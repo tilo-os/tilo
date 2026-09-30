@@ -1,0 +1,112 @@
+[package]
+name = "tilo-agent-participant"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "An agent as a first-class session participant: its own certified device and root-signed delegation, apps driven through the same resource/action door a person uses, durable edits in the host's order, and a live cursor every participant sees."
+
+[lib]
+name = "tilo_agent_participant"
+path = "src/lib.rs"
+
+[dependencies]
+# Apps run headless through the same component runtime a window or the
+# browser mounts; the resource tree (declared + semantic) is the door.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-actions = { path = "../../collab/actions" }
+# Installs a record that arrived from the session into the agent's profile.
+tilo-app-state = { path = "../../system/app-state" }
+durable-store = { path = "../../system/durable-store" }
+# `apps/agent`'s model planner: action discovery tools over a catalogue, and
+# the chooser that asks through tilo-model-gateway.
+agent = { path = "../../../apps/agent" }
+# The apps an agent can open in a browser session: the browser desktop's
+# registry, generated from the app manifests.
+# generated apps: begin (tools/web/generate_web_desktop.py)
+api-tester = { path = "../../../apps/api-tester" }
+calculator = { path = "../../../apps/calculator" }
+calendar = { path = "../../../apps/calendar" }
+camera = { path = "../../../apps/camera" }
+chat = { path = "../../../apps/chat", default-features = false, features = [] }
+clocks = { path = "../../../apps/clocks" }
+contacts = { path = "../../../apps/contacts" }
+diffmerge = { path = "../../../apps/diffmerge" }
+ebook = { path = "../../../apps/ebook" }
+feeds = { path = "../../../apps/feeds" }
+hex-editor = { path = "../../../apps/hex-editor" }
+image-editor = { path = "../../../apps/image-editor" }
+maps = { path = "../../../apps/maps" }
+music = { path = "../../../apps/music", default-features = false, features = [] }
+notes = { path = "../../../apps/notes" }
+passwords = { path = "../../../apps/passwords" }
+pdf-viewer = { path = "../../../apps/pdf-viewer" }
+photos = { path = "../../../apps/photos" }
+scratchpad = { path = "../../../apps/scratchpad" }
+sheets = { path = "../../../apps/sheets" }
+shortcuts = { path = "../../../apps/shortcuts" }
+slides = { path = "../../../apps/slides" }
+snippets = { path = "../../../apps/snippets" }
+speed-test = { path = "../../../apps/speed-test" }
+themes = { path = "../../../apps/themes" }
+totp = { path = "../../../apps/totp" }
+tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
+typst-editor = { path = "../../../apps/typst-editor" }
+video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
+video-player = { path = "../../../apps/video-player" }
+weather = { path = "../../../apps/weather" }
+word-processor = { path = "../../../apps/word-processor" }
+# generated apps: end
+# The certified relay session (iroh for a host-side agent) and its live
+# plane; the same code a browser page runs.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+iroh-base.workspace = true
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+collab-types = { path = "../../collab/collab-types" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+# An OpenAI-compatible model endpoint, called from the agent's own thread,
+# shaped for its target (a plain provider or Tilo Cloud's metered endpoint).
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-model-gateway = { path = "../model-gateway" }
+# Agents' sessions do their I/O on the host's runtime, or one of their own.
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tempfile.workspace = true
+percent-encoding = "2"
+tracing.workspace = true
+# Each agent's apps get a profile and secret store of their own.
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+iroh.workspace = true
+url.workspace = true
+# tilo-browser-peer's test support (its HTTPS client), included by path.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+bytes.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["full"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+
+[package.metadata.cargo-machete]
+# Used by tilo-browser-peer's test support, which the tests include by path.
+ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
+
+[lints]
+workspace = true

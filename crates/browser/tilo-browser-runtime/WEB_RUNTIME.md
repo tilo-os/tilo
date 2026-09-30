@@ -140,13 +140,10 @@ over:
 - the `release` profile as declared, and the `CARGO_PROFILE_RELEASE_*`
   overrides,
 - the `Cargo.lock` digest,
-- every unit the core links that the app collection's graphs share, except
-  `tilo-browser-runtime` itself: package, features and Cargo's metadata hash
-  (package, features, profile, dependency graph; independent of the checkout
-  path), plus for workspace crates a digest of the source files rustc read
-  (from dep-info). A crate only the core uses exports nothing apps link
-  against, so an optional core feature that adds such crates without changing
-  a shared crate's features (`relay`) keeps the id and links the same apps.
+- every unit the core links except `tilo-browser-runtime` itself: package,
+  features and Cargo's metadata hash (package, features, profile, dependency
+  graph; independent of the checkout path), plus for workspace crates a digest
+  of the source files rustc read (from dep-info).
 
 The core crate is left out on purpose: apps reach it only through
 `tilo_runtime_register_app`, whose contract is versioned by `REGISTRATION` in
@@ -195,39 +192,18 @@ embed their data).
 
 ## Apps outside the Tilo tree
 
-`tilo-app build --platform web` (and `package`, `dev`) runs
-`build-web-standalone.sh OUTPUT WORK APP_DIR [--app-only]` from the SDK
-checkout the app builds against. A crate's symbols carry its Cargo metadata
-hash, which covers its path relative to the workspace root, so the app cannot
-simply be built in its own workspace. `web-runtime/external-workspace.mjs`
-makes `WORK/workspace`, a workspace that mirrors the checkout: every top-level
-entry linked in as it is, Tilo's `Cargo.toml` with one more member,
-`external/<package>`, and Tilo's `Cargo.lock`. The member is the app's package
-with its Tilo dependencies pointed into the mirror (`tilo-app` without default
-features, the portable toolkit); its sources stay where they are. Every build
-step then runs against that workspace (`TILO_WEB_WORKSPACE`), and the core is
-the same core as in the checkout: its ABI id digests only the core's own
-`Cargo.lock` entries, so the app's additions leave it alone.
-
-OUTPUT receives the core's output without `build/`, the app under `apps/`,
-and `web/dev.html` as `index.html`: it mounts the app on the record it had
-before and reloads when a new build is served (under `tilo-app dev`, the
-server's `/__tilo-dev/build` generation; elsewhere the module digest in
-`app.json`). `--app-only` rebuilds only the side module against the core in
-WORK and replaces only `apps/` in OUTPUT; when an edit made the module import
-something the core does not export yet, it links the core again.
-
-The app joins `TILO_WEB_COLLECTION`, so the core exports what it imports from
-crates that are not the toolkit's (`automerge`, `serde_json`, generic
-instantiations). A registry core is built for the default collection only: an
-app outside it can import something that core does not export, and the page
-refuses to link it (`unresolved.txt` names what is missing) until the app
-drops that import or the core's collection grows.
-
-`build-web-core.sh` keeps the core in OUTPUT when cargo rebuilt nothing and
-the ABI, features, collection and the scripts themselves are unchanged, and
-publishes fonts and measures sizes again only when their inputs changed, so a
-repeated build costs the cargo check and the app's link.
+`tilo-app build --platform web` (and `dev`, `run`) builds the app's bundle,
+as `build --target web --bundle app` does: `wasm32` has no dynamic linking,
+so the runtime and the app are one module. A small generated crate under
+`<target>/tilo-app/web/<package>/crate` depends on `tilo-browser-runtime` and
+the app, registers the app's `definition()` at start, and builds into the app
+workspace's target directory as its own Cargo workspace (with that
+workspace's `[patch]`, profiles and lock file), so an app anywhere builds
+against the SDK checkout it names. The bundle lands in
+`<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
+`index.html?app=<id>`; `--output` copies it. `package --target web` writes
+it in the immutable layout Cloud serves. There is no side-module web
+package: this runtime has no separately published core to link one into.
 
 ## Loading apps in the page
 
@@ -558,6 +534,41 @@ shaders):
 | 8 | automerge | 428 | | 18 | zune_jpeg | 107 |
 | 9 | hashbrown | 418 | | 19 | image_webp | 103 |
 | 10 | serde_json | 387 | | 20 | regex_syntax | 102 |
+
+## Collaboration end to end
+
+`crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
+apps, headless Chrome pages and a host agent in one room of a local
+`tilo-relay dev` host on spare ports, and checks what a person would see: the
+same record on every side; edits native to browser, browser to native and
+browser to browser, with the time until the other side shows them; named
+cursors and carets both ways; a page that joins late; an agent's edit and
+cursor on native and in the pages; and a reloaded page that keeps its device
+and room membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
+under a throwaway runtime profile that carries the dev host's user root, two
+pages, then a third, and (with `--agents --agent-model scripted`) an agent
+spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
+table) under `--out` and stops everything it started.
+
+```sh
+cargo build --release -p tilo-relay --features web,agents
+cargo build -p shell --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
+crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
+node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
+  --apps notes,sheets,scratchpad --out /abs/e2e
+```
+
+`--build` runs those builds itself (the bundle with `--profile dev` into
+`OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
+for a relay without `agents`. The native window is read and edited from
+outside the process through the macOS accessibility API
+(`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
+running the script needs Accessibility permission; the native pointer moves
+through a `TILO_NATIVE_SCENARIO` timeline. Native presence from the pages is
+read from the runtime daemon's log. The screen must stay unlocked for the whole
+run: a locked screen presents no native window, so the script refuses to start
+on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
+`*-channels.txt`. macOS only.
 
 ## Tests
 

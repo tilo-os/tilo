@@ -80,6 +80,7 @@ pub mod render_call;
 pub mod render_chat;
 pub mod responsive;
 pub mod search_provider;
+pub mod semantic_read;
 pub mod storage;
 
 pub use app::ChatApp;

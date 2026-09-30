@@ -125,7 +125,7 @@ impl SheetTable {
 /// (including one over the zip-bomb bounds or carrying a DTD), or a tab
 /// spans more than [`MAX_MATERIALIZED_SLOTS`].
 pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let parsed = XlsxCodec::parse(&std::fs::read(path)?)?;
+    let parsed = XlsxCodec::parse(&read_file(path)?)?;
     // Excel stores dates as serial numbers; the cell's number format is the
     // only sign one is a date.
     let dates = parsed
@@ -435,8 +435,29 @@ pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     if !styles.is_empty() {
         preserved.insert("xl/styles.xml".to_string(), cell_styles(&styles));
     }
-    std::fs::write(path, XlsxCodec::export_snapshot(&snap, &preserved)?)?;
+    write_file(path, &XlsxCodec::export_snapshot(&snap, &preserved)?)?;
     Ok(())
+}
+
+/// The bytes of a file a chooser named.
+///
+/// # Errors
+///
+/// The file cannot be read (on the web: it has no native path).
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    tilo_files::blocking::read(&dir, &name)
+}
+
+/// Save `bytes` as the file a chooser named, keeping an existing file's link
+/// and permissions.
+///
+/// # Errors
+///
+/// The file cannot be written (on the web: it has no native path).
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
 /// Map our format to an Excel number-format code string.

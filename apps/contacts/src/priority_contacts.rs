@@ -2,7 +2,8 @@
 //!
 //! Only launcher-started Contacts enables this publisher (`TILO_PACKAGE_ID`);
 //! tests, shots and standalone binaries stay hermetic. The shell independently
-//! verifies the D-Bus sender's process ancestry before accepting a replacement.
+//! verifies the sender's process ancestry before accepting a replacement.
+//! Other platforms have no such list, and `ui::notify` says so.
 
 use std::sync::LazyLock;
 

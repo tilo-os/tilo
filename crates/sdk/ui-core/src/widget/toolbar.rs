@@ -1887,9 +1887,9 @@ mod lifecycle_tests {
     }
 
     #[test]
-    #[ignore = "manual offscreen evidence; set QUICK_UI_SCREENSHOT_DIR"]
+    #[ignore = "manual offscreen evidence; set TILO_UI_SCREENSHOT_DIR"]
     fn rendered_toolbar_overflow_fixtures() {
-        let dir = std::env::var("QUICK_UI_SCREENSHOT_DIR").unwrap();
+        let dir = crate::env::var("TILO_UI_SCREENSHOT_DIR").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         for (name, width, height, scale, toolbar_width) in [
             ("toolbar-ordinary-100", 720u32, 340u32, 1.0, 530.0),

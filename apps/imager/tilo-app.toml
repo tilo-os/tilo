@@ -14,13 +14,21 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Installs Tilo: writes OS images to block devices and configures each host OS's bootloader and firmware."
+
+[package.names]
+de = "Laufwerksabbilder"
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-[platform]
-native = "Installs Tilo: writes OS images to block devices and configures each host OS's bootloader and firmware."
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["files.paths", "processes"]
+optional = ["files.open", "app-files", "network.http", "threads"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

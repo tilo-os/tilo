@@ -139,7 +139,7 @@ impl MusicApp {
             }
             ui::portal::PortalOutcome::Failed(error) => error,
         };
-        self.toast = Some((error.clone(), std::time::Instant::now()));
+        self.toast = Some((error.clone(), ui::time::now()));
         self.resource_stream_results
             .push(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -199,9 +199,7 @@ impl MusicApp {
 
     pub(super) fn start_local_file(&mut self) -> Result<u64, String> {
         let file = self.local_file.as_ref().ok_or("No local file is open")?;
-        let metadata = std::fs::metadata(&file.path)
-            .map_err(|error| format!("Local audio file is unavailable: {error}"))?;
-        if !metadata.is_file() || metadata.len() == 0 {
+        if !crate::files::is_nonempty_file(&file.path) {
             return Err("Local audio file is unavailable or empty".into());
         }
         let uri = media::source::path_to_file_uri(&file.path).map_err(|error| error.to_string())?;
@@ -521,13 +519,13 @@ mod tests {
             let first_output = tilo_test_env::hang_deadline();
             while app.audio.frames_rendered() < 2 {
                 app.tick();
-                assert!(std::time::Instant::now() < first_output);
+                assert!(ui::time::now() < first_output);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             app.pb.playing = false;
             app.audio.pause();
             while app.audio.is_playing_real() {
-                assert!(std::time::Instant::now() < first_output);
+                assert!(ui::time::now() < first_output);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             assert!(!app.audio.reached_eos());
@@ -577,12 +575,12 @@ mod tests {
                     assert!(app.resource_stream_resume.is_none());
                     break;
                 }
-                assert!(std::time::Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             while !app.audio.reached_eos() {
                 app.audio.pump();
-                assert!(std::time::Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             assert!(
@@ -753,10 +751,7 @@ mod tests {
             {
                 break update;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "cached decoder never settled"
-            );
+            assert!(ui::time::now() < deadline, "cached decoder never settled");
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
         if valid_audio {
@@ -1042,10 +1037,7 @@ mod tests {
         {
             app.tick();
             assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
-            assert!(
-                std::time::Instant::now() < until,
-                "file decoder did not render PCM"
-            );
+            assert!(ui::time::now() < until, "file decoder did not render PCM");
             capture.wait_for_more(std::time::Duration::from_millis(20));
         }
         let pcm = capture.snapshot();
@@ -1098,10 +1090,7 @@ mod tests {
             assert!(!app.pb.playing);
             let paused_by = tilo_test_env::hang_deadline();
             while app.audio.is_playing_real() {
-                assert!(
-                    std::time::Instant::now() < paused_by,
-                    "native source did not pause"
-                );
+                assert!(ui::time::now() < paused_by, "native source did not pause");
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             let resource = crate::app::MusicApp::publish_resource(
@@ -1151,7 +1140,7 @@ mod tests {
                     break;
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "paused source did not resume output: frames {before} -> {}, playing {}, \
                      confirmed {}, error {:?}",
                     app.audio.frames_rendered(),
@@ -1368,7 +1357,7 @@ mod tests {
                     break;
                 }
                 assert!(
-                    std::time::Instant::now() < until,
+                    ui::time::now() < until,
                     "decoder failure never reached the operation"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(5));

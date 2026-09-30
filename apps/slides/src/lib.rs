@@ -53,6 +53,7 @@ pub mod framework_history;
 mod help_overlay;
 pub mod model;
 pub mod odp;
+pub mod outline;
 mod overview_grid;
 pub mod pptx;
 mod presentation;
@@ -71,6 +72,14 @@ use ui::widget::Widget;
 /// document.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SlidesApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.slides", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Slides")
 }
 
 /// Root pre-loaded with the hermetic sample deck, optionally jumped to a named

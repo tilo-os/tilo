@@ -16,8 +16,9 @@ path = "src/main.rs"
 # Media import uses the shared host file chooser (`ui::portal`) in every build;
 # it is independent of the GStreamer decode/export features.
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 fnv.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
 # `ui` brings the host file chooser and the planar upload + YUV shader the
 # compositor paints hardware-decoded frames with (`ui::gpu_video`).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -42,8 +43,7 @@ gstreamer = { workspace = true, optional = true }
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
-thumbnail = { path = "../../crates/media/thumbnail" }
-workspace-hack = { version = "0.1" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
@@ -52,8 +52,14 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
+
+# The page build has no GStreamer: the editor runs with representative
+# preview frames there (the preview's blocking frame-exact seeks need an
+# asynchronous path before the page's media elements can serve them).
+[package.metadata.tilo]
+web-features = []
 
 [features]
 # Shared-runtime build, as the rest of the fleet has adopted: links the
@@ -65,10 +71,14 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
+decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
 gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

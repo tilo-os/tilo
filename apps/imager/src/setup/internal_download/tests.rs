@@ -1081,7 +1081,7 @@ fn redirects_and_stream_timeouts_are_bounded() {
             InternalTransport::client(Url::parse(&url).unwrap(), Duration::from_millis(40))
                 .unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        let start = Instant::now();
+        let start = ui::time::now();
         assert!(
             transport
                 .transfer(
@@ -1135,7 +1135,7 @@ fn redirects_and_stream_timeouts_are_bounded() {
                 .unwrap();
                 let mut file = tempfile::tempfile().unwrap();
                 let cancel = AtomicBool::new(false);
-                let start = Instant::now();
+                let start = ui::time::now();
                 let mut events = Vec::new();
                 let result = transport.transfer(&selected, 0, &mut file, None, &cancel, 5, |p| {
                     events.push(p);

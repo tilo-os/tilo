@@ -30,8 +30,8 @@ uuid.workspace = true
 base64.workspace = true
 crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
@@ -44,7 +44,7 @@ tilo-automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 cap-std = "3.4.6"
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
@@ -73,6 +73,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(windows)'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["dx12-shader-cache"] }
 windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 # The cargo-xwin Clang sysroot's NEON header cannot compile blake3's C

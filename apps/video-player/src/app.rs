@@ -28,7 +28,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
 use ui::paint::fill_rect;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, PortalChannel,
+    PortalOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -340,9 +343,22 @@ const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 /// deliberately separate from the media generation: it identifies *this
 /// chooser* rather than the media that may eventually be selected.
 struct PendingPortalOpen {
-    channel: PortalChannel,
+    channel: PickerChannel,
     generation: u64,
     invocation: Option<tilo_actions::InvocationId>,
+}
+
+/// A host with paths answers with the chosen path; a host without them (a
+/// browser page) hands over the file's bytes.
+enum PickerChannel {
+    Path(PortalChannel),
+    Contents(ContentsChannel),
+}
+
+/// What the picker chose, in the form the host could give it.
+enum Picked {
+    Path(PathBuf),
+    Contents(PickedContents),
 }
 
 /// A terminal response paired with the request identity and optional action
@@ -351,7 +367,7 @@ struct PendingPortalOpen {
 type PortalOpenOutcome = (
     u64,
     Option<tilo_actions::InvocationId>,
-    Result<PathBuf, Option<String>>,
+    Result<Picked, Option<String>>,
 );
 
 /// A canonical open invocation awaiting its decoder's first picture. This is
@@ -360,7 +376,7 @@ type PortalOpenOutcome = (
 struct PendingMediaOpen {
     invocation: tilo_actions::InvocationId,
     source_id: String,
-    deadline: std::time::Instant,
+    deadline: ui::time::Instant,
 }
 
 /// A file-backed local record. The source is deliberately kept only in this
@@ -654,7 +670,22 @@ pub struct PlayerApp {
     /// Production builds carry no observer or additional settlement path.
     #[cfg(test)]
     history_test_open_error_observer: Option<std::rc::Rc<std::cell::RefCell<Option<String>>>>,
+    /// Where files have no path: the kept copy (`crate::kept`) of each
+    /// queue or recent entry opened by contents, by entry id.
+    kept: HashMap<String, String>,
+    /// Kept copies still on disk, newest first.
+    kept_retained: Vec<String>,
+    /// A kept copy being read back, and the entry it reopens.
+    kept_recall: Option<KeptRecall>,
+    kept_wake: ui::wake::WakeHandle,
     dirty: bool,
+}
+
+struct KeptRecall {
+    bytes: std::sync::mpsc::Receiver<Option<Vec<u8>>>,
+    token: String,
+    title: String,
+    queue_id: Option<String>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -860,7 +891,7 @@ impl PlayerApp {
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
-        let recent = crate::preferences::load_recent_history()
+        let recent: VecDeque<LocalMediaEntry> = crate::preferences::load_recent_history()
             .into_iter()
             .map(|entry| LocalMediaEntry {
                 id: entry.id,
@@ -876,6 +907,10 @@ impl PlayerApp {
         preferences: PlaybackPreferences,
         recent: VecDeque<LocalMediaEntry>,
     ) -> Self {
+        let kept_retained = recent
+            .iter()
+            .filter_map(|entry| crate::kept::token_of(&entry.source).map(str::to_owned))
+            .collect();
         let action_ctx = crate::actions::PlayerResourceCtx {
             title: "No media",
             media: crate::actions::MediaAvailability {
@@ -953,6 +988,10 @@ impl PlayerApp {
             open_error: None,
             #[cfg(test)]
             history_test_open_error_observer: None,
+            kept: HashMap::new(),
+            kept_retained,
+            kept_recall: None,
+            kept_wake: ui::wake::WakeHandle::new(),
             dirty: true,
         }
     }
@@ -1038,7 +1077,7 @@ impl PlayerApp {
         app.history_test_open_error_observer = Some(observed_error.clone());
         app.portal_generation = 11;
         app.portal_open = Some(PendingPortalOpen {
-            channel,
+            channel: PickerChannel::Path(channel),
             generation: 11,
             invocation: None,
         });
@@ -1341,6 +1380,98 @@ impl PlayerApp {
         self.open_local_source(source, title, Some(queue_id))
     }
 
+    /// Open a video the host handed over as bytes (a browser page has no
+    /// paths to give).
+    fn open_contents(&mut self, file: &PickedContents) -> Result<(), String> {
+        let source = media::Source::from_contents(&file.name, &file.bytes)
+            .map_err(|e| format!("could not stage {}: {e}", file.name))?;
+        let title = if file.name.is_empty() {
+            "selected video".to_string()
+        } else {
+            file.name.clone()
+        };
+        let queue_id = self.ensure_queued(source.clone(), title.clone());
+        self.open_local_source(source, title, Some(queue_id.clone()))?;
+        if !crate::kept::native_paths() {
+            self.keep_contents(&queue_id, file);
+        }
+        Ok(())
+    }
+
+    /// Keep a video opened by contents for Recent, or say why it is not.
+    fn keep_contents(&mut self, queue_id: &str, file: &PickedContents) {
+        if file.bytes.len() > crate::kept::KEEP_LIMIT {
+            if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
+                entry.title = format!(
+                    "{} — too large to reopen after a reload (over {} MB)",
+                    entry.title,
+                    crate::kept::KEEP_LIMIT / (1024 * 1024)
+                );
+            }
+            self.invalidate_search_cache();
+            return;
+        }
+        let token = crate::kept::token(&file.name, file.bytes.len());
+        self.kept_retained.insert(0, token.clone());
+        self.kept_retained.truncate(crate::kept::KEPT_VIDEOS);
+        self.kept.insert(queue_id.to_owned(), token.clone());
+        drop(crate::kept::keep(
+            token,
+            file.bytes.clone(),
+            self.kept_retained.clone(),
+        ));
+    }
+
+    /// Start reading a kept copy back; the entry opens once it is here.
+    fn recall_kept(&mut self, token: &str, title: String, queue_id: Option<String>) {
+        let wake = self.kept_wake.clone();
+        self.kept_recall = Some(KeptRecall {
+            bytes: crate::kept::recall(token.to_owned(), move || wake.wake()),
+            token: token.to_owned(),
+            title,
+            queue_id,
+        });
+        self.open_error = None;
+        self.dirty = true;
+    }
+
+    fn poll_kept_recall(&mut self) {
+        let Some(recall) = self.kept_recall.as_ref() else {
+            return;
+        };
+        let bytes = match recall.bytes.try_recv() {
+            Ok(bytes) => bytes,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        let Some(recall) = self.kept_recall.take() else {
+            return;
+        };
+        let opened = bytes
+            .ok_or_else(|| {
+                format!(
+                    "the kept copy of {} is gone; open the file again",
+                    recall.title
+                )
+            })
+            .and_then(|bytes| {
+                media::Source::from_contents(&recall.title, &bytes)
+                    .map_err(|e| format!("could not stage {}: {e}", recall.title))
+            });
+        match opened {
+            Ok(source) => {
+                if let Some(queue_id) = &recall.queue_id {
+                    self.kept.insert(queue_id.clone(), recall.token);
+                }
+                let _ = self.open_local_source(source, recall.title, recall.queue_id);
+            }
+            Err(error) => {
+                self.open_error = Some(error);
+                self.dirty = true;
+            }
+        }
+    }
+
     fn ensure_queued(&mut self, source: media::Source, title: String) -> String {
         if let Some(entry) = self.queue.iter().find(|entry| {
             media::session::session_key(&entry.source) == media::session::session_key(&source)
@@ -1374,6 +1505,11 @@ impl PlayerApp {
         title: String,
         queue_id: Option<String>,
     ) -> Result<(), String> {
+        if let Some(token) = crate::kept::token_of(&source) {
+            let token = token.to_owned();
+            self.recall_kept(&token, title, queue_id);
+            return Ok(());
+        }
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
             self.dirty = true;
@@ -1435,13 +1571,23 @@ impl PlayerApp {
     }
 
     fn persist_recent_history(&self) -> std::io::Result<()> {
+        // A page's `blob:` source dies with the page: an entry is kept by its
+        // kept copy, while that copy is retained, or not at all.
         let entries: Vec<RecentMedia> = self
             .recent
             .iter()
-            .map(|entry| RecentMedia {
-                id: entry.id.clone(),
-                title: entry.title.clone(),
-                source: entry.source.clone(),
+            .filter_map(|entry| {
+                let source = match self.kept.get(&entry.id) {
+                    Some(token) => crate::kept::source(token),
+                    None => entry.source.clone(),
+                };
+                let retained = crate::kept::token_of(&source)
+                    .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
+                (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
+                    id: entry.id.clone(),
+                    title: entry.title.clone(),
+                    source,
+                })
             })
             .collect();
         crate::preferences::save_recent_history(&entries)
@@ -1453,6 +1599,11 @@ impl PlayerApp {
         if let Err(error) = self.persist_recent_history() {
             self.recent = previous;
             return Err(format!("could not clear local recent history: {error}"));
+        }
+        if !self.kept_retained.is_empty() {
+            self.kept.clear();
+            self.kept_retained.clear();
+            crate::kept::forget_all();
         }
         self.invalidate_search_cache();
         self.dirty = true;
@@ -1763,7 +1914,13 @@ impl PlayerApp {
         self.portal_generation = generation;
         self.open_error = None;
         self.portal_open = Some(PendingPortalOpen {
-            channel: video_open_request().send(),
+            channel: if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+                == tilo_paths::Availability::Available
+            {
+                PickerChannel::Path(video_open_request().send())
+            } else {
+                PickerChannel::Contents(video_open_request().send_contents())
+            },
             generation,
             invocation: None,
         });
@@ -1797,7 +1954,7 @@ impl PlayerApp {
         self.media_open = Some(PendingMediaOpen {
             invocation,
             source_id,
-            deadline: std::time::Instant::now() + OPEN_FRAME_TIMEOUT,
+            deadline: ui::time::now() + OPEN_FRAME_TIMEOUT,
         });
         Ok(())
     }
@@ -1830,7 +1987,7 @@ impl PlayerApp {
                 output: tilo_actions::ActionOutput::default(),
             });
         }
-        if std::time::Instant::now() >= pending.deadline {
+        if ui::time::now() >= pending.deadline {
             let pending = self.media_open.take()?;
             let message = "The decoder did not produce a first frame in time.".to_string();
             self.open_error = Some(message.clone());
@@ -2076,19 +2233,33 @@ impl PlayerApp {
     }
 
     /// Drain a pending portal outcome, opening the chosen file.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each answer a picker can give, handled in one place"
+    )]
     fn drain_portal(&mut self) {
         let pending = self.portal_open.take();
         let mut outcome: Option<PortalOpenOutcome> = None;
         if let Some(request) = pending.as_ref() {
-            match request.channel.try_recv() {
-                Ok(PortalOutcome::Opened(p)) => {
-                    outcome = Some((request.generation, request.invocation, Ok(p)));
-                }
-                Ok(PortalOutcome::Cancelled) => {
-                    outcome = Some((request.generation, request.invocation, Err(None)));
-                }
-                Ok(PortalOutcome::Failed(error)) => {
-                    outcome = Some((request.generation, request.invocation, Err(Some(error))));
+            let received = match &request.channel {
+                PickerChannel::Path(channel) => channel.try_recv().map(|answer| match answer {
+                    PortalOutcome::Opened(p) => Ok(Picked::Path(p)),
+                    PortalOutcome::Cancelled => Err(None),
+                    PortalOutcome::Failed(error) => Err(Some(error)),
+                }),
+                PickerChannel::Contents(channel) => channel.try_recv().map(|answer| match answer {
+                    ContentsOutcome::Picked(files) => files
+                        .into_iter()
+                        .next()
+                        .map(Picked::Contents)
+                        .ok_or_else(|| Some("the picker returned no file".into())),
+                    ContentsOutcome::Cancelled => Err(None),
+                    ContentsOutcome::Failed(error) => Err(Some(error)),
+                }),
+            };
+            match received {
+                Ok(result) => {
+                    outcome = Some((request.generation, request.invocation, result));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     outcome = Some((
@@ -2127,7 +2298,8 @@ impl PlayerApp {
                 return;
             }
             let result = match outcome {
-                Ok(path) => self.open_path(&path).map(|()| true),
+                Ok(Picked::Path(path)) => self.open_path(&path).map(|()| true),
+                Ok(Picked::Contents(file)) => self.open_contents(&file).map(|()| true),
                 Err(None) => Ok(false),
                 Err(Some(e)) => {
                     self.open_error = Some(e.clone());
@@ -2611,7 +2783,7 @@ impl PlayerApp {
             } else {
                 ("Couldn't open video", error.as_str())
             }
-        } else if self.player.has_media() {
+        } else if self.player.has_media() || self.kept_recall.is_some() {
             ("Loading video…", "Preparing the first frame")
         } else if compact_copy {
             ("Open a video\nto start", "MP4, WebM, MKV,\nMOV and AVI")
@@ -3601,6 +3773,7 @@ impl Widget for PlayerApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        self.poll_kept_recall();
         let shared = crate::shared::read(state);
         if !self.shot_shared && shared != self.shared_library {
             self.shared_library = shared;
@@ -5554,7 +5727,7 @@ mod tests {
             app.media_open
                 .as_mut()
                 .expect("pending decoder open")
-                .deadline = std::time::Instant::now();
+                .deadline = ui::time::now();
             assert!(matches!(
                 Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
                 Some(tilo_actions::InvocationUpdate::Failed { error, .. })

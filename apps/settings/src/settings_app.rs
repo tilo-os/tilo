@@ -377,7 +377,7 @@ impl SettingsApp {
             TextInput::from_state(&self.search_state)
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
-                .with_placeholder("Search settings")
+                .with_placeholder(&crate::i18n::t("settings-search-placeholder"))
                 .with_font_size(13.0),
         )
     }
@@ -403,8 +403,8 @@ impl SettingsApp {
             .with_intrinsic_height()
             .with_gap(ui::tokens::Spacing::BASE.s4)
             .push(crate::widgets::page_heading(
-                self.selected.label(),
-                self.selected.subtitle(),
+                &self.selected.label(),
+                &self.selected.subtitle(),
             ))
             .push(body);
         // Account forms and cards are more legible as a column on large
@@ -557,6 +557,9 @@ impl SettingsApp {
                 Box::new(pane)
             }
             Category::Accessibility => panes::accessibility::build(),
+            Category::Notifications if self.deterministic_hardware_for_shot => {
+                Box::new(panes::notifications::NotificationsPane::for_shot())
+            }
             Category::Notifications => {
                 let mut pane = panes::notifications::NotificationsPane::new();
                 if let Some(dispatcher) = &self.framework {
@@ -1799,7 +1802,7 @@ impl Widget for SettingsApp {
             if widget.name() == "SidebarRow"
                 && let Some(category) = Category::ALL
                     .iter()
-                    .find(|category| widget.test_id() == Some(category.label()))
+                    .find(|category| widget.test_id() == Some(category.label().as_str()))
             {
                 categories.push(category.slug());
             }
@@ -3612,7 +3615,7 @@ mod tests {
             let app = layout_at(app, 440.0, 820.0);
 
             let mut heading = None;
-            named_rect(&*app, selected.label(), &mut heading);
+            named_rect(&*app, &selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             let back = app.back_button_rect();
             assert!(
@@ -3645,7 +3648,7 @@ mod tests {
                 layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
 
             let mut heading = None;
-            named_rect(&*app, selected.label(), &mut heading);
+            named_rect(&*app, &selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             assert!(
                 heading.y0 < 844.0,

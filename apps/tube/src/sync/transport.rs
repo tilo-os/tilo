@@ -22,9 +22,11 @@
 //!    are chunked with STREAM (START/DATA/END).
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::future::Future;
+use std::io::{self, Read, Write};
+use std::pin::pin;
+use std::task::Poll;
+use ui::time::{Duration, Instant};
 
 use base64::Engine;
 use flate2::Compression;
@@ -218,7 +220,7 @@ struct Reasm {
 /// One connected + handshaked Noise session. Owns the socket and the transport
 /// cipher state. Not `Clone`; drive it from a single thread.
 pub struct GrayjaySession {
-    stream: TcpStream,
+    stream: Stream,
     transport: TransportState,
     remote_public_key: String,
     local_public_key: String,
@@ -246,7 +248,7 @@ impl GrayjaySession {
     // -- handshake ---------------------------------------------------------
 
     /// Raw-socket version exchange that precedes the Noise handshake.
-    fn version_check(stream: &mut TcpStream) -> SyncResult<i32> {
+    fn version_check(stream: &mut Stream) -> SyncResult<i32> {
         stream
             .write_all(&PROTOCOL_VERSION.to_le_bytes())
             .map_err(|error| io_err(&error))?;
@@ -270,7 +272,7 @@ impl GrayjaySession {
     /// Returns an error for invalid peer metadata, a failed Noise handshake, or
     /// a socket read/write failure.
     pub fn connect_initiator(
-        mut stream: TcpStream,
+        stream: impl Into<Stream>,
         device: &DeviceKey,
         remote_public_key_b64: &str,
         pairing_code: Option<&str>,
@@ -278,6 +280,7 @@ impl GrayjaySession {
     ) -> SyncResult<Self> {
         let remote_pub = b64_decode(remote_public_key_b64)?;
 
+        let mut stream: Stream = stream.into();
         let remote_version = Self::version_check(&mut stream)?;
 
         let params = NOISE_PATTERN_MAIN
@@ -369,11 +372,12 @@ impl GrayjaySession {
     /// Returns an error for malformed frames, rejected peers, a failed Noise
     /// handshake, or a socket read/write failure.
     pub fn accept_responder(
-        mut stream: TcpStream,
+        stream: impl Into<Stream>,
         device: &DeviceKey,
         device_name: &str,
         allow: impl Fn(&str, Option<&str>) -> bool,
     ) -> SyncResult<Self> {
+        let mut stream: Stream = stream.into();
         let remote_version = Self::version_check(&mut stream)?;
 
         let params = NOISE_PATTERN_MAIN
@@ -749,7 +753,7 @@ impl GrayjaySession {
     fn complete_authorization(&mut self, deadline: Instant) -> SyncResult<String> {
         self.send_authorized()?;
         loop {
-            if Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err(SyncError::Transport(
                     "timed out waiting for peer authorization".into(),
                 ));
@@ -792,7 +796,104 @@ fn stream_header(payload: &[u8]) -> SyncResult<(i32, usize, &[u8])> {
     ))
 }
 
-fn read_exact(stream: &mut TcpStream, buf: &mut [u8]) -> SyncResult<()> {
+/// A connected socket for the blocking protocol thread: `tilo_net`'s TCP,
+/// driven through the app runtime, each read and write bounded by the
+/// session's I/O timeout.
+pub struct Stream(Socket);
+
+enum Socket {
+    Net {
+        socket: tilo_net::sockets::TcpStream,
+        timeout: Duration,
+    },
+    /// The in-process test peers' loopback sockets.
+    #[cfg(test)]
+    Std(std::net::TcpStream),
+}
+
+#[cfg(test)]
+impl From<std::net::TcpStream> for Stream {
+    fn from(stream: std::net::TcpStream) -> Self {
+        Self(Socket::Std(stream))
+    }
+}
+
+impl Stream {
+    fn connect(
+        host: &str,
+        port: u16,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+    ) -> io::Result<Self> {
+        let socket = wait(
+            connect_timeout,
+            tilo_net::sockets::TcpStream::connect_timeout(host, port, connect_timeout),
+        )?;
+        Ok(Self(Socket::Net {
+            socket,
+            timeout: io_timeout,
+        }))
+    }
+}
+
+/// Wait on the app runtime for `future`, at most `timeout`.
+fn wait<T>(
+    timeout: Duration,
+    future: impl Future<Output = Result<T, tilo_net::NetError>>,
+) -> io::Result<T> {
+    let bounded = async move {
+        let mut future = pin!(future);
+        let mut expiry = pin!(ui::rt::sleep(timeout));
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(result) = future.as_mut().poll(cx) {
+                return Poll::Ready(Some(result));
+            }
+            expiry.as_mut().poll(cx).map(|()| None)
+        })
+        .await
+    };
+    match ui::rt::app().block_on(bounded) {
+        Ok(Some(result)) => result.map_err(io::Error::other),
+        Ok(None) => Err(io::ErrorKind::TimedOut.into()),
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
+
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Socket::Net { socket, timeout } => {
+                let timeout = *timeout;
+                wait(timeout, socket.read(buf))
+            }
+            #[cfg(test)]
+            Socket::Std(stream) => stream.read(buf),
+        }
+    }
+}
+
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match &mut self.0 {
+            Socket::Net { socket, timeout } => {
+                let timeout = *timeout;
+                wait(timeout, socket.write_all(buf)).map(|()| buf.len())
+            }
+            #[cfg(test)]
+            Socket::Std(stream) => stream.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.0 {
+            Socket::Net { .. } => Ok(()),
+            #[cfg(test)]
+            Socket::Std(stream) => stream.flush(),
+        }
+    }
+}
+
+fn read_exact(stream: &mut Stream, buf: &mut [u8]) -> SyncResult<()> {
     stream.read_exact(buf).map_err(|error| io_err(&error))
 }
 
@@ -939,27 +1040,17 @@ impl GrayjaySyncTransport {
     ) -> SyncResult<GrayjaySession> {
         let mut last_err = SyncError::Transport("no addresses to connect".into());
         for addr in &info.addresses {
-            let target = format!("{addr}:{}", info.port);
-            let sock_addr = match target.to_socket_addrs() {
-                Ok(mut it) => match it.next() {
-                    Some(a) => a,
-                    None => continue,
-                },
-                Err(e) => {
-                    last_err = SyncError::Transport(format!("resolve {target}: {e}"));
-                    continue;
-                }
+            let Ok(port) = u16::try_from(info.port) else {
+                last_err = SyncError::Transport(format!("invalid port {}", info.port));
+                continue;
             };
-            let stream = match TcpStream::connect_timeout(&sock_addr, self.connect_timeout) {
+            let stream = match Stream::connect(addr, port, self.connect_timeout, self.io_timeout) {
                 Ok(s) => s,
                 Err(e) => {
                     last_err = io_err(&e);
                     continue;
                 }
             };
-            stream.set_nodelay(true).ok();
-            stream.set_read_timeout(Some(self.io_timeout)).ok();
-            stream.set_write_timeout(Some(self.io_timeout)).ok();
 
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -968,7 +1059,7 @@ impl GrayjaySyncTransport {
                 pairing_code.or(info.pairing_code.as_deref()),
                 &self.device_name,
             )?;
-            let deadline = Instant::now() + self.sync_deadline;
+            let deadline = ui::time::now() + self.sync_deadline;
             session.complete_authorization(deadline)?;
             return Ok(session);
         }
@@ -1048,9 +1139,9 @@ impl SyncTransport for GrayjaySyncTransport {
         session.send_data(sync_opcode::SYNC_STATE_EXCHANGE, &req_json)?;
 
         let mut out = SyncState::default();
-        let deadline = Instant::now() + self.sync_deadline;
+        let deadline = ui::time::now() + self.sync_deadline;
         let mut got_subs = false;
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             match session.recv() {
                 Ok(Incoming::Data {
                     sub_opcode,
@@ -1080,7 +1171,7 @@ impl SyncTransport for GrayjaySyncTransport {
             }
             // Subscriptions are the primary payload; once we have them, a short
             // grace for history is enough — bail if the peer went quiet.
-            if got_subs && Instant::now() + Duration::from_millis(500) >= deadline {
+            if got_subs && ui::time::now() + Duration::from_millis(500) >= deadline {
                 break;
             }
         }
@@ -1140,7 +1231,7 @@ fn parse_history_urls(payload: &[u8]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
 
     #[test]

@@ -2,22 +2,24 @@
 name = "cloud-source-dav"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "WebDAV and Nextcloud accounts as a cloud-source provider: PROPFIND listings, sync-collection, ranged reads, conditional and chunked uploads, versions."
 
 [dependencies]
 base64 = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["std"] }
-cloud-source = { path = "../cloud-source" }
-tilo-dav = { path = "../tilo-dav" }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
+tilo-dav = { version = "0.1.0", path = "../tilo-dav" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 url = { workspace = true, features = ["serde"] }
 percent-encoding.workspace = true
 # The in-memory WebDAV/Nextcloud server behind `fake-server`.
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 
 [features]
 # `cloud_source_dav::fake::FakeDav`, an in-memory WebDAV/Nextcloud server on

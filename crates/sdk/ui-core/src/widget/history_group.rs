@@ -103,13 +103,15 @@ impl OpFamily {
         }
     }
 
-    fn plural(self) -> &'static str {
-        match self {
-            OpFamily::Edit => "edits",
-            OpFamily::Comment => "comments",
-            OpFamily::Governance => "permission changes",
-            OpFamily::Deletion => "deletions",
-        }
+    /// "3 edits", in the desktop's language.
+    fn count(self, count: usize) -> String {
+        let key = match self {
+            OpFamily::Edit => "history-group-edits",
+            OpFamily::Comment => "history-group-comments",
+            OpFamily::Governance => "history-group-access-changes",
+            OpFamily::Deletion => "history-group-deletions",
+        };
+        crate::i18n!(key, "count" => count)
     }
 }
 
@@ -182,29 +184,28 @@ impl HistoryGroup {
                 .map(|e| e.summary.clone())
                 .unwrap_or_default();
         }
-        let noun = match self.families.as_slice() {
-            [only] => only.plural(),
-            _ => "changes",
+        let count = if let [only] = self.families.as_slice() {
+            only.count(self.len())
+        } else {
+            crate::i18n!("history-group-changes", "count" => self.len())
         };
-        let mut s = format!("{} {noun}", self.len());
-        if let Some(span) = self.span_label() {
-            s.push_str(" over ");
-            s.push_str(&span);
+        self.over_span(count)
+    }
+
+    /// `count` followed by how long the range took, when that is worth saying.
+    fn over_span(&self, count: String) -> String {
+        match self.span_label() {
+            Some(span) => crate::i18n!("history-group-over", "count" => count, "span" => span),
+            None => count,
         }
-        s
     }
 
     /// The dim second line: who, and how much moved.
     pub fn subtitle(&self, entries: &[HistoryEntry]) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
-            let noun = if self.len() == 1 { "change" } else { "changes" };
-            let mut count = format!("{} {noun}", self.len());
-            if let Some(span) = self.span_label() {
-                count.push_str(" over ");
-                count.push_str(&span);
-            }
-            parts.push(count);
+            let count = crate::i18n!("history-group-changes", "count" => self.len());
+            parts.push(self.over_span(count));
         }
         let who = self.authors_label();
         if !who.is_empty() {
@@ -215,19 +216,19 @@ impl HistoryGroup {
         {
             // Same spelling as a row's own summary: a group that wrote its
             // counts with a different minus sign reads as a different unit.
-            parts.push(format!("+{ins} -{del} chars"));
+            parts.push(crate::i18n!("history-group-chars", "inserted" => ins, "deleted" => del));
         } else if self.name.is_none()
             && self.len() > 1
             && let Some(first) = entries.get(self.start)
         {
             // No character counts to aggregate (a run of governance acts, say):
             // name the first thing that happened rather than padding the row.
-            parts.push(format!("from \u{201c}{}\u{201d}", first.summary));
+            parts.push(crate::i18n!("history-group-from", "summary" => first.summary.as_str()));
         }
         if let Some(by) = &self.named_by
             && self.name.is_some()
         {
-            parts.push(format!("named by {}", by.name));
+            parts.push(crate::i18n!("history-group-named-by", "name" => by.name.as_str()));
         }
         parts.join(" \u{00b7} ")
     }
@@ -237,8 +238,8 @@ impl HistoryGroup {
         match self.authors.as_slice() {
             [] => String::new(),
             [a] => a.name.clone(),
-            [a, b] => format!("{} and {}", a.name, b.name),
-            [a, b, rest @ ..] => format!("{}, {} + {}", a.name, b.name, rest.len()),
+            [a, b] => authors_pair(&a.name, &b.name),
+            [a, b, rest @ ..] => authors_more(&a.name, &b.name, rest.len()),
         }
     }
 
@@ -252,13 +253,13 @@ impl HistoryGroup {
         }
         let mins = secs / 60;
         if mins < 60 {
-            return Some(format!("{mins} min"));
+            return Some(crate::i18n!("history-span-minutes", "count" => mins));
         }
         let hours = mins / 60;
         if hours < 24 {
-            return Some(format!("{hours} h"));
+            return Some(crate::i18n!("history-span-hours", "count" => hours));
         }
-        Some(format!("{} d", hours / 24))
+        Some(crate::i18n!("history-span-days", "count" => hours / 24))
     }
 
     /// Index ranges of this group's own rows — everything in `start..end` that
@@ -641,6 +642,16 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
     let mut out = [0u8; 16];
     hex::decode_to_slice(s, &mut out).ok()?;
     Some(HistoryEntryId(out))
+}
+
+/// "Alice and Bob", in the desktop's language.
+pub fn authors_pair(first: &str, second: &str) -> String {
+    crate::i18n!("history-authors-two", "first" => first, "second" => second)
+}
+
+/// "Alice, Bob + 4", in the desktop's language.
+pub fn authors_more(first: &str, second: &str, rest: usize) -> String {
+    crate::i18n!("history-authors-more", "first" => first, "second" => second, "rest" => rest)
 }
 
 #[cfg(test)]

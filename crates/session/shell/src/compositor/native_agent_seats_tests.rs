@@ -138,6 +138,13 @@ impl Fixture {
         self.frame_builder.relayout();
     }
 
+    /// Where `strip`'s row is drawn, `None` while it is collapsed.
+    fn row(&self, strip: u64) -> Option<Rect> {
+        self.frame_builder
+            .host()
+            .strip_row_rect(crate::shell::state::StripId(strip))
+    }
+
     fn strip_names(&self) -> Vec<String> {
         let chrome = self.frame_builder.chrome();
         let tree = chrome.tree();
@@ -151,87 +158,154 @@ impl Fixture {
 const SHIFT: u32 = 42;
 const CONTROL: u32 = 29;
 
+const SCREEN: [f64; 4] = [0.0, 0.0, 800.0, 600.0];
+
 #[test]
-fn agents_in_an_empty_workspace_see_the_whole_screen_until_windows_open() {
+fn a_lone_agent_sees_the_whole_screen_before_and_after_it_opens_a_window() {
     let mut fx = Fixture::new();
     let (strip_a, viewport) = fx.seat("a");
     assert_eq!(
-        viewport,
-        [0.0, 0.0, 800.0, 600.0],
-        "no window anywhere: the empty-workspace card is the screen"
+        viewport, SCREEN,
+        "no window anywhere: the empty-workspace card"
     );
     fx.add_window(strip_a);
-    let (_, [_, ay, _, ah]) = fx.seat("a");
-    assert!(ah > 0.0 && ah <= 600.0 - ay, "a's strip is a row now");
+    let (_, viewport) = fx.seat("a");
+    assert_eq!(
+        viewport, SCREEN,
+        "its window's row, the top bar and anything opened over them"
+    );
+    // A strip another agent left behind still exists, but it does not take
+    // half of a's screen.
+    fx.frame_builder.with_chrome(|chrome| {
+        let _ = chrome.agent_strip(None, |_| true, "Someone else");
+    });
+    fx.frame_builder.relayout();
+    let _ = fx.seat("a");
+    let row = fx.row(strip_a).expect("a's row is drawn");
+    assert!(
+        row.height() > 600.0 * 0.75,
+        "a's strip fills the work area: {row:?}"
+    );
 }
 
 #[test]
-fn two_agents_get_their_own_strips_stacked_on_screen() {
+fn each_agents_strip_fills_the_screen_on_its_turn() {
     let mut fx = Fixture::new();
     let (strip_a, _) = fx.seat("a");
     fx.add_window(strip_a);
-    let (_, [_, _, alone_w, alone_h]) = fx.seat("a");
-    assert_eq!(fx.active_strip(), Some(strip_a), "a's strip has focus");
-    assert!(alone_w > 0.0 && alone_h > 0.0);
-    let (strip_b, _) = fx.seat("b");
+    let _ = fx.seat("a");
+    let alone = fx.row(strip_a).expect("a's row");
+    let (strip_b, viewport) = fx.seat("b");
     assert_ne!(strip_a, strip_b);
+    assert_eq!(viewport, SCREEN);
     assert_eq!(fx.active_strip(), Some(strip_b), "b's strip has focus");
     assert_eq!(fx.strip_names(), vec!["Agent a", "Agent b"]);
     fx.add_window(strip_b);
-    let (_, [_, by, bw, bh]) = fx.seat("b");
-    let (again, [_, ay, _, ah]) = fx.seat("a");
+    let _ = fx.seat("b");
+    assert_eq!(fx.row(strip_a), None, "a's windows are not on b's screen");
+    let b_row = fx.row(strip_b).expect("b's row");
+    assert_eq!(b_row, alone, "b's strip gets the screen a had alone");
+
+    let (again, viewport) = fx.seat("a");
     assert_eq!(again, strip_a, "an agent keeps its strip");
+    assert_eq!(viewport, SCREEN);
     assert_eq!(fx.active_strip(), Some(strip_a));
-    assert!(bw > 0.0 && bh > 0.0 && ah > 0.0);
-    assert!(
-        ay + ah <= by || by + bh <= ay,
-        "the strips do not overlap: a {ay}+{ah}, b {by}+{bh}"
-    );
-    assert!(ah < alone_h, "a's strip shrank to make room for b's");
+    assert_eq!(fx.row(strip_b), None);
+    assert_eq!(fx.row(strip_a), Some(alone), "nor did a's shrink");
 }
 
 #[test]
-fn coordinates_are_relative_to_the_agents_strip() {
+fn coordinates_are_screen_pixels_and_each_agent_keeps_its_pointer() {
     let mut fx = Fixture::new();
     let (strip_a, _) = fx.seat("a");
     fx.add_window(strip_a);
     let (strip_b, _) = fx.seat("b");
     fx.add_window(strip_b);
-    let (_, [bx, by, _, bh]) = fx.seat("b");
-    assert!(by > 0.0, "b's strip is below a's");
     fx.ok(
         "b",
         serde_json::json!({"op":"pointer_move","x":10.0,"y":20.0}),
     );
-    assert_eq!(fx.state.client_input.cursor(), (bx + 10.0, by + 20.0));
+    assert_eq!(fx.state.client_input.cursor(), (10.0, 20.0));
 
-    let refused = fx.send(
-        "b",
-        serde_json::json!({"op":"click_at","x":10.0,"y":bh + 1.0}),
-    );
+    let refused = fx.send("b", serde_json::json!({"op":"click_at","x":10.0,"y":601.0}));
     assert_eq!(refused["err"]["code"], "outside_viewport", "{refused}");
     assert_eq!(
         fx.state.client_input.cursor(),
-        (bx + 10.0, by + 20.0),
+        (10.0, 20.0),
         "a refused click moves nothing"
     );
 
-    let (_, [ax, ay, _, _]) = fx.seat("a");
+    let _ = fx.seat("a");
     assert_eq!(
         fx.state.client_input.cursor(),
-        (bx + 10.0, by + 20.0),
+        (10.0, 20.0),
         "a never moved its pointer, so the seat keeps b's"
     );
     fx.ok(
         "a",
         serde_json::json!({"op":"pointer_move","x":5.0,"y":5.0}),
     );
-    assert_eq!(fx.state.client_input.cursor(), (ax + 5.0, ay + 5.0));
+    assert_eq!(fx.state.client_input.cursor(), (5.0, 5.0));
     let _ = fx.seat("b");
     assert_eq!(
         fx.state.client_input.cursor(),
-        (bx + 10.0, by + 20.0),
+        (10.0, 20.0),
         "b's turn puts the pointer back where b left it"
+    );
+}
+
+#[test]
+fn an_agent_that_moves_to_a_free_strip_stays_there() {
+    let mut fx = Fixture::new();
+    let (strip_a, _) = fx.seat("a");
+    fx.add_window(strip_a);
+    let mut other = None;
+    fx.frame_builder.with_chrome(|chrome| {
+        other = chrome.agent_strip(None, |_| true, "Earlier work");
+    });
+    let other = other.expect("a second strip").0;
+    fx.add_window(other);
+    let _ = fx.seat("a");
+    assert_eq!(fx.active_strip(), Some(strip_a));
+
+    // a switches strips itself, as Super+Down does.
+    fx.frame_builder.with_chrome(|chrome| {
+        let _ = chrome.focus_strip(crate::shell::state::StripId(other));
+    });
+    let (strip, _) = fx.seat("a");
+    assert_eq!(strip, other, "its next command does not pull it back");
+    assert_eq!(fx.active_strip(), Some(other));
+    assert!(fx.row(other).is_some() && fx.row(strip_a).is_none());
+
+    // b may not take the strip a works in.
+    let (strip_b, _) = fx.seat("b");
+    assert_ne!(strip_b, other);
+    fx.frame_builder.with_chrome(|chrome| {
+        let _ = chrome.focus_strip(crate::shell::state::StripId(other));
+    });
+    let (strip, _) = fx.seat("b");
+    assert_eq!(strip, strip_b, "a's strip stays a's");
+    assert_eq!(fx.active_strip(), Some(strip_b));
+}
+
+#[test]
+fn the_last_agent_leaving_shows_every_strip_again() {
+    let mut fx = Fixture::new();
+    let (strip_a, _) = fx.seat("a");
+    fx.add_window(strip_a);
+    let (strip_b, _) = fx.seat("b");
+    fx.add_window(strip_b);
+    let _ = fx.seat("b");
+    assert!(fx.frame_builder.chrome().single_strip());
+    fx.ok("a", serde_json::json!({"op":"agent_leave"}));
+    assert!(fx.frame_builder.chrome().single_strip(), "b still drives");
+    fx.ok("b", serde_json::json!({"op":"agent_leave"}));
+    fx.frame_builder.relayout();
+    assert!(!fx.frame_builder.chrome().single_strip());
+    let (a, b) = (fx.row(strip_a), fx.row(strip_b));
+    assert!(
+        a.is_some() && b.is_some(),
+        "both rows are drawn again: {a:?} {b:?}"
     );
 }
 

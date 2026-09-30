@@ -217,6 +217,81 @@ fn names_are_validated_and_the_last_strip_cannot_be_removed() {
 }
 
 #[test]
+fn a_group_moves_whole_into_an_empty_strip_and_a_stale_move_changes_nothing() {
+    let mut workspace = workspace_with_group();
+    let mut mint = minter(700);
+    apply_command(
+        &mut workspace,
+        &DesktopCommand::CreateStrip {
+            name: "Below".into(),
+        },
+        &mut mint,
+        &mut create,
+    )
+    .unwrap();
+    let below = workspace.strips[1].id.0;
+    let layout = |workspace: &Workspace| {
+        workspace
+            .strips
+            .iter()
+            .map(|strip| {
+                let groups = strip
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.iter().map(|tab| tab.id).collect()))
+                    .collect::<Vec<(u64, Vec<u64>)>>();
+                (strip.id.0, groups)
+            })
+            .collect::<Vec<_>>()
+    };
+    let untouched = layout(&workspace);
+    for stale in [
+        DesktopCommand::MoveGroup {
+            group: 20,
+            strip: below,
+            before: Some(404),
+        },
+        DesktopCommand::MoveGroup {
+            group: 404,
+            strip: below,
+            before: None,
+        },
+        DesktopCommand::MoveGroup {
+            group: 20,
+            strip: 404,
+            before: None,
+        },
+    ] {
+        assert!(apply_command(&mut workspace, &stale, &mut mint, &mut create).is_err());
+        assert_eq!(
+            layout(&workspace),
+            untouched,
+            "{stale:?} must leave the desk alone"
+        );
+    }
+    apply_command(
+        &mut workspace,
+        &DesktopCommand::MoveGroup {
+            group: 20,
+            strip: below,
+            before: None,
+        },
+        &mut mint,
+        &mut create,
+    )
+    .unwrap();
+    assert!(workspace.strips[0].window_groups.is_empty());
+    let moved = &workspace.strips[1].window_groups;
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].id, 20);
+    assert_eq!(
+        moved[0].tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+        [30, 31],
+        "the group keeps its tabs and their order"
+    );
+}
+
+#[test]
 fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
     let mut workspace = Workspace::new(WorkspaceId(1), "Desk");
     let json = r#"{"id":"tidy","name":"Tidy","steps":[],"saved_by":"someone-else"}"#;

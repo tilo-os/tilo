@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hardened-runtime entitlements for Tilo.app (Tilo and tilo-runtime).
+<!-- Hardened-runtime entitlements for Tilo.app (Tilo and the updater;
+     tilo-runtime adds its two capture devices in Runtime.entitlements).
      Deliberately empty: every exception below was considered and is unused.
 
      - com.apple.security.app-sandbox: absent. tilo-runtime is the launcher

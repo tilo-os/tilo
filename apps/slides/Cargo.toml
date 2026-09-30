@@ -17,6 +17,8 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
@@ -48,7 +50,6 @@ taffy.workspace = true
 # match the `tilo-doc-codecs` document codecs so the workspace resolves one copy of each.
 zip.workspace = true
 quick-xml.workspace = true
-workspace-hack = { version = "0.1" }
 # Host-native image open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on Tilo the compositor's portal backend renders Tilo's picker. The
@@ -62,3 +63,7 @@ workspace = true
 vello_encoding.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

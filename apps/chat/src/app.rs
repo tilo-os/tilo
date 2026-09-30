@@ -466,7 +466,7 @@ impl CallChromeMotion {
             );
             self.target_open = open;
         }
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.sampled = self.transition.value(now);
         self.animating = self.transition.is_animating(now);
     }
@@ -792,6 +792,16 @@ pub enum ChatRuntime {
     Unavailable,
 }
 
+/// Whether this host offers Chat's native services: attachments imported
+/// from native paths into the on-disk content store, and the shell's voice
+/// service. A browser page has neither.
+pub(crate) fn native_services() -> bool {
+    matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
+}
+
 impl ChatApp {
     /// Project a checked Chat record for `identity`.
     ///
@@ -808,14 +818,11 @@ impl ChatApp {
         }
         // A native component keeps attachments in the app's content store;
         // any other host (the browser, tests) keeps them in memory.
-        #[cfg(not(target_arch = "wasm32"))]
         let content = if runtime == ChatRuntime::Native {
             ContentStore::for_app()
         } else {
             ContentStore::memory()
         };
-        #[cfg(target_arch = "wasm32")]
-        let content = ContentStore::memory();
         let mut app = Self::bare(content);
         app.canonical = true;
         app.external_services = runtime == ChatRuntime::Native;
@@ -839,10 +846,11 @@ impl ChatApp {
     /// instances genuinely different participants rather than two "`u_me"s`
     /// colliding.
     pub fn new() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        let content = ContentStore::for_app();
-        #[cfg(target_arch = "wasm32")]
-        let content = ContentStore::memory();
+        let content = if native_services() {
+            ContentStore::for_app()
+        } else {
+            ContentStore::memory()
+        };
         let mut app = Self::bare(content);
         app.is_live = true;
         app.me = LocalIdentity::resolve();
@@ -2949,7 +2957,7 @@ impl Collaborative for ChatApp {
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
         let before = self.native_voice.snapshot.state;
-        requests.extend(self.native_voice.take_requests(ui::clock::Instant::now()));
+        requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
             self.project_native_voice();
         }
@@ -3457,7 +3465,7 @@ impl Widget for ChatApp {
         self.layout_text_scale = theme.text_scale;
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
-        self.tooltips.tick(ui::clock::Instant::now());
+        self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;

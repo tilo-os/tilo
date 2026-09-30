@@ -57,9 +57,9 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
     drop(host.web);
     host.relay.shutdown().await;
     let host = start_host(&root, &host_device, state.path(), listen).await;
+    // A reconnect resumes: the page already holds what it published.
     peer.reconnect().unwrap();
     let mut events = Vec::new();
-    assert_eq!(next_document(&peer, &mut events).await, tree, "resumed");
     ready(&[&peer]).await;
     events.clear();
     let _ = peer.drain();

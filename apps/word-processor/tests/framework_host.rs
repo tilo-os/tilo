@@ -197,7 +197,7 @@ fn keystroke_cost(app: &mut TestApp<WordProcessorApp>) -> std::time::Duration {
     let mut costs: Vec<_> = "typing along"
         .chars()
         .map(|ch| {
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             app.harness().key(&ch.to_string());
             started.elapsed()
         })

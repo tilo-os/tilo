@@ -171,6 +171,11 @@ struct StewardEntry {
     requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
     redelivery: HashMap<Ed25519PublicKey, Backoff>,
     dirty: bool,
+    /// Whether this session published the channel's genesis frame to the
+    /// room. Devices that are not members yet learn from it who stewards
+    /// the channel and that it is encrypted, so they ask for access and
+    /// hold their edits instead of writing plaintext the channel refuses.
+    announced: bool,
 }
 
 struct MemberEntry {
@@ -487,6 +492,17 @@ impl ChannelEncryption {
         let Some(entry) = self.stewards.get_mut(&channel) else {
             return;
         };
+        if !entry.announced
+            && let Some(genesis) = entry.steward.journal().frames().first().cloned()
+        {
+            self.delivery = self.delivery.wrapping_add(1);
+            entry.announced = transport.publish(NeighbourMsg::MlsGovernance {
+                room: entry.room.to_string(),
+                frame: Box::new(genesis),
+                delivery: self.delivery,
+            });
+            tracing::debug!(room = %entry.room, ?channel, accepted = entry.announced, "channel genesis announced to the room");
+        }
         let outbox = entry.steward.outbox();
         let owed: BTreeSet<Ed25519PublicKey> =
             outbox.iter().map(|outgoing| outgoing.recipient).collect();
@@ -597,6 +613,7 @@ impl ChannelEncryption {
                 requests,
                 redelivery: HashMap::new(),
                 dirty: true,
+                announced: false,
             },
         );
         self.register_gate(channel, gate);
@@ -1076,6 +1093,43 @@ mod tests {
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Removed
+        ));
+    }
+
+    /// A device that is not a member yet (a browser, which learns nothing
+    /// about the room's governance but what the host carries) learns from
+    /// the room that the channel exists, is encrypted and who stewards it.
+    #[test]
+    fn a_new_channel_announces_its_genesis_to_the_room() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let policy = Policy::default();
+        let owner_dir = tempfile::tempdir().unwrap();
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (5, 5), &policy, owner_dir.path());
+        let observer = Endpoint {
+            room: Arc::clone(&room),
+            id: 1,
+            room_id,
+        };
+        room.queues.lock().unwrap().entry(1).or_default();
+        assert!(ready_epoch(&owner.service.access(room_id, channel, now)).is_some());
+        run(&mut [&mut owner], &mut now, 3);
+        let genesis: Vec<_> = observer
+            .take_inbound()
+            .into_iter()
+            .filter_map(|inbound| match inbound {
+                InboundChannelGovernance::Frame { frame, .. } => Some(frame),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(genesis.len(), 1, "announced once per session");
+        assert_eq!(genesis[0].channel, channel);
+        assert_eq!(genesis[0].signed_by, public(5));
+        assert!(matches!(
+            genesis[0].action,
+            collab_types::MlsGovernanceAction::Genesis
         ));
     }
 

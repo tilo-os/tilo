@@ -1,17 +1,17 @@
 //! Opt-in visual evidence for render tests.
 //!
 //! A render test asserts on the pixels it holds in memory. Setting
-//! `QUICK_UI_SCREENSHOT_DIR` additionally writes each frame there as a PNG
+//! `TILO_UI_SCREENSHOT_DIR` additionally writes each frame there as a PNG
 //! for a reviewer to open; without it nothing touches the filesystem, so
 //! parallel runs never share output paths.
 
 use std::path::Path;
 
 /// Write `rgba` (tightly packed, `width` pixels per row) to
-/// `$QUICK_UI_SCREENSHOT_DIR/<name>.png` when that variable is set.
+/// `$TILO_UI_SCREENSHOT_DIR/<name>.png` when that variable is set.
 /// `name` may contain `/` to group a suite's frames in a subdirectory.
 pub fn save_png(name: &str, width: u32, height: u32, rgba: &[u8]) {
-    let Some(dir) = std::env::var_os("QUICK_UI_SCREENSHOT_DIR") else {
+    let Some(dir) = tilo_ui::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     let path = Path::new(&dir).join(format!("{name}.png"));

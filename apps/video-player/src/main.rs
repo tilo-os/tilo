@@ -148,13 +148,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // Real decode prerolls asynchronously; pump until its first picture is
     // ready. The synthesized fallback produces one on the first pass.
     let mut warm = ui::State::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(5);
     loop {
         app.sync(&mut warm.doc, &warm.root);
-        if app.has_media_frame() || std::time::Instant::now() >= deadline {
+        if app.has_media_frame()
+            || ui::time::now() >= deadline
+            || ui::rt::sleep_thread(std::time::Duration::from_millis(40)).is_err()
+        {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(40));
     }
     if require_decoded_frame && !app.has_media_frame() {
         return Err(LaunchError::Operation(

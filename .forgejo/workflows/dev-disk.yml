@@ -446,9 +446,9 @@ jobs:
           echo "DEV_IMAGE_DIGEST=$actual" >> "$GITHUB_ENV"
           echo "::notice::resumed verified dev image $DEV_CHECKPOINT_REF"
 
-      # Keep the OS and dev-image recipe at SOURCE_REVISION. A separately
-      # reviewed workflow commit supplies disk installation, VM verification,
-      # and publication scripts even when an older signed source lacks them.
+      # Keep the OS and dev-image recipe at SOURCE_REVISION. After the image is
+      # loaded, a separately reviewed workflow commit supplies the disk-only
+      # entry point, installation, VM verification, and publication scripts.
       # The package records both revisions.
       - name: Checkout exact disk tooling revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -457,6 +457,7 @@ jobs:
           path: .ci-disk-tooling
           persist-credentials: false
           sparse-checkout: |
+            os/dev/build-image.sh
             os/dev/disk-image.sh
             os/dev/export-direct-boot-bundle.sh
             os/dev/hold-loop-partition-nodes.py
@@ -477,10 +478,10 @@ jobs:
             echo '::error::disk tooling checkout differs from workflow revision'
             exit 1
           }
-          # build-image.sh and disk-image.sh both source _common.sh. Install
-          # the reviewed helper with the reviewed disk script, after the dev
-          # image was built from the unmodified OS source.
-          for file in disk-image.sh export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
+          # The dev image is already built from SOURCE_REVISION. Install the
+          # reviewed disk-only entry point with its disk helpers, so checkpoint
+          # runs do not download external build assets again.
+          for file in build-image.sh disk-image.sh export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
                        check-dev-vm.sh diagnose-boot-failure.sh publish-dev-disk-candidate.sh \
                        publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"

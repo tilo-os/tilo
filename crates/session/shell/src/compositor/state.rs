@@ -412,6 +412,12 @@ mod personal_fabric_input_holder_tests {
     }
 }
 
+/// How long a toplevel asked to close keeps unthrottled frame callbacks: long
+/// enough to present its last frames and exit, short enough that a client
+/// ignoring the close cannot draw unseen at full speed for the rest of the
+/// session.
+pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -688,6 +694,10 @@ pub struct State {
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// Toplevels the compositor has asked to close, each with the moment its
+    /// frame callbacks stop going unthrottled. See
+    /// [`Self::ask_toplevel_to_close`].
+    closing_toplevels: HashMap<u64, std::time::Instant>,
     /// One-time capabilities issued through the authenticated shell-ui
     /// service. A public Wayland client is promoted only when its app-id
     /// carries an exact token from this set.
@@ -906,6 +916,70 @@ impl State {
         std::mem::take(&mut self.floating_toplevel_events)
     }
 
+    /// Ask `toplevel` to close. Until [`CLOSING_FRAME_GRACE`] has passed its
+    /// frame callbacks fire as soon as it commits, whether or not it is
+    /// shown: the tile is already gone, and a client whose swapchain waits on
+    /// a frame callback before its next present (Mesa's FIFO) would otherwise
+    /// block on its last frame, and so never finish closing.
+    pub(crate) fn ask_toplevel_to_close(&mut self, toplevel: &ToplevelSurface) {
+        let id = surface_id(toplevel.wl_surface());
+        let now = std::time::Instant::now();
+        let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
+        self.closing_toplevels.insert(id, until);
+        toplevel.send_close();
+        self.release_frame_callbacks(toplevel.wl_surface());
+    }
+
+    /// Whether `surface_id` was asked to close and its grace has not run out.
+    pub(crate) fn is_closing_toplevel(&self, surface_id: u64) -> bool {
+        self.closing_toplevels
+            .get(&surface_id)
+            .is_some_and(|until| std::time::Instant::now() < *until)
+    }
+
+    /// A commit from a toplevel asked to close: its frame is done now.
+    fn release_closing_frame_callbacks(&self, surface: &WlSurface, surface_id: u64) {
+        if self.is_closing_toplevel(surface_id) {
+            self.release_frame_callbacks(surface);
+        }
+    }
+
+    /// Fire every frame callback `surface` has queued. Returns whether any
+    /// fired.
+    pub(crate) fn release_frame_callbacks(&self, surface: &WlSurface) -> bool {
+        let time_ms = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let mut fired = false;
+        wl_compositor::with_states(surface, |states| {
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
+            for callback in attrs.current().frame_callbacks.drain(..) {
+                callback.done(time_ms);
+                fired = true;
+            }
+        });
+        fired
+    }
+
+    /// The user or the shell closed the window showing `surface_id`: its tab
+    /// goes, and the client and every sheet over it are asked to close.
+    pub fn close_surface_on_request(&mut self, surface_id: u64) {
+        let _ = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
+        };
+        if let Some(toplevel) = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| self::surface_id(toplevel.wl_surface()) == surface_id)
+            .cloned()
+        {
+            self.ask_toplevel_to_close(&toplevel);
+        }
+        self.close_sheets_over(surface_id);
+    }
+
     pub(crate) fn is_floating_toplevel(&self, surface_id: u64) -> bool {
         self.floating_toplevels
             .iter()
@@ -1094,6 +1168,7 @@ impl State {
             text_fields: crate::compositor::text_commit::TextFields::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
+            closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
             floating_toplevel_events: Vec::new(),
@@ -3054,7 +3129,8 @@ impl State {
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed = !completed.is_empty();
+        let changed =
+            crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
@@ -3107,6 +3183,10 @@ pub struct ClientState {
     /// credentials when it connected. Display changes it makes are kept
     /// without asking once the person trusts this executable.
     pub executable: Option<String>,
+    /// Peer pid from `SO_PEERCRED` when the connection was accepted.
+    /// Used to recognise xwayland-satellite after its last toplevel dies
+    /// while leftover X clients (Wine) still hold the X socket.
+    pub pid: Option<u32>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3123,6 +3203,7 @@ impl Default for ClientState {
             workspace_id: None,
             enforce_package_id: false,
             executable: None,
+            pid: None,
         }
     }
 }
@@ -3142,11 +3223,13 @@ impl ClientState {
     /// authenticated at the public socket boundary.
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
             enforce_package_id: identity.confined,
+            pid: Some(pid),
             ..Self::default()
         })
     }
@@ -3318,6 +3401,7 @@ impl CompositorHandler for State {
         });
         let session_scale = self.scale;
         self.client_cursor.surface_committed(surface, session_scale);
+        self.release_closing_frame_callbacks(surface, surface_id);
         if crate::compositor::toplevel_icon::sync(surface, surface_id) {
             tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
         }
@@ -4277,14 +4361,38 @@ impl State {
 
     /// Ask every sheet on `root`'s tile to close — the user closed the
     /// window they belong to.
-    pub(crate) fn close_sheets_over(&self, root: SurfaceId) {
+    pub(crate) fn close_sheets_over(&mut self, root: SurfaceId) {
         let sheets = crate::compositor::foreign::store().sheets_over(root);
-        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
-            let id = surface_id(toplevel.wl_surface());
-            if sheets.iter().any(|link| link.surface == id) {
-                toplevel.send_close();
-            }
+        let closing: Vec<ToplevelSurface> = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .filter(|toplevel| {
+                let id = surface_id(toplevel.wl_surface());
+                sheets.iter().any(|link| link.surface == id)
+            })
+            .cloned()
+            .collect();
+        for toplevel in closing {
+            self.ask_toplevel_to_close(&toplevel);
         }
+    }
+
+    /// Wayland peer pids that currently own at least one `xdg_toplevel`.
+    /// xwayland-satellite keeps leftover X clients (Wine) after the last
+    /// window; this is how the supervisor knows the user already closed it.
+    pub(crate) fn mapped_xwayland_pids(&self) -> std::collections::HashSet<u32> {
+        let mut pids = std::collections::HashSet::new();
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let Some(client) = toplevel.wl_surface().client() else {
+                continue;
+            };
+            let Some(pid) = client.get_data::<ClientState>().and_then(|data| data.pid) else {
+                continue;
+            };
+            pids.insert(pid);
+        }
+        pids
     }
 }
 
@@ -4405,6 +4513,7 @@ impl XdgShellHandler for State {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
+        self.closing_toplevels.remove(&surface_id);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
@@ -4768,6 +4877,9 @@ impl XdgShellHandler for State {
             self.fullscreen_output = None;
             self.fullscreen_target = None;
         }
+        // The tab's size was withheld while fullscreen; the next configure
+        // pass hands it back.
+        crate::compositor::foreign::store().resend_configure(surface_id);
         surface.with_pending_state(|state| {
             state.states.unset(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
@@ -5301,12 +5413,14 @@ mod osk_identity_tests {
         // Phase `launcher_attribution_overrides_missing_app_id_and_rejects_spoofing`.
         {
             let room = crate::shell::state::RoomId::new();
-            let client =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let client = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "so.tilo.notes".into(),
                     workspace_id: Some(room.to_string()),
                     confined: true,
-                });
+                },
+                42,
+            );
             assert_eq!(
                 authenticated_toplevel_identity(Some(&client), None),
                 Ok((Some("so.tilo.notes".into()), Some(room)))
@@ -5321,12 +5435,14 @@ mod osk_identity_tests {
         }
         // Phase `stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible`.
         {
-            let attributed =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let attributed = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "so.tilo.notes".into(),
                     workspace_id: Some("not-a-room".into()),
                     confined: true,
-                });
+                },
+                42,
+            );
             assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
             assert_eq!(
                 authenticated_toplevel_identity(
@@ -5336,12 +5452,14 @@ mod osk_identity_tests {
                 Ok((Some("org.example.HostApp".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
-            let host =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let host = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "host.desktop-entry".into(),
                     workspace_id: Some(room.to_string()),
                     confined: false,
-                });
+                },
+                42,
+            );
             assert_eq!(
                 authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),
                 Ok((Some("LegacyStartupWMClass".into()), Some(room)))

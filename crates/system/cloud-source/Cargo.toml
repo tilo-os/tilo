@@ -2,8 +2,10 @@
 name = "cloud-source"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "The provider interface behind mounted cloud accounts: items, change feeds, ranged reads, resumable uploads, revisions and a conformance suite."
 
 # Provider crates (WebDAV/Nextcloud, Google Drive, OneDrive, Dropbox, iCloud

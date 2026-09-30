@@ -213,9 +213,9 @@ impl ScanSession {
     pub fn capture_from_sane(
         &mut self,
         device: &str,
-        settings: os_actions::printing::ScanSettings,
+        settings: tilo_capture::scanner::ScanSettings,
     ) -> Result<(), String> {
-        let bytes = os_actions::printing::scan_page(device, settings)?;
+        let bytes = tilo_capture::scanner::scan_page(device, settings)?;
         let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
             .map_err(|error| format!("scanner returned an invalid PNG: {error}"))?;
         self.add_page(image);

@@ -565,7 +565,7 @@ mod tests {
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
-        let t0 = std::time::Instant::now();
+        let t0 = ui::time::now();
         let _ = model.decode_top(&path, &geom, &layout, 8);
         let dt = t0.elapsed();
         assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");

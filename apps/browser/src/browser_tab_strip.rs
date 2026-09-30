@@ -39,7 +39,7 @@ pub struct BrowserTabStrip {
     visuals: HashMap<u64, TabVisual>,
     pending_toggle_mute: Option<u64>,
     reduced_motion: bool,
-    spinner_started: std::time::Instant,
+    spinner_started: ui::time::Instant,
     rect: Rect,
 }
 impl BrowserTabStrip {
@@ -58,7 +58,7 @@ impl BrowserTabStrip {
             visuals: HashMap::new(),
             pending_toggle_mute: None,
             reduced_motion: false,
-            spinner_started: std::time::Instant::now(),
+            spinner_started: ui::time::now(),
             rect: Rect::ZERO,
         }
     }

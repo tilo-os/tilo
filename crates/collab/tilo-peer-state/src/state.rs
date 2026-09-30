@@ -37,6 +37,7 @@ pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
 pub use media_governance::VerifiedSecurityMetadataOnly;
+pub use sealed_compaction::SealCheckpoint;
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -2563,6 +2564,44 @@ impl StatePeer {
         };
         Ok((message, coverage))
     }
+    /// An encrypted record this replica keeps as sealed history: no governed
+    /// snapshot can carry it, since a cleartext checkpoint would downgrade it.
+    fn sealed_route(&self, route: &Route) -> bool {
+        self.core
+            .documents
+            .get(route)
+            .is_some_and(|document| document.encryption_required)
+    }
+    /// The governor's receipt for `route`'s sealed history: its last
+    /// checkpoint coverage in `rows`, acknowledging every sealed write this
+    /// replica durably holds through the record's sequence watermarks.
+    /// `None` for a record without checkpoint coverage.
+    fn sealed_receipt(
+        &self,
+        route: &Route,
+        rows: &BTreeMap<String, crate::coverage::Coverage>,
+        generation: u64,
+    ) -> Result<Option<crate::durability::DurableReceipt>, String> {
+        let Some(mut coverage) = rows
+            .get(&crate::coverage::route_key(&route.app, &route.record))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let document = self
+            .core
+            .documents
+            .get(route)
+            .ok_or("sealed receipt for a record this state does not hold")?;
+        for (author, sequence) in &document.channel.last_seq_per_author {
+            let watermark = coverage
+                .watermarks
+                .entry(hex::encode(author.as_bytes()))
+                .or_default();
+            *watermark = (*watermark).max(*sequence);
+        }
+        crate::durability::DurableReceipt::new(coverage, generation).map(Some)
+    }
     fn signed_snapshots_in_place(
         &mut self,
         key: &SigningKey,
@@ -2584,6 +2623,7 @@ impl StatePeer {
             .core
             .documents
             .iter()
+            .filter(|(route, _)| !self.sealed_route(route))
             .map(|(route, entry)| {
                 self.prepare_signed_mutation(
                     &route.app,
@@ -2596,6 +2636,27 @@ impl StatePeer {
             .collect::<Result<Vec<_>, _>>()?;
         let (messages, coverages): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
         let coverages = coverages.into_iter().flatten().collect::<Vec<_>>();
+        let sealed = self
+            .core
+            .documents
+            .keys()
+            .filter(|route| self.sealed_route(route))
+            .map(|route| (crate::coverage::route_key(&route.app, &route.record), route))
+            .collect::<BTreeMap<_, _>>();
+        let mut sealed_receipts = BTreeMap::new();
+        if let Some(generation) = receipts_at {
+            let rows = crate::coverage::entries(
+                self.core
+                    .room_doc
+                    .as_deref()
+                    .ok_or("missing room governance")?,
+            )?;
+            for (route_key, route) in &sealed {
+                if let Some(receipt) = self.sealed_receipt(route, &rows, generation)? {
+                    sealed_receipts.insert(route_key.clone(), receipt);
+                }
+            }
+        }
         let room = self
             .core
             .room_doc
@@ -2603,14 +2664,16 @@ impl StatePeer {
             .ok_or("missing room governance")?;
         match receipts_at {
             Some(generation) => crate::coverage::put_all_with_receipts(room, coverages, |rows| {
-                rows.iter()
-                    .map(|(route, coverage)| {
-                        Ok((
+                let mut receipts = sealed_receipts;
+                for (route, coverage) in rows {
+                    if !sealed.contains_key(route) {
+                        receipts.insert(
                             route.clone(),
                             crate::durability::DurableReceipt::new(coverage.clone(), generation)?,
-                        ))
-                    })
-                    .collect()
+                        );
+                    }
+                }
+                Ok(receipts)
             })?,
             None if !coverages.is_empty() => crate::coverage::put_all(room, coverages)?,
             None => {}
@@ -2649,6 +2712,7 @@ impl StatePeer {
         let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
         *self = candidate;
         Ok(messages)
     }
@@ -2674,6 +2738,7 @@ impl StatePeer {
         crate::durability::monotonic(self.core.room_doc.as_deref(), room)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
         *self = candidate;
         Ok(messages)
     }
@@ -2693,7 +2758,12 @@ impl StatePeer {
         self.validate_present_media_policy()?;
         let mut messages = Vec::with_capacity(dirty.len());
         let mut coverages = Vec::with_capacity(dirty.len());
+        let mut sealed = Vec::new();
         for (route, bytes) in dirty {
+            if self.sealed_route(route) {
+                sealed.push(route.clone());
+                continue;
+            }
             let (message, coverage) = self.prepare_signed_mutation(
                 &route.app,
                 &route.record,
@@ -2718,6 +2788,21 @@ impl StatePeer {
             coverages.push(coverage.ok_or("missing published coverage")?);
             messages.push(message);
         }
+        let covered = crate::coverage::entries(
+            self.core
+                .room_doc
+                .as_deref()
+                .ok_or("missing room governance")?,
+        )?;
+        let mut sealed_receipts = BTreeMap::new();
+        for route in &sealed {
+            if let Some(receipt) = self.sealed_receipt(route, &covered, generation)? {
+                sealed_receipts.insert(
+                    crate::coverage::route_key(&route.app, &route.record),
+                    receipt,
+                );
+            }
+        }
         crate::coverage::put_all_with_receipts(
             self.core
                 .room_doc
@@ -2725,8 +2810,12 @@ impl StatePeer {
                 .ok_or("missing room governance")?,
             coverages,
             |rows| {
+                receipts.extend(sealed_receipts);
                 for (route, _) in dirty {
                     let route_key = crate::coverage::route_key(&route.app, &route.record);
+                    if sealed.contains(route) {
+                        continue;
+                    }
                     let covered = rows.get(&route_key).ok_or("missing published coverage")?;
                     receipts.insert(
                         route_key,
@@ -2866,6 +2955,7 @@ impl StatePeer {
             });
         }
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(Some(before)));
         *self = candidate;
         Ok(messages)
     }

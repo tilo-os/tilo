@@ -5,10 +5,10 @@
 use chrono::{DateTime, Datelike, Local, NaiveTime, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tilo_files::{Dir, VPath, blocking};
+use tilo_paths::AppPaths;
 use uuid::Uuid;
 
 pub mod actions;
@@ -20,6 +20,11 @@ pub use app::ClocksApp;
 #[must_use]
 pub fn app_root() -> Box<dyn ui::widget::Widget> {
     Box::new(ClocksApp::new())
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.clocks", app_root).as_definition("Clocks")
 }
 
 #[must_use]
@@ -181,24 +186,27 @@ fn snapshot_active_default() -> bool {
 /// per-login; owner/mode checks on the shell side prevent forged status.
 pub mod transport {
     use super::ShellSnapshot;
-    use std::fs;
     use std::io;
-    use std::path::PathBuf;
+    use tilo_files::{Dir, VPath, blocking};
 
-    #[must_use]
-    pub fn path() -> Option<PathBuf> {
-        xdg_paths::xdg::runtime_dir().map(|p| p.join("tilo/clocks.json"))
+    /// `$XDG_RUNTIME_DIR/tilo`, which the shell reads and writes too.
+    fn runtime() -> io::Result<Dir> {
+        let location = tilo_paths::AppPaths::for_app("tilo")
+            .runtime()
+            .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))?;
+        Dir::open(location).map_err(io::Error::other)
     }
+
     /// Atomically writes `snapshot` to the private transport file.
     ///
     /// # Errors
     ///
-    /// Fails when `XDG_RUNTIME_DIR` is unset, serialization fails, or the
-    /// file cannot be written.
+    /// Fails when the session has no runtime directory, serialization
+    /// fails, or the file cannot be written.
     pub fn publish(snapshot: &ShellSnapshot) -> io::Result<()> {
-        let path = path()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing"))?;
-        atomic_file::write_private(&path, &serde_json::to_vec(snapshot)?)
+        let name = VPath::new("clocks.json").map_err(io::Error::other)?;
+        blocking::write_private(&runtime()?, &name, &serde_json::to_vec(snapshot)?)
+            .map_err(io::Error::other)
     }
 
     #[derive(serde::Deserialize)]
@@ -213,9 +221,10 @@ pub mod transport {
         activity_id: Option<uuid::Uuid>,
     }
     pub fn take_command() -> Option<(String, Option<uuid::Uuid>)> {
-        let path = xdg_paths::xdg::runtime_dir()?.join("tilo/clocks-command.json");
-        let bytes = fs::read(&path).ok()?;
-        let _ = fs::remove_file(path);
+        let dir = runtime().ok()?;
+        let name = VPath::new("clocks-command.json").ok()?;
+        let bytes = blocking::read(&dir, &name).ok()?;
+        let _ = blocking::remove(&dir, &name);
         if bytes.len() > 1024 {
             return None;
         }
@@ -294,17 +303,13 @@ impl Stopwatch {
     }
 }
 
-/// `$XDG_STATE_HOME/tilo/clocks.json`, else the per-user state directory
-/// (`~/.local/state`; Windows: `%LOCALAPPDATA%`). Relative overrides are
-/// ignored.
-fn state_path() -> Option<PathBuf> {
-    state_path_in(
-        xdg_paths::env_dir("XDG_STATE_HOME").or_else(xdg_paths::state_home_or_local_app_data),
-    )
-}
+const STATE_FILE: &str = "clocks.json";
 
-fn state_path_in(state_home: Option<PathBuf>) -> Option<PathBuf> {
-    state_home.map(|p| p.join("tilo/clocks.json"))
+/// The saved state: `tilo/clocks.json` in the user's state directory
+/// (`$XDG_STATE_HOME` on Linux), in the page's profile on the web.
+fn state_store() -> Option<(Dir, VPath)> {
+    let dir = Dir::open(AppPaths::for_app("tilo").state()).ok()?;
+    Some((dir, VPath::new(STATE_FILE).ok()?))
 }
 
 fn command_timer(timers: &mut [Timer], activity_id: Option<Uuid>) -> Option<&mut Timer> {
@@ -363,13 +368,22 @@ impl ClockState {
 
     #[must_use]
     pub fn load() -> Self {
-        state_path().map(|p| Self::load_at(&p)).unwrap_or_default()
+        state_store()
+            .map(|(dir, name)| Self::load_from(&dir, &name))
+            .unwrap_or_default()
     }
 
-    fn load_at(path: &Path) -> Self {
-        fs::read(path)
+    fn load_from(dir: &Dir, name: &VPath) -> Self {
+        blocking::read(dir, name)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn load_at(path: &std::path::Path) -> Self {
+        tilo_files::file_at(path)
+            .map(|(dir, name)| Self::load_from(&dir, &name))
             .unwrap_or_default()
     }
 
@@ -380,17 +394,20 @@ impl ClockState {
     /// Fails when no state directory is available, the directory cannot be
     /// created, or the file cannot be written.
     pub fn save(&self) -> io::Result<()> {
-        let path = state_path()
+        let (dir, name) = state_store()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state directory"))?;
-        self.save_at(&path)
+        self.save_to(&dir, &name)
     }
 
-    fn save_at(&self, path: &Path) -> io::Result<()> {
-        let dir = path
-            .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid state path"))?;
-        private_fs::directory(dir)?;
-        atomic_file::write_with_mode(path, &serde_json::to_vec_pretty(self)?, 0o600)
+    fn save_to(&self, dir: &Dir, name: &VPath) -> io::Result<()> {
+        blocking::write_private(dir, name, &serde_json::to_vec_pretty(self)?)
+            .map_err(io::Error::other)
+    }
+
+    #[cfg(test)]
+    fn save_at(&self, path: &std::path::Path) -> io::Result<()> {
+        let (dir, name) = tilo_files::file_at(path).map_err(io::Error::other)?;
+        self.save_to(&dir, &name)
     }
 }
 
@@ -522,6 +539,7 @@ fn next_alarm_in_timezone<Tz: TimeZone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// A one-shot 12:00 "Lunch" alarm; cases override the fields they probe.
     fn lunch_alarm(weekdays: BTreeSet<WeekdayKey>) -> Alarm {
@@ -911,23 +929,14 @@ mod tests {
     }
 
     #[test]
-    fn state_store_resolves_its_path_and_never_clobbers_a_blocker() {
-        // Case: an absolute state override is used for the real store.
+    fn state_store_round_trips_and_never_clobbers_a_blocker() {
+        // Case: a saved state reads back from its file.
         {
             let directory = tempfile::tempdir().unwrap();
-            let path = state_path_in(Some(directory.path().to_path_buf())).unwrap();
+            let path = directory.path().join(STATE_FILE);
             let state = ClockState::default();
             state.save_at(&path).unwrap();
-            assert_eq!(
-                path,
-                directory.path().join("tilo/clocks.json"),
-                "case absolute-override: path"
-            );
-            assert_eq!(
-                ClockState::load_at(&path),
-                state,
-                "case absolute-override: round trip"
-            );
+            assert_eq!(ClockState::load_at(&path), state, "case round trip");
         }
 
         // Case: a save failure is reported without overwriting a blocker.

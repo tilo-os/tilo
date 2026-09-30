@@ -440,7 +440,7 @@ mod tests {
         let observed = requests.clone();
         let handle = thread::spawn(move || {
             for reply in replies {
-                let start = std::time::Instant::now();
+                let start = ui::time::now();
                 let mut stream: TcpStream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,

@@ -64,6 +64,26 @@ compositor puts a touchscreen that names no output on the primary one.
 Headless slots have no seat and refuse `input`; use `tilo-vm control
 key|type|click` there. While a slot holds seat0, its input goes to seat0.
 
+## Opening apps: a throwaway identity
+
+A control-socket session skips the first-login flow, so a new slot's user
+has no identity and every app refuses to start. `--identity` gives it one:
+
+```sh
+tilo-vm slot create apps --headful --identity
+tilo-vm control --slot apps actions list
+```
+
+The session mints it through a control op (`provision_test_identity`) that
+only dev-image shells carry; a release build refuses it. The identity is
+named "Throwaway test identity" and marked as one beside its record, and the
+op never replaces or adopts a real identity. A newly minted identity comes
+with fresh desktop state: tilo-vmd stops the session, removes the user's
+`~/.config/tilo/state.json` and the files beside it that belong to it
+(`state.automerge`, its `.meta`, `state.json.invocations`), and starts it
+again, since a workspace made before the identity belongs to the Unix user
+and hides app launches. Running the same create again keeps the identity and the layout.
+
 ## Several monitors, mixed scale
 
 ```sh

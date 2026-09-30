@@ -18,7 +18,7 @@
 //!    animation settles — mirroring how the map keeps drawing cached tiles
 //!    while new ones stream in.
 
-use ui::clock::Instant;
+use ui::time::Instant;
 
 use vello::kurbo::{Affine, Point};
 
@@ -32,7 +32,7 @@ const ZOOM_RATE: f64 = 20.0;
 const MAX_DT: f64 = 0.1;
 
 fn dt_since(last: &mut Option<Instant>) -> f64 {
-    let now = Instant::now();
+    let now = ui::time::now();
     let dt = last.map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(MAX_DT));
     *last = Some(now);
     dt

@@ -16,7 +16,7 @@
 //! from the global focus order (the modal manages its own field focus).
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -470,7 +470,7 @@ impl AuthenticatorApp {
     }
 
     fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), Instant::now(), kind));
+        self.toast = Some((msg.into(), ui::time::now(), kind));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -1737,12 +1737,12 @@ impl Widget for AuthenticatorApp {
         if !self.reduce_motion {
             return None;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap_or_default();
         let until_next_second =
             Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
-        Some(Instant::now() + until_next_second)
+        Some(ui::time::now() + until_next_second)
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -1863,7 +1863,7 @@ mod tests {
             let deadline = app
                 .next_wake_deadline()
                 .expect("the discrete countdown schedules its next second");
-            let delay = deadline.saturating_duration_since(Instant::now());
+            let delay = deadline.saturating_duration_since(ui::time::now());
             assert!(delay > Duration::ZERO);
             assert!(delay <= Duration::from_secs(1));
         }

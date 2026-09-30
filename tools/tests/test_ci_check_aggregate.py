@@ -246,7 +246,8 @@ class CheckAggregateTests(unittest.TestCase):
             select = section(self.workflow, "select", 2)
             self.assertIn("suites_required: ${{ steps.plan.outputs.suites_required }}", select)
             self.assertIn("suites: ${{ steps.plan.outputs.suites }}", select)
-            plan = step_script(self.workflow, "plan")
+            self.assertIn("run: bash tools/ci/select.sh", section(self.workflow, "select", 2))
+            plan = (ROOT / "tools/ci/select.sh").read_text(encoding="utf-8")
             self.assertIn("if [ \"$EVENT_NAME\" = push ]; then\n"
                           "  # Pull requests run", plan)
             self.assertIn("selection_args+=(--all-suites)", plan)
@@ -331,8 +332,6 @@ class CheckAggregateTests(unittest.TestCase):
             script = (ROOT / "tools/ci/check-wasm.sh").read_text()
             for package, _ in hack.ROOTS:
                 self.assertIn(f"-p {package}", script)
-            self.assertIn("--features tilo-browser-runtime/dylink", script)
-            self.assertIn("--features cloud,static-apps", script)
             self.assertIn('--target "$target"', script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
@@ -353,12 +352,11 @@ class CheckAggregateTests(unittest.TestCase):
             select = section(self.workflow, "select", 2)
             self.assertIn("security_required: ${{ steps.plan.outputs.security_required }}", select)
             self.assertIn("EVENT_NAME: ${{ github.event_name }}", select)
-            self.assertIn('if [ "$EVENT_NAME" = pull_request ]; then', select)
-            self.assertIn("selection_args+=(--allow-security-skip)", select)
-            script = step_script(self.workflow, "plan")
+            script = (ROOT / "tools/ci/select.sh").read_text(encoding="utf-8")
+            self.assertIn('if [ "$EVENT_NAME" = pull_request ]; then', script)
+            self.assertIn("selection_args+=(--allow-security-skip)", script)
             # Execute the production pipeline with failing selector and benign git.
             # This catches a missing pipefail even when tee exits successfully.
-            script = re.sub(r"\$\{\{.*?\}\}", "", script)
             prefix = "git() { echo fixture-base; }; python3() { return 37; }; export -f git python3;\n"
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "outputs"

@@ -133,7 +133,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
     && { sccache --zero-stats 2>/dev/null || true; } \
-    && cargo build --locked --release -p tilo-relay -p fs --bins \
+    && cargo build --locked --release -p tilo-relay -p tilo-fs --bins \
     && { sccache --show-stats 2>/dev/null || true; } \
     && mkdir -p /out \
     && cp target/release/tilo-relay \

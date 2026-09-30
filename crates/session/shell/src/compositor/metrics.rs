@@ -50,7 +50,14 @@ pub struct FrameSample {
     pub backpressured: bool,
     /// Microseconds after the target deadline when this frame was submitted.
     pub deadline_late_us: u32,
+    /// What ended the park that closed this tick: the name of the deadline
+    /// that expired, or [`WAKE_IO`] when a registered fd became readable
+    /// first. An idle desktop that keeps waking is named here.
+    pub wake: &'static str,
 }
+
+/// [`FrameSample::wake`] for a park ended by a readable fd (input, a client, the control socket, a worker ping) rather than by a deadline.
+pub const WAKE_IO: &str = "io";
 
 impl FrameSample {
     /// Non-parked time in the interval this sample's `period_us` spans. `period_us` runs from the
@@ -64,7 +71,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -86,6 +93,7 @@ impl FrameSample {
                 .unwrap_or_default(),
             u8::from(self.backpressured),
             self.deadline_late_us,
+            self.wake,
         )
     }
 }
@@ -93,7 +101,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us";
+input_retirement_latency_us,backpressured,deadline_late_us,wake";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -168,6 +176,8 @@ pub struct FrameSummary {
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
     pub target_period_us: u32,
+    /// Ticks per [`FrameSample::wake`] reason.
+    pub wakes: std::collections::BTreeMap<&'static str, u64>,
 }
 
 /// How far a painted frame's period may stray from the target refresh interval and still count
@@ -290,6 +300,14 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         ),
         on_cadence_ratio,
         target_period_us,
+        wakes: samples.iter().filter(|s| !s.wake.is_empty()).fold(
+            std::collections::BTreeMap::new(),
+            |mut wakes, s| {
+                let n = wakes.entry(s.wake).or_insert(0_u64);
+                *n = n.saturating_add(1);
+                wakes
+            },
+        ),
     }
 }
 
@@ -500,6 +518,9 @@ impl FrameRecorder {
     }
     pub fn mark_sleep(&mut self, d: Duration) {
         self.cur.sleep_us = us(d);
+    }
+    pub fn mark_wake(&mut self, reason: &'static str) {
+        self.cur.wake = reason;
     }
 
     pub fn mark_backpressured(&mut self) {
@@ -1090,6 +1111,7 @@ mod tests {
                 input_retirement_latency_us: Some(13),
                 backpressured: true,
                 deadline_late_us: 14,
+                wake: "cadence",
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");

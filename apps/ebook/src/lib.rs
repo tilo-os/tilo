@@ -56,6 +56,7 @@ pub mod search_provider;
 mod shelf_controls;
 #[cfg(test)]
 mod test_epub;
+mod web_file;
 pub mod xhtml;
 
 pub use app::BooksApp;

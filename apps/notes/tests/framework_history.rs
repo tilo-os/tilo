@@ -498,7 +498,8 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
     assert!(inspection.contains("activity_timeline"), "{inspection}");
-    let checkout = notes::hosting::default_notebook();
+    // A launch into a workspace opens the room's shared default record.
+    let checkout = notes::hosting::launch_notebook(true);
     let directory = app_state::DocStore::room_record_dir_at(
         &profile,
         canonical::PACKAGE,

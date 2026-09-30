@@ -2,21 +2,23 @@
 name = "cloud-source-dropbox"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Dropbox accounts as a cloud-source provider: API v2 listings and cursor feed, long-poll, content_hash, revisions, upload sessions, ranged reads, share links and quota."
 
 [dependencies]
 chrono = { workspace = true, features = ["std"] }
-cloud-source = { path = "../cloud-source" }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 # The in-memory Dropbox API behind `fake-server`.
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 
 [features]
 # `cloud_source_dropbox::fake::FakeDropbox`, an in-memory Dropbox API v2 on

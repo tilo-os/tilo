@@ -92,11 +92,11 @@ mod switch;
 pub mod testing;
 mod view;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use app::launch_spec;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
 pub use app::{ResourceApp, definition};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::{definition_launch_spec, launch_spec};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;

@@ -83,6 +83,10 @@ pub struct SessionActionPolicy {
     /// Whether the display manager can open a greeter beside this session.
     /// Without it, Switch user is offered by no entry point.
     user_switching: Rc<Cell<bool>>,
+    /// Set for a session that does not own the seat (headless, nested): the
+    /// machine belongs to another desktop, which alone may suspend, restart
+    /// or shut it down, or switch its user.
+    detached_from_host: Rc<Cell<bool>>,
 }
 
 impl SessionActionPolicy {
@@ -90,7 +94,12 @@ impl SessionActionPolicy {
         Self {
             inhibitors: Rc::new(RefCell::new(inhibitors)),
             user_switching: Rc::default(),
+            detached_from_host: Rc::default(),
         }
+    }
+
+    pub fn detach_from_host(&self) {
+        self.detached_from_host.set(true);
     }
 
     /// Point every holder of this policy at the registry exported by the
@@ -105,7 +114,12 @@ impl SessionActionPolicy {
 
     /// Whether this session offers `action` at all.
     pub fn offers(&self, action: os_actions::SessionAction) -> bool {
-        action != os_actions::SessionAction::SwitchUser || self.user_switching.get()
+        use os_actions::SessionAction::{Restart, ShutDown, Suspend, SwitchUser};
+        match action {
+            SwitchUser => self.user_switching.get() && !self.detached_from_host.get(),
+            Suspend | Restart | ShutDown => !self.detached_from_host.get(),
+            _ => true,
+        }
     }
 
     fn inhibit_scope(action: os_actions::SessionAction) -> Option<u32> {
@@ -124,6 +138,9 @@ impl SessionActionPolicy {
     ///
     /// The user-facing reason when a portal inhibitor blocks `action`.
     pub fn admit(&self, action: os_actions::SessionAction) -> Result<(), String> {
+        if self.detached_from_host.get() && !self.offers(action) {
+            return Err(t("search-session-not-offered"));
+        }
         let Some(scope) = Self::inhibit_scope(action) else {
             return Ok(());
         };
@@ -396,6 +413,43 @@ mod tests {
             );
         }
 
+        // Phase `a_session_detached_from_the_host_never_offers_its_power`.
+        {
+            let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+            let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
+            policy.set_user_switching(true);
+            policy.detach_from_host();
+            for id in ["suspend", "switch-user", "restart", "shut-down"] {
+                assert!(
+                    exact_catalog(&policy, &chrome, id).enumerate().is_empty(),
+                    "{id} must not be offered by a headless or nested session"
+                );
+            }
+            for action in [
+                os_actions::SessionAction::Suspend,
+                os_actions::SessionAction::SwitchUser,
+                os_actions::SessionAction::Restart,
+                os_actions::SessionAction::ShutDown,
+            ] {
+                assert!(policy.admit(action).is_err(), "{action:?} admitted");
+            }
+            assert_eq!(exact_catalog(&policy, &chrome, "lock").enumerate().len(), 1);
+            assert!(policy.admit(os_actions::SessionAction::Lock).is_ok());
+            assert!(policy.admit(os_actions::SessionAction::Logout).is_ok());
+
+            let mut menu = crate::shell::power_menu::PowerMenu::for_session(true);
+            let offered = menu.row_count();
+            menu.detach_from_host();
+            assert_eq!(
+                menu.row_count(),
+                offered - 4,
+                "the flyout drops suspend, switch user, restart and shut down"
+            );
+        }
+    }
+
+    #[test]
+    fn invoking_a_session_action_queues_it_and_honours_inhibits() {
         // Phase `invoking_queues_for_the_executor_and_actuates_nothing_itself`.
         {
             let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());

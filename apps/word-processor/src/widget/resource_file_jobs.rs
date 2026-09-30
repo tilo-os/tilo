@@ -2,6 +2,15 @@
 use super::{AutoCommit, WordProcessorWidget, WpFormat};
 use ui::invocation_scope::ResourceInvocationScope;
 
+/// File effects name native paths; a host without them (a browser page) has no
+/// file or asset transport.
+fn native_paths() -> bool {
+    matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
+}
+
 impl WordProcessorWidget {
     pub(super) fn start_file_operation(
         &mut self,
@@ -15,7 +24,7 @@ impl WordProcessorWidget {
         scope: Option<&ResourceInvocationScope>,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
-        if cfg!(target_arch = "wasm32") && kind == tilo_actions::OperationKind::Effect {
+        if kind == tilo_actions::OperationKind::Effect && !native_paths() {
             return Err("file operation unsupported: no browser file/asset transport".into());
         }
 

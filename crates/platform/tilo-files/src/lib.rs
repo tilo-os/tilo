@@ -594,6 +594,25 @@ pub fn canonicalize(path: &std::path::Path) -> Result<PathBuf, FsError> {
     Ok(std::fs::canonicalize(path)?)
 }
 
+/// A native path as a string that stays the same however the platform spells
+/// it: on Windows the `file:` URL, which normalizes the verbatim `\\?\` prefix
+/// canonicalization adds once a file exists; elsewhere the path itself. For
+/// keys derived from a document's location (a recovery slot's name).
+#[must_use]
+pub fn path_identity(path: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        url::Url::from_file_path(path).map_or_else(
+            |()| path.to_string_lossy().into_owned(),
+            |url| url.to_string(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().into_owned()
+    }
+}
+
 fn below_root(path: &VPath) -> Result<(), FsError> {
     if path.is_root() {
         Err(FsError::InvalidPath(BELOW_ROOT))

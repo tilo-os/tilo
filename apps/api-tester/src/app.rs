@@ -418,6 +418,9 @@ pub struct ApiTesterApp {
     last_cursor: Point,
     seeded: bool,
     adopted: bool,
+    /// Mounted on a record another participant created: its content is
+    /// theirs to seed, so an empty document is left untouched.
+    joined: bool,
     dirty: bool,
     /// Set when the child set changed; drained by `take_structure_dirty`.
     last_sig: ChildSig,
@@ -676,6 +679,7 @@ impl ApiTesterApp {
             last_cursor: Point::ZERO,
             seeded: false,
             adopted: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             dirty: true,
             last_sig: ChildSig::default(),
             persisted_once: false,
@@ -992,7 +996,7 @@ impl ApiTesterApp {
         http::build_outgoing(&req, &self.env_vars())
     }
 
-    /// Kick off a real request on a worker thread.
+    /// Kick off a real request on the app runtime.
     fn send(&mut self) {
         if self.sending {
             return;
@@ -1003,8 +1007,8 @@ impl ApiTesterApp {
         self.error = None;
         self.dirty = true;
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let outcome = match http::send_blocking(&out) {
+        drop(ui::rt::app().spawn(async move {
+            let outcome = match http::send(&out).await {
                 Ok(response) => SendOutcome::Ok {
                     response,
                     method,
@@ -1013,7 +1017,7 @@ impl ApiTesterApp {
                 Err(e) => SendOutcome::Err(e),
             };
             let _ = tx.send(outcome);
-        });
+        }));
     }
 
     /// Drain any finished send result from the worker.
@@ -3430,6 +3434,9 @@ impl Widget for ApiTesterApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        if self.joined && !self.adopted && ApiDoc::is_empty(state, path) {
+            return;
+        }
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
@@ -4766,7 +4773,7 @@ mod tests {
     fn resource_send_performs_a_real_http_round_trip() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -4778,7 +4785,7 @@ mod tests {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
-                            Instant::now() < deadline,
+                            ui::time::now() < deadline,
                             "the app's HTTP request never reached the probe server"
                         );
                         std::thread::sleep(Duration::from_millis(10));

@@ -154,11 +154,12 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 fn cache_dir() -> std::path::PathBuf {
     // An absolute XDG_CACHE_HOME wins on every platform (sandboxed launches
     // set one); otherwise the platform's own cache directory.
-    let base = xdg_paths::env_dir("XDG_CACHE_HOME")
-        .or_else(xdg_paths::cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = tilo_paths::env_dir("XDG_CACHE_HOME")
+        .or_else(tilo_paths::cache_dir)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     let dir = base.join("tilo-music");
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = crate::files::create_dir_all(&dir);
     dir
 }
 

@@ -610,7 +610,7 @@ impl VideoEditorApp {
                         self.pending_rename = (rename_window
                             && VideoEditorApp::bin_name_rect(rect).contains(p))
                         .then_some(mid);
-                        self.last_click_media = Some((mid, Instant::now()));
+                        self.last_click_media = Some((mid, ui::time::now()));
                     }
                     return;
                 }

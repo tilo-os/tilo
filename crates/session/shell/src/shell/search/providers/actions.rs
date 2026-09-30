@@ -11,6 +11,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
+use settings_store::hardware::ShortcutAction;
 use std::rc::Rc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
@@ -70,6 +71,12 @@ const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[
         "Confirm importing credentials and delegating workspace administration.",
     ),
 ];
+
+const LANGUAGE_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "language",
+    ParamType::Text,
+    "BCP 47 tag or name: en-US, de-DE, English, or German.",
+)];
 
 const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -196,7 +203,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
         }
-        "notifications.dnd.toggle" => {
+        "notifications.dnd.toggle"
+        | "appearance.theme.dark"
+        | "appearance.theme.light"
+        | "appearance.high-contrast"
+        | "appearance.language" => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -214,6 +225,18 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
+        }
+        // Each is one step: repeating it steps again.
+        id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
+            contract = ActionContract::view();
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
+        // Layout, undone by the opposite move.
+        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
         }
         _ => {}
     }
@@ -244,6 +267,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
+        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         _ => tilo_actions::OperationKind::Effect,
     }
 }
@@ -758,6 +782,92 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
         "What to call them in this workspace. Shown beside their cursor and caret.",
     ),
 ];
+
+/// Parameters of `window.focus-nth`.
+const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "index",
+    ParamType::Integer,
+    "Which window group of the focused strip, counting from 1 (1 to 9).",
+)];
+
+/// Relative window-management actions that move focus or the view.
+const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
+    "window.focus-previous",
+    "window.focus-next",
+    "strip.focus-previous",
+    "strip.focus-next",
+    "workspace.previous",
+    "workspace.next",
+    "tab.previous",
+    "tab.next",
+    "window.focus-nth",
+];
+
+/// Relative window-management actions that rearrange the desk.
+const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
+    "group.move-left",
+    "group.move-right",
+    "group.move-to-strip-previous",
+    "group.move-to-strip-next",
+    "group.move-to-display-previous",
+    "group.move-to-display-next",
+    "group.maximize",
+    "group.fullscreen",
+    "group.narrower",
+    "group.wider",
+    "tab.move-to-group-previous",
+    "tab.move-to-group-next",
+];
+
+/// Queue `action` for the overlay host, which runs it on the focused group
+/// exactly as its chord does.
+fn request_window_shortcut(
+    st: &mut ChromeState,
+    action: ShortcutAction,
+) -> Result<(), ActionError> {
+    active_workspace_id(st)?;
+    st.request_shortcut_action(action);
+    Ok(())
+}
+
+fn persist_appearance(
+    st: &mut ChromeState,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ActionError> {
+    settings_store::update_section("appearance", values)
+        .map_err(|err| ActionError::Refused(err.to_string()))?;
+    crate::shell::i18n::apply_configured_locale();
+    st.note_appearance_change();
+    Ok(())
+}
+
+fn set_theme(st: &mut ChromeState, theme: &str, high_contrast: bool) -> Result<(), ActionError> {
+    let mut values = serde_json::Map::new();
+    values.insert("theme".into(), serde_json::Value::String(theme.into()));
+    values.insert(
+        "high_contrast".into(),
+        serde_json::Value::Bool(high_contrast),
+    );
+    persist_appearance(st, values)
+}
+
+fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
+    let language = match requested.trim() {
+        "en" | "en-US" | "english" | "English" => "en-US",
+        "de" | "de-DE" | "german" | "German" | "deutsch" | "Deutsch" => "de-DE",
+        other => {
+            return Err(ActionError::Refused(format!(
+                "{other:?} is not a language this desktop has"
+            )));
+        }
+    };
+    let mut values = serde_json::Map::new();
+    values.insert(
+        "language".into(),
+        serde_json::Value::String(language.into()),
+    );
+    persist_appearance(st, values)
+}
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
 /// `settings.open`, …); `apply` runs it when the user picks the row (or an
@@ -1495,6 +1605,144 @@ impl Action {
             },
         ),
         chrome(
+            "window.focus-previous",
+            "search-action-window-focus-previous",
+            "search-action-window-focus-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::FocusPreviousWindow),
+        ),
+        chrome(
+            "window.focus-next",
+            "search-action-window-focus-next",
+            "search-action-window-focus-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::FocusNextWindow),
+        ),
+        chrome(
+            "strip.focus-previous",
+            "search-action-strip-focus-previous",
+            "search-action-strip-focus-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousStrip),
+        ),
+        chrome(
+            "strip.focus-next",
+            "search-action-strip-focus-next",
+            "search-action-strip-focus-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
+        ),
+        chrome(
+            "workspace.previous",
+            "search-action-workspace-previous",
+            "search-action-workspace-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousWorkspace),
+        ),
+        chrome(
+            "workspace.next",
+            "search-action-workspace-next",
+            "search-action-workspace-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextWorkspace),
+        ),
+        chrome(
+            "tab.previous",
+            "search-action-tab-previous",
+            "search-action-tab-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousTab),
+        ),
+        chrome(
+            "tab.next",
+            "search-action-tab-next",
+            "search-action-tab-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextTab),
+        ),
+        chrome(
+            "group.move-left",
+            "search-action-group-move-left",
+            "search-action-group-move-left-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupLeft),
+        ),
+        chrome(
+            "group.move-right",
+            "search-action-group-move-right",
+            "search-action-group-move-right-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupRight),
+        ),
+        chrome(
+            "group.move-to-strip-previous",
+            "search-action-group-move-to-strip-previous",
+            "search-action-group-move-to-strip-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
+        ),
+        chrome(
+            "group.move-to-strip-next",
+            "search-action-group-move-to-strip-next",
+            "search-action-group-move-to-strip-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+        ),
+        chrome(
+            "group.move-to-display-previous",
+            "search-action-group-move-to-display-previous",
+            "search-action-group-move-to-display-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
+        ),
+        chrome(
+            "group.move-to-display-next",
+            "search-action-group-move-to-display-next",
+            "search-action-group-move-to-display-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
+        ),
+        chrome(
+            "group.maximize",
+            "search-action-group-maximize",
+            "search-action-group-maximize-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
+        ),
+        chrome(
+            "group.fullscreen",
+            "search-action-group-fullscreen",
+            "search-action-group-fullscreen-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleFullscreen),
+        ),
+        chrome(
+            "group.narrower",
+            "search-action-group-narrower",
+            "search-action-group-narrower-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ResizeNarrower),
+        ),
+        chrome(
+            "group.wider",
+            "search-action-group-wider",
+            "search-action-group-wider-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ResizeWider),
+        ),
+        chrome(
+            "tab.move-to-group-previous",
+            "search-action-tab-move-to-group-previous",
+            "search-action-tab-move-to-group-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabLeft),
+        ),
+        chrome(
+            "tab.move-to-group-next",
+            "search-action-tab-move-to-group-next",
+            "search-action-tab-move-to-group-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabRight),
+        ),
+        Action {
+            id: "window.focus-nth",
+            label: "search-action-window-focus-nth",
+            subtitle: "search-action-window-focus-nth-subtitle",
+            params: WINDOW_FOCUS_NTH_PARAMS,
+            apply: |st, args| {
+                let action = args
+                    .integer("index")
+                    .and_then(|index| usize::try_from(index).ok()?.checked_sub(1))
+                    .and_then(|index| {
+                        ShortcutAction::ALL
+                            .into_iter()
+                            .find(|action| action.focus_group_index() == Some(index))
+                    })
+                    .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
+                request_window_shortcut(st, action)
+            },
+        },
+        chrome(
             "tab.move-to-new-group",
             "search-action-tab-move-to-new-group",
             "search-action-tab-move-to-new-group-subtitle",
@@ -1520,6 +1768,39 @@ impl Action {
                 Ok(())
             },
         ),
+        chrome(
+            "appearance.theme.dark",
+            "search-action-appearance-theme-dark",
+            "search-action-appearance-theme-dark-subtitle",
+            |st, _| set_theme(st, "dark", false),
+        ),
+        chrome(
+            "appearance.theme.light",
+            "search-action-appearance-theme-light",
+            "search-action-appearance-theme-light-subtitle",
+            |st, _| set_theme(st, "light", false),
+        ),
+        chrome(
+            "appearance.high-contrast",
+            "search-action-appearance-high-contrast",
+            "search-action-appearance-high-contrast-subtitle",
+            |st, _| set_theme(st, "dark", true),
+        ),
+        Action {
+            id: "appearance.language",
+            label: "search-action-appearance-language",
+            subtitle: "search-action-appearance-language-subtitle",
+            params: LANGUAGE_PARAMS,
+            apply: |st, args| {
+                let language = args.text("language").unwrap_or_default();
+                if language.trim().is_empty() {
+                    return Err(ActionError::Refused(
+                        "a language is required; nothing was changed".into(),
+                    ));
+                }
+                set_language(st, language)
+            },
+        },
         // The first exported action that changes a document rather than
         // the chrome around one, and so the first told *what* to write.
         Action {
@@ -2310,11 +2591,11 @@ impl SearchProvider for ActionsProvider {
             &ctx.chrome.tree().desktop,
             true,
         );
-        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
+            let (subtitle, keywords) = workspace_view_copy(&descriptor.request);
             candidates.record(
                 &descriptor.label.to_lowercase(),
-                &view_keywords,
+                &format!("{subtitle} {keywords}").to_lowercase(),
                 &descriptor.id,
             );
             let score = 0;
@@ -2325,7 +2606,7 @@ impl SearchProvider for ActionsProvider {
                 provider_id: self.id().into(),
                 id: descriptor.id,
                 title: descriptor.label,
-                subtitle: Some(t("search-action-workspace-view-subtitle")),
+                subtitle: Some(subtitle),
                 badge: None,
                 score,
                 params: vec![],
@@ -2566,7 +2847,9 @@ impl SearchProvider for ActionsProvider {
                     on_begin_invoke: None,
                 });
             }
-            if let Some(catalog) = &self.provider_catalog {
+            if let Some(catalog) = &self.provider_catalog
+                && asks_about_search_sources(ctx.needle)
+            {
                 for (provider_id, provider_name) in catalog.borrow().iter() {
                     if provider_id == "actions" {
                         continue;
@@ -2587,10 +2870,12 @@ impl SearchProvider for ActionsProvider {
                             t_args("search-action-provider-enable-subtitle", source),
                         )
                     };
+                    let id = format!("search.provider.toggle:{provider_id}");
                     candidates.record(
                         &label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        "search.provider.toggle",
+                        &format!("{subtitle} {}", t("search-action-provider-keywords"))
+                            .to_lowercase(),
+                        &id,
                     );
                     let score = 0;
                     let preferences = Rc::clone(preferences);
@@ -2599,7 +2884,7 @@ impl SearchProvider for ActionsProvider {
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: self.id().to_string(),
-                        id: format!("search.provider.toggle:{provider_id}"),
+                        id,
                         title: label,
                         subtitle: Some(subtitle),
                         badge: Some(if enabled {
@@ -2725,6 +3010,53 @@ impl SearchProvider for ActionsProvider {
             }
         }
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
+    }
+}
+
+/// Whether a query is about search itself, so a per-source on/off switch is
+/// an answer to it. "notes" looks for notes, not for hiding them; an empty
+/// listing and an exact `search.provider.toggle:…` address still see every
+/// switch.
+fn asks_about_search_sources(needle: &str) -> bool {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() || needle.starts_with("search.provider.") {
+        return true;
+    }
+    let keywords = t("search-action-provider-keywords").to_lowercase();
+    needle
+        .split_whitespace()
+        .filter(|word| word.chars().count() >= 3)
+        .any(|word| {
+            keywords
+                .split_whitespace()
+                .any(|keyword| keyword.starts_with(word))
+        })
+}
+
+/// A workspace view's subtitle and the extra words it answers to. Switching
+/// to a workspace is not an answer to "history", and each Activity view says
+/// what it shows rather than that it is a view.
+fn workspace_view_copy(
+    request: &tilo_desktop::activity::view_actions::WorkspaceViewRequest,
+) -> (String, String) {
+    use tilo_desktop::activity::ActivityView;
+    use tilo_desktop::activity::view_actions::WorkspaceViewRequest;
+    let activity = |view: ActivityView| {
+        let subtitle = match view {
+            ActivityView::CatchUp => "search-action-activity-catch-up-subtitle",
+            ActivityView::Tasks => "search-action-activity-tasks-subtitle",
+            ActivityView::Explore => "search-action-activity-explore-subtitle",
+            ActivityView::Replay => "search-action-activity-replay-subtitle",
+        };
+        (t(subtitle), t("search-action-activity-keywords"))
+    };
+    match request {
+        WorkspaceViewRequest::Select { .. } => (
+            t("search-action-workspace-switch-subtitle"),
+            t("search-action-workspace-switch-keywords"),
+        ),
+        WorkspaceViewRequest::OpenActivity { view, .. } => activity(*view),
+        WorkspaceViewRequest::CloseActivity { .. } => activity(ActivityView::CatchUp),
     }
 }
 
@@ -3221,6 +3553,91 @@ mod tests {
     }
 
     #[test]
+    fn history_finds_activity_views_and_not_a_workspace_switch() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let query = |needle| {
+            provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+
+        let history = query("history");
+        let explore = history
+            .iter()
+            .find(|row| row.id == "room.activity.explore")
+            .expect("history names the full timeline");
+        assert_eq!(
+            explore.subtitle.as_deref(),
+            Some("Every change here, by person, app and time")
+        );
+        assert!(
+            history
+                .iter()
+                .all(|row| !row.id.starts_with("workspace.select.")),
+            "switching workspace is not an answer to “history”: {:?}",
+            history.iter().map(|row| &row.title).collect::<Vec<_>>()
+        );
+
+        let switch = query("switch");
+        let row = switch
+            .iter()
+            .find(|row| row.id.starts_with("workspace.select."))
+            .expect("a workspace is still reachable by switching to it");
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("Go to this workspace and its windows")
+        );
+    }
+
+    #[test]
+    fn a_search_for_a_source_finds_it_not_its_off_switch() {
+        let preferences = Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::default(),
+        ));
+        let catalog = Rc::new(std::cell::RefCell::new(vec![(
+            "notes".to_string(),
+            "Notes".to_string(),
+        )]));
+        let provider = ActionsProvider::with_preferences_and_catalog(preferences, catalog);
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let switch = |needle| {
+            provider
+                .query(SearchContext {
+                    needle,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &chrome.borrow(),
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "search.provider.toggle:notes")
+        };
+
+        assert!(switch("notes").is_none(), "“notes” looks for notes");
+        let row = switch("disable notes").expect("asking to disable it finds the switch");
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("Hide Notes results from search and agent discovery")
+        );
+        assert!(
+            switch("").is_some(),
+            "a complete listing keeps every switch"
+        );
+        assert!(
+            switch("search.provider.toggle:notes").is_some(),
+            "an exact address still resolves"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -3404,6 +3821,151 @@ mod tests {
                 assert!(!copy.trim().is_empty(), "{key} resolves to nothing");
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_and_language_actions_are_searchable_and_write_the_settings_store() {
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let query = |needle: &str| {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let id_of = |needle: &str, want: &str| {
+            query(needle)
+                .into_iter()
+                .find(|row| row.id == want)
+                .unwrap_or_else(|| panic!("{needle:?} must find {want}"))
+                .id
+        };
+        assert_eq!(
+            id_of("dark theme", "appearance.theme.dark"),
+            "appearance.theme.dark"
+        );
+        assert_eq!(
+            id_of("light theme", "appearance.theme.light"),
+            "appearance.theme.light"
+        );
+        assert_eq!(
+            id_of("high contrast", "appearance.high-contrast"),
+            "appearance.high-contrast"
+        );
+        assert_eq!(
+            id_of("language", "appearance.language"),
+            "appearance.language"
+        );
+
+        invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
+        assert!(
+            chrome.borrow().appearance_generation > 0,
+            "theme actions must wake the live frame, not only write the store"
+        );
+        let appearance = settings_store::load_section("appearance");
+        assert_eq!(
+            appearance.get("theme").and_then(serde_json::Value::as_str),
+            Some("dark")
+        );
+        assert_eq!(
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
+        invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
+        let appearance = settings_store::load_section("appearance");
+        assert_eq!(
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let language = query("language")
+            .into_iter()
+            .find(|row| row.id == "appearance.language")
+            .expect("language action");
+        let args = ActionArgs::bind(
+            &language.params,
+            [(
+                "language".into(),
+                crate::shell::search::action_api::ArgValue::Text("German".into()),
+            )],
+        )
+        .expect("language arguments");
+        let mut document = AutoCommit::new();
+        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        assert_eq!(
+            settings_store::str_at(&settings_store::load(), "appearance", "language"),
+            Some("de-DE")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn language_action_switches_the_live_catalogue() {
+        struct RestoreLocale;
+        impl Drop for RestoreLocale {
+            fn drop(&mut self) {
+                ui::i18n::I18nManager::set_locale("en-US");
+            }
+        }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let _restore = RestoreLocale;
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let language = {
+            let state = chrome.borrow();
+            let doc = AutoCommit::new();
+            provider
+                .query(SearchContext {
+                    needle: "language",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "appearance.language")
+                .expect("language action")
+        };
+        let args = ActionArgs::bind(
+            &language.params,
+            [(
+                "language".into(),
+                crate::shell::search::action_api::ArgValue::Text("German".into()),
+            )],
+        )
+        .expect("language arguments");
+        let mut document = AutoCommit::new();
+        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+
+        assert_eq!(
+            settings_store::str_at(&settings_store::load(), "appearance", "language"),
+            Some("de-DE")
+        );
+        assert_eq!(
+            crate::shell::i18n::current_locale(),
+            "de-DE",
+            "writing the store without selecting the live catalogue leaves chrome English"
+        );
+        assert_eq!(t("tab-closed-undo"), "Rückgängig");
+        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
     }
 
     #[test]
@@ -3811,6 +4373,40 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn shell_action_contracts_match_availability_risk_and_mechanism() {
+        // Phase `window_actions_are_published_with_focus_and_layout_contracts`.
+        {
+            for id in WINDOW_FOCUS_ACTION_IDS
+                .iter()
+                .chain(WINDOW_LAYOUT_ACTION_IDS)
+            {
+                assert!(
+                    Action::ALL.iter().any(|action| action.id == *id),
+                    "{id} is listed but not published"
+                );
+            }
+            for id in WINDOW_FOCUS_ACTION_IDS {
+                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::View);
+                let contract = shell_action_contract(id);
+                assert_eq!(
+                    contract.permission,
+                    tilo_actions::PermissionRequirement::Read,
+                    "{id} only moves focus"
+                );
+                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+            }
+            for id in WINDOW_LAYOUT_ACTION_IDS {
+                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
+                let contract = shell_action_contract(id);
+                assert_eq!(
+                    contract.permission,
+                    tilo_actions::PermissionRequirement::Write,
+                    "{id} rearranges the shared desk"
+                );
+                assert!(contract.reversible);
+                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+            }
+        }
+
         // Phase `every_shell_action_exposes_a_valid_operational_contract`.
         {
             let chrome = chrome_with_room();

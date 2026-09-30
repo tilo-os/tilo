@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -736,7 +736,7 @@ impl Session {
                 )));
             }
         };
-        let began = Instant::now();
+        let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
@@ -862,7 +862,7 @@ impl Session {
         let body = conversation.body(&tools::loop_definitions());
         // The model starts first: the cancellation check and the live update
         // are round trips to the host, and they run while it thinks.
-        let turn_began = Instant::now();
+        let turn_began = ui::time::now();
         let rx = self.chooser.start_turn(body, timeout, turn);
         self.turn = Some(ActiveTurn::new(rx, crate::live::PlanStream::new(targets)));
         if self.live.is_active() {
@@ -889,7 +889,7 @@ impl Session {
         let body = loop {
             self.pump_turn_waiting(Duration::from_millis(50));
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
-                let handling = Instant::now();
+                let handling = ui::time::now();
                 let handled = self.handle_call(run, state, &call, &mut failed)?;
                 stepping += handling.elapsed();
                 if let Some(message) = settle(handled, &call.id, &mut results, &mut finish) {
@@ -898,7 +898,7 @@ impl Session {
                 }
             }
             // Write the text of an invoke still streaming, chunk by chunk.
-            let handling = Instant::now();
+            let handling = ui::time::now();
             let cancelled = self.advance_streaming(run, state, failed)?;
             stepping += handling.elapsed();
             if let Some(message) = cancelled {
@@ -1580,7 +1580,7 @@ impl Session {
             let arguments = with_param(&action.arguments, &streaming.param, &chunk);
             self.live_applying(&streaming.first, &arguments, Some(&pending));
             self.set_executing(true);
-            let began = Instant::now();
+            let began = ui::time::now();
             let result = self.run_task_step(
                 run,
                 state.completed,
@@ -1707,11 +1707,11 @@ impl Session {
         if self.broker_revision != since {
             return Ok(());
         }
-        let deadline = Instant::now() + wait;
+        let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             self.pump_turn();
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(left.min(Duration::from_millis(20)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
@@ -1741,12 +1741,12 @@ impl Session {
                 .iter()
                 .any(|o| o.app == app && !before.contains(&o.address().resource))
         };
-        let deadline = Instant::now() + wait;
+        let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
         let mut found = appeared(self);
-        while !found && Instant::now() < deadline {
+        while !found && ui::time::now() < deadline {
             self.pump_turn();
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(left.min(Duration::from_millis(20)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
@@ -2479,7 +2479,7 @@ mod tests {
             enrolled_custody: Some(custody),
             enrolled_active: Some(acceptance),
             enrolled_sequence: 0,
-            asked_at: Instant::now(),
+            asked_at: ui::time::now(),
             last_route: None,
             broker_surfaces: surfaces,
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),

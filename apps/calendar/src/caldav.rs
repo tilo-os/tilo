@@ -206,10 +206,10 @@ pub fn build_delete_request(
     }
 }
 
-pub fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
+pub async fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
-        live::push_jobs_live(jobs)
+        live::push_jobs_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -218,10 +218,10 @@ pub fn push_jobs(jobs: &[UploadJob]) -> MutationResult {
     }
 }
 
-pub fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
+pub async fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
     #[cfg(feature = "live")]
     {
-        live::remove_jobs_live(jobs)
+        live::remove_jobs_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -236,12 +236,12 @@ pub fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
 /// `live` this sends an HTTP `DELETE`; without the feature it removes nothing
 /// and returns an empty list — the queue is retained until a live build drains
 /// it, exactly like [`push_all`].
-pub fn delete_all(
+pub async fn delete_all(
     jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
 ) -> Vec<crate::model::Id> {
     #[cfg(feature = "live")]
     {
-        live::delete_all_live(jobs)
+        live::delete_all_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -322,15 +322,15 @@ pub fn pull_calendar(
 /// (`REPORT` calendar-query, falling back to a plain `GET`) against each
 /// account's server and parses the returned `calendar-data` through
 /// [`ics::parse`]. Without that feature there is no transport, so it returns
-/// an empty [`SyncOutcome::Offline`] — it never invents entries. Either way
-/// this stays synchronous; the live app runs it off the UI thread.
-pub fn sync_all(
+/// an empty [`SyncOutcome::Offline`] — it never invents entries. The live app
+/// runs it on the app runtime, off the UI thread.
+pub async fn sync_all(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
 ) -> (SyncResult, SyncOutcome) {
     #[cfg(feature = "live")]
     {
-        live::sync_all_live(accounts, today)
+        live::sync_all_live(accounts, today).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -342,14 +342,14 @@ pub fn sync_all(
 /// Synchronise with durable per-collection checkpoints supplied by the caller.
 /// Keeping the checkpoint in the Automerge document (rather than a transport
 /// cache) makes restart and collaborative hand-off deterministic.
-pub fn sync_all_with_checkpoints(
+pub async fn sync_all_with_checkpoints(
     accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
     today: NaiveDate,
     checkpoints: &[(String, String)],
 ) -> (SyncResult, SyncOutcome) {
     #[cfg(feature = "live")]
     {
-        live::sync_all_live_with_checkpoints(accounts, today, checkpoints)
+        live::sync_all_live_with_checkpoints(accounts, today, checkpoints).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -367,10 +367,10 @@ pub fn sync_all_with_checkpoints(
 /// from the outbox. Without the feature (headless / demo build) there is no
 /// transport, so it uploads nothing and returns an empty list — the queue is
 /// simply retained until a live build drains it.
-pub fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
+pub async fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
     #[cfg(feature = "live")]
     {
-        live::push_all_live(jobs)
+        live::push_all_live(jobs).await
     }
     #[cfg(not(feature = "live"))]
     {
@@ -621,7 +621,9 @@ mod live {
     use std::time::Duration;
 
     use chrono::NaiveDate;
-    use tilo_dav::{Credentials, DavClient, Depth, Precondition, StatusCode};
+    use tilo_dav::net::{
+        Credentials, DavClient, Depth, Error as DavError, Precondition, StatusCode,
+    };
 
     use super::{RemoteCalendar, SyncOutcome, SyncResult};
     use crate::account::CalDavConfig;
@@ -629,12 +631,17 @@ mod live {
 
     const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
 
-    fn client() -> Result<DavClient, tilo_dav::Error> {
-        DavClient::new(&tilo_dav::Options {
-            user_agent: Some("Tilo-Calendar/0.1"),
-            timeout: Duration::from_secs(20),
-            ..tilo_dav::Options::default()
-        })
+    /// In a page, servers that do not allow the page's origin are reached
+    /// through the host's fetch proxy when it offers one.
+    fn client() -> Result<DavClient, DavError> {
+        DavClient::with_fetch_proxy(
+            &tilo_dav::net::Options {
+                user_agent: Some("Tilo-Calendar/0.1"),
+                timeout: Duration::from_secs(20),
+                ..tilo_dav::net::Options::default()
+            },
+            tilo_net::proxy::ProxyUse::CrossOrigin,
+        )
     }
 
     fn authenticated(client: &DavClient, config: &CalDavConfig) -> DavClient {
@@ -644,23 +651,23 @@ mod live {
         ))
     }
 
-    fn dav_error_message(error: &tilo_dav::Error) -> String {
+    fn dav_error_message(error: &DavError) -> String {
         match error {
-            tilo_dav::Error::TooLarge => "calendar response exceeds the 8 MiB safety limit".into(),
-            tilo_dav::Error::Xml(error) => super::xml_error_message(error),
-            other => other.to_string(),
+            DavError::TooLarge => "calendar response exceeds the 8 MiB safety limit".into(),
+            DavError::Xml(error) => super::xml_error_message(error),
+            DavError::Transport(error) => error.to_string(),
         }
     }
 
     /// Fetch every visible calendar across the configured accounts.
-    pub fn sync_all_live(
+    pub async fn sync_all_live(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
     ) -> (SyncResult, SyncOutcome) {
-        sync_all_live_with_checkpoints(accounts, today, &[])
+        sync_all_live_with_checkpoints(accounts, today, &[]).await
     }
 
-    pub fn sync_all_live_with_checkpoints(
+    pub async fn sync_all_live_with_checkpoints(
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
         checkpoints: &[(String, String)],
@@ -684,7 +691,9 @@ mod live {
                     cal,
                     today,
                     checkpoint_map.get(cal.id.as_str()).copied(),
-                ) {
+                )
+                .await
+                {
                     Ok(mut res) => {
                         let palette = cal.palette();
                         for e in &mut res.events {
@@ -719,7 +728,7 @@ mod live {
     /// stored token, falling back to an authoritative `calendar-query` when
     /// the server refuses the token or the report. Each resource's
     /// `calendar-data` is handed to [`ics::parse`].
-    fn pull_calendar_live(
+    async fn pull_calendar_live(
         client: &DavClient,
         config: &CalDavConfig,
         cal: &RemoteCalendar,
@@ -732,6 +741,7 @@ mod live {
         let body = super::sync_collection_body(checkpoint.unwrap_or_default());
         let mut response = client
             .report(url.as_str(), Depth::One, body)
+            .await
             .map_err(|error| dav_error_message(&error))?;
 
         // RFC 6578 uses 403 with a valid-sync-token precondition (some servers
@@ -746,6 +756,7 @@ mod live {
             let query = tilo_dav::body::calendar_query_body(&super::REPORT_PROPS, None);
             response = client
                 .report(url.as_str(), Depth::One, query)
+                .await
                 .map_err(|error| dav_error_message(&error))?;
         }
         if !response.status().is_success() {
@@ -753,6 +764,7 @@ mod live {
         }
         let listing = response
             .multistatus(&super::LIMITS)
+            .await
             .map_err(|error| dav_error_message(&error))?;
         let parsed = super::interpret_multistatus(listing)?;
         let mut result = SyncResult::default();
@@ -791,7 +803,7 @@ mod live {
         let next_token = if parsed.token.is_some() {
             parsed.token
         } else if full {
-            discover_sync_token(&client, &url)?
+            discover_sync_token(&client, &url).await?
         } else {
             None
         };
@@ -808,15 +820,17 @@ mod live {
         Ok(result)
     }
 
-    fn discover_sync_token(client: &DavClient, url: &str) -> Result<Option<String>, String> {
+    async fn discover_sync_token(client: &DavClient, url: &str) -> Result<Option<String>, String> {
         let response = client
             .propfind(url, Depth::Zero, &[tilo_dav::props::SYNC_TOKEN])
+            .await
             .map_err(|error| dav_error_message(&error))?;
         if !response.status().is_success() {
             return Ok(None);
         }
         let listing = response
             .multistatus(&super::LIMITS)
+            .await
             .map_err(|error| dav_error_message(&error))?;
         Ok(listing
             .responses
@@ -834,7 +848,7 @@ mod live {
     /// and DELETE responses. Servers freely alternate between absolute and
     /// path hrefs, so retaining the wire spelling would duplicate resources.
     fn canonical_resource_url(collection_url: &str, href: &str) -> Result<String, String> {
-        let base = tilo_dav::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
+        let base = tilo_dav::net::Url::parse(&format!("{}/", collection_url.trim_end_matches('/')))
             .map_err(|_| "calendar collection has an invalid URL".to_string())?;
         base.join(href)
             .map(|url| url.to_string())
@@ -844,7 +858,7 @@ mod live {
     /// PUT every queued event to its target collection, returning the ids that
     /// stored successfully. Best-effort: a failed upload leaves that event in
     /// the outbox for the next attempt and does not abort the rest.
-    pub fn push_all_live(
+    pub async fn push_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
     ) -> Vec<crate::model::Id> {
         let Ok(client) = client() else {
@@ -853,12 +867,14 @@ mod live {
         let mut pushed = Vec::new();
         for (config, cal, event) in jobs {
             let req = super::build_put_request(config, cal, event);
-            let resp = authenticated(&client, config).put(
-                req.url.as_str(),
-                req.body.into_bytes(),
-                Some(CALENDAR_CONTENT_TYPE),
-                Precondition::None,
-            );
+            let resp = authenticated(&client, config)
+                .put(
+                    req.url.as_str(),
+                    req.body.into_bytes(),
+                    Some(CALENDAR_CONTENT_TYPE),
+                    Precondition::None,
+                )
+                .await;
             if matches!(resp, Ok(r) if r.status().is_success()) {
                 pushed.push(event.id);
             }
@@ -866,7 +882,7 @@ mod live {
         pushed
     }
 
-    pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
+    pub async fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
@@ -886,12 +902,14 @@ mod live {
                 None if request.if_none_match => Precondition::IfNoneMatchAny,
                 None => Precondition::None,
             };
-            let sent = authenticated(&client, &job.config).put(
-                request.url.as_str(),
-                std::mem::take(&mut request.body).into_bytes(),
-                Some(CALENDAR_CONTENT_TYPE),
-                precondition,
-            );
+            let sent = authenticated(&client, &job.config)
+                .put(
+                    request.url.as_str(),
+                    std::mem::take(&mut request.body).into_bytes(),
+                    Some(CALENDAR_CONTENT_TYPE),
+                    precondition,
+                )
+                .await;
             match sent {
                 Ok(response) if response.status().is_success() => {
                     result.confirmed.push(job.event.id);
@@ -918,7 +936,7 @@ mod live {
     /// DELETE every queued event resource, returning the uids the server
     /// confirmed removed. Best-effort and per-resource: a failed delete leaves
     /// that uid in the outbox for the next attempt and does not abort the rest.
-    pub fn delete_all_live(
+    pub async fn delete_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
     ) -> Vec<crate::model::Id> {
         let Ok(client) = client() else {
@@ -927,7 +945,9 @@ mod live {
         let mut deleted = Vec::new();
         for (config, cal, uid) in jobs {
             let req = super::build_delete_request(config, cal, *uid);
-            let resp = authenticated(&client, config).delete(req.url.as_str(), Precondition::None);
+            let resp = authenticated(&client, config)
+                .delete(req.url.as_str(), Precondition::None)
+                .await;
             // 2xx, or a 404 (already gone), both mean the resource is absent.
             let gone = matches!(resp, Ok(r) if r.status().is_success() || r.status() == StatusCode::NOT_FOUND);
             if gone {
@@ -937,7 +957,7 @@ mod live {
         deleted
     }
 
-    pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
+    pub async fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
@@ -950,10 +970,12 @@ mod live {
             // Even when an older server omitted the revision, keep deletion
             // conditional on the resource still existing. Known revisions use
             // their exact ETag and therefore detect concurrent modification.
-            let sent = authenticated(&client, &job.config).delete(
-                url.as_str(),
-                Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
-            );
+            let sent = authenticated(&client, &job.config)
+                .delete(
+                    url.as_str(),
+                    Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
+                )
+                .await;
             match sent {
                 Ok(response)
                     if response.status().is_success()
@@ -990,6 +1012,30 @@ mod live {
         use test_http::{Reply, Responder};
 
         use super::*;
+
+        fn run<T>(future: impl Future<Output = T>) -> T {
+            ui::rt::block_on(future).expect("a test thread may block")
+        }
+
+        fn pull_calendar_live(
+            client: &DavClient,
+            config: &CalDavConfig,
+            cal: &RemoteCalendar,
+            today: NaiveDate,
+            checkpoint: Option<&str>,
+        ) -> Result<SyncResult, String> {
+            run(super::pull_calendar_live(
+                client, config, cal, today, checkpoint,
+            ))
+        }
+
+        fn push_jobs_live(jobs: &[super::super::UploadJob]) -> super::super::MutationResult {
+            run(super::push_jobs_live(jobs))
+        }
+
+        fn remove_jobs_live(jobs: &[super::super::RemoveJob]) -> super::super::MutationResult {
+            run(super::remove_jobs_live(jobs))
+        }
 
         fn config(server_url: String) -> CalDavConfig {
             CalDavConfig {
@@ -1234,6 +1280,29 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
 mod tests {
     use super::*;
     use crate::account::AccountStore;
+
+    fn run<T>(future: impl Future<Output = T>) -> T {
+        ui::rt::block_on(future).expect("a test thread may block")
+    }
+
+    fn sync_all(
+        accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+        today: NaiveDate,
+    ) -> (SyncResult, SyncOutcome) {
+        run(super::sync_all(accounts, today))
+    }
+
+    #[cfg(not(feature = "live"))]
+    fn delete_all(
+        jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
+    ) -> Vec<crate::model::Id> {
+        run(super::delete_all(jobs))
+    }
+
+    #[cfg(not(feature = "live"))]
+    fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
+        run(super::push_all(jobs))
+    }
 
     fn today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()

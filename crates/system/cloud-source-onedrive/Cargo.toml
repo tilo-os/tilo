@@ -2,22 +2,24 @@
 name = "cloud-source-onedrive"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "OneDrive, OneDrive for Business and SharePoint document libraries as a cloud-source provider over Microsoft Graph: delta feed, ranged reads, upload sessions, versions, share links."
 
 [dependencies]
 chrono = { workspace = true, features = ["std"] }
-cloud-source = { path = "../cloud-source" }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
 base64.workspace = true
 percent-encoding.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 # The in-memory Graph server behind `fake-server`.
 sha2 = { workspace = true, optional = true }
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 
 [features]
 # `cloud_source_onedrive::fake::FakeGraph`, an in-memory Microsoft Graph

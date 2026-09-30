@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -36,7 +36,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::format::bytes as format_bytes;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+    SaveChannel, SaveOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -175,6 +178,9 @@ pub struct HexView {
     path: Option<PathBuf>,
     /// An in-flight XDG-portal open request, drained once per frame in `sync`.
     open_rx: Option<PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    open_contents_rx: Option<ContentsChannel>,
+    save_contents_rx: Option<SaveChannel>,
     /// An in-flight XDG-portal save-destination request.
     save_rx: Option<PortalChannel>,
     resource_invocation: Option<tilo_actions::InvocationId>,
@@ -245,6 +251,8 @@ impl HexView {
             has_file: true,
             path: None,
             open_rx: None,
+            open_contents_rx: None,
+            save_contents_rx: None,
             save_rx: None,
             resource_invocation: None,
             pending_resource_io: None,
@@ -285,6 +293,12 @@ impl HexView {
     pub fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
+        // Where files have no path, the file last opened by contents.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+        {
+            v.load_bytes(file.name, file.bytes, None);
+        }
         v
     }
 
@@ -359,7 +373,7 @@ impl HexView {
     /// headless frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Deterministic `--shots` hook for the real search overlay. It is not
@@ -403,8 +417,13 @@ impl HexView {
     /// Start the host file chooser to open a file. No-op if one is already in
     /// flight. The pick arrives over `open_rx`, drained in `sync`.
     fn begin_open(&mut self) {
-        if self.open_rx.is_none() {
+        if self.open_rx.is_some() || self.open_contents_rx.is_some() {
+            return;
+        }
+        if crate::web_file::native_paths() {
             self.open_rx = Some(file_open_request().send());
+        } else {
+            self.open_contents_rx = Some(file_open_request().send_contents());
         }
     }
 
@@ -413,6 +432,13 @@ impl HexView {
     fn begin_save(&mut self) {
         if let Some(path) = self.path.clone() {
             let _ = self.write_to(&path);
+        } else if !crate::web_file::native_paths() {
+            if self.save_contents_rx.is_none() {
+                let name = self.suggested_name();
+                crate::web_file::remember(&name, self.model.bytes());
+                self.save_contents_rx =
+                    Some(file_save_request(&name).send_save_contents(self.model.bytes().to_vec()));
+            }
         } else if self.save_rx.is_none() {
             self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
@@ -431,7 +457,10 @@ impl HexView {
     /// Write the current bytes to `path`, clearing the dirty markers on
     /// success and flashing the outcome either way.
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
-        match std::fs::write(path, self.model.bytes()) {
+        let saved = tilo_files::file_at(path).and_then(|(dir, name)| {
+            tilo_files::blocking::save_document(&dir, &name, self.model.bytes())
+        });
+        match saved {
             Ok(()) => {
                 self.model.clear_dirty();
                 self.path = Some(path.to_path_buf());
@@ -454,23 +483,13 @@ impl HexView {
 
     /// Load a local path into this editor. The path and bytes stay local.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
-        match std::fs::read(&path) {
+        match crate::app::read_file(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
                     || "untitled".to_string(),
                     |s| s.to_string_lossy().into_owned(),
                 );
-                let n = bytes.len();
-                self.model = HexModel::new(bytes);
-                self.file_name = name;
-                self.path = Some(path);
-                self.has_file = true;
-                self.overlay = Overlay::None;
-                self.matches.clear();
-                self.search_needle = None;
-                self.matches_truncated = false;
-                self.match_idx = None;
-                self.dirty = true;
+                let n = self.load_bytes(name, bytes, Some(path));
                 self.flash(
                     format!(
                         "Opened {}",
@@ -487,8 +506,88 @@ impl HexView {
         }
     }
 
+    /// Show `bytes` as the open file; its length.
+    fn load_bytes(&mut self, name: String, bytes: Vec<u8>, path: Option<PathBuf>) -> usize {
+        let n = bytes.len();
+        self.model = HexModel::new(bytes);
+        self.file_name = name;
+        self.path = path;
+        self.has_file = true;
+        self.overlay = Overlay::None;
+        self.matches.clear();
+        self.search_needle = None;
+        self.matches_truncated = false;
+        self.match_idx = None;
+        self.dirty = true;
+        n
+    }
+
+    /// A file chosen by contents: shown, and remembered so it outlives a
+    /// reload.
+    fn open_contents(&mut self, outcome: ContentsOutcome) -> Result<(), String> {
+        match outcome {
+            ContentsOutcome::Picked(files) => {
+                let Some(file) = files.into_iter().next() else {
+                    return Err("no file was chosen".into());
+                };
+                crate::web_file::remember(&file.name, &file.bytes);
+                let n = self.load_bytes(file.name, file.bytes, None);
+                self.flash(
+                    format!(
+                        "Opened {}",
+                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
+                Ok(())
+            }
+            ContentsOutcome::Cancelled => Err("cancelled".into()),
+            ContentsOutcome::Failed(reason) => {
+                self.flash(&reason, true);
+                Err(reason)
+            }
+        }
+    }
+
     /// Drain completed portal open/save requests into this device-local view.
     fn drain_portal(&mut self) {
+        if let Some(rx) = self.open_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.open_contents_rx = None;
+                    let result = self.open_contents(outcome);
+                    self.finish_resource_io(result);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.open_contents_rx = None;
+                    self.finish_resource_io(Err("file picker disconnected".into()));
+                }
+            }
+        }
+        if let Some(rx) = self.save_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.save_contents_rx = None;
+                    let result = match outcome {
+                        SaveOutcome::Saved => {
+                            self.model.clear_dirty();
+                            self.flash("Saved", false);
+                            self.dirty = true;
+                            Ok(())
+                        }
+                        SaveOutcome::Cancelled => Err("cancelled".into()),
+                        SaveOutcome::Failed(reason) => {
+                            self.flash(&reason, true);
+                            Err(reason)
+                        }
+                    };
+                    self.finish_resource_io(result);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.save_contents_rx = None,
+            }
+        }
         if let Some(rx) = self.open_rx.as_ref() {
             match rx.try_recv() {
                 Ok(outcome) => {
@@ -560,7 +659,7 @@ impl HexView {
 
     /// Post a transient status message.
     fn flash(&mut self, msg: impl Into<String>, error: bool) {
-        self.flash = Some((msg.into(), error, Instant::now()));
+        self.flash = Some((msg.into(), error, ui::time::now()));
         self.dirty = true;
     }
 
@@ -1351,7 +1450,7 @@ impl HexView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_bubble_label();
         // Poke only on a genuine change — `draw` runs every frame, so poking
         // unconditionally would pin the bubble open forever.
@@ -1920,7 +2019,7 @@ impl Widget for HexView {
         // once the host dialog closes), while a flash is counting down, and
         // while the floating status bubble is lingering / fading so it hides
         // itself without needing a stray pointer event.
-        self.is_busy() || self.status_bubble.needs_frame(Instant::now())
+        self.is_busy() || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn build_layout(
@@ -2170,6 +2269,7 @@ impl Widget for HexView {
                             .with_name("Open file")
                             .with_description("Choose a local file to inspect")
                             .with_state(AccessState::default().focusable(true))
+                            .with_bounds(self.open_button)
                             .with_action_target("hex.open"),
                     );
                 }
@@ -2806,8 +2906,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "hex-direct-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));

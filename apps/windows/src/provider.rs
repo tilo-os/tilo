@@ -2,7 +2,7 @@
 //! or host path is constructed in UI code.
 use std::fs::File;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
@@ -479,7 +479,7 @@ impl LiveProvider {
             commands: command_tx,
             events: event_rx,
             refresh_pending: true,
-            next_refresh: Instant::now() + REFRESH_INTERVAL,
+            next_refresh: ui::time::now() + REFRESH_INTERVAL,
             notice: None,
             operation_result: None,
             pending_vm_install: None,
@@ -507,14 +507,14 @@ impl LiveProvider {
                     self.cached.vm_install_confirmation =
                         self.pending_vm_install_confirmation.clone();
                     self.refresh_pending = false;
-                    self.next_refresh = Instant::now() + REFRESH_INTERVAL;
+                    self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                 }
                 WorkerEvent::Unavailable(detail) => {
                     // A malformed, mismatched, or disconnected response never
                     // leaves stale installed applications painted as live.
                     self.cached = unavailable_catalogue(&detail);
                     self.refresh_pending = false;
-                    self.next_refresh = Instant::now() + REFRESH_INTERVAL;
+                    self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                     self.notice = Some(detail);
                 }
                 WorkerEvent::Notice(detail) => self.notice = Some(detail),
@@ -550,7 +550,7 @@ impl CompatibilityProvider for LiveProvider {
     }
     fn catalogue(&mut self) -> Catalogue {
         self.drain();
-        if !self.refresh_pending && Instant::now() >= self.next_refresh {
+        if !self.refresh_pending && ui::time::now() >= self.next_refresh {
             if self.commands.send(WorkerCommand::Refresh).is_ok() {
                 self.refresh_pending = true;
             } else {
@@ -1848,7 +1848,7 @@ mod tests {
                 commands: command_tx,
                 events: event_rx,
                 refresh_pending: true,
-                next_refresh: Instant::now() + REFRESH_INTERVAL,
+                next_refresh: ui::time::now() + REFRESH_INTERVAL,
                 notice: None,
                 operation_result: None,
                 pending_vm_install: None,
@@ -1870,7 +1870,7 @@ mod tests {
                 commands: command_tx,
                 events: event_rx,
                 refresh_pending: true,
-                next_refresh: Instant::now() + REFRESH_INTERVAL,
+                next_refresh: ui::time::now() + REFRESH_INTERVAL,
                 notice: None,
                 operation_result: None,
                 pending_vm_install: None,

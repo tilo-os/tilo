@@ -21,6 +21,60 @@ pub struct McpServer<H> {
     detail: Detail,
     /// The short names compact pages gave long resource ids.
     handles: std::sync::Mutex<page::Handles>,
+    open_files: std::sync::Arc<OpenFiles>,
+}
+
+/// The instance each file last went to through an app's own `open` or
+/// `import-<extension>`, shared by every session of an endpoint: opening
+/// that file again returns that instance instead of starting another that
+/// opens it a second time.
+#[derive(Default)]
+pub struct OpenFiles(std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>);
+
+impl OpenFiles {
+    const MAX: usize = 1024;
+
+    fn key(path: &str) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.into())
+    }
+
+    fn files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<std::path::PathBuf, u64>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record(&self, path: &str, peer: u64) {
+        let mut files = self.files();
+        if files.len() >= Self::MAX {
+            files.clear();
+        }
+        files.insert(Self::key(path), peer);
+    }
+
+    fn peer(&self, path: &str) -> Option<u64> {
+        self.files().get(&Self::key(path)).copied()
+    }
+}
+
+/// The path an app's own file-opening action was given, by the directory's
+/// convention [`McpServer::path_opener`] follows.
+fn opened_file<'a>(action: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<&'a str> {
+    (action == tilo_actions::remote::APPLICATION_OPEN_ACTION || action.starts_with("import-"))
+        .then(|| arguments.get("path").and_then(Value::as_str))
+        .flatten()
+        .filter(|path| !path.is_empty())
+}
+
+/// Whether an invocation's answer leaves open that it did what it asked: it
+/// succeeded, or is still running when the call stopped waiting.
+fn may_have_opened(value: &Value) -> bool {
+    !matches!(
+        value.pointer("/update/state").and_then(Value::as_str),
+        Some("failed" | "cancelled") | None
+    )
 }
 
 #[derive(Default, Deserialize)]
@@ -148,7 +202,15 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             computer: None,
             detail: Detail::Compact,
             handles: std::sync::Mutex::default(),
+            open_files: std::sync::Arc::default(),
         }
+    }
+    /// Share which instance holds which file with the endpoint's other
+    /// sessions.
+    #[must_use]
+    pub fn with_open_files(mut self, open_files: std::sync::Arc<OpenFiles>) -> Self {
+        self.open_files = open_files;
+        self
     }
     fn handles(&self) -> std::sync::MutexGuard<'_, page::Handles> {
         self.handles
@@ -163,8 +225,15 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         self.handles().full(&name)
     }
-    fn compact(&self, page: &CataloguePage) -> Value {
-        page::compact_page(page, &mut self.handles())
+    /// `page` compact. An app instance's resource ids are opaque and long,
+    /// and named by handles; the workspace's (`app.<app_id>`, its permission
+    /// roles) are names that partners' provisioning and prompts spell out.
+    fn compact(&self, page: &CataloguePage, workspace: bool) -> Value {
+        if workspace {
+            page::compact_page(page, None)
+        } else {
+            page::compact_page(page, Some(&mut self.handles()))
+        }
     }
     /// Offer the canonical `computer` tools, driving `computer`.
     #[must_use]
@@ -507,7 +576,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if workspace {
             offer_open_path(&mut page);
         }
-        let mut value = self.compact(&page);
+        let mut value = self.compact(&page, workspace);
         if partial && let Some(fields) = value.as_object_mut() {
             fields.insert("partial_match".into(), Value::Bool(true));
         }
@@ -745,6 +814,13 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Some(app_id) => self.peers_of(app_id).await?,
             None => Vec::new(),
         };
+        if let Some(peer) = path
+            .as_deref()
+            .and_then(|path| self.open_files.peer(path))
+            .filter(|peer| before.contains(peer))
+        {
+            return Ok(self.already_open(peer).await);
+        }
         let invocation = a
             .invocation_id
             .as_deref()
@@ -755,9 +831,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
         };
+        let file = target
+            .provider
+            .parse::<u64>()
+            .ok()
+            .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
         let mut value = self
-            .run(target, a.arguments, invocation, a.revision, wait)
+            .run_with_handles(target, a.arguments, invocation, a.revision, wait)
             .await?;
+        if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
+            self.open_files.record(&path, peer);
+        }
         let Some(app_id) = launching else {
             return Ok(value);
         };
@@ -772,9 +856,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         };
         // Best effort: the app is open whether or not its directory reads.
         let directory = match peer {
-            Some(peer) if self.detail == Detail::Compact => {
-                self.directory(&peer.to_string()).await.ok()
-            }
+            Some(peer) if self.detail == Detail::Compact => self.first_directory(peer).await.ok(),
             _ => None,
         };
         if let Some(fields) = value.as_object_mut() {
@@ -790,10 +872,95 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         Ok(value)
     }
+    /// [`Self::run`], with the session handles `arguments` name expanded
+    /// where the action takes a resource. Refused with a handle left as
+    /// text, the call runs once more with that handle's resource id, and
+    /// the answer says so in `adjusted`.
+    async fn run_with_handles(
+        &self,
+        target: RemoteActionTarget,
+        mut arguments: serde_json::Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+        revision: Option<String>,
+        wait: std::time::Duration,
+    ) -> Result<Value, String> {
+        let unexpanded = self
+            .expand_handles(&target, revision.clone(), &mut arguments)
+            .await;
+        let retry = (!unexpanded.is_empty()).then(|| (target.clone(), arguments.clone()));
+        let value = self
+            .run(target, arguments, invocation, revision.clone(), wait)
+            .await?;
+        let Some((target, mut arguments)) = retry
+            .filter(|_| value.pointer("/update/state").and_then(Value::as_str) == Some("failed"))
+        else {
+            return Ok(value);
+        };
+        for (name, _, id) in &unexpanded {
+            arguments.insert(name.clone(), id.clone().into());
+        }
+        let mut value = self
+            .run(
+                target,
+                arguments,
+                tilo_actions::InvocationId::new(),
+                revision,
+                wait,
+            )
+            .await?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("adjusted".into(), handle_note(&unexpanded).into());
+        }
+        Ok(value)
+    }
     /// Start one invocation of `target` and answer with its update once it
     /// is terminal or `wait` has passed. An omitted revision is the
     /// directory as it is now.
+    ///
+    /// A number the action refused as outside its range is recoverable: the
+    /// call runs once more with the bound it named, and the answer says so
+    /// in `adjusted`.
     async fn run(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+        revision: Option<String>,
+        wait: std::time::Duration,
+    ) -> Result<Value, String> {
+        let value = self
+            .run_once(
+                target.clone(),
+                arguments.clone(),
+                invocation,
+                revision.clone(),
+                wait,
+            )
+            .await?;
+        let Some((name, bound)) = out_of_range(&value, &arguments) else {
+            return Ok(value);
+        };
+        let given = arguments.get(&name).cloned().unwrap_or_default();
+        let mut arguments = arguments;
+        arguments.insert(name.clone(), bound.clone());
+        let mut value = self
+            .run_once(
+                target,
+                arguments,
+                tilo_actions::InvocationId::new(),
+                revision,
+                wait,
+            )
+            .await?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert(
+                "adjusted".into(),
+                format!("{name} {given} is out of range; used {bound}").into(),
+            );
+        }
+        Ok(value)
+    }
+    async fn run_once(
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, Value>,
@@ -853,11 +1020,76 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Ok(value) => value,
             Err(error) => json!({"error":error}),
         };
+        if value.get("error").is_none() && may_have_opened(&value) {
+            self.open_files.record(path, peer);
+        }
         if let Some(fields) = value.as_object_mut() {
             fields.insert("resource".into(), resource.into());
             fields.insert("action".into(), action.into());
         }
         value
+    }
+    /// The answer to opening a file instance `peer` already holds: that
+    /// instance, as an `open` that started it would have answered. The file
+    /// is not opened again, which could drop edits not yet saved.
+    async fn already_open(&self, peer: u64) -> Value {
+        let mut value = serde_json::Map::new();
+        value.insert("update".into(), json!({"state": "succeeded"}));
+        value.insert("peer_id".into(), peer.into());
+        value.insert("opened".into(), json!({"already_open": true}));
+        if self.detail == Detail::Compact
+            && let Ok(directory) = self.directory(&peer.to_string()).await
+        {
+            value.insert("directory".into(), directory);
+        }
+        Value::Object(value)
+    }
+    /// Replace each argument naming a session handle with the resource id
+    /// it stands for, where the action takes a resource there. Answers the
+    /// handles left as they were, as `(argument, handle, resource id)`: the
+    /// action takes text there, which may mean the handle literally.
+    async fn expand_handles(
+        &self,
+        target: &RemoteActionTarget,
+        revision: Option<String>,
+        arguments: &mut serde_json::Map<String, Value>,
+    ) -> Vec<(String, String, String)> {
+        let named: Vec<(String, String, String)> = {
+            let handles = self.handles();
+            arguments
+                .iter()
+                .filter_map(|(name, value)| {
+                    let handle = value.as_str()?;
+                    let id = handles.issued(handle)?;
+                    Some((name.clone(), handle.to_owned(), id.to_owned()))
+                })
+                .collect()
+        };
+        if named.is_empty() {
+            return named;
+        }
+        let params = match self.revision_for(&target.provider, revision).await {
+            Ok((revision, _)) => self
+                .ask(CatalogueQuery::resolve(target, revision))
+                .await
+                .ok()
+                .and_then(|page| page.rows.into_iter().find_map(|row| row.action))
+                .map(|action| action.params)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let mut unexpanded = Vec::new();
+        for (name, handle, id) in named {
+            let takes_resource = params.iter().any(|param| {
+                param.name == name.as_str() && param.ty == tilo_actions::ParamType::Resource
+            });
+            if takes_resource {
+                arguments.insert(name, id.into());
+            } else {
+                unexpanded.push((name, handle, id));
+            }
+        }
+        unexpanded
     }
     /// The action of `provider` that opens `path`, by the directory's
     /// convention.
@@ -894,6 +1126,25 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
         }
         Ok(None)
+    }
+    /// A just-opened instance's [`Self::directory`] once it lists a
+    /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
+    /// publish again while it starts (binding its document), and a page read
+    /// in between is empty, which leaves the caller to query again.
+    async fn first_directory(&self, peer: u64) -> Result<Value, String> {
+        let provider = peer.to_string();
+        let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
+        loop {
+            let directory = self.directory(&provider).await?;
+            let listed = directory
+                .get("resources")
+                .and_then(Value::as_array)
+                .is_some_and(|resources| !resources.is_empty());
+            if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+                return Ok(directory);
+            }
+            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
+        }
     }
     /// A just-opened instance's directory: its top-level resources with
     /// their actions, and the resources beneath them while the page stays
@@ -937,7 +1188,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 })
             }));
             let mut trial = self.handles().clone();
-            if page::compact_page(&grown, &mut trial).to_string().len() > DIRECTORY_BYTES {
+            if page::compact_page(&grown, Some(&mut trial))
+                .to_string()
+                .len()
+                > DIRECTORY_BYTES
+            {
                 truncated = true;
                 continue;
             }
@@ -953,7 +1208,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
             page = grown;
         }
-        let mut value = self.compact(&page);
+        let mut value = self.compact(&page, false);
         if let Some(fields) = value.as_object_mut() {
             fields.remove("exhausted");
             if truncated {
@@ -996,8 +1251,23 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 .host()
                 .observe(&self.caller(), &id)
                 .is_some_and(|state| state.update.is_terminal());
-            if terminal || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+            if terminal {
                 return self.status(id);
+            }
+            if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+                let mut value = self.status(id)?;
+                if let Some(fields) = value.as_object_mut() {
+                    fields.insert(
+                        "pending".into(),
+                        format!(
+                            "not finished within {} ms; tilo_status with this invocation_id answers \
+                             how it went, or pass a longer wait_ms",
+                            wait.as_millis()
+                        )
+                        .into(),
+                    );
+                }
+                return Ok(value);
             }
             tokio::time::sleep(SETTLE_POLL).await;
         }
@@ -1127,6 +1397,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 /// its directory, and how often it looks.
 const JUST_LAUNCHED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 const JUST_LAUNCHED_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long an `open` waits more for the new instance's directory to list a
+/// resource once it has published: two query turns cost more.
+const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new
@@ -1159,8 +1432,45 @@ const MAX_WAIT_MS: u64 = 30_000;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
+/// The numeric argument a failed update refused as outside its range, with
+/// the bound the refusal named (`argument `pageSize` must be at most 64`).
+fn out_of_range(
+    value: &Value,
+    arguments: &serde_json::Map<String, Value>,
+) -> Option<(String, Value)> {
+    let error = value.pointer("/update/error")?;
+    if error.get("code")?.as_str()? != "invalid_arguments" {
+        return None;
+    }
+    let (name, rest) = error
+        .get("message")?
+        .as_str()?
+        .strip_prefix("argument `")?
+        .split_once("` must be at ")?;
+    let bound = rest
+        .strip_prefix("most ")
+        .or_else(|| rest.strip_prefix("least "))?;
+    let bound = bound
+        .parse::<i64>()
+        .map(Value::from)
+        .or_else(|_| bound.parse::<f64>().map(Value::from))
+        .ok()?;
+    arguments.get(name)?.as_f64()?;
+    Some((name.to_owned(), bound))
+}
+
 fn empty_object() -> Value {
     json!({})
+}
+/// What a call refused with session handles as text ran again with: each
+/// handle's resource id in full.
+fn handle_note(expanded: &[(String, String, String)]) -> String {
+    let named = expanded
+        .iter()
+        .map(|(name, handle, id)| format!("{name} {handle} was refused; used its id {id}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("{named} (this argument takes ids, not handles)")
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the
@@ -1257,7 +1567,7 @@ fn tool_definitions() -> Vec<Value> {
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id and directory (its resources and all their actions, so no tilo_query is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). Long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),

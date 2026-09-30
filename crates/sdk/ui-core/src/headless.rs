@@ -466,6 +466,16 @@ pub struct FrameSchedule {
     pub next_wake_deadline: Option<crate::time::Instant>,
 }
 
+/// Why a widget asks a live host for a frame
+/// ([`FrameHarness::frame_requesters`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDemand {
+    /// [`Widget::needs_animation_frame`]: a frame every vsync.
+    Animation,
+    /// [`Widget::next_wake_deadline`] is due.
+    Deadline,
+}
+
 /// Borrowed paint input without constructing an accessibility snapshot.
 pub struct FrameRenderInput<'a> {
     pub scene: &'a Scene,
@@ -580,7 +590,7 @@ pub struct FrameHarness {
     /// re-solve in place. False until the first successful build and after
     /// every path that discards the raw maps, so the next frame rebuilds.
     layout_built: bool,
-    /// Test override for the `QUICK_UI_FULL_RELAYOUT` safety valve: `Some`
+    /// Test override for the `TILO_UI_FULL_RELAYOUT` safety valve: `Some`
     /// wins over the environment.
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
@@ -626,14 +636,14 @@ pub struct RelayoutStats {
     pub marked_leaves: usize,
 }
 
-/// `QUICK_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
+/// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
 /// tree on every frame, as it did before retained relayout — a safety valve if
 /// a widget ever changes size without reporting `is_layout_dirty`, mirroring
-/// `App`'s `QUICK_UI_NO_SCROLL_OPT`.
+/// `App`'s `TILO_UI_NO_SCROLL_OPT`.
 fn full_relayout_forced() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
@@ -1955,7 +1965,7 @@ impl FrameHarness {
                 .component_wake
                 .as_ref()
                 .is_some_and(|wake| wake.dirty.get());
-        let schedule = |roots: Vec<&dyn Widget>| FrameSchedule {
+        self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame()),
             next_wake_deadline: roots
                 .iter()
@@ -1963,7 +1973,11 @@ impl FrameHarness {
                 .min(),
             needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
             queued_work,
-        };
+        })
+    }
+
+    /// The roots [`Self::frame_schedule`] reads demand from.
+    fn with_schedule_roots<R>(&self, visit: impl FnOnce(Vec<&dyn Widget>) -> R) -> R {
         if self.history_layout.is_some() && self.system_search_presentation().is_none() {
             return self.presentation(|history, _| {
                 let mut roots: Vec<&dyn Widget> = vec![history];
@@ -1974,10 +1988,53 @@ impl FrameHarness {
                 {
                     roots.push(palette);
                 }
-                schedule(roots)
+                visit(roots)
             });
         }
-        schedule(self.presentation_roots())
+        visit(self.presentation_roots())
+    }
+
+    /// The widgets behind [`Self::frame_schedule`]'s animation demand and due
+    /// wake deadline, each as the path of widget names from its root to the
+    /// deepest widget whose demand none of its children explains. A
+    /// diagnostic for idle redraws; it walks only the demanding branches.
+    pub fn frame_requesters(&self) -> Vec<(String, FrameDemand)> {
+        fn visit(
+            widget: &dyn Widget,
+            now: crate::time::Instant,
+            path: &mut Vec<String>,
+            out: &mut Vec<(String, FrameDemand)>,
+        ) -> (bool, bool) {
+            let animating = widget.needs_animation_frame();
+            let due = widget.next_wake_deadline().is_some_and(|at| at <= now);
+            if !animating && !due {
+                return (false, false);
+            }
+            path.push(widget.name().to_owned());
+            let (mut child_animating, mut child_due) = (false, false);
+            widget.for_each_child(&mut |child| {
+                let (animating, due) = visit(child, now, path, out);
+                child_animating |= animating;
+                child_due |= due;
+            });
+            if animating && !child_animating {
+                out.push((path.join("/"), FrameDemand::Animation));
+            }
+            if due && !child_due {
+                out.push((path.join("/"), FrameDemand::Deadline));
+            }
+            path.pop();
+            (animating, due)
+        }
+        self.drain_component_wakes();
+        let now = crate::time::now();
+        self.with_schedule_roots(|roots| {
+            let mut out = Vec::new();
+            for root in roots {
+                visit(root, now, &mut Vec::new(), &mut out);
+            }
+            out
+        })
     }
 
     /// Drain optional canonical font assets demanded by the most recent
@@ -2113,29 +2170,28 @@ impl FrameHarness {
     /// Rasterise the most recently laid-out frame to a PNG.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
-    /// this never runs a separate screenshot-only widget pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// this never runs a separate screenshot-only widget pipeline. A browser
+    /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
     /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// background. Use this for rendered contrast measurements. Nothing is
+    /// written in a browser page, as for [`FrameHarness::render_png`].
     pub fn render_window_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.bg_app);
     }
 
     /// Rasterise the most recently laid-out frame over a transparent
     /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Empty in a browser page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     /// [`FrameHarness::render_rgba`] over the theme background, as the
     /// native window composites it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.bg_app)
     }
@@ -2145,6 +2201,17 @@ impl FrameHarness {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
         crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_rgba_on(&self, _background: vello::peniko::Color) -> Vec<u8> {
+        tracing::warn!("a browser page has no offscreen renderer; the frame is empty");
+        Vec::new()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_png_on(&self, out: &std::path::Path, _background: vello::peniko::Color) {
+        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2403,7 +2470,7 @@ impl FrameHarness {
         // reports structure dirty, a history owner was invalidated, the
         // viewport moved, or nothing has been built yet); re-solve sizes in
         // place only when some widget reports it needs measuring; otherwise
-        // just re-apply positions. `QUICK_UI_FULL_RELAYOUT` forces the
+        // just re-apply positions. `TILO_UI_FULL_RELAYOUT` forces the
         // rebuild path on every frame.
         let history_width = f64::from(self.viewport.0);
         let structure = self.full_relayout_forced_now()
@@ -6273,14 +6340,14 @@ impl FrameHarness {
     // -- Retained relayout diagnostics -------------------------------------
 
     /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `QUICK_UI_FULL_RELAYOUT`.
+    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
     fn full_relayout_forced_now(&self) -> bool {
         self.full_relayout_override
             .unwrap_or_else(full_relayout_forced)
     }
 
     /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `QUICK_UI_FULL_RELAYOUT`; `None`
+    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
     /// returns to the environment's choice. Benchmarks use this to compare
     /// both paths inside one process.
     pub fn set_full_relayout(&mut self, forced: Option<bool>) {
@@ -6838,7 +6905,16 @@ fn collect_targets(
         out.entry(bare).or_insert_with(|| w.get_rect());
     }
     if let Some(id) = w.test_id() {
-        out.insert(id.to_string(), w.get_rect());
+        // A widget whose own node names narrower bounds (an empty state's
+        // button inside its panel) is operated where it says it is, as
+        // assistive technology would.
+        let rect = w
+            .accessibility()
+            .and_then(|node| node.bounds)
+            .map(crate::a11y::AccessBounds::to_rect)
+            .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
+            .unwrap_or_else(|| w.get_rect());
+        out.insert(id.to_string(), rect);
     }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
@@ -7742,6 +7818,110 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+
+    /// A widget that asks for frames as configured, over its children.
+    struct DemandProbe {
+        name: &'static str,
+        animating: bool,
+        deadline: Option<crate::time::Instant>,
+        children: Vec<DemandProbe>,
+    }
+
+    impl DemandProbe {
+        fn leaf(name: &'static str) -> Self {
+            Self {
+                name,
+                animating: false,
+                deadline: None,
+                children: Vec::new(),
+            }
+        }
+    }
+
+    impl Widget for DemandProbe {
+        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.children
+                .iter()
+                .map(|child| child as &dyn Widget)
+                .collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.children
+                .iter_mut()
+                .map(|child| child as &mut (dyn Widget + '_))
+                .collect()
+        }
+        fn needs_animation_frame(&self) -> bool {
+            self.animating || self.children.iter().any(Widget::needs_animation_frame)
+        }
+        fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+            self.children
+                .iter()
+                .filter_map(Widget::next_wake_deadline)
+                .chain(self.deadline)
+                .min()
+        }
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn frame_requesters_name_the_widgets_that_ask_for_frames() {
+        let now = crate::time::now();
+        let mut spinner = DemandProbe::leaf("Spinner");
+        spinner.animating = true;
+        let mut clock = DemandProbe::leaf("Clock");
+        clock.deadline = Some(now);
+        let mut later = DemandProbe::leaf("Later");
+        later.deadline = now.checked_add(std::time::Duration::from_secs(60));
+        let mut panel = DemandProbe::leaf("Panel");
+        panel.children = vec![spinner, DemandProbe::leaf("Idle")];
+        let mut root = DemandProbe::leaf("Root");
+        root.children = vec![panel, clock, later];
+        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+        let mut requesters = harness.frame_requesters();
+        requesters.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            requesters,
+            vec![
+                ("Root/Clock".to_owned(), FrameDemand::Deadline),
+                ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_idle_tree_has_no_frame_requesters() {
+        let mut root = DemandProbe::leaf("Root");
+        root.children = vec![DemandProbe::leaf("Idle")];
+        let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
+        assert!(harness.frame_requesters().is_empty());
+        assert!(!harness.frame_schedule().needs_animation_frame);
+    }
 
     #[test]
     fn late_browser_font_install_rebuilds_layout_without_mutating_document_or_focus() {
@@ -8688,6 +8868,119 @@ mod tests {
         fn is_focused(&self) -> bool {
             self.focused
         }
+    }
+
+    /// A panel whose own node is a small button drawn inside it, the shape
+    /// of an empty state: only a press on the button counts.
+    struct PanelButton {
+        rect: Rect,
+        pointer: Point,
+        presses: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl PanelButton {
+        fn button(&self) -> Rect {
+            Rect::new(
+                self.rect.x0 + 10.0,
+                self.rect.y1 - 40.0,
+                self.rect.x0 + 90.0,
+                self.rect.y1 - 10.0,
+            )
+        }
+    }
+
+    impl Widget for PanelButton {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(layout.size.width),
+                origin.y + f64::from(layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.pointer =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } if self.button().contains(self.pointer) => {
+                    self.presses.set(self.presses.get().saturating_add(1));
+                    *ctx.handled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name("Create")
+                    .with_bounds(self.button()),
+            )
+        }
+
+        fn name(&self) -> &'static str {
+            "PanelButton"
+        }
+
+        fn test_id(&self) -> Option<&str> {
+            Some("panel-button")
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn a_named_click_lands_on_the_bounds_the_widget_names() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(PanelButton {
+                rect: Rect::ZERO,
+                pointer: Point::ZERO,
+                presses: std::rc::Rc::clone(&presses),
+            }),
+            (400, 300),
+        );
+        driver.click_named("panel-button").unwrap();
+        assert_eq!(presses.get(), 1);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

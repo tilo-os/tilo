@@ -847,7 +847,7 @@ mod native {
     }
     /// The per-user cache directory that holds `tilo-internal-install`.
     pub(in crate::setup) fn cache_base() -> Result<std::path::PathBuf> {
-        xdg_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
+        tilo_paths::cache_dir().ok_or_else(|| "Current-user LocalAppData cache unavailable".into())
     }
     pub(in crate::setup) struct CacheRoot {
         lease: Arc<LockedRoot>,
@@ -1135,8 +1135,8 @@ mod native {
     }
     fn generated() -> Result<String> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let ticks = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let ticks = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
         let mut h = Sha256::new();

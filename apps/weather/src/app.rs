@@ -29,7 +29,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -244,7 +244,7 @@ impl WeatherApp {
             initial_fetch_done: false,
             seeded_doc: false,
             seed_sample_document: false,
-            last_activity: Instant::now(),
+            last_activity: ui::time::now(),
             resource_refresh_invocation: None,
             resource_refresh_failure: None,
             resource_refresh_tickets: std::collections::HashSet::new(),
@@ -353,7 +353,7 @@ impl WeatherApp {
         let mut disconnected = false;
         if let Some(svc) = self.service.as_ref() {
             if !reqs.is_empty() {
-                self.last_activity = Instant::now();
+                self.last_activity = ui::time::now();
             }
             for r in reqs {
                 if let Some(failed) = svc.request(r) {
@@ -812,7 +812,7 @@ impl WeatherApp {
         } else {
             self.core.borrow_mut().refresh_all();
         }
-        self.last_activity = Instant::now();
+        self.last_activity = ui::time::now();
         Ok(true)
     }
 

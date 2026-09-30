@@ -19,10 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
 use tilo_clock::unix_now_i64;
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -120,19 +120,19 @@ fn shrink(r: Rect, d: f64) -> Rect {
     Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
-const fn scan_color_label(color: os_actions::printing::ScanColor) -> &'static str {
+const fn scan_color_label(color: tilo_capture::scanner::ScanColor) -> &'static str {
     match color {
-        os_actions::printing::ScanColor::Color => "Color",
-        os_actions::printing::ScanColor::Grayscale => "Grayscale",
-        os_actions::printing::ScanColor::LineArt => "Black & white",
+        tilo_capture::scanner::ScanColor::Color => "Color",
+        tilo_capture::scanner::ScanColor::Grayscale => "Grayscale",
+        tilo_capture::scanner::ScanColor::LineArt => "Black & white",
     }
 }
 
-const fn scan_source_label(source: os_actions::printing::ScanSource) -> &'static str {
+const fn scan_source_label(source: tilo_capture::scanner::ScanSource) -> &'static str {
     match source {
-        os_actions::printing::ScanSource::Flatbed => "Flatbed",
-        os_actions::printing::ScanSource::Feeder => "Feeder",
-        os_actions::printing::ScanSource::FeederDuplex => "Duplex feeder",
+        tilo_capture::scanner::ScanSource::Flatbed => "Flatbed",
+        tilo_capture::scanner::ScanSource::Feeder => "Feeder",
+        tilo_capture::scanner::ScanSource::FeederDuplex => "Duplex feeder",
     }
 }
 
@@ -254,7 +254,7 @@ impl OcrLanguage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DocumentSettings {
-    scan: os_actions::printing::ScanSettings,
+    scan: tilo_capture::scanner::ScanSettings,
     ocr_language: OcrLanguage,
 }
 
@@ -282,10 +282,10 @@ impl DocumentChoice {
 impl Default for DocumentSettings {
     fn default() -> Self {
         Self {
-            scan: os_actions::printing::ScanSettings {
+            scan: tilo_capture::scanner::ScanSettings {
                 resolution_dpi: 300,
-                color: os_actions::printing::ScanColor::Color,
-                source: os_actions::printing::ScanSource::Flatbed,
+                color: tilo_capture::scanner::ScanColor::Color,
+                source: tilo_capture::scanner::ScanSource::Flatbed,
             },
             ocr_language: OcrLanguage::English,
         }
@@ -395,7 +395,7 @@ pub struct CameraApp {
     document_choice: Option<DocumentChoice>,
     document_choice_anchors: [Rect; 5],
     document_popover: Popover,
-    scanner_devices: Vec<os_actions::printing::Scanner>,
+    scanner_devices: Vec<tilo_capture::scanner::Scanner>,
     selected_scanner: Option<String>,
     document_save_picker: Option<ui::portal::PortalChannel>,
     scan_image_picker: Option<ui::portal::PortalChannel>,
@@ -497,11 +497,11 @@ impl CameraApp {
 
     fn with(storage: Storage, initial_screen: Screen) -> Self {
         let scanner_devices = match &storage {
-            Storage::Sample => vec![os_actions::printing::Scanner {
+            Storage::Sample => vec![tilo_capture::scanner::Scanner {
                 device: "sample:document-scanner".into(),
                 description: "Document scanner".into(),
             }],
-            Storage::Disk(_) => os_actions::printing::scanners().unwrap_or_default(),
+            Storage::Disk(_) => tilo_capture::scanner::scanners().unwrap_or_default(),
         };
         let selected_scanner = scanner_devices
             .first()
@@ -725,7 +725,7 @@ impl CameraApp {
             return self.fire_shutter();
         }
         self.countdown = Some(Countdown {
-            due: Instant::now() + Duration::from_secs(seconds as u64),
+            due: ui::time::now() + Duration::from_secs(seconds as u64),
             mode: self.mode,
         });
         self.toast = Some(format!("Timer set for {seconds} seconds"));
@@ -751,7 +751,7 @@ impl CameraApp {
         let Some(countdown) = self.countdown.as_ref() else {
             return;
         };
-        if Instant::now() < countdown.due {
+        if ui::time::now() < countdown.due {
             self.dirty = true;
             return;
         }
@@ -811,7 +811,7 @@ impl CameraApp {
             return Err("Camera job counter exhausted; restart Camera".into());
         };
         let dir = match &self.storage {
-            Storage::Disk(dir) => Some(dir.clone()),
+            Storage::Disk(dir) => native_paths().then(|| dir.clone()),
             Storage::Sample => None,
         };
         // AVI muxing can copy tens of MiB, including when screenshots/tests
@@ -880,6 +880,28 @@ impl CameraApp {
             }
         }
         Vec::new()
+    }
+
+    /// Whether a real camera is open and delivering the viewfinder.
+    fn viewfinder_live(&self) -> bool {
+        #[cfg(feature = "live-capture")]
+        {
+            self.camera.is_some()
+        }
+        #[cfg(not(feature = "live-capture"))]
+        {
+            false
+        }
+    }
+
+    /// Whether the live viewfinder has no camera yet on a platform whose
+    /// devices appear only after the user is asked.
+    fn awaiting_camera(&self) -> bool {
+        matches!(self.storage, Storage::Disk(_))
+            && self.screen == Screen::Camera
+            && !self.viewfinder_live()
+            && tilo_capture::availability(tilo_capture::Feature::Camera)
+                == tilo_capture::Availability::Prompt
     }
 
     fn viewfinder_seed(facing: Facing) -> u8 {
@@ -1532,18 +1554,16 @@ impl CameraApp {
                 self.document_job = Some(receiver);
                 self.document_job_kind = Some(DocumentJobKind::Capture);
                 let settings = self.document_settings.scan;
-                let spawn = std::thread::Builder::new()
-                    .name("camera-document-capture".into())
-                    .spawn(move || {
-                        let result = os_actions::printing::scan_page(&scanner_device, settings)
-                            .and_then(|bytes| {
-                                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                                    .map_err(|error| {
-                                        format!("scanner returned an invalid PNG: {error}")
-                                    })
-                            });
-                        let _ = sender.send(DocumentJobResult::Capture(result));
-                    });
+                let spawn = ui::rt::spawn_thread("camera-document-capture", move || {
+                    let result = tilo_capture::scanner::scan_page(&scanner_device, settings)
+                        .and_then(|bytes| {
+                            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                                .map_err(|error| {
+                                    format!("scanner returned an invalid PNG: {error}")
+                                })
+                        });
+                    let _ = sender.send(DocumentJobResult::Capture(result));
+                });
                 if let Err(error) = spawn {
                     self.document_job = None;
                     self.document_job_kind = None;
@@ -1598,18 +1618,18 @@ impl CameraApp {
                 "Scan color",
                 &["Color", "Grayscale", "Black & white"],
                 match self.document_settings.scan.color {
-                    os_actions::printing::ScanColor::Color => 0,
-                    os_actions::printing::ScanColor::Grayscale => 1,
-                    os_actions::printing::ScanColor::LineArt => 2,
+                    tilo_capture::scanner::ScanColor::Color => 0,
+                    tilo_capture::scanner::ScanColor::Grayscale => 1,
+                    tilo_capture::scanner::ScanColor::LineArt => 2,
                 },
             ),
             DocumentChoice::Source => (
                 "Paper source",
                 &["Flatbed", "Feeder", "Duplex feeder"],
                 match self.document_settings.scan.source {
-                    os_actions::printing::ScanSource::Flatbed => 0,
-                    os_actions::printing::ScanSource::Feeder => 1,
-                    os_actions::printing::ScanSource::FeederDuplex => 2,
+                    tilo_capture::scanner::ScanSource::Flatbed => 0,
+                    tilo_capture::scanner::ScanSource::Feeder => 1,
+                    tilo_capture::scanner::ScanSource::FeederDuplex => 2,
                 },
             ),
             DocumentChoice::Language => (
@@ -1650,9 +1670,9 @@ impl CameraApp {
             }
             Some(DocumentChoice::Color) => {
                 if let Some(value) = [
-                    os_actions::printing::ScanColor::Color,
-                    os_actions::printing::ScanColor::Grayscale,
-                    os_actions::printing::ScanColor::LineArt,
+                    tilo_capture::scanner::ScanColor::Color,
+                    tilo_capture::scanner::ScanColor::Grayscale,
+                    tilo_capture::scanner::ScanColor::LineArt,
                 ]
                 .get(index)
                 {
@@ -1661,9 +1681,9 @@ impl CameraApp {
             }
             Some(DocumentChoice::Source) => {
                 if let Some(value) = [
-                    os_actions::printing::ScanSource::Flatbed,
-                    os_actions::printing::ScanSource::Feeder,
-                    os_actions::printing::ScanSource::FeederDuplex,
+                    tilo_capture::scanner::ScanSource::Flatbed,
+                    tilo_capture::scanner::ScanSource::Feeder,
+                    tilo_capture::scanner::ScanSource::FeederDuplex,
                 ]
                 .get(index)
                 {
@@ -1719,15 +1739,13 @@ impl CameraApp {
         self.document_job = Some(receiver);
         self.document_job_kind = Some(DocumentJobKind::Recognize);
         let language = self.document_settings.ocr_language.code();
-        let spawn = std::thread::Builder::new()
-            .name("camera-document-ocr".into())
-            .spawn(move || {
-                let result = tilo_ocr::recognize_detailed(&image, language);
-                let _ = sender.send(DocumentJobResult::Recognize {
-                    page: index,
-                    result,
-                });
+        let spawn = ui::rt::spawn_thread("camera-document-ocr", move || {
+            let result = tilo_ocr::recognize_detailed(&image, language);
+            let _ = sender.send(DocumentJobResult::Recognize {
+                page: index,
+                result,
             });
+        });
         if spawn.is_err() {
             self.document_job = None;
             self.document_job_kind = None;
@@ -1945,7 +1963,7 @@ impl CameraApp {
                     path.set_extension("pdf");
                 }
                 self.toast = Some(
-                    match std::fs::write(&path, self.document_scan.searchable_pdf()) {
+                    match crate::files::save(&path, &self.document_scan.searchable_pdf()) {
                         Ok(()) => format!(
                             "Saved {}",
                             path.file_name()
@@ -2222,7 +2240,7 @@ impl CameraApp {
                 self.worker.submit(crate::worker::PhotoJob {
                     invocation,
                     generation,
-                    dir: dir.clone(),
+                    dir: native_paths().then(|| dir.clone()),
                     frame,
                     format: self.settings.photo_format,
                     facing: self.facing,
@@ -2505,17 +2523,7 @@ impl CameraApp {
                         self.camera_issue = None;
                     }
                     Err(error) => {
-                        let message = error.to_string().to_ascii_lowercase();
-                        self.camera_issue = Some(
-                            if message.contains("permission")
-                                || message.contains("not permitted")
-                                || message.contains("access denied")
-                            {
-                                CameraIssue::PermissionDenied
-                            } else {
-                                CameraIssue::StartFailed
-                            },
-                        );
+                        self.camera_issue = Some(camera_issue_for(error.downcast_ref()));
                     }
                 }
             } else if std::env::var_os("CAMERA_SHOT_CAMERA_STATE").is_none() {
@@ -2524,8 +2532,19 @@ impl CameraApp {
             self.cam_config = want;
         }
 
-        if let Some(cam) = &self.camera
-            && let Some(f) = cam.frames.take_latest()
+        // A start the user refused, or a camera that went away, ends the
+        // session; the settings key stays so a new request is not made every
+        // frame.
+        if let Some(error) = self
+            .camera
+            .as_mut()
+            .and_then(crate::capture::Capture::failure)
+        {
+            self.camera = None;
+            self.camera_issue = Some(camera_issue_for(Some(&error)));
+        }
+        if let Some(cam) = &mut self.camera
+            && let Some(f) = cam.take_latest()
         {
             let _ = self.push_camera_frame(FrameBuf {
                 rgba: f.rgba,
@@ -2542,6 +2561,24 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     // back to `cur` rather than panicking if that ever stops holding.
     let next = (i + 1) % all.len().max(1);
     all.get(next).copied().unwrap_or(cur)
+}
+
+/// The empty-state category for a capture that could not start.
+#[cfg(feature = "live-capture")]
+/// Whether captures can be projected into a native directory here; a
+/// browser page keeps them only in the content store.
+fn native_paths() -> bool {
+    matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
+}
+
+fn camera_issue_for(error: Option<&tilo_capture::CaptureError>) -> CameraIssue {
+    match error {
+        Some(tilo_capture::CaptureError::PermissionDenied) => CameraIssue::PermissionDenied,
+        _ => CameraIssue::StartFailed,
+    }
 }
 
 /// The frame size to request from a webcam for a chosen resolution preset.
@@ -2747,8 +2784,10 @@ impl Widget for CameraApp {
             // A cancelled/superseded agent invocation owns no durable result.
             // Local shutter jobs have no invocation and remain valid.
             if result.invocation.is_some() && terminal.is_none() {
-                if let Ok(saved) = result.result {
-                    let _ = std::fs::remove_file(saved.local_path);
+                if let Ok(saved) = result.result
+                    && let Some(path) = &saved.local_path
+                {
+                    crate::files::remove(path);
                 }
                 continue;
             }
@@ -2766,7 +2805,9 @@ impl Widget for CameraApp {
                         facing: saved.facing,
                     };
                     if let Err(error) = self.try_perform_action(state, &action) {
-                        let _ = std::fs::remove_file(&saved.local_path);
+                        if let Some(path) = &saved.local_path {
+                            crate::files::remove(path);
+                        }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
                             self.completed_operations.insert(
@@ -2832,7 +2873,7 @@ impl Widget for CameraApp {
                 if let Ok(saved) = result.result
                     && let Some(path) = saved.local_path
                 {
-                    let _ = std::fs::remove_file(path);
+                    crate::files::remove(&path);
                 }
                 continue;
             }
@@ -2851,7 +2892,7 @@ impl Widget for CameraApp {
                     };
                     if let Err(error) = self.try_perform_action(state, &action) {
                         if let Some(path) = &saved.local_path {
-                            let _ = std::fs::remove_file(path);
+                            crate::files::remove(path);
                         }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
@@ -3048,7 +3089,7 @@ impl Widget for CameraApp {
             if std::env::var_os("CAMERA_SHOT_TIMER_RUNNING").is_some() && self.countdown.is_none() {
                 self.settings.timer = Timer::S3;
                 self.countdown = Some(Countdown {
-                    due: Instant::now() + Duration::from_secs(3),
+                    due: ui::time::now() + Duration::from_secs(3),
                     mode: self.mode,
                 });
             }
@@ -3440,14 +3481,21 @@ impl Widget for CameraApp {
         // it advances the elapsed indicator and drains the real camera worker.
         // Reduced-motion users receive the same capture correctness through a
         // low-frequency wake deadline below, without a continuous UI loop.
-        (self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced
+        // A live viewfinder is content, not motion: it runs regardless.
+        self.viewfinder_live()
+            || ((self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced)
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.awaiting_camera() {
+            // Where access is prompted (the page, macOS) devices appear
+            // asynchronously; look again rather than wait for input.
+            return Some(ui::time::now() + Duration::from_secs(1));
+        }
         if self.motion_reduced && (self.recording.is_some() || self.countdown.is_some()) {
             // The visible counter changes once per second; four wakeups per
             // second keep worker settlement responsive without recreating a
             // 30 fps decorative frame loop for reduced-motion users.
-            Some(Instant::now() + Duration::from_millis(250))
+            Some(ui::time::now() + Duration::from_millis(250))
         } else {
             None
         }
@@ -4813,7 +4861,7 @@ impl CameraApp {
         let Some(countdown) = self.countdown.as_ref() else {
             return;
         };
-        let duration = countdown.due.saturating_duration_since(Instant::now());
+        let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let label = format!("{remaining}  ·  Tap shutter to cancel");
         let tw = f64::from(p::text_w(tr, &label, 12.5));
@@ -4892,17 +4940,16 @@ impl CameraApp {
         let request = match (&cap.path, media) {
             (Some(path), _) => {
                 let key = address_key.or_else(|| {
-                    let meta = std::fs::metadata(path).ok()?;
+                    let meta = crate::files::metadata(path)?;
                     let mtime_ms = meta
-                        .modified()
-                        .ok()?
-                        .duration_since(std::time::UNIX_EPOCH)
+                        .modified
+                        .duration_since(ui::time::UNIX_EPOCH)
                         .ok()?
                         .as_millis();
                     Some(thumbnail::ThumbKey::of_path_meta(
                         path,
                         u64::try_from(mtime_ms).unwrap_or(u64::MAX),
-                        meta.len(),
+                        meta.len,
                         size,
                     ))
                 });
@@ -6738,7 +6785,7 @@ mod tests {
         mut done: impl FnMut(&CameraApp) -> bool,
     ) {
         let deadline = tilo_test_env::hang_deadline();
-        while !done(app) && Instant::now() < deadline {
+        while !done(app) && ui::time::now() < deadline {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -7444,7 +7491,7 @@ mod tests {
             app.apply(Action::Shutter, &mut doc, &root);
             assert!(app.is_counting_down());
             assert_eq!(app.captures.len(), before, "timer does not capture early");
-            app.countdown.as_mut().expect("armed timer").due = Instant::now();
+            app.countdown.as_mut().expect("armed timer").due = ui::time::now();
             app.sync(&mut doc, &root);
             assert!(!app.is_counting_down());
             assert_eq!(app.captures.len(), 1);
@@ -7528,7 +7575,7 @@ mod tests {
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
             let deadline = tilo_test_env::hang_deadline();
-            while Instant::now() < deadline
+            while ui::time::now() < deadline
                 && std::fs::read_dir(&dir).map_or(true, |entries| {
                     !entries.flatten().any(|e| {
                         e.path().extension().is_some_and(|x| x == "jpg")
@@ -7892,7 +7939,7 @@ mod tests {
         // Phase `document_capture_never_falls_back_to_a_different_scanner`.
         {
             let (mut app, _doc, _root) = sample_app();
-            app.scanner_devices.push(os_actions::printing::Scanner {
+            app.scanner_devices.push(tilo_capture::scanner::Scanner {
                 device: "sample:office-scanner".into(),
                 description: "Office scanner".into(),
             });
@@ -7976,7 +8023,7 @@ mod tests {
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.document_settings, DocumentSettings::default());
-            app.scanner_devices.push(os_actions::printing::Scanner {
+            app.scanner_devices.push(tilo_capture::scanner::Scanner {
                 device: "sample:office-scanner".into(),
                 description: "Office scanner".into(),
             });
@@ -7999,11 +8046,11 @@ mod tests {
             assert_eq!(app.document_settings.scan.resolution_dpi, 600);
             assert_eq!(
                 app.document_settings.scan.color,
-                os_actions::printing::ScanColor::Grayscale
+                tilo_capture::scanner::ScanColor::Grayscale
             );
             assert_eq!(
                 app.document_settings.scan.source,
-                os_actions::printing::ScanSource::Feeder
+                tilo_capture::scanner::ScanSource::Feeder
             );
             assert_eq!(app.document_settings.ocr_language.code(), "deu");
             assert_eq!(

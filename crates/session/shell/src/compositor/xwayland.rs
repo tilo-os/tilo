@@ -16,6 +16,15 @@
 //! that never runs an X11 app never runs an X server. Satellite is stopped
 //! again when its workspace closes or no X client has been connected for
 //! [`IDLE_TIMEOUT`]; the socket stays, and the next client starts a fresh one.
+//!
+//! Satellite hands Xwayland native output resolutions and announces the
+//! output scale over XSETTINGS, which GTK follows. Toolkits that size from
+//! the `Xft.dpi` resource instead (Qt, Xft and Xt clients, and the composing
+//! input method's own candidate window) would stay at 96 DPI on a
+//! high-density output, so each new server also gets satellite's DPI in its
+//! root `RESOURCE_MANAGER` before the composer is asked to connect. The
+//! client whose connection started the server may read resources before
+//! that.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -23,7 +32,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -52,6 +61,10 @@ const STABLE_UPTIME: Duration = Duration::from_secs(30);
 /// stopped. Long enough that an app restarting itself (installers, launchers
 /// that re-exec) finds the server still up.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Wine (and similar X11 runtimes) keep the X socket after the last
+/// window is gone. Two seconds is enough for a legitimate re-map and
+/// short enough that the leftover process does not sit around.
+const WINDOWLESS_TIMEOUT: Duration = Duration::from_secs(2);
 const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 /// The frame loop polls far more often than an idle stop needs; reading the
 /// kernel's socket table once a second keeps idle detection off the frame
@@ -61,6 +74,11 @@ const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// method is asked to connect, so the request lands on a server that is
 /// already accepting rather than stalling the composer in the handshake.
 const COMPOSER_CONNECT_DELAY: Duration = Duration::from_secs(1);
+/// How long satellite gets to announce its scale over XSETTINGS.
+const XSETTINGS_WAIT: Duration = Duration::from_secs(2);
+/// How long publishing the DPI may hold back the composer before it is asked
+/// to connect anyway, and the publisher is abandoned.
+const RESOURCES_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Every workspace display of this session, shared by the host-launch path
 /// (which creates displays) and the compositor-thread supervisor (which
@@ -150,11 +168,15 @@ pub(crate) struct WorkspaceDisplay {
     socket_identity: (u64, u64),
     lock: PathBuf,
     authority: PathBuf,
+    /// The MIT-MAGIC-COOKIE-1 in [`Self::authority`].
+    cookie: [u8; 16],
     bridge: Option<Bridge>,
     rapid_exits: u8,
     /// When the running bridge was first observed with no connected client.
     idle_since: Option<Instant>,
     idle_checked: Option<Instant>,
+    /// Satellite has mapped at least one toplevel in this run.
+    saw_toplevel: bool,
     /// The composer process group already asked to serve the running
     /// server, so each server and composer pair is asked once.
     composer_asked: Option<libc::pid_t>,
@@ -171,6 +193,37 @@ struct Bridge {
     /// but the final state must still converge without another settings
     /// file write to wake the watcher.
     pending_keyboard: Option<KeyboardSettings>,
+    /// Still publishing `Xft.dpi` to the new server.
+    resources: Option<ResourcePublish>,
+}
+
+/// Mirrors satellite's XSETTINGS `Xft/DPI` into the root window's
+/// `RESOURCE_MANAGER`, off the compositor thread: a starting X server may
+/// take a while to accept.
+struct ResourcePublish {
+    worker: std::thread::JoinHandle<Result<u32, String>>,
+    /// The worker's connection, shut down to unblock it when abandoned.
+    stream: UnixStream,
+}
+
+impl ResourcePublish {
+    fn start(display: &WorkspaceDisplay) -> Result<Self, String> {
+        let stream = UnixStream::connect(&display.socket)
+            .map_err(|error| format!("connecting to {}: {error}", display.socket.display()))?;
+        let worker_stream = stream
+            .try_clone()
+            .map_err(|error| format!("duplicating X11 connection: {error}"))?;
+        let cookie = display.cookie;
+        let worker = std::thread::Builder::new()
+            .name("xwayland-resources".into())
+            .spawn(move || publish_font_dpi(worker_stream, cookie))
+            .map_err(|error| format!("starting resource publisher: {error}"))?;
+        Ok(Self { worker, stream })
+    }
+
+    fn abandon(self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 struct KeyboardUpdate {
@@ -180,7 +233,8 @@ struct KeyboardUpdate {
 }
 
 /// Starts a satellite for a display that just received its first client.
-type Spawn<'a> = dyn FnMut(&WorkspaceDisplay) -> Result<(Child, KeyboardSettings), String> + 'a;
+type Spawn<'a> = dyn FnMut(&WorkspaceDisplay) -> Result<(Child, KeyboardSettings, Option<ResourcePublish>), String>
+    + 'a;
 
 impl Displays {
     fn new(paths: Paths, satellite: Result<PathBuf, String>) -> Self {
@@ -224,7 +278,12 @@ impl Displays {
     /// that just became unavailable.
     #[cfg(test)]
     fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> Vec<String> {
-        self.poll_with(now, spawn, &mut ComposerClients::for_group(None))
+        self.poll_with(
+            now,
+            spawn,
+            &mut ComposerClients::for_group(None),
+            &HashSet::new(),
+        )
     }
 
     /// [`Self::poll`] with the composing input method's view: its
@@ -235,10 +294,11 @@ impl Displays {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> Vec<String> {
         let mut exhausted = Vec::new();
         for (workspace, display) in &mut self.workspaces {
-            if display.poll(now, spawn, composer) {
+            if display.poll(now, spawn, composer, mapped_satellites) {
                 exhausted.push(workspace.clone());
             }
         }
@@ -294,11 +354,14 @@ impl WorkspaceDisplay {
             };
             let authority = paths.runtime.join(format!("Xauthority-{number}"));
             let _ = fs::remove_file(&authority);
-            if let Err(error) = write_xauthority(&authority, number) {
-                let _ = fs::remove_file(&socket);
-                let _ = fs::remove_file(&lock);
-                return Err(error);
-            }
+            let cookie = match write_xauthority(&authority, number) {
+                Ok(cookie) => cookie,
+                Err(error) => {
+                    let _ = fs::remove_file(&socket);
+                    let _ = fs::remove_file(&lock);
+                    return Err(error);
+                }
+            };
             return Ok(Self {
                 number,
                 listener,
@@ -306,10 +369,12 @@ impl WorkspaceDisplay {
                 socket_identity,
                 lock,
                 authority,
+                cookie,
                 bridge: None,
                 rapid_exits: 0,
                 idle_since: None,
                 idle_checked: None,
+                saw_toplevel: false,
                 composer_asked: None,
             });
         }
@@ -335,6 +400,7 @@ impl WorkspaceDisplay {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> bool {
         let session = self.session();
         if let Some(bridge) = self.bridge.as_mut() {
@@ -358,9 +424,36 @@ impl WorkspaceDisplay {
                     return false;
                 }
             }
+            let uptime = now.saturating_duration_since(bridge.started);
+            if let Some(publish) = bridge
+                .resources
+                .take_if(|publish| publish.worker.is_finished())
+            {
+                match publish.worker.join() {
+                    Ok(Ok(dpi)) => {
+                        tracing::info!(display = self.number, dpi, "Xwayland: published Xft.dpi");
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, display = self.number, "Xwayland: could not publish Xft.dpi");
+                    }
+                    Err(_) => tracing::warn!(
+                        display = self.number,
+                        "Xwayland: Xft.dpi publisher panicked"
+                    ),
+                }
+            } else if uptime >= RESOURCES_TIMEOUT
+                && let Some(publish) = bridge.resources.take()
+            {
+                tracing::warn!(
+                    display = self.number,
+                    "Xwayland: gave up publishing Xft.dpi"
+                );
+                publish.abandon();
+            }
             if let Some(group) = composer.process_group()
                 && self.composer_asked != Some(group)
-                && now.saturating_duration_since(bridge.started) >= COMPOSER_CONNECT_DELAY
+                && uptime >= COMPOSER_CONNECT_DELAY
+                && bridge.resources.is_none()
             {
                 self.composer_asked = Some(group);
                 composer.requests.push(session.display.clone());
@@ -372,25 +465,18 @@ impl WorkspaceDisplay {
                 return false;
             }
             self.idle_checked = Some(now);
-            match composer.connected_clients(&self.socket) {
-                Some(0) => {
-                    let idle_since = *self.idle_since.get_or_insert(now);
-                    if now.saturating_duration_since(idle_since) >= IDLE_TIMEOUT {
-                        tracing::info!(display = self.number, "stopping idle Xwayland bridge");
-                        self.stop_bridge();
-                    }
-                }
-                // An unreadable socket table must never stop a server that
-                // may still have clients.
-                Some(_) | None => self.idle_since = None,
-            }
+            self.reap_if_idle(
+                now,
+                composer.connected_clients(&self.socket),
+                mapped_satellites,
+            );
             return false;
         }
         if !has_pending_connection(&self.listener) {
             return false;
         }
         match spawn(self) {
-            Ok((child, keyboard)) => {
+            Ok((child, keyboard, resources)) => {
                 tracing::info!(
                     display = self.number,
                     "starting Xwayland bridge for its first client"
@@ -401,6 +487,7 @@ impl WorkspaceDisplay {
                     keyboard,
                     keyboard_update: None,
                     pending_keyboard: None,
+                    resources,
                 });
                 self.idle_since = None;
                 false
@@ -413,9 +500,35 @@ impl WorkspaceDisplay {
         }
     }
 
+    fn reap_if_idle(
+        &mut self,
+        now: Instant,
+        connected: Option<usize>,
+        mapped_satellites: &HashSet<u32>,
+    ) {
+        let mapped = self
+            .bridge
+            .as_ref()
+            .is_some_and(|bridge| mapped_satellites.contains(&bridge.child.id()));
+        if mapped {
+            self.saw_toplevel = true;
+        }
+        match idle_deadline(connected, mapped, self.saw_toplevel) {
+            Some(limit) => {
+                let idle_since = *self.idle_since.get_or_insert(now);
+                if now.saturating_duration_since(idle_since) >= limit {
+                    tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                    self.stop_bridge();
+                }
+            }
+            None => self.idle_since = None,
+        }
+    }
+
     fn stop_bridge(&mut self) {
         self.idle_since = None;
         self.idle_checked = None;
+        self.saw_toplevel = false;
         self.composer_asked = None;
         let Some(mut bridge) = self.bridge.take() else {
             return;
@@ -423,6 +536,9 @@ impl WorkspaceDisplay {
         if let Some(mut update) = bridge.keyboard_update.take() {
             let _ = update.child.kill();
             let _ = update.child.wait();
+        }
+        if let Some(publish) = bridge.resources.take() {
+            publish.abandon();
         }
         if matches!(bridge.child.try_wait(), Ok(None)) {
             let _ = bridge.child.kill();
@@ -617,7 +733,11 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
 
     /// Poll from the compositor's frame loop, before launch actions run, so
     /// a launch in this tick sees the current set of displays.
-    pub(crate) fn poll(&mut self, chrome: &crate::shell::chrome_state::Chrome) {
+    pub(crate) fn poll(
+        &mut self,
+        chrome: &crate::shell::chrome_state::Chrome,
+        mapped_satellites: &HashSet<u32>,
+    ) {
         let mut registry = registry();
         let Some(displays) = registry.displays.as_mut() else {
             return;
@@ -632,11 +752,26 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         let wayland_socket = self.wayland_socket.clone();
         let satellite = displays.satellite.clone();
         let mut spawn = |display: &WorkspaceDisplay| match satellite.as_ref() {
-            Ok(binary) => spawn_satellite(binary, &wayland_socket, display),
+            Ok(binary) => {
+                let (child, keyboard) = spawn_satellite(binary, &wayland_socket, display)?;
+                let resources = ResourcePublish::start(display)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "Xwayland: cannot publish Xft.dpi");
+                    })
+                    .ok();
+                Ok((child, keyboard, resources))
+            }
             Err(reason) => Err(reason.clone()),
         };
         let mut composer = ComposerClients::current();
-        let exhausted = self.sync(displays, &live, Instant::now(), &mut spawn, &mut composer);
+        let exhausted = self.sync(
+            displays,
+            &live,
+            Instant::now(),
+            &mut spawn,
+            &mut composer,
+            mapped_satellites,
+        );
         if !composer.requests.is_empty() {
             let authorities: Vec<PathBuf> = displays
                 .workspaces
@@ -670,9 +805,10 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> Vec<String> {
         displays.retain_workspaces(live);
-        let exhausted = displays.poll_with(now, spawn, composer);
+        let exhausted = displays.poll_with(now, spawn, composer, mapped_satellites);
         let gone: Vec<String> = self
             .watched
             .keys()
@@ -715,6 +851,14 @@ impl<W: ListenerWatch> Drop for XwaylandSupervisor<W> {
         let mut registry = registry();
         registry.displays = None;
         registry.wake = None;
+    }
+}
+
+fn idle_deadline(connected: Option<usize>, mapped: bool, saw_toplevel: bool) -> Option<Duration> {
+    match connected {
+        Some(0) => Some(IDLE_TIMEOUT),
+        Some(_) if saw_toplevel && !mapped => Some(WINDOWLESS_TIMEOUT),
+        _ => None,
     }
 }
 
@@ -950,7 +1094,7 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
-fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
+fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
     let mut cookie = [0_u8; 16];
     UnwrapErr(SysRng).fill_bytes(&mut cookie);
     let mut contents = Vec::with_capacity(64);
@@ -967,7 +1111,171 @@ fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
         .map_err(|error| format!("creating Xauthority: {error}"))?;
     file.write_all(&contents)
         .and_then(|()| file.sync_all())
-        .map_err(|error| format!("writing Xauthority: {error}"))
+        .map_err(|error| format!("writing Xauthority: {error}"))?;
+    Ok(cookie)
+}
+
+/// Wait for satellite's XSETTINGS `Xft/DPI` and merge it into the root
+/// window's `RESOURCE_MANAGER` as `Xft.dpi`. Returns the published DPI.
+fn publish_font_dpi(stream: UnixStream, cookie: [u8; 16]) -> Result<u32, String> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    fn text(error: impl std::fmt::Display) -> String {
+        error.to_string()
+    }
+    let (stream, _) =
+        x11rb::rust_connection::DefaultStream::from_unix_stream(stream).map_err(text)?;
+    let conn = x11rb::rust_connection::RustConnection::connect_to_stream_with_auth_info(
+        stream,
+        0,
+        b"MIT-MAGIC-COOKIE-1".to_vec(),
+        cookie.to_vec(),
+    )
+    .map_err(text)?;
+    let root = conn
+        .setup()
+        .roots
+        .first()
+        .ok_or("the X server has no screen")?
+        .root;
+    let atom = |name: &[u8]| -> Result<u32, String> {
+        Ok(conn
+            .intern_atom(false, name)
+            .map_err(text)?
+            .reply()
+            .map_err(text)?
+            .atom)
+    };
+    let selection = atom(b"_XSETTINGS_S0")?;
+    let settings = atom(b"_XSETTINGS_SETTINGS")?;
+    let started = Instant::now();
+    let scaled_dpi = loop {
+        let owner = conn
+            .get_selection_owner(selection)
+            .map_err(text)?
+            .reply()
+            .map_err(text)?
+            .owner;
+        if owner != x11rb::NONE {
+            let value = conn
+                .get_property(false, owner, settings, AtomEnum::ANY, 0, u32::MAX)
+                .map_err(text)?
+                .reply()
+                .map_err(text)?
+                .value;
+            if let Some(dpi) = xsettings_integer(&value, "Xft/DPI") {
+                break dpi;
+            }
+        }
+        if started.elapsed() >= XSETTINGS_WAIT {
+            return Err("satellite announced no Xft/DPI".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // XSETTINGS carries the DPI in 1/1024ths.
+    let dpi = u32::try_from(scaled_dpi)
+        .ok()
+        .and_then(|dpi| dpi.checked_div(1024))
+        .filter(|dpi| *dpi > 0)
+        .ok_or_else(|| format!("satellite announced Xft/DPI {scaled_dpi}"))?;
+    let existing = conn
+        .get_property(
+            false,
+            root,
+            AtomEnum::RESOURCE_MANAGER,
+            AtomEnum::STRING,
+            0,
+            u32::MAX,
+        )
+        .map_err(text)?
+        .reply()
+        .map_err(text)?
+        .value;
+    let merged = with_resource(
+        &String::from_utf8_lossy(&existing),
+        "Xft.dpi",
+        &dpi.to_string(),
+    );
+    conn.change_property8(
+        PropMode::REPLACE,
+        root,
+        AtomEnum::RESOURCE_MANAGER,
+        AtomEnum::STRING,
+        merged.as_bytes(),
+    )
+    .map_err(text)?;
+    conn.sync().map_err(text)?;
+    Ok(dpi)
+}
+
+/// The integer setting `name` of an XSETTINGS `_XSETTINGS_SETTINGS` value.
+fn xsettings_integer(data: &[u8], name: &str) -> Option<i32> {
+    let big_endian = match data.first()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    let u16_at = |offset: usize| -> Option<u16> {
+        let bytes: [u8; 2] = data.get(offset..offset.checked_add(2)?)?.try_into().ok()?;
+        Some(if big_endian {
+            u16::from_be_bytes(bytes)
+        } else {
+            u16::from_le_bytes(bytes)
+        })
+    };
+    let u32_at = |offset: usize| -> Option<u32> {
+        let bytes: [u8; 4] = data.get(offset..offset.checked_add(4)?)?.try_into().ok()?;
+        Some(if big_endian {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        })
+    };
+    let padded = |length: usize| length.checked_add(3).map(|length| length & !3);
+    let count = u32_at(8)?;
+    let mut offset = 12_usize;
+    for _ in 0..count {
+        let kind = *data.get(offset)?;
+        let name_length = usize::from(u16_at(offset.checked_add(2)?)?);
+        let name_start = offset.checked_add(4)?;
+        let setting = data.get(name_start..name_start.checked_add(name_length)?)?;
+        // Past the padded name and the setting's last-change serial.
+        offset = name_start
+            .checked_add(padded(name_length)?)?
+            .checked_add(4)?;
+        let value_length = match kind {
+            0 => {
+                if setting == name.as_bytes() {
+                    return u32_at(offset).map(u32::cast_signed);
+                }
+                4
+            }
+            1 => 4_usize.checked_add(padded(usize::try_from(u32_at(offset)?).ok()?)?)?,
+            2 => 8,
+            _ => return None,
+        };
+        offset = offset.checked_add(value_length)?;
+    }
+    None
+}
+
+/// `resources` with `key` set to `value`, every other line kept.
+fn with_resource(resources: &str, key: &str, value: &str) -> String {
+    let mut merged: String = resources
+        .lines()
+        .filter(|line| {
+            line.split_once(':')
+                .is_none_or(|(name, _)| name.trim() != key)
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    merged.push_str(key);
+    merged.push_str(":\t");
+    merged.push_str(value);
+    merged.push('\n');
+    merged
 }
 
 fn push_field(buffer: &mut Vec<u8>, field: &[u8]) {
@@ -1006,12 +1314,12 @@ mod tests {
         workspaces.iter().map(|w| (*w).to_string()).collect()
     }
 
-    fn sleeper() -> Result<(Child, KeyboardSettings), String> {
+    fn sleeper() -> Result<(Child, KeyboardSettings, Option<ResourcePublish>), String> {
         let child = Command::new("/usr/bin/sleep")
             .arg("30")
             .spawn()
             .map_err(|error| error.to_string())?;
-        Ok((child, KeyboardSettings::default()))
+        Ok((child, KeyboardSettings::default(), None))
     }
 
     fn connect(session: &X11Session, displays: &Displays) -> UnixStream {
@@ -1177,6 +1485,27 @@ mod tests {
     }
 
     #[test]
+    fn wine_without_a_window_stops_the_bridge() {
+        assert_eq!(idle_deadline(Some(0), false, false), Some(IDLE_TIMEOUT));
+        assert_eq!(
+            idle_deadline(Some(1), false, true),
+            Some(WINDOWLESS_TIMEOUT),
+            "an X client with no toplevel is Wine after close, not a live app"
+        );
+        assert_eq!(
+            idle_deadline(Some(1), true, true),
+            None,
+            "a mapped satellite is not idle"
+        );
+        assert_eq!(
+            idle_deadline(Some(1), false, false),
+            None,
+            "a server that has not mapped yet is still starting"
+        );
+        assert_eq!(idle_deadline(None, false, true), None);
+    }
+
+    #[test]
     fn an_idle_bridge_stops_and_the_next_client_restarts_it() {
         let mut fixture = fixture();
         let (session, _) = fixture.displays.session_for("room-a").unwrap();
@@ -1268,6 +1597,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(supervisor.watched["room-a"].1);
 
@@ -1278,6 +1608,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(
             !supervisor.watched["room-a"].1,
@@ -1290,6 +1621,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(supervisor.watched.is_empty());
         drop(supervisor);
@@ -1311,14 +1643,14 @@ mod tests {
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(start, &mut |_| sleeper(), &mut composer);
+            .poll_with(start, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert!(composer.requests.is_empty());
 
         let client = connect(&session, &fixture.displays);
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(start, &mut |_| sleeper(), &mut composer);
+            .poll_with(start, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert!(
             composer.requests.is_empty(),
             "a server that just started is given time to accept"
@@ -1328,13 +1660,14 @@ mod tests {
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(later, &mut |_| sleeper(), &mut composer);
+            .poll_with(later, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert_eq!(composer.requests, std::slice::from_ref(&session.display));
         let mut composer = ComposerClients::for_group(composer_group);
         fixture.displays.poll_with(
             later + IDLE_CHECK_INTERVAL,
             &mut |_| sleeper(),
             &mut composer,
+            &HashSet::new(),
         );
         assert!(composer.requests.is_empty(), "asked once per server");
 
@@ -1343,11 +1676,194 @@ mod tests {
             later + IDLE_CHECK_INTERVAL * 2,
             &mut |_| sleeper(),
             &mut restarted,
+            &HashSet::new(),
         );
         assert_eq!(
             restarted.requests,
             std::slice::from_ref(&session.display),
             "a restarted composer is asked again"
+        );
+        drop(client);
+    }
+
+    /// An `_XSETTINGS_SETTINGS` value: a string, then integers, as satellite
+    /// announces them.
+    fn xsettings(big_endian: bool, integers: &[(&str, i32)]) -> Vec<u8> {
+        let u16b = |v: u16| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let u32b = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let mut data = vec![u8::from(big_endian), 0, 0, 0];
+        data.extend(u32b(7));
+        data.extend(u32b(
+            u32::try_from(integers.len())
+                .unwrap()
+                .checked_add(1)
+                .unwrap(),
+        ));
+        let header = |data: &mut Vec<u8>, kind: u8, name: &str| {
+            data.extend([kind, 0]);
+            data.extend(u16b(u16::try_from(name.len()).unwrap()));
+            data.extend(name.as_bytes());
+            data.resize(data.len().next_multiple_of(4), 0);
+            data.extend(u32b(0));
+        };
+        header(&mut data, 1, "Net/ThemeName");
+        data.extend(u32b(7));
+        data.extend(b"Adwaita\0");
+        for (name, value) in integers {
+            header(&mut data, 0, name);
+            data.extend(u32b(value.cast_unsigned()));
+        }
+        data
+    }
+
+    #[test]
+    fn satellite_dpi_is_read_from_xsettings_in_either_byte_order() {
+        for big_endian in [false, true] {
+            let data = xsettings(
+                big_endian,
+                &[
+                    ("Gdk/WindowScalingFactor", 2),
+                    ("Xft/DPI", 192 * 1024),
+                    ("Gdk/UnscaledDPI", 96 * 1024),
+                ],
+            );
+            assert_eq!(xsettings_integer(&data, "Xft/DPI"), Some(192 * 1024));
+            assert_eq!(xsettings_integer(&data, "Gdk/WindowScalingFactor"), Some(2));
+            assert_eq!(
+                xsettings_integer(&data, "Net/ThemeName"),
+                None,
+                "a string is not an integer"
+            );
+            assert_eq!(xsettings_integer(&data, "Xft/Hinting"), None);
+            let truncated = &data[..data.len() - 2];
+            assert_eq!(xsettings_integer(truncated, "Gdk/UnscaledDPI"), None);
+        }
+        assert_eq!(xsettings_integer(&[], "Xft/DPI"), None);
+    }
+
+    #[test]
+    fn publishing_dpi_replaces_only_that_resource() {
+        assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
+        assert_eq!(
+            with_resource(
+                "Xcursor.theme:\tAdwaita\nXft.dpi:\t96\n*customization: -color",
+                "Xft.dpi",
+                "192"
+            ),
+            "Xcursor.theme:\tAdwaita\n*customization: -color\nXft.dpi:\t192\n"
+        );
+    }
+
+    #[test]
+    fn the_composer_waits_for_the_published_dpi_but_not_forever() {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(Some(released));
+        let mut far_ends = Vec::new();
+        let mut spawn = |_: &WorkspaceDisplay| {
+            let (child, keyboard, _) = sleeper()?;
+            let (stream, far_end) = UnixStream::pair().map_err(|error| error.to_string())?;
+            far_ends.push(far_end);
+            let resources = released
+                .lock()
+                .unwrap()
+                .take()
+                .map(|released| ResourcePublish {
+                    worker: std::thread::spawn(move || {
+                        released.recv().map_err(|error| error.to_string())?;
+                        Ok(192)
+                    }),
+                    stream,
+                });
+            Ok((child, keyboard, resources))
+        };
+        let mut fixture = fixture();
+        let (session, _) = fixture.displays.session_for("room-a").unwrap();
+        let client = connect(&session, &fixture.displays);
+        let start = Instant::now();
+        let group = Some(4242);
+        fixture.displays.poll_with(
+            start,
+            &mut spawn,
+            &mut ComposerClients::for_group(group),
+            &HashSet::new(),
+        );
+
+        let mut composer = ComposerClients::for_group(group);
+        fixture.displays.poll_with(
+            start + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
+        assert!(
+            composer.requests.is_empty(),
+            "the composer would read 96 DPI"
+        );
+
+        release.send(()).unwrap();
+        let display = fixture.displays.workspaces.get("room-a").unwrap();
+        let bridge = display.bridge.as_ref().unwrap();
+        while !bridge.resources.as_ref().unwrap().worker.is_finished() {
+            std::thread::yield_now();
+        }
+        let mut composer = ComposerClients::for_group(group);
+        fixture.displays.poll_with(
+            start + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
+        assert_eq!(composer.requests, std::slice::from_ref(&session.display));
+
+        // A server whose publisher never finishes still gets its composer.
+        fixture
+            .displays
+            .workspaces
+            .get_mut("room-a")
+            .unwrap()
+            .stop_bridge();
+        let (_stalled, stalled) = std::sync::mpsc::channel::<()>();
+        *released.lock().unwrap() = Some(stalled);
+        let restart = start + STABLE_UPTIME;
+        fixture.displays.poll_with(
+            restart,
+            &mut spawn,
+            &mut ComposerClients::for_group(group),
+            &HashSet::new(),
+        );
+        let mut composer = ComposerClients::for_group(group);
+        fixture.displays.poll_with(
+            restart + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
+        assert!(composer.requests.is_empty());
+        let mut composer = ComposerClients::for_group(group);
+        fixture.displays.poll_with(
+            restart + RESOURCES_TIMEOUT,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
+        assert_eq!(composer.requests, std::slice::from_ref(&session.display));
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            std::io::Read::read(&mut far_ends.last().unwrap(), &mut byte).unwrap(),
+            0,
+            "the abandoned publisher's connection is shut down"
         );
         drop(client);
     }

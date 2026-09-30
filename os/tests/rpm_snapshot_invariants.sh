@@ -20,6 +20,9 @@ has() {
   grep -Fq -- "$needle" "$file" && ok "$message" || bad "$message"
 }
 
+# Checks read job text from here-strings, not `printf | grep -q`: under
+# pipefail, grep exiting at its first match can SIGPIPE the writer.
+
 # Every image which consumes the frozen repository must contribute its package
 # blocks to the workflow parser and retrigger the snapshot when it changes.
 mapfile -t frozen_consumers < <(
@@ -33,7 +36,7 @@ mapfile -t frozen_consumers < <(
 
 for file in "${frozen_consumers[@]}"; do
   relative="${file#"$repo/"}"
-  "$derive" --sources | grep -Fxq "$relative" \
+  grep -Fxq "$relative" <<<"$("$derive" --sources)" \
     && ok "$relative contributes packages to the snapshot parser" \
     || bad "$relative consumes frozen RPMs but is absent from the snapshot parser"
   has "$workflow" "- $relative" "$relative changes retrigger the RPM snapshot"
@@ -86,8 +89,8 @@ has "$workflow" './os/dev/derive-rpm-package-set.py' \
 has "$workflow" 'runner: runner-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
 snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
-if printf '%s\n' "$snapshot_job" | grep -Fq 'Install and check native snapshot host tools' \
-  && printf '%s\n' "$snapshot_job" | grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' \
+if grep -Fq 'Install and check native snapshot host tools' <<<"$snapshot_job" \
+  && grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' <<<"$snapshot_job" \
   && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
   ok 'native RPM snapshot installs and checks host tools before accessing the base'
 else
@@ -197,11 +200,11 @@ has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
 for consumer in "$image_workflow" "$relay_workflow"; do
   resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
-  if printf '%s\n' "$resolver_job" | grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' \
-    && printf '%s\n' "$resolver_job" | grep -Fq './os/dev/resolve-rpm-snapshot.sh' \
-    && printf '%s\n' "$resolver_job" | grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' \
-    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' \
-    && ! printf '%s\n' "$resolver_job" | grep -Fq 'enable-openid-connect: true'; then
+  if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
+    && grep -Fq './os/dev/resolve-rpm-snapshot.sh' <<<"$resolver_job" \
+    && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
+    && ! grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' <<<"$resolver_job" \
+    && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then
     ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
   else
     bad "$(basename "$consumer") may sign in a reusable job or accept an unverified RPM snapshot"

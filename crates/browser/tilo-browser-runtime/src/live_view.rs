@@ -340,37 +340,8 @@ pub(crate) fn snapshot_json(
     })
 }
 
-/// Local presence snapshot of a single-record mount: the record fills the
-/// mount, so there is no window rectangle, and pointers stay unpublished.
-#[cfg(any(feature = "relay", test))]
-pub(crate) fn record_snapshot_json(
-    app: &str,
-    record: &str,
-    selection: Option<(PresenceKey, PresencePayload)>,
-) -> serde_json::Value {
-    let focus = record_json(Some(&(app.to_owned(), record.to_owned())));
-    let selection = (!focus.is_null())
-        .then_some(selection)
-        .flatten()
-        .and_then(|(key, payload)| encode_selection(&key, &payload))
-        .map_or(
-            serde_json::Value::Null,
-            |(anchor, head)| serde_json::json!({"anchor": hex(&anchor), "head": hex(&head)}),
-        );
-    serde_json::json!({
-        "covered": false,
-        "focus": focus,
-        "focusRect": null,
-        "focusScroll": null,
-        "focusGroup": null,
-        "selection": selection,
-        "drag": null,
-        "groups": [],
-    })
-}
-
-/// Labels hosts put on certificates they issue for the owner's own devices
-/// (`tilo-device-host` identity/enrollment). They name a machine, never the
+/// Labels hosts put on certificates they issue for the owner's own devices.
+/// They name a machine, never the
 /// person, so they are not shown as the owner's name.
 const MACHINE_LABELS: &[&str] = &[
     "Browser viewer",

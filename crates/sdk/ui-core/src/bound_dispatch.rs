@@ -1598,6 +1598,13 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    // An agent principal names one writer; a person may write from several
+    // devices at once.
+    let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
+        actor.as_bytes().to_vec()
+    } else {
+        crate::history_source::authors::device_actor(actor, doc.get_actor())
+    };
     let dispatched =
         if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
             tilo_actions::Dispatched::AppliedLocal(
@@ -1605,7 +1612,7 @@ fn execute_document(
                     doc,
                     action,
                     encoded,
-                    Some(actor.as_bytes()),
+                    Some(writer.as_slice()),
                     context,
                 )
                 .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?,
@@ -1616,7 +1623,7 @@ fn execute_document(
                 action,
                 encoded,
                 transport,
-                Some(actor.as_bytes()),
+                Some(writer.as_slice()),
                 context,
             )
             .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
@@ -1702,6 +1709,9 @@ pub(crate) fn execute_resource_operation(
             tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
             tilo_actions::Dispatched::SubmittedToHost(_) => None,
         };
+        let before = applied
+            .as_ref()
+            .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
@@ -1713,7 +1723,21 @@ pub(crate) fn execute_resource_operation(
                 path,
             );
         }
-        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        let value =
+            matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
+                // Submitted to another host, nothing here shows its effect.
+                before
+                    .and_then(|before| {
+                        let after = doc.get_heads();
+                        let changes = doc.diff(&before, &after);
+                        crate::resources::document_action_result(&*widget, doc, address, &changes)
+                    })
+                    .unwrap_or(serde_json::Value::Null)
+            });
+        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+            value,
+            ..tilo_actions::ActionOutput::default()
+        })
     } else if let Some(readers) =
         crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
     {
@@ -3899,3 +3923,7 @@ mod semantic_authority_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]
 mod author_writer_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/device_actor_tests.rs"]
+mod device_actor_tests;

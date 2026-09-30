@@ -51,7 +51,6 @@ pub mod doc;
 pub mod draw;
 mod endpoint_editor;
 pub mod geo;
-pub mod livetest;
 mod map_controls;
 mod map_info_sheet;
 pub mod model;
@@ -73,6 +72,13 @@ use ui::widget::Widget;
 /// tile worker so OSM raster tiles fetch + decode off the UI thread).
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(MapsApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.maps", app_root)
+        .component_actions(actions::register)
+        .as_definition("Maps")
 }
 
 /// Build the root widget for headless `--shots` and tests: no tile worker, no

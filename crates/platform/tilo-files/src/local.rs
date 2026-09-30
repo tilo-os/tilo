@@ -5,7 +5,9 @@
 
 use std::path::PathBuf;
 
-use crate::{Entry, FsError, Held, LockMode, Meta, VPath, disk, memory};
+use crate::{Entry, FsError, Held, Kind, LockMode, Meta, VPath, disk, memory};
+
+const BAD_NAME: &str = "a listed name is not a path segment";
 
 #[derive(Clone)]
 pub(crate) enum Local {
@@ -56,6 +58,15 @@ impl Local {
                 let joined = appended(view.read(path), bytes)?;
                 view.write_atomic(path, &joined)
             }
+        }
+    }
+
+    pub(crate) fn write(&self, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
+        match self {
+            Self::Disk(root) => disk::write(root, path, bytes),
+            Self::Memory(scope) => scope.write_atomic(path, bytes),
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            Self::Mirror(view) => view.write_atomic(path, bytes),
         }
     }
 
@@ -111,6 +122,20 @@ impl Local {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Self::Mirror(view) => view.remove(path),
         }
+    }
+
+    pub(crate) fn remove_all(&self, path: &VPath) -> Result<(), FsError> {
+        if let Self::Disk(root) = self {
+            return disk::remove_all(root, path);
+        }
+        // Memory trees and the page's mirror hold no links to follow.
+        if self.metadata(path)?.kind == Kind::Dir {
+            for entry in self.list(path)? {
+                let name = VPath::new(&entry.name).map_err(|_| FsError::InvalidPath(BAD_NAME))?;
+                self.remove_all(&path.join(&name))?;
+            }
+        }
+        self.remove(path)
     }
 
     pub(crate) fn create_dir_all(&self, path: &VPath) -> Result<(), FsError> {

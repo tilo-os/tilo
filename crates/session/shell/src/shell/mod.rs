@@ -81,6 +81,7 @@ pub mod input_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub mod launcher;
+pub mod live_presence;
 pub mod magnifier;
 pub mod media_keys;
 pub mod mpris;

@@ -122,7 +122,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the exact per-frame passes the live event loop runs (compute_layout /
     // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
     // "always re-solve" baseline and the scroll-reposition fast path — and
-    // prints the numbers. No window, no GPU present (matches the QUICK_UI_PERF
+    // prints the numbers. No window, no GPU present (matches the TILO_UI_PERF
     // main-thread breakdown, which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
         // `--watch` benches the watch page (full-bleed player + a long comment
@@ -386,6 +386,15 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
     None
 }
 
+/// The rangeable Invidious proxy's stream URL and quality for `id`.
+#[cfg(all(feature = "live", feature = "media"))]
+fn resolve_proxied(id: &str) -> Option<(String, String)> {
+    ui::rt::block_on(tube::backend::proxy::resolve_rangeable(id))
+        .ok()
+        .flatten()
+        .map(|r| (r.url, r.quality))
+}
+
 /// `--probe-engine [id]`: exercise playback through the shared `media::MediaEngine`
 /// — the exact path the watch page streams through. Resolves a directly-playable
 /// stream (direct extractor first, then the rangeable Invidious proxy), opens the
@@ -400,8 +409,8 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
 )]
 fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
-    use std::time::{Duration, Instant};
-    use tube::backend::{YtBackend, proxy, ytdlp::YtDlpBackend};
+    use tube::backend::{YtBackend, ytdlp::YtDlpBackend};
+    use ui::time::Duration;
 
     eprintln!("probe-engine: constructing the yt-dlp backend…");
     let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
@@ -409,7 +418,7 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
         .resolve_playback_source(id)
         .ok()
         .map(|s| (s.url, s.quality))
-        .or_else(|| proxy::resolve_rangeable(id).map(|r| (r.url, r.quality)))
+        .or_else(|| resolve_proxied(id))
         .ok_or("no directly-playable stream resolved")?;
     println!(
         "probe-engine: resolved {quality}; url(host)={}",
@@ -425,11 +434,11 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     engine.open(media::Source::Remote { url });
     engine.play();
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = ui::time::now() + Duration::from_secs(20);
     let mut sums: HashSet<u64> = HashSet::new();
     let mut distinct = 0u64;
     let mut errored = false;
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         for ev in engine.poll() {
             match ev {
                 media::MediaEvent::Error(e) => {
@@ -457,7 +466,7 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(15));
+        let _ = ui::rt::sleep_thread(Duration::from_millis(15));
     }
     println!(
         "probe-engine: {distinct} DISTINCT frames; final pos={}ms dur={:?}ms buffering={}%",
@@ -631,11 +640,13 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 )]
 fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
-    use tube::backend::{BackendResult, YtBackend, proxy, yt_thumb_url, ytdlp::YtDlpBackend};
+    use tube::backend::{BackendResult, YtBackend, yt_thumb_url, ytdlp::YtDlpBackend};
     use tube::model::{DataSource, Route, TubeModel, Video};
 
     let out_dir = std::path::Path::new(dir);
-    std::fs::create_dir_all(out_dir).ok();
+    if let Ok((parent, name)) = tilo_files::file_at(out_dir) {
+        let _ = tilo_files::blocking::create_dir_all(&parent, &name);
+    }
     let backend = YtDlpBackend::new().map_err(|e| format!("yt-dlp backend: {e}"))?;
 
     // ---- Real watch page with a real decoded frame ----
@@ -680,7 +691,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         .resolve_playback_source(watch_id)
         .ok()
         .map(|s| (s.url, s.quality))
-        .or_else(|| proxy::resolve_rangeable(watch_id).map(|r| (r.url, r.quality)));
+        .or_else(|| resolve_proxied(watch_id));
     match resolved {
         Some((url, quality)) => {
             println!("  resolved {quality} stream; decoding a real frame via the media engine…");
@@ -1484,7 +1495,6 @@ fn run_bench_scroll(
     watch: bool,
     loaded: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Instant;
     use tube::model::{Route, TubeModel};
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -1627,7 +1637,7 @@ fn run_bench_scroll(
             // Sync first, exactly as the live event loop does: this pumps the
             // media engine (pulling the freshest frame + playhead), so a loaded
             // watch page's per-frame engine cost is measured, not just layout.
-            let t = Instant::now();
+            let t = ui::time::now();
             widget.sync(&mut state.doc, &state.root);
             sync.push(t.elapsed().as_micros());
 
@@ -1660,17 +1670,17 @@ fn run_bench_scroll(
                 ever_reposition_only = true;
             }
             if force_compute || needs_measure {
-                let t = Instant::now();
+                let t = ui::time::now();
                 solve(&mut taffy, &node_map, &mut tr)?;
                 compute.push(t.elapsed().as_micros());
             } else {
                 compute.push(0);
             }
-            let t = Instant::now();
+            let t = ui::time::now();
             widget.apply_layout(&taffy, child, Point::ORIGIN);
             apply.push(t.elapsed().as_micros());
 
-            let t = Instant::now();
+            let t = ui::time::now();
             let mut scene = Scene::new();
             let prev = presence.push_viewport(vello::kurbo::Rect::new(
                 0.0,

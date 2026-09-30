@@ -367,10 +367,10 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         // resolver needs one. Match its scale to the captured outer theme so
         // pre-paint hit testing and accessibility geometry are already exact.
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.recompute_layout(&theme, &mut tr);
-        self.place_content(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.recompute_layout(&theme, tr);
+            self.place_content(&theme, tr);
+        });
     }
 
     fn draw(

@@ -99,7 +99,7 @@ impl Apps {
     ///
     /// The grants file cannot be read; no capture is brokered then.
     #[cfg(target_os = "macos")]
-    fn device_grants(&self) -> std::io::Result<Arc<tilo_capture::grants::DeviceGrants>> {
+    pub(crate) fn device_grants(&self) -> std::io::Result<Arc<tilo_capture::grants::DeviceGrants>> {
         if let Some(grants) = self.device_grants.get() {
             return Ok(Arc::clone(grants));
         }

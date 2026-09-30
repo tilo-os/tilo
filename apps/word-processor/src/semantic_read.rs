@@ -1,5 +1,7 @@
 //! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
 pub mod action;
+pub mod changes;
+pub mod markdown;
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_doc::semantic_read::{Basis, Limits, ReadError, TextPosition};
@@ -19,6 +21,84 @@ pub struct Segment {
     pub kind: String,
     pub text: String,
     pub complete: bool,
+    #[serde(flatten)]
+    pub shape: Shape,
+    /// The inline marks over `text`, in its characters; Markdown renders them.
+    #[serde(skip)]
+    pub marks: Vec<tilo_doc::document::MarkSpan>,
+}
+/// Where a block sits in the document's structure: a heading's or list
+/// item's level, a list's numbering, a cell's table, row and column.
+#[derive(Debug, Default, Serialize)]
+pub struct Shape {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nesting: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub col: Option<i64>,
+}
+impl Shape {
+    /// The shape `attrs`, a materialized block's attributes, give it.
+    pub fn of_attrs(attrs: &std::collections::BTreeMap<String, tilo_doc::AttrVal>) -> Self {
+        let int = |key: &str| match attrs.get(key) {
+            Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
+            _ => None,
+        };
+        Self {
+            level: int("level"),
+            ordered: match attrs.get("ordered") {
+                Some(tilo_doc::AttrVal::Bool(flag)) => Some(*flag),
+                _ => None,
+            },
+            nesting: int("nesting"),
+            table: match attrs.get("table") {
+                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
+                _ => None,
+            },
+            row: int("row"),
+            col: int("col"),
+        }
+    }
+}
+fn shape(source: &Source<'_>, block: &ObjId) -> Result<Shape, ReadError> {
+    let mut shape = Shape::default();
+    let Some(attrs) = source.block_attrs(block)? else {
+        return Ok(shape);
+    };
+    let int = |key: &str| {
+        let mut found = None;
+        source.field(&attrs, key, |value| {
+            if let source::Value::Scalar(scalar) = value {
+                found = match scalar {
+                    automerge::ScalarValueRef::Int(n) => Some(*n),
+                    automerge::ScalarValueRef::Uint(n) => i64::try_from(*n).ok(),
+                    _ => None,
+                };
+            }
+            Ok(())
+        })?;
+        Ok::<_, ReadError>(found)
+    };
+    shape.level = int("level")?;
+    shape.nesting = int("nesting")?;
+    shape.row = int("row")?;
+    shape.col = int("col")?;
+    source.field(&attrs, "ordered", |value| {
+        if let source::Value::Scalar(automerge::ScalarValueRef::Boolean(flag)) = value {
+            shape.ordered = Some(*flag);
+        }
+        Ok(())
+    })?;
+    let table = source.string(&attrs, "table", 128)?;
+    shape.table = (!table.is_empty()).then_some(table);
+    Ok(shape)
 }
 #[derive(Debug, Serialize)]
 pub struct Page {
@@ -40,6 +120,10 @@ pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::Seman
 use automerge::{ObjId, ObjType, ROOT};
 use std::{cmp::Ordering, ops::ControlFlow};
 use tilo_doc::semantic_read::{json_len, source::Source};
+use tilo_doc::semantic_read::{
+    json_len,
+    source::{self, Source},
+};
 struct Candidate {
     id: String,
     order: Vec<u8>,
@@ -175,7 +259,7 @@ fn read_source(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text = source.object(
+        let text_object = source.object(
             &candidate.object,
             tilo_doc::schema::BLOCK_TEXT,
             ObjType::Text,
@@ -186,6 +270,8 @@ fn read_source(
             kind: source.string(&candidate.object, tilo_doc::schema::BLOCK_KIND, 64)?,
             text: String::new(),
             complete: false,
+            shape: shape(source, &candidate.object)?,
+            marks: Vec::new(),
         });
         let mut continuation = Cursor {
             basis: page.basis.fingerprint,
@@ -214,8 +300,9 @@ fn read_source(
             break;
         };
         let (text, next, complete) =
-            source.text_fragment(text.as_ref(), position, available, &work)?;
+            source.text_fragment(text_object.as_ref(), position, available, &work)?;
         let segment = page.segments.last_mut().ok_or(ReadError::Malformed)?;
+        segment.marks = source.fragment_marks(text_object.as_ref(), position, &text, &work)?;
         segment.text = text;
         segment.complete = complete;
         continuation.position = if complete {

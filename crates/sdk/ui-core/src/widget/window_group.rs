@@ -172,7 +172,7 @@ const MAXIMIZED_CHIP_H: f64 = 22.0;
 /// Narrowest the `[app title]` chip is drawn, so a one-letter title still
 /// reads as a chip rather than a dot.
 const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
-/// Width of the `[Restore]` chip: icon slot, gap, label, end pads.
+/// Narrowest the `[Restore]` chip is drawn; a longer label widens it.
 const MAXIMIZED_RESTORE_CHIP_W: f64 = 76.0;
 /// Side of the lucide glyph slot inside the maximized chips — the same
 /// 14 px the tab pills' app glyphs and action chips use.
@@ -269,7 +269,13 @@ impl WindowGroup {
         width: WindowWidth,
     ) -> Self {
         let descs = tabs.iter().map(|(d, _)| d.clone()).collect();
-        let hosts = tabs.into_iter().map(|(d, h)| (d.id, h)).collect();
+        let hosts = tabs
+            .into_iter()
+            .map(|(d, h)| {
+                h.set_panic_scope(d.id);
+                (d.id, h)
+            })
+            .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -628,6 +634,7 @@ impl WindowGroup {
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
         host.start_spawn_animation();
+        host.set_panic_scope(id);
         self.hosts.insert(clamped, (id, host));
     }
 
@@ -653,6 +660,7 @@ impl WindowGroup {
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
+        host.set_panic_scope(tab_id);
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -795,8 +803,8 @@ impl WindowGroup {
         self.bar.take_activation()
     }
 
-    /// The bar's `active_id` is the authoritative copy (the shell's
-    /// per-frame harvest mirrors it into the persisted tree), so a
+    /// The bar's `active_id` is the authoritative copy (the shell
+    /// flushes it into the persisted tree after input), so a
     /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
         if !self.bar.tabs().iter().any(|t| t.id == id) {
@@ -894,7 +902,7 @@ impl WindowGroup {
         self.bar.close_rect_for_tests(tab_id)
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
@@ -1424,7 +1432,12 @@ impl WindowGroup {
         let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-        let restore_w = MAXIMIZED_RESTORE_CHIP_W;
+        let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
+        let (lw, lh) = tr.measure(&label, title_size, None);
+        let icon_inset = f64::from(theme.tokens.spacing.s2);
+        // Icon slot, gap, label, end pad: a longer translation widens the chip.
+        let restore_w = MAXIMIZED_RESTORE_CHIP_W
+            .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(lw) + icon_inset);
         let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
@@ -1449,7 +1462,6 @@ impl WindowGroup {
         // chip's edge, `MAXIMIZED_ICON_PX` a side and centred on the chip's
         // centre line, with the label one `spacing.s2` after it — the same
         // icon → gap → label rhythm a tab pill uses.
-        let icon_inset = f64::from(theme.tokens.spacing.s2);
         let icon_x0 = self.restore_rect.x0 + icon_inset;
         let icon_slot = Rect::new(
             icon_x0,
@@ -1465,8 +1477,6 @@ impl WindowGroup {
             theme.tokens.colors.text_primary,
             icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label = "Restore";
-        let (_lw, lh) = tr.measure(label, title_size, None);
         let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
         let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
         // Affine composition is floating-point matrix multiply — it
@@ -1478,7 +1488,7 @@ impl WindowGroup {
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
         tr.draw_text(
             scene,
-            label,
+            &label,
             title_size,
             theme.tokens.colors.text_primary,
             label_transform,
@@ -1793,7 +1803,10 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&self.bar);
         }
-        if let Some(host) = self.active_host() {
+        let active = self.bar.active_id();
+        if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
+            // A host swapped in through `host_for_tab_mut` is named here.
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1804,7 +1817,8 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&mut self.bar);
         }
-        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1812,7 +1826,8 @@ impl Widget for WindowGroup {
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for (_, host) in &self.hosts {
+        for (id, host) in &self.hosts {
+            host.set_panic_scope(*id);
             visitor(host);
         }
     }
@@ -4216,6 +4231,42 @@ mod tests {
                 "restore and close sit one s1 apart"
             );
             assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
+        }
+        // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
+        {
+            use crate::i18n::I18nManager;
+            let restore_width_in = |locale: &str| {
+                I18nManager::init(locale);
+                let mut g = make_group();
+                g.maximized = true;
+                g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
+                g.last_cursor = Point::new(600.0, 10.0);
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
+                let size = renderer_type_size(&tr, theme.tokens.typography.scale.xs);
+                let (label_w, _) = tr.measure(&label, size, None);
+                let label_x0 = g.restore_rect.x0
+                    + f64::from(theme.tokens.spacing.s2) * 2.0
+                    + MAXIMIZED_ICON_PX;
+                assert!(
+                    label_x0 + f64::from(label_w) <= g.restore_rect.x1,
+                    "{locale}: `{label}` must fit its chip {:?}",
+                    g.restore_rect
+                );
+                (label, g.restore_rect.width())
+            };
+            let (en, en_w) = restore_width_in("en-US");
+            let (de, de_w) = restore_width_in("de-DE");
+            assert_eq!(en, "Restore");
+            assert_eq!(de, "Wiederherstellen", "the chip reads German under de-DE");
+            assert!(
+                de_w > en_w,
+                "the longer label widens the chip: {de_w} vs {en_w}"
+            );
+            I18nManager::init("en-US");
         }
     }
 

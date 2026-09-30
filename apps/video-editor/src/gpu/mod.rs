@@ -1564,7 +1564,7 @@ mod tests {
             );
             let deadline = tilo_test_env::hang_deadline();
             let mut ready = false;
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 if decoder.update(&p, playhead) {
                     ready = true;
                     break;

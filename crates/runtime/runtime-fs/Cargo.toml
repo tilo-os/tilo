@@ -18,8 +18,8 @@ name = "runtime_fs"
 path = "src/lib.rs"
 
 [dependencies]
-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 blake3.workspace = true
 cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs"] }
@@ -35,7 +35,7 @@ postcard = { workspace = true, features = ["use-std"] }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file", features = ["test-support"] }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file", features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }

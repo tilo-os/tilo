@@ -379,7 +379,7 @@ mod tests {
     /// `restrict_self` cannot be undone.
     ///
     /// ```bash
-    /// cargo test -p sandbox-core --lib -- --ignored application_ruleset_enforces
+    /// cargo test -p tilo-sandbox-core --lib -- --ignored application_ruleset_enforces
     /// ```
     #[test]
     #[ignore = "requires a live Landlock ABI 5 kernel; run with --ignored"]

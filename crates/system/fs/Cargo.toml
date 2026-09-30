@@ -1,5 +1,5 @@
 [package]
-name = "fs"
+name = "tilo-fs"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Portable content-addressed storage and the default Tilo filesystem service."
+
+[lib]
+name = "fs"
+path = "src/lib.rs"
 
 # The content plane is portable. Filesystem projection, mounting and service
 # protocols remain enabled by default for the OS; app-only consumers opt out.
@@ -26,7 +30,7 @@ filesystem = [
     "dep:tilo-content",
     "dep:collab-types",
     "dep:ed25519-dalek",
-    "dep:thumbnail",
+    "dep:tilo-thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
     "document-media",
@@ -104,7 +108,7 @@ required-features = ["filesystem"]
 
 [dependencies]
 bounded-command = { version = "0.1.0", path = "../bounded-command" }
-atomic-file = { version = "0.1.0", path = "../atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
@@ -131,7 +135,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-thumbnail = { version = "0.1.0", path = "../../media/thumbnail", optional = true }
+tilo-thumbnail = { version = "0.1.0", path = "../../media/thumbnail", optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.

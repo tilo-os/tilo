@@ -302,7 +302,7 @@ if [ -x "$preflight" ] \
    && containerfile_has_copy "$production_containerfile" \
         os/usr/libexec/tilo-verified-boot-install-preflight \
         /usr/libexec/tilo-verified-boot-install-preflight \
-   && grep -Fq '"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
+   && grep -Fq '"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
    && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
    && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
@@ -353,7 +353,8 @@ fi
 if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$production_containerfile" \
+   && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \

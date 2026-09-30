@@ -10,7 +10,7 @@
 //!   * [`load_luma`]     — decode + downscale an image for the code scanner.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 
 use crate::frame::{self, FrameBuf};
 use crate::model::PhotoFormat;
@@ -24,8 +24,8 @@ pub fn resolve_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    let pics = xdg_paths::picture_dir().unwrap_or_else(|| {
-        xdg_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
+    let pics = tilo_paths::picture_dir().unwrap_or_else(|| {
+        tilo_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
     pics.join("Camera")
 }
@@ -39,40 +39,49 @@ pub fn resolve_dir() -> PathBuf {
 /// Returns an error if `dir` cannot be created or the file cannot be written
 /// or encoded.
 pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<String> {
+    let (name, bytes) = encode_photo(frame, format)?;
+    crate::files::write(&dir.join(&name), &bytes)?;
+    Ok(name)
+}
+
+/// Encode `frame` in `format` under a timestamped capture name, for a host
+/// with no directory to write it to.
+///
+/// # Errors
+///
+/// Returns an error if the frame is invalid or cannot be encoded.
+pub fn encode_photo(frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<(String, Vec<u8>)> {
     if !valid_frame(frame) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "invalid camera frame",
         ));
     }
-    std::fs::create_dir_all(dir)?;
     let name = format!("IMG_{}.{}", timestamp_name(), format.extension());
-    let path = dir.join(&name);
-    match format {
-        PhotoFormat::Png => write_png(&path, frame)?,
-        PhotoFormat::Jpeg => write_jpeg(&path, frame)?,
-    }
-    Ok(name)
+    let bytes = match format {
+        PhotoFormat::Png => encode_png(frame)?,
+        PhotoFormat::Jpeg => encode_jpeg(frame)?,
+    };
+    Ok((name, bytes))
 }
 
-fn write_png(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
+fn encode_png(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
     use image::{ExtendedColorType, ImageEncoder};
-    let file = std::fs::File::create(path)?;
-    let w = std::io::BufWriter::new(file);
-    image::codecs::png::PngEncoder::new(w)
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
         .write_image(&frame.rgba, frame.w, frame.h, ExtendedColorType::Rgba8)
-        .map_err(|e| std::io::Error::other(e.to_string()))
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(out)
 }
 
-fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
+fn encode_jpeg(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
     use image::{ExtendedColorType, ImageEncoder};
     let rgb = frame::rgba_to_rgb(&frame.rgba);
-    let file = std::fs::File::create(path)?;
-    let w = std::io::BufWriter::new(file);
-    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(w, 90);
+    let mut out = Vec::new();
+    let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
     enc.write_image(&rgb, frame.w, frame.h, ExtendedColorType::Rgb8)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(())
+    Ok(out)
 }
 
 /// Decode `path` to a greyscale (luma) buffer, downscaled so its longest
@@ -80,8 +89,7 @@ fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
 /// This is what the scanner feeds to the QR detector when scanning a code
 /// out of a portal-selected image (no camera required).
 pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
-    let bytes =
-        thumbnail::read_bounded(std::fs::File::open(path).ok()?, thumbnail::MAX_IMAGE_BYTES)?;
+    let bytes = crate::files::read_bounded(path, thumbnail::MAX_IMAGE_BYTES)?;
     load_luma_bytes(&bytes, max)
 }
 
@@ -114,7 +122,7 @@ fn valid_frame(frame: &FrameBuf) -> bool {
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
 /// photo and video writers so capture file names are consistent.
 pub fn timestamp_name() -> String {
-    let now = SystemTime::now()
+    let now = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();

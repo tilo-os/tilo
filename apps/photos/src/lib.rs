@@ -68,6 +68,7 @@ pub mod actions;
 pub mod analysis;
 pub mod app;
 pub mod doc;
+mod files;
 pub mod framework_history;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
@@ -170,6 +171,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(PhotosApp::new_persistent(
         tilo_content::ContentStore::for_app(),
     ))
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.photos", app_root)
+        .component_actions(actions::register)
+        .as_definition("Photos")
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -329,8 +337,7 @@ pub fn seed_scenario(
     }
     if scenario == "error" {
         let path = dir.join("unreadable-image.png");
-        std::fs::create_dir_all(dir).ok();
-        if std::fs::write(&path, b"this is not an image").is_ok() {
+        if files::StateFile::at(&path).is_some_and(|file| file.write(b"this is not an image")) {
             let open = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
             PhotosDoc::set_image(doc, Some(&open));
         }
@@ -339,11 +346,10 @@ pub fn seed_scenario(
 
     let path = dir.join("harbour.png");
     let pattern = shots_pattern_variant(1200, 800, 4);
-    if let Some(png) = pixels::encode_png(&pattern) {
-        std::fs::create_dir_all(dir).ok();
-        if std::fs::write(&path, png).is_err() {
-            return;
-        }
+    if let Some(png) = pixels::encode_png(&pattern)
+        && !files::StateFile::at(&path).is_some_and(|file| file.write(&png))
+    {
+        return;
     }
     app.open_path(doc, &path.to_string_lossy());
     // The first imported photograph is part of the timeline fixture too.
@@ -412,8 +418,10 @@ pub fn seed_scenario(
                     _ => (720, 960),
                 };
                 let fixture = shots_pattern_variant(width, height, variant as u8);
-                if let Some(bytes) = pixels::encode_png(&fixture) {
-                    let _ = std::fs::write(&sample_path, bytes);
+                if let Some(bytes) = pixels::encode_png(&fixture)
+                    && let Some(file) = files::StateFile::at(&sample_path)
+                {
+                    let _ = file.write(&bytes);
                 }
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), width, height);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);

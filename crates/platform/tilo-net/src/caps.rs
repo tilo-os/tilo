@@ -18,6 +18,8 @@ pub enum Feature {
     WebTransport,
     /// Raw TCP, UDP and TLS over TCP: [`sockets`](crate::sockets).
     Sockets,
+    /// Endpoints peers dial by ticket: [`p2p`](crate::p2p).
+    PeerToPeer,
     /// Whether the device is online: [`status`](crate::status).
     Status,
     /// Whether the connection is metered: [`NetStatus::metered`](crate::status::NetStatus::metered).
@@ -52,6 +54,7 @@ impl std::error::Error for Unsupported {}
 
 pub(crate) const WEB_CROSS_ORIGIN: &str = "The browser only reads responses from sites that allow it; the host can relay others through its fetch proxy.";
 pub(crate) const WEB_SOCKETS: &str = "A browser page cannot open raw network connections.";
+pub(crate) const WEB_PEER_TO_PEER: &str = "A browser page cannot accept connections from peers.";
 #[cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(dead_code, reason = "only a page lacks these")
@@ -76,10 +79,15 @@ pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
             Feature::Sockets,
             [Available, Available, Unsupported(WEB_SOCKETS)],
         ),
+        (
+            Feature::PeerToPeer,
+            [Available, Available, Unsupported(WEB_PEER_TO_PEER)],
+        ),
         (Feature::Status, [Available, Available, Available]),
+        // Linux asks NetworkManager, which may not be running.
         (
             Feature::Metered,
-            [Unsupported(NOT_YET), Unsupported(NOT_YET), Available],
+            [Available, Unsupported(NOT_YET), Available],
         ),
     ]
 };
@@ -131,12 +139,13 @@ pub(crate) fn unsupported(feature: Feature) -> Unsupported {
 mod tests {
     use super::*;
 
-    const ALL: [Feature; 7] = [
+    const ALL: [Feature; 8] = [
         Feature::Http,
         Feature::CrossOriginHttp,
         Feature::WebSocket,
         Feature::WebTransport,
         Feature::Sockets,
+        Feature::PeerToPeer,
         Feature::Status,
         Feature::Metered,
     ];

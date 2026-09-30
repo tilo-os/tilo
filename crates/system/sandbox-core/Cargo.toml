@@ -1,5 +1,5 @@
 [package]
-name = "sandbox-core"
+name = "tilo-sandbox-core"
 version = "0.1.0"
 edition = "2024"
 publish = true

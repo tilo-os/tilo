@@ -5,7 +5,7 @@
 //! `CalDAV`/`WebDAV`. Both verify servers against Tilo's trust store.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::net::TcpStream;
@@ -42,10 +42,10 @@ impl LiveAccountTester {
         if addresses.is_empty() {
             return Err("server name returned no address".into());
         }
-        let deadline = Instant::now() + Self::NETWORK_TIMEOUT;
+        let deadline = ui::time::now() + Self::NETWORK_TIMEOUT;
         let mut last_error = None;
         for address in addresses {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(ui::time::now()) else {
                 break;
             };
             match timeout(remaining, TcpStream::connect(address)).await {

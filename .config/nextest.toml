@@ -6,7 +6,7 @@ fail-fast = false
 
 # Also the profile for the whole suite outside CI, under tools/test-env.sh;
 # DEVELOPMENT.md ("The whole suite, as CI runs it") has the command, which keeps
-# the visual goldens (GOLDEN_FILTER in the workflows) for an idle renderer.
+# the visual goldens (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
 # A test still running after 30 s prints a SLOW line each period, so a log
 # shows where shard time goes while it runs; tools/ci/nextest_report.py lists
@@ -36,7 +36,8 @@ compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
-cloud-host-workers = { max-threads = 4 }
+browser-peer-relay = { max-threads = 2 }
+agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
@@ -48,10 +49,13 @@ filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or t
 test-group = "compositor"
 priority = 90
 
+# Not started with the pool-wide and longest tests: each suite's first route
+# join runs under the SDK's 4.5 s primary-route deadline, which the opening
+# burst of a whole-workspace shard (every slot starting a process at once)
+# exceeds.
 [[profile.default.overrides]]
 filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
-priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
@@ -77,10 +81,25 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
+# Each tilo-browser-peer integration test runs a relay host and its browser
+# sessions against fixed deadlines; the multi-megabyte ones starve the rest.
 [[profile.default.overrides]]
-filter = 'package(tilo-cloud-host) and (test(/^agent_workers::enrolled_handoff_tests::/) or test(/_with_actual_agent_runtime_/))'
-test-group = "cloud-host-workers"
+filter = 'package(tilo-browser-peer) and kind(test)'
+test-group = "browser-peer-relay"
+
+# Each tilo-agent-participant integration test runs a relay host, agents and
+# browser sessions that drive every web app natively against fixed deadlines;
+# the all-app coverage runs starve a concurrent session of the CPU it needs.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-participant) and kind(test)'
+test-group = "agent-participant-sessions"
+
+# Megabytes of fsynced commits: these need the runner's disk and CPUs to
+# themselves to finish within their deadlines.
+[[profile.default.overrides]]
+filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpressure))'
+threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-cloud-host) and (test(=agent_workers::tests::cloud_worker_set_follows_open_windows_over_ninety_cycles) or test(=delivery::retention::growth_tests::store_stays_bounded_over_many_agent_steps_refreshes_and_retries) or test(=tests::compact_bootstrap_stays_small_beyond_sixty_four_devices) or test(=agent_workers::enrolled_handoff_tests::participant_stream_tests::streamed_type_text_continues_the_appended_paragraph) or test(=desktop_commands::tests::fifty_open_close_cycles_keep_the_catalogue_bounded))) or (package(tilo-device-host) and binary(owner_retention)) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50

@@ -101,7 +101,7 @@ impl Credentials {
                 self.sequence,
                 Pending {
                     action: action.name(),
-                    deadline: Instant::now() + Duration::from_secs(35),
+                    deadline: ui::time::now() + Duration::from_secs(35),
                 },
             );
         }
@@ -165,7 +165,7 @@ impl Credentials {
         let Some(pending) = self.pending.get(&reply.request_id) else {
             return vec![];
         };
-        if !self.open || pending.action != reply.action || Instant::now() >= pending.deadline {
+        if !self.open || pending.action != reply.action || ui::time::now() >= pending.deadline {
             return vec![];
         }
         if reply.success
@@ -211,7 +211,7 @@ impl Credentials {
                     (
                         id,
                         reply.username.unwrap_or_default(),
-                        Instant::now() + Duration::from_secs(30),
+                        ui::time::now() + Duration::from_secs(30),
                     )
                 });
             }
@@ -266,7 +266,7 @@ impl Credentials {
                     return vec![];
                 }
                 if let Some((capture, _, expires)) = self.capture.take() {
-                    if Instant::now() >= expires {
+                    if ui::time::now() >= expires {
                         self.notice = "Capture expired. Read the login again.".into();
                         return vec![];
                     }
@@ -315,7 +315,7 @@ impl Credentials {
         if self.open && self.address_mode {
             dirty |= self.addresses.sync();
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         if self.pending.values().any(|p| now >= p.deadline)
             || self.capture.as_ref().is_some_and(|c| now >= c.2)
         {
@@ -689,7 +689,7 @@ mod tests {
             model.capture = Some((
                 "2".into(),
                 "person".into(),
-                Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                ui::time::now().checked_sub(Duration::from_secs(1)).unwrap(),
             ));
             assert!(model.act(Action::Save).is_empty());
             assert!(model.capture.is_none());

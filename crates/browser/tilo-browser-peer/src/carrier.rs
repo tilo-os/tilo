@@ -16,8 +16,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
-    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, LiveGrant, MAX_POLL_MS,
-    SessionChallenge, SessionFinish, SessionGrant,
+    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, FEATURE_RESUME, LiveGrant,
+    MAX_POLL_MS, MAX_REQUEST_BYTES, SessionChallenge, SessionFinish, decode_grant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -64,14 +64,22 @@ async fn call<T: serde::de::DeserializeOwned>(
     session: Option<&str>,
     body: Vec<u8>,
 ) -> Result<T, LinkError> {
+    let bytes = call_raw(client, route, session, body).await?;
+    postcard::from_bytes(&bytes).map_err(|error| LinkError::Malformed(error.to_string()))
+}
+
+async fn call_raw(
+    client: &dyn HttpClient,
+    route: &str,
+    session: Option<&str>,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, LinkError> {
     let (status, bytes) = client
         .post(&path(route), session, body)
         .await
         .map_err(LinkError::Unavailable)?;
     match status {
-        200 => {
-            postcard::from_bytes(&bytes).map_err(|error| LinkError::Malformed(error.to_string()))
-        }
+        200 => Ok(bytes),
         401 | 403 => Err(LinkError::Refused(
             String::from_utf8_lossy(&bytes).into_owned(),
         )),
@@ -154,11 +162,13 @@ pub struct HttpsLink {
     session: String,
     client: Arc<dyn HttpClient>,
     end: watch::Sender<bool>,
+    features: u64,
 }
 
 impl HttpsLink {
     /// Run the handshake as the device behind `signer` and start the send
-    /// and poll pumps. The host must present `host_device` under `user`.
+    /// and poll pumps. The host must present `host_device`, certified under
+    /// any person's root.
     ///
     /// # Errors
     ///
@@ -182,9 +192,10 @@ impl HttpsLink {
             })?,
         )
         .await?;
-        auth::verify_hello_ack(
+        // The host device is pinned, so it may be another person's: the
+        // host of a room this device was invited to.
+        auth::verify_pinned_host_ack(
             &challenge.ack,
-            &cert.user_public_key,
             revocations,
             crate::clock::now_ns(),
             &client_nonce,
@@ -197,18 +208,21 @@ impl HttpsLink {
             .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
-        let grant: SessionGrant = call(
-            client.as_ref(),
-            "/session/finish",
-            None,
-            encode(&SessionFinish {
-                handshake: challenge.handshake,
-                ack2: HelloAck2 {
-                    sig_over_server_nonce,
-                },
-            })?,
+        let (grant, features) = decode_grant(
+            &call_raw(
+                client.as_ref(),
+                "/session/finish",
+                None,
+                encode(&SessionFinish {
+                    handshake: challenge.handshake,
+                    ack2: HelloAck2 {
+                        sig_over_server_nonce,
+                    },
+                })?,
+            )
+            .await?,
         )
-        .await?;
+        .map_err(|error| LinkError::Malformed(error.to_string()))?;
         let session = hex::encode(grant.token);
         let (outbound, outgoing) = mpsc::unbounded_channel();
         let (incoming, inbound) = mpsc::channel(1024);
@@ -232,7 +246,26 @@ impl HttpsLink {
             session,
             client,
             end,
+            features,
         })
+    }
+
+    /// Whether the host resumes subscriptions from positions
+    /// (`Envelope::SubscribeFrom`).
+    pub fn resumable(&self) -> bool {
+        self.features & FEATURE_RESUME != 0
+    }
+
+    /// Whether the host asks members to compact sealed routes
+    /// (`Envelope::CompactVolunteer`).
+    pub fn compacts(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_COMPACTION != 0
+    }
+
+    /// Whether the host governs calls in its rooms
+    /// (`Envelope::VoiceJoin`, see [`tilo_relay_protocol::voice`]).
+    pub fn voice(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_VOICE != 0
     }
 
     /// Queue one envelope for the host, in order.
@@ -276,6 +309,15 @@ impl Drop for HttpsLink {
     }
 }
 
+/// Encoded envelopes one `/send` carries: the host refuses a body past
+/// [`MAX_REQUEST_BYTES`], and the batch's length prefix needs a few bytes.
+const SEND_BATCH_BYTES: usize = MAX_REQUEST_BYTES.saturating_sub(64 * 1024);
+
+fn encoded_len(envelope: &Envelope) -> usize {
+    postcard::serialize_with_flavor(envelope, postcard::ser_flavors::Size::default())
+        .unwrap_or(usize::MAX)
+}
+
 async fn send_pump(
     client: Arc<dyn HttpClient>,
     session: String,
@@ -283,16 +325,29 @@ async fn send_pump(
     end: watch::Sender<bool>,
 ) {
     let mut ended = end.subscribe();
+    // An envelope that did not fit the previous batch opens the next.
+    let mut carried = None;
     loop {
-        let first = tokio::select! {
-            envelope = outgoing.recv() => envelope,
-            _ = ended.wait_for(|ended| *ended) => None,
+        let first = if let Some(envelope) = carried.take() {
+            Some(envelope)
+        } else {
+            tokio::select! {
+                envelope = outgoing.recv() => envelope,
+                _ = ended.wait_for(|ended| *ended) => None,
+            }
         };
         let Some(first) = first else {
             return;
         };
+        let mut bytes = encoded_len(&first);
         let mut batch = vec![first];
         while let Ok(next) = outgoing.try_recv() {
+            let len = encoded_len(&next);
+            if bytes.saturating_add(len) > SEND_BATCH_BYTES {
+                carried = Some(next);
+                break;
+            }
+            bytes = bytes.saturating_add(len);
             batch.push(next);
         }
         let Ok(body) = postcard::to_allocvec(&batch) else {

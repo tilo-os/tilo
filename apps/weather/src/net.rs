@@ -1,19 +1,15 @@
-//! Background networking worker (live binary only).
+//! Background networking (live binary only).
 //!
 //! `--shots` never touches this module — the offscreen frame renders the
 //! bundled [`crate::sample`] data. In the live app the [`WeatherApp`] owns
-//! one [`WeatherService`]: a detached worker thread with a `reqwest` client
-//! that waits on the shared app runtime for each request. The widget posts
-//! [`Request`]s down an mpsc channel and drains [`Response`]s (non-blocking)
-//! from another, applying them to the model on the next frame. While a request is in flight the
-//! widget reports `needs_animation_frame()`, so the event loop keeps
-//! pumping frames and the result surfaces within a few hundred ms of
-//! arrival.
+//! one [`WeatherService`]: each [`Request`] becomes its own task on the shared
+//! app runtime, fetched through `tilo_net`, and its [`Response`] comes back on
+//! a channel whose sender wakes the UI. The widget drains responses
+//! (non-blocking) and applies them to the model on the next frame.
 //!
 //! [`WeatherApp`]: crate::app::WeatherApp
 
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::thread;
 
 use tilo_clock::unix_now;
 
@@ -133,13 +129,26 @@ fn send_response(tx: &ResponseSender, context: Option<(u64, u64)>, response: Res
     });
 }
 
-/// Handle to the background worker. Dropping it closes the request channel
-/// and the worker thread exits after its current job.
+/// Handle to the background fetches. Dropping it discards responses still
+/// in flight.
 pub struct WeatherService {
-    tx: Sender<Request>,
+    dispatch: Dispatch,
     rx: Receiver<Response>,
 }
 
+/// Where requests go.
+enum Dispatch {
+    /// Each request runs as a task on the app runtime.
+    Live {
+        client: Option<tilo_net::Client>,
+        responses: ResponseSender,
+    },
+    /// Tests: requests are handed to the test, which answers them.
+    #[cfg(test)]
+    Recorded(Sender<Request>),
+}
+
+#[derive(Clone)]
 struct ResponseSender {
     sender: Sender<Response>,
     wake: ui::wake::WakeHandle,
@@ -158,37 +167,51 @@ impl ResponseSender {
 }
 
 impl WeatherService {
-    /// Spawn the worker thread and its reqwest client; requests run on the
-    /// shared app runtime.
+    /// A service whose requests run on the shared app runtime.
     pub fn spawn() -> Self {
-        let (req_tx, req_rx) = channel::<Request>();
-        let (res_tx, res_rx) = channel::<Response>();
-        let res_tx = ResponseSender {
-            sender: res_tx,
-            wake: ui::wake::WakeHandle::new(),
-        };
-
-        let _ = thread::Builder::new()
-            .name("weather-net".to_string())
-            .spawn(move || worker(&req_rx, &res_tx));
-
+        let (sender, rx) = channel::<Response>();
+        let client = tilo_net::Client::builder()
+            .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
+            .build()
+            .ok();
         Self {
-            tx: req_tx,
-            rx: res_rx,
+            dispatch: Dispatch::Live {
+                client,
+                responses: ResponseSender {
+                    sender,
+                    wake: ui::wake::WakeHandle::new(),
+                },
+            },
+            rx,
         }
     }
 
-    /// Queue a job, returning an exact failed completion if the worker is gone.
+    /// Queue a job, returning an exact failed completion if it cannot run.
     pub fn request(&self, req: Request) -> Option<Response> {
-        self.tx
-            .send(req)
-            .err()
-            .map(|e| e.0.failure("Weather worker disconnected".into()))
+        match &self.dispatch {
+            Dispatch::Live { client, responses } => match ui::rt::try_app() {
+                Ok(runtime) => {
+                    drop(runtime.spawn(serve(client.clone(), req, responses.clone())));
+                    None
+                }
+                Err(e) => Some(req.failure(format!("app runtime: {e}"))),
+            },
+            #[cfg(test)]
+            Dispatch::Recorded(requests) => requests
+                .send(req)
+                .err()
+                .map(|e| e.0.failure("Weather worker disconnected".into())),
+        }
     }
 
-    /// Drain all ready responses without blocking (used by the standalone probe).
+    /// Drain all ready responses without blocking.
     pub fn drain(&self) -> Vec<Response> {
         self.drain_with_status().0
+    }
+
+    /// Wait up to `timeout` for the next response (the standalone probe).
+    pub fn wait(&self, timeout: std::time::Duration) -> Option<Response> {
+        self.rx.recv_timeout(timeout).ok()
     }
 
     /// An empty live queue and a permanently closed response channel are
@@ -205,146 +228,62 @@ impl WeatherService {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep the three existing provider branches together with their exact request completion envelopes"
-)]
-fn worker(req_rx: &Receiver<Request>, res_tx: &ResponseSender) {
-    let rt = match ui::rt::try_app() {
-        Ok(rt) => rt,
-        Err(e) => {
-            while let Ok(req) = req_rx.recv() {
-                let _ = res_tx.send(req.failure(format!("tokio init: {e}")));
-            }
-            return;
-        }
+/// Fetch and parse one request, and post its outcome.
+async fn serve(client: Option<tilo_net::Client>, req: Request, responses: ResponseSender) {
+    let (req, context) = match req {
+        Request::Tracked {
+            ticket,
+            generation,
+            request,
+        } => (*request, Some((ticket, generation))),
+        request => (request, None),
     };
-    let client = tilo_net::http::client()
-        .user_agent("tilo-weather/0.1 (+https://open-meteo.com)")
-        .build()
-        .ok();
-    // This worker waits on each request; the app runtime's thread drives the
-    // sockets and timers meanwhile.
-    let get = |url: &str| {
-        rt.block_on(fetch(client.as_ref(), url))
-            .unwrap_or_else(|e| Err(e.to_string()))
+    let response = match req {
+        Request::Tracked { .. } => return,
+        Request::Forecast {
+            location_id,
+            lat,
+            lon,
+            units,
+        } => fetch(client.as_ref(), &api::forecast_url(lat, lon, units))
+            .await
+            .and_then(|body| api::parse_forecast(&body, location_id, units, unix_now()))
+            .map_or_else(
+                |message| Response::Error {
+                    kind: RequestKind::Forecast,
+                    message,
+                },
+                Response::Forecast,
+            ),
+        Request::AirQuality {
+            location_id,
+            lat,
+            lon,
+        } => fetch(client.as_ref(), &api::air_quality_url(lat, lon))
+            .await
+            .and_then(|body| api::parse_air_quality(&body, location_id, unix_now()))
+            .map_or_else(
+                |message| Response::Error {
+                    kind: RequestKind::AirQuality,
+                    message,
+                },
+                Response::AirQuality,
+            ),
+        Request::Geocode { seq, query } => fetch(client.as_ref(), &api::geocode_url(&query))
+            .await
+            .and_then(|body| api::parse_geocode(&body))
+            .map_or_else(
+                |message| Response::Error {
+                    kind: RequestKind::Geocode,
+                    message,
+                },
+                |results| Response::Geocode { seq, results },
+            ),
     };
-
-    while let Ok(req) = req_rx.recv() {
-        let (req, context) = match req {
-            Request::Tracked {
-                ticket,
-                generation,
-                request,
-            } => (*request, Some((ticket, generation))),
-            request => (request, None),
-        };
-        match req {
-            Request::Tracked { .. } => {}
-            Request::Forecast {
-                location_id,
-                lat,
-                lon,
-                units,
-            } => {
-                let url = api::forecast_url(lat, lon, units);
-                match get(&url) {
-                    Ok(body) => match api::parse_forecast(&body, location_id, units, unix_now()) {
-                        Ok(snap) => {
-                            send_response(res_tx, context, Response::Forecast(snap));
-                        }
-                        Err(e) => {
-                            send_response(
-                                res_tx,
-                                context,
-                                Response::Error {
-                                    kind: RequestKind::Forecast,
-                                    message: e,
-                                },
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        send_response(
-                            res_tx,
-                            context,
-                            Response::Error {
-                                kind: RequestKind::Forecast,
-                                message: e,
-                            },
-                        );
-                    }
-                }
-            }
-            Request::AirQuality {
-                location_id,
-                lat,
-                lon,
-            } => {
-                let url = api::air_quality_url(lat, lon);
-                match get(&url) {
-                    Ok(body) => match api::parse_air_quality(&body, location_id, unix_now()) {
-                        Ok(aq) => {
-                            send_response(res_tx, context, Response::AirQuality(aq));
-                        }
-                        Err(e) => {
-                            send_response(
-                                res_tx,
-                                context,
-                                Response::Error {
-                                    kind: RequestKind::AirQuality,
-                                    message: e,
-                                },
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        send_response(
-                            res_tx,
-                            context,
-                            Response::Error {
-                                kind: RequestKind::AirQuality,
-                                message: e,
-                            },
-                        );
-                    }
-                }
-            }
-            Request::Geocode { seq, query } => {
-                let url = api::geocode_url(&query);
-                match get(&url) {
-                    Ok(body) => match api::parse_geocode(&body) {
-                        Ok(results) => {
-                            send_response(res_tx, context, Response::Geocode { seq, results });
-                        }
-                        Err(e) => {
-                            send_response(
-                                res_tx,
-                                context,
-                                Response::Error {
-                                    kind: RequestKind::Geocode,
-                                    message: e,
-                                },
-                            );
-                        }
-                    },
-                    Err(e) => {
-                        send_response(
-                            res_tx,
-                            context,
-                            Response::Error {
-                                kind: RequestKind::Geocode,
-                                message: e,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-    }
+    send_response(&responses, context, response);
 }
 
-async fn fetch(client: Option<&reqwest::Client>, url: &str) -> Result<String, String> {
+async fn fetch(client: Option<&tilo_net::Client>, url: &str) -> Result<String, String> {
     let client = client.ok_or_else(|| "no http client".to_string())?;
     let resp = client
         .get(url)
@@ -361,7 +300,14 @@ async fn fetch(client: Option<&reqwest::Client>, url: &str) -> Result<String, St
 pub(crate) fn test_service() -> (WeatherService, Receiver<Request>, Sender<Response>) {
     let (tx, requests) = channel();
     let (responses, rx) = channel();
-    (WeatherService { tx, rx }, requests, responses)
+    (
+        WeatherService {
+            dispatch: Dispatch::Recorded(tx),
+            rx,
+        },
+        requests,
+        responses,
+    )
 }
 
 #[cfg(test)]

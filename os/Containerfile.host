@@ -61,7 +61,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
     && cargo build --release \
-        -p tilo-relay -p fs \
+        -p tilo-relay -p tilo-fs \
     && mkdir -p /out \
     && cp target/release/tilo-relay \
           target/release/tilo-relay-admin \

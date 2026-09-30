@@ -127,12 +127,17 @@ impl Handles {
             .cloned()
             .unwrap_or_else(|| name.to_owned())
     }
+
+    /// The resource id `handle` stands for, when this session issued it.
+    pub fn issued(&self, handle: &str) -> Option<&str> {
+        self.by_handle.get(handle).map(String::as_str)
+    }
 }
 
 /// `page` with its rows grouped by resource and each action reduced to a
-/// signature: `{"save-as": "Save document as (path?)"}`. Long resource ids
-/// are named by their session handles.
-pub fn compact_page(page: &CataloguePage, handles: &mut Handles) -> Value {
+/// signature: `{"save-as": "Save document as (path?)"}`. With `handles`,
+/// long resource ids are named by their session handles.
+pub fn compact_page(page: &CataloguePage, mut handles: Option<&mut Handles>) -> Value {
     /// One resource of the page: its head and its actions, in page order.
     struct Group {
         id: String,
@@ -144,7 +149,7 @@ pub fn compact_page(page: &CataloguePage, handles: &mut Handles) -> Value {
         if !groups.iter().any(|group| group.id == row.resource.id) {
             groups.push(Group {
                 id: row.resource.id.clone(),
-                head: resource_head(row, handles),
+                head: resource_head(row, handles.as_deref_mut()),
                 actions: Map::new(),
             });
         }
@@ -189,9 +194,13 @@ pub fn compact_page(page: &CataloguePage, handles: &mut Handles) -> Value {
     value
 }
 
-fn resource_head(row: &CatalogueRow, handles: &mut Handles) -> Map<String, Value> {
+fn resource_head(row: &CatalogueRow, handles: Option<&mut Handles>) -> Map<String, Value> {
     let mut head = Map::new();
-    head.insert("resource".into(), handles.short(&row.resource.id).into());
+    let name = handles.map_or_else(
+        || row.resource.id.clone(),
+        |handles| handles.short(&row.resource.id),
+    );
+    head.insert("resource".into(), name.into());
     head.insert("kind".into(), row.resource.kind.clone().into());
     head.insert("label".into(), row.resource.label.clone().into());
     head

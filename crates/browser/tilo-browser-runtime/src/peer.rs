@@ -1,1459 +1,1146 @@
-//! One browser state owner with authenticated HTTPS delivery; no relay fallback.
-#[path = "peer_agent_reads.rs"]
-mod agent_reads;
-#[path = "peer_cloud/wasm.rs"]
-mod cloud_api;
-#[path = "peer_delivery/wasm.rs"]
-mod delivery_api;
-#[path = "peer_invitation/wasm.rs"]
-mod invitation_api;
-#[path = "peer_live/wasm.rs"]
-mod live_api;
-#[path = "peer_live/members.rs"]
-mod live_members_api;
-#[path = "peer_media/wasm.rs"]
-mod media_api;
-use automerge::transaction::Transactable;
-use ed25519_dalek::SigningKey;
-use serde::Deserialize;
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
+//! The page's certified peer: `tilo_browser_peer` behind wasm-bindgen for
+//! `web/peer.mjs`, reaching the host over HTTPS only.
+//!
+//! The device key stays in custody (`web/device-custody.mjs`): either a
+//! non-extractable `WebCrypto` Ed25519 key that signs through a JavaScript
+//! callback, or — where `WebCrypto` lacks Ed25519 — a seed unsealed from
+//! `IndexedDB` straight into this module, which keeps it only in wasm
+//! memory. Nothing here generates or holds a user root.
+//!
+//! The peer record (certificates and the commit outbox) is kept in the
+//! profile's durable store when the page names a profile
+//! ([`DurablePeerStore`]), committed to `IndexedDB` with everything else.
+//! Once started, the certified user becomes the toolkit's local identity
+//! (`ui::local_identity`), so mounts attribute edits to that person.
+//!
+//! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
+//! The live plane runs in JavaScript over WebTransport (`web/live-transport.mjs`,
+//! with the HTTPS fallback); this module issues its grant
+//! ([`WasmPeer::live_grant`]) and encodes and validates its frames with the
+//! host's canonical codec. Documents reach the desktop's
+//! `CollaborationManager` through [`WasmPeer::collab_transport`].
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use js_sys::{Function, Promise, Reflect, Uint8Array};
+use serde::{Deserialize, Serialize};
+use tilo_browser_peer::{
+    DeviceSigner, DocumentRoute, FailureSubject, Host, HttpClient, HttpFuture, LocalState,
+    PeerConfig, PeerEvent, PeerEvents, PeerHandle, PeerRecord, PeerSnapshot, PeerStore, SignError,
+    SignFuture,
 };
-use tilo_peer_state::{NeighbourMsg, StatePeer};
-use tilo_user_identity::{
-    DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
+use tilo_relay_protocol::live::{
+    DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveRecord, OpsFrame,
+    ParticipantKind, PresenceFrame, PreviewOp,
 };
-use ui::portable_storage::{PendingWrite, PortableStorage, StorageKey};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
-use web_time::SystemTime;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Enrollment {
-    version: u32,
-    certificate: DeviceCert,
-    root_public_key: [u8; 32],
-    host_certificate: DeviceCert,
-    /// The native host's relay endpoint and packet relay. The browser peer
-    /// reaches its host only over HTTPS delivery and never dials them.
-    #[expect(dead_code, reason = "the browser peer never dials the native relay")]
-    relay_address: serde::de::IgnoredAny,
-    #[expect(dead_code, reason = "the browser peer never dials the native relay")]
-    packet_relay: serde::de::IgnoredAny,
-    revocations: Vec<RevocationEntry>,
-    bootstrap: Bootstrap,
+use wasm_bindgen_futures::JsFuture;
+
+fn js_error(error: impl std::fmt::Display) -> JsError {
+    JsError::new(&error.to_string())
 }
-#[derive(Deserialize)]
-struct Bootstrap {
-    room: String,
-    workspace_id: String,
-    directory_update: DirectoryUpdate,
-    directory_author: DeviceCert,
-    certified_roster: Vec<DeviceCert>,
-    #[serde(default)]
-    delivery_hint: Option<tilo_peer_state::join::TransportHint>,
-}
-use crate::peer_delivery_cursor::CursorIdentity;
-use crate::peer_journal::{Journal, JournalStorage};
-use crate::peer_storage_batch::PeerStorageBatches;
-struct Peer {
-    data_host: DeviceCert,
-    media_enrollment: media_api::MediaEnrollment,
-    media: RefCell<media_api::MediaState>,
-    delivery: RefCell<delivery_api::DeliveryState>,
-    actions: RefCell<crate::action_client::PendingActions>,
-    agent_reads: RefCell<crate::agent_reads::PendingAgentReads>,
-    health_projection: RefCell<crate::peer_journal::HealthProjection>,
-    action_v2: std::cell::Cell<bool>,
-    admission_failure: RefCell<Option<String>>,
-    initial_admission_replay: RefCell<crate::admission_health::InitialAdmissionReplay>,
-    was_ready: std::cell::Cell<bool>,
-    published: RefCell<BTreeSet<[u8; 32]>>,
-    id: u32,
-    cache: PortableStorage,
-    outbox: RefCell<Vec<NeighbourMsg>>,
-    transport_generation: std::cell::Cell<u64>,
-    state_revision: std::cell::Cell<u64>,
-    transport_connected: std::cell::Cell<bool>,
-    admission_progress: RefCell<crate::admission_health::AdmissionProgress>,
-    last_relay_contact: std::cell::Cell<Option<f64>>,
-    last_peer_contact: std::cell::Cell<Option<f64>>,
-    batches: RefCell<PeerStorageBatches>,
-    journal_storage: RefCell<JournalStorage>,
-    committed_at: std::cell::Cell<Option<f64>>,
-    state: RefCell<StatePeer>,
-    _key: SigningKey,
-    callback: js_sys::Function,
-    closed: std::cell::Cell<bool>,
-    /// Whether the last full report was `ready`; the light report between
-    /// commit boundaries then needs no recomputed health (see `report_light`).
-    last_report_ready: std::cell::Cell<bool>,
-    /// A report whose text the host already holds is not delivered again.
-    report_dedup: RefCell<crate::report_text::ReportDedup>,
-}
-thread_local! {static PEERS:RefCell<BTreeMap<u32,Rc<Peer>>>=const{RefCell::new(BTreeMap::new())};static NEXT:std::cell::Cell<u32>=const{std::cell::Cell::new(1)};}
-thread_local! {
-    static LOCAL_CONTEXTS: RefCell<crate::peer_onboarding_custody::Table<crate::peer_onboarding::LocalContext>> = RefCell::new(Default::default());
-}
-struct LocalUse {
-    id: u32,
-    entry: Rc<crate::peer_onboarding_custody::Entry<crate::peer_onboarding::LocalContext>>,
-}
-impl Drop for LocalUse {
-    fn drop(&mut self) {
-        LOCAL_CONTEXTS.with(|table| table.borrow_mut().settle(self.id, &self.entry));
+
+/// The page store without a surface; a desktop surface; its asset.
+fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSubject {
+    match (surface, asset) {
+        (None, _) => FailureSubject::Storage,
+        (Some(surface), None) => FailureSubject::Surface(surface),
+        (Some(surface), Some(asset)) => FailureSubject::Asset { surface, asset },
     }
 }
-fn local_owner(id: Option<u32>) -> Result<Option<crate::peer_onboarding_custody::Owner>, JsValue> {
-    id.map(|id| {
-        PEERS.with(|all| {
-            let all = all.borrow();
-            let peer = all
-                .get(&id)
-                .filter(|peer| !peer.closed.get())
-                .ok_or_else(|| error("closed Peer"))?;
-            Ok(crate::peer_onboarding_custody::Owner {
-                id,
-                generation: peer.transport_generation.get(),
+
+/// A device signer backed by page custody.
+enum PageSigner {
+    /// `{publicKey: Uint8Array(32), sign(message): Promise<Uint8Array(64)>}`
+    /// over a non-extractable `WebCrypto` key.
+    WebCrypto {
+        public_key: [u8; 32],
+        sign: Function,
+        this: JsValue,
+    },
+    /// A seed the page unsealed into this module; zeroized on drop by
+    /// `ed25519-dalek`.
+    Seed(ed25519_dalek::SigningKey),
+}
+
+impl PageSigner {
+    fn from_js(custody: &JsValue) -> Result<Self, JsError> {
+        let seed = Reflect::get(custody, &"seed".into()).map_err(|_| js_error("custody"))?;
+        if !seed.is_undefined() && !seed.is_null() {
+            let seed: [u8; 32] = Uint8Array::new(&seed)
+                .to_vec()
+                .try_into()
+                .map_err(|_| js_error("device seed must be 32 bytes"))?;
+            return Ok(Self::Seed(ed25519_dalek::SigningKey::from_bytes(&seed)));
+        }
+        let public_key: [u8; 32] = Uint8Array::new(
+            &Reflect::get(custody, &"publicKey".into()).map_err(|_| js_error("custody"))?,
+        )
+        .to_vec()
+        .try_into()
+        .map_err(|_| js_error("device public key must be 32 bytes"))?;
+        let sign: Function = Reflect::get(custody, &"sign".into())
+            .map_err(|_| js_error("custody"))?
+            .dyn_into()
+            .map_err(|_| js_error("custody.sign must be a function"))?;
+        Ok(Self::WebCrypto {
+            public_key,
+            sign,
+            this: custody.clone(),
+        })
+    }
+}
+
+impl DeviceSigner for PageSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        match self {
+            Self::WebCrypto { public_key, .. } => *public_key,
+            Self::Seed(key) => key.verifying_key().to_bytes(),
+        }
+    }
+
+    fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {
+        match self {
+            Self::Seed(key) => DeviceSigner::sign(key, message),
+            Self::WebCrypto { sign, this, .. } => {
+                let called = sign.call1(this, &Uint8Array::from(message.as_slice()).into());
+                Box::pin(async move {
+                    let promise: Promise = called
+                        .map_err(|_| SignError("custody refused to sign".into()))?
+                        .dyn_into()
+                        .map_err(|_| SignError("custody.sign must return a promise".into()))?;
+                    let signature = JsFuture::from(promise)
+                        .await
+                        .map_err(|_| SignError("custody signing failed".into()))?;
+                    Uint8Array::new(&signature)
+                        .to_vec()
+                        .try_into()
+                        .map_err(|_| SignError("signature must be 64 bytes".into()))
+                })
+            }
+        }
+    }
+}
+
+/// Where a profile keeps its peers' records, one per user root. Changing it
+/// orphans stored outboxes.
+const PEER_PACKAGE: &str = "so.tilo.browser-peer";
+
+/// The peer record in the profile's durable store. A save is accepted by the
+/// store and committed by the page's durable host with the profile's other
+/// writes; a failed commit keeps the key queued for retry, and the host's
+/// `flush` reports it.
+struct DurablePeerStore {
+    store: Rc<durable_store::MemoryStore>,
+    key: durable_store::StorageKey,
+    /// Channel membership and the edits held for it, beside the record.
+    channels_key: durable_store::StorageKey,
+}
+
+thread_local! {
+    static NEXT_PEER: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
+impl DurablePeerStore {
+    fn open(namespace: &str, user_public_key: &[u8; 32]) -> Result<Self, JsError> {
+        #[derive(Deserialize)]
+        struct Namespace {
+            profile: String,
+            device: String,
+        }
+        let namespace: Namespace = serde_json::from_str(namespace).map_err(js_error)?;
+        let store = crate::storage::store(&namespace.profile, &namespace.device)
+            .map_err(|_| js_error("open the profile's storage before starting its peer"))?;
+        Ok(Self {
+            store: Rc::clone(&store),
+            key: durable_store::StorageKey::record(
+                PEER_PACKAGE,
+                crate::storage::PROFILE_WORKSPACE,
+                hex::encode(user_public_key),
+            ),
+            channels_key: durable_store::StorageKey::record(
+                PEER_PACKAGE,
+                crate::storage::PROFILE_WORKSPACE,
+                format!("{}.channels", hex::encode(user_public_key)),
+            ),
+        })
+    }
+}
+
+impl PeerStore for DurablePeerStore {
+    fn load(&self) -> Option<PeerRecord> {
+        use durable_store::DurableStore as _;
+        let stored = self.store.read(&self.key).ok()??;
+        postcard::from_bytes(&stored.bytes).ok()
+    }
+
+    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
+        self.store
+            .write(&self.key, durable_store::WriteOp::Replace(bytes), None)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn load_channels(&self) -> Option<Vec<u8>> {
+        use durable_store::DurableStore as _;
+        Some(self.store.read(&self.channels_key).ok()??.bytes)
+    }
+
+    fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        self.store
+            .write(
+                &self.channels_key,
+                durable_store::WriteOp::Replace(bytes.to_vec()),
+                None,
+            )
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The peer record in page storage: loaded before start, saved through a
+/// callback that writes it to `IndexedDB`.
+struct PageStore {
+    current: RefCell<Option<PeerRecord>>,
+    save: Function,
+}
+
+impl PeerStore for PageStore {
+    fn load(&self) -> Option<PeerRecord> {
+        self.current.borrow().clone()
+    }
+
+    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+        let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
+        *self.current.borrow_mut() = Some(record.clone());
+        self.save
+            .call1(&JsValue::NULL, &Uint8Array::from(bytes.as_slice()).into())
+            .map(|_| ())
+            .map_err(|_| "the page store refused the write".to_string())
+    }
+}
+
+/// HTTP through the page: `post(path, session, body)` resolves to
+/// `{status, body}`, rejecting only when the host was not reached.
+struct PageHttp(Function);
+
+impl HttpClient for PageHttp {
+    fn post(&self, path: &str, session: Option<&str>, body: Vec<u8>) -> HttpFuture<'_> {
+        let called = self.0.call3(
+            &JsValue::NULL,
+            &path.into(),
+            &session.map_or(JsValue::NULL, JsValue::from),
+            &Uint8Array::from(body.as_slice()).into(),
+        );
+        Box::pin(async move {
+            let promise: Promise = called
+                .map_err(|_| "post threw".to_string())?
+                .dyn_into()
+                .map_err(|_| "post must return a promise".to_string())?;
+            let answer = JsFuture::from(promise)
+                .await
+                .map_err(|error| error.as_string().unwrap_or_else(|| "fetch failed".into()))?;
+            let status = Reflect::get(&answer, &"status".into())
+                .ok()
+                .and_then(|value| value.as_f64())
+                .ok_or("post answer has no status")?;
+            let body =
+                Reflect::get(&answer, &"body".into()).map_err(|_| "post answer has no body")?;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "an HTTP status is a small positive integer"
+            )]
+            Ok((status as u16, Uint8Array::new(&body).to_vec()))
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectConfig {
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    /// The person's chosen name, for history and presence; empty for none.
+    #[serde(default)]
+    display_name: String,
+}
+
+/// The certified user as the toolkit's local identity.
+fn install_identity(cert: &DeviceCert, display_name: String) {
+    let key = cert.user_public_key;
+    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+        ui::local_identity::LocalIdentity {
+            group_public_key: key,
+            display_name,
+            avatar_color: [key[0], key[1], key[2]],
+        },
+    ))));
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Certified<'a> {
+    cert: &'a DeviceCert,
+    host_cert: &'a DeviceCert,
+}
+
+async fn post_decoded<T: serde::de::DeserializeOwned>(
+    post: &PageHttp,
+    route: &str,
+    body: Vec<u8>,
+) -> Result<T, JsError> {
+    let path = format!("{}{route}", tilo_relay_protocol::web::API_PREFIX);
+    let (status, bytes) = post.post(&path, None, body).await.map_err(js_error)?;
+    if status != 200 {
+        return Err(js_error(format!("host answered {status}")));
+    }
+    postcard::from_bytes(&bytes).map_err(js_error)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsHostInfo {
+    host_cert: DeviceCert,
+    webtransport_port: u16,
+    certificate_sha256: Option<String>,
+}
+
+/// What the host publishes before certification: its certificate, the
+/// WebTransport port and, for a development certificate, its SHA-256 for
+/// `serverCertificateHashes`. Resolves to JSON.
+///
+/// # Errors
+///
+/// Rejects when the host is unreachable or answers badly.
+#[wasm_bindgen(js_name = hostInfo)]
+pub async fn host_info(post: Function) -> Result<String, JsError> {
+    let info: tilo_relay_protocol::web::HostInfo =
+        post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
+    serde_json::to_string(&JsHostInfo {
+        host_cert: info.host_cert,
+        webtransport_port: info.webtransport_port,
+        certificate_sha256: info.certificate_sha256,
+    })
+    .map_err(js_error)
+}
+
+/// Certify this page's device key through the host's HTTPS origin. Calls
+/// `onPairingCode(code)` once the host queued the request. Resolves to
+/// `{cert, hostCert}` JSON for [`WasmPeer::start`].
+///
+/// # Errors
+///
+/// Rejects when the request is denied, expires, or the host misbehaves.
+#[wasm_bindgen(js_name = certifyDevice)]
+#[allow(
+    clippy::arc_with_non_send_sync,
+    reason = "the page's HTTP client stays on its one thread"
+)]
+pub async fn certify_device(
+    post: Function,
+    user_public_key_hex: String,
+    label: String,
+    custody: JsValue,
+    on_pairing_code: Function,
+) -> Result<String, JsError> {
+    let signer = PageSigner::from_js(&custody)?;
+    let user: [u8; 32] = hex::decode(user_public_key_hex)
+        .map_err(js_error)?
+        .try_into()
+        .map_err(|_| js_error("user public key must be 32 bytes"))?;
+    let host = Host::Https(Arc::new(PageHttp(post)));
+    let (cert, host_cert) = tilo_browser_peer::certify(&host, user, &label, &signer, |code| {
+        let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
+    })
+    .await
+    .map_err(js_error)?;
+    serde_json::to_string(&Certified {
+        cert: &cert,
+        host_cert: &host_cert,
+    })
+    .map_err(js_error)
+}
+
+// ---- Live frames as the JavaScript shape of `web/live-presence.mjs` -------
+
+#[derive(Serialize, Deserialize)]
+struct JsRecord {
+    app: String,
+    record: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsSelection {
+    anchor: String,
+    head: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsObject {
+    record: Option<JsRecord>,
+    id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsDrag {
+    object: JsObject,
+    phase: String,
+    position: [f32; 2],
+    size: Option<[f32; 2]>,
+}
+
+/// `{kind: 'person' | 'agent', label, color: '#rrggbb', activity}`.
+#[derive(Serialize, Deserialize)]
+struct JsParticipant {
+    kind: String,
+    label: String,
+    color: String,
+    #[serde(default)]
+    activity: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsPresence {
+    seq: u64,
+    sent_at_ms: u64,
+    focus: Option<JsRecord>,
+    pointer: Option<[f32; 2]>,
+    selection: Option<JsSelection>,
+    drag: Option<JsDrag>,
+    #[serde(default)]
+    participant: Option<JsParticipant>,
+}
+
+fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
+    let kind = match value.kind.as_str() {
+        "person" => ParticipantKind::Person,
+        "agent" => ParticipantKind::Agent,
+        _ => return Err(js_error("participant kind")),
+    };
+    let color: [u8; 3] = value
+        .color
+        .strip_prefix('#')
+        .and_then(|hex| hex::decode(hex).ok())
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| js_error("participant colour must be #rrggbb"))?;
+    Ok(LiveParticipant {
+        kind,
+        label: value.label,
+        color,
+        activity: value.activity,
+    })
+}
+
+fn participant_to_js(value: LiveParticipant) -> JsParticipant {
+    JsParticipant {
+        kind: match value.kind {
+            ParticipantKind::Person => "person",
+            ParticipantKind::Agent => "agent",
+        }
+        .into(),
+        label: value.label,
+        color: tilo_relay_protocol::agents::color_hex(value.color),
+        activity: value.activity,
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum JsPreviewOp {
+    Insert { at: String, text: String },
+    Delete { at: String, len: u32 },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsDecoded {
+    Presence {
+        frame: JsPresence,
+    },
+    Preview {
+        record: JsRecord,
+        seq: u64,
+        ops: Vec<JsPreviewOp>,
+    },
+    PreviewEnd {
+        record: JsRecord,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsDurable {
+    Durable { record: JsRecord },
+}
+
+fn record_to_js(record: LiveRecord) -> JsRecord {
+    JsRecord {
+        app: record.app,
+        record: record.record,
+    }
+}
+
+fn record_from_js(record: JsRecord) -> LiveRecord {
+    LiveRecord {
+        app: record.app,
+        record: record.record,
+    }
+}
+
+fn anchor(text: &str) -> Result<LiveAnchor, JsError> {
+    Ok(LiveAnchor {
+        cursor: hex::decode(text).map_err(js_error)?,
+    })
+}
+
+fn phase_from_js(text: &str) -> Result<DragPhase, JsError> {
+    Ok(match text {
+        "start" => DragPhase::Start,
+        "move" => DragPhase::Move,
+        "end" => DragPhase::End,
+        "cancel" => DragPhase::Cancel,
+        _ => return Err(js_error("drag phase")),
+    })
+}
+
+fn phase_to_js(phase: DragPhase) -> String {
+    match phase {
+        DragPhase::Start => "start",
+        DragPhase::Move => "move",
+        DragPhase::End => "end",
+        DragPhase::Cancel => "cancel",
+    }
+    .into()
+}
+
+fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
+    Ok(PresenceFrame {
+        seq: value.seq,
+        sent_at_ms: value.sent_at_ms,
+        focus: value.focus.map(record_from_js),
+        pointer: value.pointer,
+        selection: value
+            .selection
+            .map(|selection| {
+                Ok::<_, JsError>((anchor(&selection.anchor)?, anchor(&selection.head)?))
+            })
+            .transpose()?,
+        drag: value
+            .drag
+            .map(|drag| {
+                Ok::<_, JsError>((
+                    LiveObject {
+                        record: drag.object.record.map(record_from_js),
+                        id: hex::decode(drag.object.id).map_err(js_error)?,
+                    },
+                    phase_from_js(&drag.phase)?,
+                    drag.position,
+                    drag.size,
+                ))
+            })
+            .transpose()?,
+        participant: value.participant.map(participant_from_js).transpose()?,
+    })
+}
+
+fn presence_to_js(frame: PresenceFrame) -> JsPresence {
+    JsPresence {
+        seq: frame.seq,
+        sent_at_ms: frame.sent_at_ms,
+        focus: frame.focus.map(record_to_js),
+        pointer: frame.pointer,
+        selection: frame.selection.map(|(anchor, head)| JsSelection {
+            anchor: hex::encode(anchor.cursor),
+            head: hex::encode(head.cursor),
+        }),
+        drag: frame.drag.map(|(object, phase, position, size)| JsDrag {
+            object: JsObject {
+                record: object.record.map(record_to_js),
+                id: hex::encode(object.id),
+            },
+            phase: phase_to_js(phase),
+            position,
+            size,
+        }),
+        participant: frame.participant.map(participant_to_js),
+    }
+}
+
+fn ops_to_js(ops: Vec<PreviewOp>) -> Vec<JsPreviewOp> {
+    ops.into_iter()
+        .map(|op| match op {
+            PreviewOp::Insert { at, text } => JsPreviewOp::Insert {
+                at: hex::encode(at.cursor),
+                text,
+            },
+            PreviewOp::Delete { at, len } => JsPreviewOp::Delete {
+                at: hex::encode(at.cursor),
+                len,
+            },
+        })
+        .collect()
+}
+
+fn ops_from_js(ops: Vec<JsPreviewOp>) -> Result<Vec<PreviewOp>, JsError> {
+    ops.into_iter()
+        .map(|op| {
+            Ok(match op {
+                JsPreviewOp::Insert { at, text } => PreviewOp::Insert {
+                    at: anchor(&at)?,
+                    text,
+                },
+                JsPreviewOp::Delete { at, len } => PreviewOp::Delete {
+                    at: anchor(&at)?,
+                    len,
+                },
             })
         })
-    })
-    .transpose()
-}
-fn error(e: impl ToString) -> JsValue {
-    JsValue::from_str(&e.to_string())
-}
-fn report(peer: &Peer, phase: &str, error: Option<String>) {
-    let source = if !peer.transport_connected.get() {
-        crate::admission_health::ReportSource::Transport
-    } else {
-        crate::admission_health::ReportSource::Runtime
-    };
-    report_from(peer, phase, error, source);
-}
-fn report_from(
-    peer: &Peer,
-    phase: &str,
-    error: Option<String>,
-    source: crate::admission_health::ReportSource,
-) {
-    let state = peer.state.borrow();
-    let complete = crate::desktop::admission(&state).is_ok_and(|admission| admission.complete());
-    let outgoing = crate::admission_health::outgoing_projection(
-        &state,
-        &peer.outbox.borrow(),
-        SystemTime::now(),
-    );
-    let awaiting_governance = peer.initial_admission_replay.borrow_mut().waiting(
-        &state,
-        peer._key.verifying_key().to_bytes(),
-        SystemTime::now(),
-    );
-    let incomplete = crate::admission_health::permission_failure(
-        required_read_failure(peer, &state),
-        awaiting_governance,
-    )
-    .or_else(|| state.incomplete_reason())
-    .or_else(|| peer.admission_failure.borrow().clone());
-    // One pass over the pending writes for both the phase and the trigger; the
-    // health projection below counts them per record.
-    let persistence_needed = peer.cache.has_pending_writes();
-    let phase = crate::admission_health::runtime_phase(
-        phase,
-        complete,
-        persistence_needed,
-        peer.was_ready.get(),
-        incomplete.is_some(),
-        awaiting_governance,
-    );
-    if phase == "ready" {
-        peer.was_ready.set(true);
-    }
-    let error = error.or(incomplete);
-    let health = health(
-        peer,
-        &state,
-        phase == "ready",
-        error.as_deref(),
-        source,
-        outgoing.blocked_expired,
-        awaiting_governance,
-    );
-    let synchronized = health["records"].as_array().is_some_and(|records| {
-        !records.is_empty()
-            && records
-                .iter()
-                .all(|record| record["acknowledgement"]["coversCurrentBasis"] == true)
-    });
-    let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":persistence_needed,"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"outgoingExpiryAtMs":outgoing.expiry_at_ms,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
-    let text = value.to_string();
-    peer.last_report_ready.set(phase == "ready");
-    // Health was recomputed above; only its delivery is skipped when the host
-    // already holds this exact text (a forced publication that committed
-    // nothing, an inbound frame that changed nothing).
-    if peer
-        .report_dedup
-        .borrow_mut()
-        .should_emit(&text, persistence_needed)
-    {
-        let _ = peer
-            .callback
-            .call1(&JsValue::NULL, &JsValue::from_str(&text));
-    }
-}
-/// Report between commit boundaries without recomputing health. A typed key
-/// otherwise computed the full health report three times (publication,
-/// acknowledgement, committed). The light report carries only the retained
-/// phase and the persistence trigger; the host merges statuses field by field,
-/// so rows, outbox counts and health keep the last full report's values until
-/// `peer_committed` or a transport or failure path refreshes them, at most one
-/// commit cycle later. Before the peer has ever been ready this is a full
-/// report.
-fn report_light(peer: &Peer) {
-    if !(peer.was_ready.get() && peer.last_report_ready.get()) {
-        return report(peer, "admitting", None);
-    }
-    let persistence_needed = peer.cache.has_pending_writes();
-    let text = crate::report_text::light_report("ready", persistence_needed);
-    if peer
-        .report_dedup
-        .borrow_mut()
-        .should_emit(&text, persistence_needed)
-    {
-        let _ = peer
-            .callback
-            .call1(&JsValue::NULL, &JsValue::from_str(&text));
-    }
-}
-#[wasm_bindgen]
-pub async fn connect_peer(
-    raw: String,
-    identity: Vec<u8>,
-    hydrated: JsValue,
-    callback: js_sys::Function,
-    context: u32,
-) -> Result<u32, JsValue> {
-    connect_owner(None, raw, identity, hydrated, Some(callback), context).await
-}
-#[wasm_bindgen]
-pub async fn reconnect_peer(
-    id: u32,
-    raw: String,
-    identity: Vec<u8>,
-    context: u32,
-) -> Result<(), JsValue> {
-    connect_owner(Some(id), raw, identity, JsValue::NULL, None, context)
-        .await
-        .map(|_| ())
-}
-async fn connect_owner(
-    existing: Option<u32>,
-    raw: String,
-    identity: Vec<u8>,
-    hydrated: JsValue,
-    callback: Option<js_sys::Function>,
-    context: u32,
-) -> Result<u32, JsValue> {
-    let expected_owner = local_owner(existing)?;
-    let entry = LOCAL_CONTEXTS
-        .with(|table| {
-            table.borrow_mut().acquire(
-                context,
-                expected_owner,
-                tilo_delivery_protocol::clock::now_ns(),
-            )
-        })
-        .map_err(error)?;
-    let custody = LocalUse { id: context, entry };
-    let current = || {
-        if !custody.entry.alive.get()
-            || tilo_delivery_protocol::clock::now_ns() >= custody.entry.context.expires_at_ns()
-            || local_owner(existing).map_err(|_| "local onboarding owner closed".to_string())?
-                != expected_owner
-        {
-            return Err("local onboarding owner changed or expired".into());
-        }
-        Ok(())
-    };
-    let governance =
-        crate::peer_onboarding::local_governance(&custody.entry.context, &identity, &raw, current)
-            .await
-            .map_err(error)?;
-    current().map_err(error)?;
-    let config: Enrollment = serde_json::from_str(&raw).map_err(error)?;
-    if config.version != 2 {
-        return Err(error("unsupported enrollment version"));
-    }
-    let key = crate::identity::key(&identity, &raw).map_err(error)?;
-    let device = key.verifying_key().to_bytes();
-    if device != config.certificate.device_public_key
-        || config.certificate.user_public_key != config.root_public_key
-        || config.host_certificate.user_public_key != config.root_public_key
-    {
-        return Err(error("enrollment key/root binding mismatch"));
-    }
-    let now = tilo_delivery_protocol::clock::now_ns();
-    let mut revoked = RevocationList::new();
-    for entry in config.revocations {
-        if entry.user_public_key != config.root_public_key {
-            return Err(error("revocation root mismatch"));
-        }
-        revoked.insert(entry).map_err(error)?;
-    }
-    tilo_user_identity::verify_device_cert_at(&config.certificate, now).map_err(error)?;
-    tilo_user_identity::verify_device_cert_at(&config.host_certificate, now).map_err(error)?;
-    if revoked.is_revoked(&device) || revoked.is_revoked(&config.host_certificate.device_public_key)
-    {
-        return Err(error("enrolled device revoked"));
-    }
-    let workspace = config
-        .bootstrap
-        .workspace_id
-        .parse::<u64>()
-        .map_err(error)?;
-    if !tilo_relay_protocol::room_workspace_id_matches(&config.bootstrap.room, workspace) {
-        return Err(error("workspace room binding mismatch"));
-    }
-    let mut directory = WorkspaceDirectory::new(config.root_public_key, device);
-    directory
-        .apply_incremental(
-            &config.bootstrap.directory_update,
-            &config.bootstrap.directory_author,
-            &revoked,
-            now,
-        )
-        .map_err(error)?;
-    let rows = directory.as_map();
-    let row = rows
-        .get(&workspace)
-        .ok_or_else(|| error("signed directory missing workspace"))?;
-    if !row.member_devices.contains(&device)
-        || !row
-            .host_devices
-            .contains(&config.host_certificate.device_public_key)
-    {
-        return Err(error("signed directory membership/host mismatch"));
-    }
-    let initial = StatePeer::new(
-        &config.bootstrap.room,
-        config.bootstrap.directory_author,
-        config.bootstrap.certified_roster.clone(),
-        revoked.clone(),
-        SystemTime::now(),
-    )
-    .map_err(error)?;
-    let config = ValidatedOwner {
-        key,
-        initial,
-        revoked,
-        certificate: config.certificate,
-        host_certificate: config.host_certificate.clone(),
-        delivery_host: config.host_certificate,
-        workspace,
-        room: config.bootstrap.room,
-        delivery_hint: config.bootstrap.delivery_hint,
-        alive: Some(Rc::clone(&custody.entry.alive)),
-        governance: GovernanceSource::Local(Rc::new(governance)),
-    };
-    connect_validated(existing, config, hydrated, callback).await
+        .collect()
 }
 
-enum GovernanceSource {
-    Empty,
-    Invited(Rc<crate::peer_onboarding::OnboardingReply>),
-    Local(Rc<crate::peer_onboarding::GovernanceReply>),
-    /// Authenticated owner membership refresh (`OwnerMembershipComplete`).
-    Cloud(Rc<crate::peer_onboarding::OnboardingReply>),
-}
-impl GovernanceSource {
-    fn messages(&self) -> impl Iterator<Item = &[u8]> {
-        let invited = match self {
-            Self::Invited(reply) => match reply.response() {
-                tilo_peer_state::join::JoinTransportResponse::Complete(bootstrap)
-                | tilo_peer_state::join::JoinTransportResponse::MembershipComplete(bootstrap) => {
-                    Some(bootstrap)
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        let owner = match self {
-            Self::Cloud(reply) => match reply.response() {
-                tilo_peer_state::join::JoinTransportResponse::OwnerMembershipComplete(
-                    bootstrap,
-                ) => Some(bootstrap),
-                _ => None,
-            },
-            _ => None,
-        };
-        let local = match self {
-            Self::Local(reply) => Some(reply),
-            _ => None,
-        };
-        invited
-            .into_iter()
-            .flat_map(|bootstrap| bootstrap.governance_messages.iter().map(Vec::as_slice))
-            .chain(
-                owner
-                    .into_iter()
-                    .flat_map(|bootstrap| bootstrap.governance_messages.iter().map(Vec::as_slice)),
-            )
-            .chain(
-                local
-                    .into_iter()
-                    .flat_map(|reply| reply.messages().map(|(bytes, _)| bytes)),
-            )
-    }
-    fn is_empty(&self) -> bool {
-        self.messages().next().is_none()
-    }
+fn workspace(room: &str) -> Result<u64, JsError> {
+    tilo_relay_protocol::room_workspace_id(room).map_err(|_| js_error("room must be a uuid"))
 }
 
-// Not deserializable: each source must establish its own identity and authority.
-struct ValidatedOwner {
-    key: SigningKey,
-    initial: StatePeer,
-    revoked: RevocationList,
-    certificate: DeviceCert,
-    host_certificate: DeviceCert,
-    delivery_host: DeviceCert,
-    workspace: u64,
+/// Encode one presence value from `live-presence.mjs` (JSON, with its own
+/// `seq`) as the canonical live frame the host relays.
+///
+/// # Errors
+///
+/// Throws for a value outside the wire bounds.
+#[wasm_bindgen(js_name = encodeLivePresence)]
+pub fn encode_live_presence(value_json: &str) -> Result<Vec<u8>, JsError> {
+    let frame = presence_from_js(serde_json::from_str(value_json).map_err(js_error)?)?;
+    LiveFrame::Presence(frame).encode().map_err(js_error)
+}
+
+/// Encode preview operations (JSON array) for a record (JSON).
+///
+/// # Errors
+///
+/// Throws for operations outside the wire bounds.
+#[wasm_bindgen(js_name = encodeLivePreview)]
+pub fn encode_live_preview(
+    record_json: &str,
+    seq: u64,
+    ops_json: &str,
+) -> Result<Vec<u8>, JsError> {
+    let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
+    let ops = ops_from_js(serde_json::from_str(ops_json).map_err(js_error)?)?;
+    LiveFrame::Ops(OpsFrame::Preview { seq, record, ops })
+        .encode()
+        .map_err(js_error)
+}
+
+/// Encode the end of this device's previews for a record (JSON).
+///
+/// # Errors
+///
+/// Throws for a malformed record.
+#[wasm_bindgen(js_name = encodeLivePreviewEnd)]
+pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
+    let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
+    LiveFrame::Ops(OpsFrame::End { record })
+        .encode()
+        .map_err(js_error)
+}
+
+/// Decode and validate one relayed live frame to JSON
+/// (`{kind: 'presence'|'preview'|'previewEnd', …}`).
+///
+/// # Errors
+///
+/// Throws for a frame that is not canonical or out of bounds.
+#[wasm_bindgen(js_name = decodeLiveFrame)]
+pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
+    let decoded = match LiveFrame::decode(frame).map_err(js_error)? {
+        LiveFrame::Presence(presence) => JsDecoded::Presence {
+            frame: presence_to_js(presence),
+        },
+        LiveFrame::Ops(OpsFrame::Preview { seq, record, ops }) => JsDecoded::Preview {
+            record: record_to_js(record),
+            seq,
+            ops: ops_to_js(ops),
+        },
+        LiveFrame::Ops(OpsFrame::End { record }) => JsDecoded::PreviewEnd {
+            record: record_to_js(record),
+        },
+    };
+    serde_json::to_string(&decoded).map_err(js_error)
+}
+
+/// The `ops/<record digest>` track name of a record (JSON).
+///
+/// # Errors
+///
+/// Throws for a malformed record.
+#[wasm_bindgen(js_name = liveRecordTrack)]
+pub fn live_record_track(record_json: &str) -> Result<String, JsError> {
+    let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
+    Ok(format!("ops/{}", hex::encode(record.digest())))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsGrant {
+    token: String,
     room: String,
-    delivery_hint: Option<tilo_peer_state::join::TransportHint>,
-    alive: Option<Rc<std::cell::Cell<bool>>>,
-    governance: GovernanceSource,
-}
-impl ValidatedOwner {
-    fn cancelled(&self) -> bool {
-        self.alive.as_ref().is_some_and(|alive| !alive.get())
-    }
-}
-async fn connect_validated(
-    existing: Option<u32>,
-    config: ValidatedOwner,
-    hydrated: JsValue,
-    callback: Option<js_sys::Function>,
-) -> Result<u32, JsValue> {
-    let key = config.key.clone();
-    let device = key.verifying_key().to_bytes();
-    let workspace = config.workspace;
-    let workspace_root = config.initial.authority().user_public_key;
-    let initial = config.initial.clone();
-    let revoked = config.revoked.clone();
-    let profile = format!("certified:{}", config.room);
-    let device_hex = device
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    let owner = existing
-        .map(|id| {
-            PEERS
-                .with(|peers| peers.borrow().get(&id).cloned())
-                .ok_or_else(|| error("closed peer"))
-        })
-        .transpose()?;
-    if let Some(peer) = &owner {
-        if peer.state.borrow().room() != initial.room()
-            || peer.state.borrow().authority() != initial.authority()
-            || peer._key.verifying_key() != key.verifying_key()
-            || peer.data_host != config.host_certificate
-            || peer.media_enrollment.host != config.delivery_host
-            || peer.media_enrollment.device != config.certificate
-            || peer.media_enrollment.workspace != workspace
-        {
-            return Err(error("replacement transport owner binding mismatch"));
-        }
-        if !config.governance.is_empty() {
-            crate::browser::prepare_peer_remote(peer.id).map_err(error)?;
-        }
-    }
-    let cache = if let Some(peer) = &owner {
-        peer.cache.clone()
-    } else {
-        crate::browser::load_cache(&profile, &device_hex, &hydrated)?
-    };
-    let cursor_identity = CursorIdentity {
-        workspace,
-        room: config.room.clone(),
-        workspace_root,
-        device,
-        device_root: config.certificate.user_public_key,
-        host: config.delivery_host.device_public_key,
-        host_root: config.delivery_host.user_public_key,
-    };
-    let (mut state, mut outbox, journal_storage) = if let Some(peer) = &owner {
-        (
-            peer.state.borrow().clone(),
-            peer.outbox.borrow().clone(),
-            peer.journal_storage.borrow().clone(),
-        )
-    } else if let Some(saved) = cache.get(&StorageKey::Admission {
-        workspace: config.room.clone(),
-    }) {
-        let journal = Journal::decode(&saved.bytes).map_err(error)?;
-        let restored = StatePeer::restore(
-            &journal.state,
-            &config.room,
-            initial.authority().clone(),
-            initial.certificates(),
-            revoked.clone(),
-            SystemTime::now(),
-        )
-        .map_err(error)?;
-        let storage = journal.storage.clone();
-        let outbox = journal.into_unretired_outbox(&restored);
-        (restored, outbox, storage)
-    } else {
-        (initial, vec![], JournalStorage::default())
-    };
-    // Both local and invited handoffs carry original authority and member
-    // publications. They enter one bounded native cut through StatePeer's
-    // validated incoming path; a refused item leaves the retained offline
-    // owner's state untouched. An already admitted invitation replays as a
-    // no-op, so the reconnecting owner keeps its offline edits.
-    if !config.governance.is_empty() {
-        let now = SystemTime::now();
-        let mut cut =
-            crate::peer_delivery::admission::CutAdmission::begin(&state, now).map_err(error)?;
-        for bytes in config.governance.messages() {
-            cut.push_retained(bytes, now).map_err(error)?;
-        }
-        state = cut.finish(now).map_err(error)?;
-    }
-    if !config.governance.is_empty() {
-        if !state.certificates().contains(&config.certificate) {
-            return Err(error("invited current device certificate mismatch"));
-        }
-        state
-            .permissions(device, SystemTime::now())
-            .map_err(error)?;
-    }
-    if journal_storage
-        .delivery
-        .as_ref()
-        .is_some_and(|cursor| !cursor.matches_identity(&cursor_identity))
-    {
-        return Err(error(
-            "stored cursor identity does not match enrolled workspace; retain local storage for recovery",
-        ));
-    }
-    if journal_storage
-        .descriptor
-        .as_ref()
-        .is_some_and(|floor| floor.identity != cursor_identity)
-    {
-        return Err(error(
-            "stored descriptor identity does not match enrolled workspace; retain local storage for recovery",
-        ));
-    }
-    // A fresh owner's retained record can be committed ahead of its cursor
-    // journal (a record-only batch inside the publication window). Advance the
-    // journal to that verified descendant before any projection or staging, or
-    // refuse explicitly; never merge it away.
-    if owner.is_none() {
-        crate::admitted_records::repair_record_basis(
-            &cache,
-            &mut state,
-            &mut outbox,
-            &key,
-            |app| crate::desktop::definition(app).is_some(),
-            SystemTime::now(),
-        )
-        .map_err(error)?;
-    }
-    if let Some(peer) = &owner
-        && !config.governance.is_empty()
-    {
-        install_candidate(peer, state.clone()).map_err(error)?;
-    }
-    // Identity, StatePeer and durable cache exist before any network proof.
-    // JS binds the actual storage lease and ACKs the floor before HTTP setup.
-    if config.cancelled() {
-        return Err(error("invited connection cancelled"));
-    }
-    let id = match &owner {
-        Some(peer) => peer.id,
-        None => NEXT.with(|next| {
-            let id = next.get();
-            next.set(
-                id.checked_add(1)
-                    .ok_or_else(|| error("Peer handle exhausted"))?,
-            );
-            Ok::<_, JsValue>(id)
-        })?,
-    };
-    let callback = match (&owner, callback) {
-        (Some(peer), _) => peer.callback.clone(),
-        (_, Some(callback)) => callback,
-        _ => return Err(error("missing Peer status callback")),
-    };
-    let fresh_owner = owner.is_none();
-    let peer = if let Some(peer) = owner {
-        delivery_api::stop(&peer);
-        *peer.actions.borrow_mut() = Default::default();
-        *peer.agent_reads.borrow_mut() = Default::default();
-        peer.published.borrow_mut().clear();
-        peer.media_enrollment
-            .hint
-            .replace(config.delivery_hint.clone());
-        peer
-    } else {
-        Rc::new(Peer {
-            data_host: config.host_certificate.clone(),
-            media_enrollment: media_api::MediaEnrollment {
-                workspace,
-                governor: state.authority().clone(),
-                host: config.delivery_host.clone(),
-                device: config.certificate.clone(),
-                hint: RefCell::new(config.delivery_hint.clone()),
-            },
-            media: RefCell::default(),
-            delivery: RefCell::default(),
-            health_projection: RefCell::default(),
-            actions: RefCell::default(),
-            agent_reads: RefCell::default(),
-            action_v2: std::cell::Cell::new(false),
-            admission_failure: RefCell::new(None),
-            initial_admission_replay: RefCell::new(
-                crate::admission_health::InitialAdmissionReplay::new(&state),
-            ),
-            was_ready: std::cell::Cell::new(false),
-            published: RefCell::new(BTreeSet::new()),
-            id,
-            cache,
-            outbox: RefCell::new(outbox),
-            state: RefCell::new(state),
-            _key: key,
-            callback,
-            closed: std::cell::Cell::new(false),
-            last_report_ready: std::cell::Cell::new(false),
-            report_dedup: RefCell::default(),
-            transport_generation: std::cell::Cell::new(1),
-            state_revision: std::cell::Cell::new(1),
-            transport_connected: std::cell::Cell::new(false),
-            admission_progress: RefCell::default(),
-            last_relay_contact: std::cell::Cell::new(None),
-            last_peer_contact: std::cell::Cell::new(None),
-            batches: RefCell::new(PeerStorageBatches::new(id)),
-            journal_storage: RefCell::new(journal_storage),
-            committed_at: std::cell::Cell::new(None),
-        })
-    };
-    // A replacement owner installs through `install_candidate` above. A fresh
-    // owner's restored/handoff state can already be complete, and a desktop may
-    // mount from it before any delivery cut: project its records now so the
-    // portable record owners can open exactly what admission reports.
-    if fresh_owner {
-        crate::admitted_records::install_initial(
-            &peer.cache,
-            &peer.state.borrow(),
-            peer._key.verifying_key().to_bytes(),
-        )
-        .map_err(error)?;
-    }
-    stage_journal(&peer, &peer.state.borrow(), &peer.outbox.borrow()).map_err(error)?;
-    PEERS.with(|peers| peers.borrow_mut().insert(id, peer.clone()));
-    report(&peer, "admitting", None);
-    Ok(id)
+    publisher: String,
+    expires_at_ns: u64,
 }
 
-fn receive_private_action(
-    peer: &Rc<Peer>,
-    event: tilo_delivery_protocol::transport_v2::EnvelopeV2,
-    transport_generation: u64,
-) {
-    if peer.closed.get() || peer.transport_generation.get() != transport_generation {
-        return;
-    }
-    // The closed HTTPS owner admitted this correlated native response.
-    // Current membership/certificate validity is rechecked for every response.
-    if let Ok(identity) = action_context(peer) {
-        if matches!(&event, tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered { action, .. }
-                        if matches!(action.message, tilo_delivery_protocol::peer_actions::ActionMessage::CommittedDesktop { .. }))
-        {
-            // Flush local edits before cloning admission, just as on
-            // the retained channel. A complete batch installs once.
-            if let Err(error) = crate::browser::prepare_peer_remote(peer.id) {
-                mark_failure(peer.id, error);
-                return;
-            }
-            let admission = crate::committed_desktop::admit(
-                &peer.state.borrow(),
-                &event,
-                peer._key.verifying_key().to_bytes(),
-                SystemTime::now(),
-            );
-            let emit_notice = |notice: &crate::committed_desktop::CommittedDesktopNotice| {
-                let value = serde_json::json!({"committedDesktop":{"invocation":notice.invocation,"room":notice.room,"opened":notice.opened}}).to_string();
-                let _ = peer
-                    .callback
-                    .call1(&JsValue::NULL, &JsValue::from_str(&value));
-            };
-            match admission {
-                Ok(crate::committed_desktop::Admission::Ready { candidate, notice }) => {
-                    peer.last_peer_contact.set(Some(js_sys::Date::now()));
-                    if let Err(e) = install_candidate(peer, candidate) {
-                        *peer.admission_failure.borrow_mut() = Some(e.clone());
-                        report(peer, "incomplete", Some(e));
-                    } else if let Some(notice) = notice {
-                        emit_notice(&notice);
+/// A remote-action event for `web/agents.mjs` (and `actionsV1`).
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum JsRemoteAction {
+    /// A frame another device addressed to this one (`frame` is the JSON
+    /// `RemoteActionFrame` text).
+    RemoteAction { from: String, frame: String },
+    /// The host could not deliver a frame this device sent.
+    Undeliverable { to: String, reason: String },
+}
+
+/// `{agentId, label, color, device, rooms, apps, mayConfirm, expiresAtNs}`
+/// of a delegation that verified.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsDelegation {
+    agent_id: String,
+    label: String,
+    color: String,
+    device: String,
+    rooms: Vec<String>,
+    apps: Vec<String>,
+    may_confirm: bool,
+    expires_at_ns: u64,
+}
+
+/// Verify an agent's delegation (hex, as `AgentInfo.delegation` carries it)
+/// against the user root the page trusts, at `nowMs`, and return what it
+/// grants as JSON. The page calls an agent "yours" only after this.
+///
+/// # Errors
+///
+/// Throws for a delegation that does not decode, names another user, does
+/// not verify, or has expired.
+#[wasm_bindgen(js_name = verifyAgentDelegation)]
+pub fn verify_agent_delegation(
+    delegation_hex: &str,
+    user_public_key_hex: &str,
+    now_ms: f64,
+) -> Result<String, JsError> {
+    let bytes = hex::decode(delegation_hex).map_err(js_error)?;
+    let delegation =
+        tilo_relay_protocol::agents::AgentDelegation::decode(&bytes).map_err(js_error)?;
+    let user: [u8; 32] = hex::decode(user_public_key_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| js_error("user public key must be 32 bytes of hex"))?;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a page clock in milliseconds is well inside u64 nanoseconds"
+    )]
+    let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
+    delegation.verify(&user, now_ns).map_err(js_error)?;
+    serde_json::to_string(&JsDelegation {
+        agent_id: delegation.agent_id,
+        label: delegation.label,
+        color: tilo_relay_protocol::agents::color_hex(delegation.color),
+        device: hex::encode(delegation.agent_device_public_key),
+        rooms: delegation.scope.rooms,
+        apps: delegation.scope.apps,
+        may_confirm: delegation.scope.may_confirm,
+        expires_at_ns: delegation.expires_at_ns,
+    })
+    .map_err(js_error)
+}
+
+/// A running certified peer.
+#[wasm_bindgen]
+pub struct WasmPeer {
+    id: u32,
+    device_key: [u8; 32],
+    handle: PeerHandle,
+    durable_events: PeerEvents,
+    remote_events: PeerEvents,
+    listeners: Rc<RefCell<Vec<Function>>>,
+    /// The profile's store and a queue opened at start, until a room is
+    /// joined and replicated ([`crate::replication`]).
+    replication: RefCell<Option<(PeerEvents, Rc<durable_store::MemoryStore>)>>,
+}
+
+#[wasm_bindgen]
+impl WasmPeer {
+    /// Start a session. `configJson` is `{cert, hostCert}` from
+    /// [`certify_device`], optionally with `displayName`. With `namespace`
+    /// (`{profile, device}` JSON, whose storage the page has opened) the
+    /// peer record lives in that profile's durable store; otherwise `record`
+    /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
+    /// it. `post(path, session, body)` reaches the host origin.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed configuration, custody object or namespace,
+    /// or neither a namespace nor a save callback.
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "the session takes shared handles; in the page they stay on its one thread"
+    )]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "wasm-bindgen receives optional JavaScript values only as owned values"
+    )]
+    pub fn start(
+        config_json: &str,
+        custody: &JsValue,
+        namespace: Option<String>,
+        record: Option<Vec<u8>>,
+        save: Option<Function>,
+        post: Function,
+    ) -> Result<WasmPeer, JsError> {
+        let config: ConnectConfig = serde_json::from_str(config_json).map_err(js_error)?;
+        let signer = PageSigner::from_js(custody)?;
+        if signer.device_public_key() != config.cert.device_public_key {
+            return Err(js_error("custody does not hold the certified device key"));
+        }
+        let mut profile_store = None;
+        let store: Arc<dyn PeerStore> = if let Some(namespace) = namespace {
+            let durable = DurablePeerStore::open(&namespace, &config.cert.user_public_key)?;
+            profile_store = Some(Rc::clone(&durable.store));
+            Arc::new(durable)
+        } else {
+            let record = record
+                .map(|bytes| postcard::from_bytes::<PeerRecord>(&bytes))
+                .transpose()
+                .map_err(js_error)?;
+            Arc::new(PageStore {
+                current: RefCell::new(record),
+                save: save
+                    .ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?,
+            })
+        };
+        let device_key = config.cert.device_public_key;
+        install_identity(&config.cert, config.display_name);
+        let handle = PeerHandle::start(
+            PeerConfig {
+                host: Host::Https(Arc::new(PageHttp(post))),
+                cert: config.cert,
+                host_cert: config.host_cert,
+                revocations: RevocationList::new(),
+            },
+            Arc::new(signer),
+            store,
+        );
+        let id = NEXT_PEER.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1).max(1));
+            id
+        });
+        let replication = profile_store.map(|store| (handle.events(), store));
+        let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        handle.on_change({
+            let changed = changed.clone();
+            Arc::new(move || changed.notify_one())
+        });
+        wasm_bindgen_futures::spawn_local({
+            let listeners = Rc::downgrade(&listeners);
+            async move {
+                loop {
+                    changed.notified().await;
+                    let Some(listeners) = listeners.upgrade() else {
+                        return;
+                    };
+                    crate::replication::pump(id);
+                    let current = listeners.borrow().clone();
+                    for listener in current {
+                        let _ = listener.call0(&JsValue::NULL);
                     }
                 }
-                Ok(crate::committed_desktop::Admission::AwaitingRetainedState(notice)) => {
-                    peer.last_peer_contact.set(Some(js_sys::Date::now()));
-                    emit_notice(&notice);
+            }
+        });
+        Ok(Self {
+            id,
+            device_key,
+            durable_events: handle.events(),
+            remote_events: handle.events(),
+            handle,
+            listeners,
+            replication: RefCell::new(replication),
+        })
+    }
+
+    /// `PeerSnapshot` JSON.
+    pub fn snapshot(&self) -> String {
+        serde_json::to_string(&PeerSnapshot::from_status(&self.handle.status())).unwrap_or_default()
+    }
+
+    /// This page's channel state as text: whom each room follows, which
+    /// senders may govern it, and each route's membership.
+    #[wasm_bindgen(js_name = channelDiagnostics)]
+    pub fn channel_diagnostics(&self) -> String {
+        self.handle.status().channels
+    }
+
+    /// Call `listener()` whenever the snapshot may have changed.
+    pub fn subscribe(&self, listener: Function) {
+        self.listeners.borrow_mut().push(listener);
+    }
+
+    /// Join a room (uuid).
+    ///
+    /// # Errors
+    ///
+    /// Throws for a room that is not a uuid, or a closed session.
+    #[wasm_bindgen(js_name = joinRoom)]
+    pub fn join_room(&self, room: &str) -> Result<(), JsError> {
+        self.handle.join(workspace(room)?).map_err(js_error)?;
+        if let Some((events, store)) = self.replication.borrow_mut().take() {
+            let device = hex::encode(self.device_key);
+            crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
+                .map_err(js_error)?;
+        }
+        Ok(())
+    }
+
+    /// This peer in the page, for `mountDesktop({peer})`: mounts in its
+    /// room replicate their records and desktop through it.
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// A live-plane grant for `room` over the current HTTPS session, as
+    /// `{token (hex), room, publisher, expiresAtNs}` JSON. With `agent`, the
+    /// grant is for that agent of this device: it publishes under the
+    /// agent's own namespace, never as the device.
+    ///
+    /// # Errors
+    ///
+    /// Rejects when not connected or not admitted to the room.
+    #[wasm_bindgen(js_name = liveGrant)]
+    pub async fn live_grant(&self, room: String, agent: Option<String>) -> Result<String, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        let done: tilo_browser_peer::session::GrantCompletion = Box::new(move |grant| {
+            let _ = reply.send(grant);
+        });
+        let workspace = workspace(&room)?;
+        match agent {
+            None => self.handle.live_grant_then(workspace, done),
+            Some(agent) => self.handle.agent_live_grant_then(workspace, agent, done),
+        }
+        .map_err(js_error)?;
+        let grant = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        serde_json::to_string(&JsGrant {
+            token: hex::encode(grant.token),
+            room: grant.room,
+            publisher: grant.publisher,
+            expires_at_ns: grant.expires_at_ns,
+        })
+        .map_err(js_error)
+    }
+
+    /// Records whose durable change landed since the last call, as a JSON
+    /// array of `{kind: 'durable', record}`: the live layer drops their
+    /// previews and snaps drags.
+    #[wasm_bindgen(js_name = takeDurableEvents)]
+    pub fn take_durable_events(&self) -> String {
+        let out: Vec<JsDurable> = self
+            .durable_events
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::Document(document) => Some(JsDurable::Durable {
+                    record: JsRecord {
+                        app: document.route.app_id,
+                        record: document.route.record,
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Send one remote-action frame (JSON `RemoteActionFrame` text) to the
+    /// device `to` (hex) of `room`; the host's own device key reaches its
+    /// app-serving plane (apps and the agent supervisor).
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed room or device, or a closed session.
+    #[wasm_bindgen(js_name = sendRemoteAction)]
+    pub fn send_remote_action(&self, room: &str, to: &str, frame: &str) -> Result<(), JsError> {
+        let to: [u8; 32] = hex::decode(to)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| js_error("device must be 32 bytes of hex"))?;
+        self.handle
+            .send_remote_action(workspace(room)?, to, frame.as_bytes().to_vec())
+            .map_err(js_error)
+    }
+
+    /// Remote-action frames and undeliverable answers since the last call,
+    /// as a JSON array of `{kind: 'remoteAction', from, frame}` and
+    /// `{kind: 'undeliverable', to, reason}`.
+    #[wasm_bindgen(js_name = takeRemoteActionEvents)]
+    pub fn take_remote_action_events(&self) -> String {
+        let out: Vec<JsRemoteAction> = self
+            .remote_events
+            .drain()
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::RemoteAction { from, frame, .. } => Some(JsRemoteAction::RemoteAction {
+                    from: hex::encode(from),
+                    frame: String::from_utf8(frame).ok()?,
+                }),
+                PeerEvent::RemoteActionUndeliverable { to, reason, .. } => {
+                    Some(JsRemoteAction::Undeliverable {
+                        to: hex::encode(to),
+                        reason,
+                    })
                 }
-                Ok(crate::committed_desktop::Admission::Ignored) => (),
-                Err(error) => web_sys::console::debug_1(&JsValue::from_str(&format!(
-                    "Committed desktop direct admission rejected: {error}"
-                ))),
-            }
-            return;
-        }
-        let root = peer.state.borrow().authority().user_public_key;
-        peer.agent_reads
-            .borrow_mut()
-            .receive(&event, &identity, transport_generation);
-        let catalogue = match &event {
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::Delivered { action, .. } => {
-                Some(action.message.clone())
-            }
-            _ => None,
+                _ => None,
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Whether the page holds the room's record `record` of `app`: open in
+    /// a mount, or received from the room and stored for whoever opens it.
+    #[wasm_bindgen(js_name = hasRecord)]
+    pub fn has_record(&self, app: &str, record: &str) -> bool {
+        crate::replication::has_record(self.id, app, record)
+    }
+
+    /// The room's records this page holds, as JSON `[{app, record}]`, so a
+    /// page can hand a guest the record its desktop created.
+    #[wasm_bindgen(js_name = roomRecords)]
+    pub fn room_records(&self) -> String {
+        let records: Vec<JsRecord> = crate::replication::records(self.id)
+            .into_iter()
+            .map(|(app, record)| JsRecord { app, record })
+            .collect();
+        serde_json::to_string(&records).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Report the page store's durability of a record (`unknown`,
+    /// `pending`, `committing`, `durable`, `failed`).
+    #[wasm_bindgen(js_name = setLocalState)]
+    pub fn set_local_state(&self, app: &str, room: &str, record: &str, state: &str) {
+        let state = match state {
+            "pending" => LocalState::Pending,
+            "committing" => LocalState::Committing,
+            "durable" => LocalState::Durable,
+            "failed" => LocalState::Failed,
+            _ => LocalState::Unknown,
         };
-        if peer.actions.borrow_mut().receive(event, root)
-            && let Some(message) = catalogue
-        {
-            if let tilo_delivery_protocol::peer_actions::ActionMessage::BrokerCatalogue {
-                host,
-                ..
-            } = &message
-            {
-                peer.delivery.borrow_mut().broker = Some(*host);
-            }
-            peer.agent_reads.borrow_mut().observe_catalogue(
-                &message,
-                &identity,
-                transport_generation,
-            );
-        }
-        // Wake command waiters as soon as the authenticated response
-        // is installed. The JS host keeps only a deadline timer.
-        let _ = peer.callback.call1(
-            &JsValue::NULL,
-            &JsValue::from_str("{\"actionResponseReady\":true}"),
+        self.handle.set_local_state(
+            DocumentRoute {
+                app_id: app.into(),
+                cluster_id: room.into(),
+                record: record.into(),
+            },
+            state,
         );
     }
-}
-/// Request bootstrap on the retained authenticated transport without replacing
-/// the owner or requiring the very document permissions bootstrap may supply.
-#[wasm_bindgen]
-pub fn peer_request_sync(id: u32, expected_transport_generation: String) -> Result<(), JsValue> {
-    let expected = expected_transport_generation
-        .parse::<u64>()
-        .map_err(error)?;
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        if peer.closed.get()
-            || !peer.transport_connected.get()
-            || peer.transport_generation.get() != expected
-        {
-            return Err(error("sync transport generation is unavailable"));
-        }
-        delivery_api::request_snapshot(&peer).map_err(error)
-    })
-}
-/// Disconnect transport without destroying durable cache/outbox ownership.
-#[wasm_bindgen]
-pub async fn disconnect_peer(id: u32) {
-    let peer = PEERS.with(|peers| peers.borrow().get(&id).cloned());
-    if let Some(peer) = peer {
-        *peer.agent_reads.borrow_mut() = Default::default();
-        delivery_api::stop(&peer);
+
+    /// Resolve once every published document is durable on the host.
+    ///
+    /// # Errors
+    ///
+    /// Rejects when the host refused a change or the session closed.
+    pub async fn flush(&self) -> Result<(), JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .barrier_then(Box::new(move |result| {
+                let _ = reply.send(result);
+            }))
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
     }
-}
-#[wasm_bindgen]
-pub async fn close_peer(id: u32) {
-    let peer = PEERS.with(|peers| peers.borrow_mut().remove(&id));
-    if let Some(peer) = peer {
-        *peer.agent_reads.borrow_mut() = Default::default();
-        peer.closed.set(true);
-        peer.media.borrow_mut().close();
-        peer.delivery.borrow_mut().close();
-        if let Some(next) = peer.transport_generation.get().checked_add(1) {
-            peer.transport_generation.set(next);
-        }
-        report(&peer, "closed", None);
+
+    /// Reconnect now (also after a failure).
+    ///
+    /// # Errors
+    ///
+    /// Throws once the session is closed.
+    pub fn reconnect(&self) -> Result<(), JsError> {
+        self.handle.reconnect().map_err(js_error)
+    }
+
+    /// Ask the host for the joined rooms' shared state again.
+    ///
+    /// # Errors
+    ///
+    /// Throws once the session is closed.
+    pub fn refresh(&self) -> Result<(), JsError> {
+        self.handle.refresh().map_err(js_error)
+    }
+
+    /// Report a failure of the page store (no `surface`), of desktop surface
+    /// `surface`, or of that surface's `asset`, with a `FailureCode`.
+    ///
+    /// # Errors
+    ///
+    /// Throws on a code the page may not report.
+    #[wasm_bindgen(js_name = reportFailure)]
+    pub fn report_failure(
+        &self,
+        surface: Option<String>,
+        asset: Option<String>,
+        code: &str,
+        message: &str,
+    ) -> Result<(), JsError> {
+        self.handle
+            .report_failure(failure_subject(surface, asset), code, message)
+            .map_err(js_error)
+    }
+
+    /// Clear the failure `reportFailure` reported for the same subject.
+    #[wasm_bindgen(js_name = clearFailure)]
+    pub fn clear_failure(&self, surface: Option<String>, asset: Option<String>) {
+        self.handle.clear_failure(&failure_subject(surface, asset));
+    }
+
+    /// Clear every failure of desktop surface `surface` and its assets.
+    #[wasm_bindgen(js_name = clearSurface)]
+    pub fn clear_surface(&self, surface: &str) {
+        self.handle.clear_surface(surface);
+    }
+
+    /// End the session. The page no longer acts as the certified user.
+    pub fn dispose(&self) {
+        self.listeners.borrow_mut().clear();
+        self.handle.close();
+        crate::replication::close(self.id);
+        ui::local_identity::install_source(None);
     }
 }
 
-#[wasm_bindgen]
-pub fn create_identity() -> Vec<u8> {
-    crate::identity::create()
-}
-#[wasm_bindgen]
-pub fn identity_request(material: &[u8]) -> Result<String, JsValue> {
-    crate::identity::request(material).map_err(error)
-}
-#[wasm_bindgen]
-pub fn identity_complete(material: &[u8], challenge: &str) -> Result<String, JsValue> {
-    crate::identity::complete(material, challenge).map_err(error)
-}
-#[wasm_bindgen]
-pub fn bind_identity(material: &[u8], challenge: &str, raw: &str) -> Result<Vec<u8>, JsValue> {
-    crate::identity::bind(material, challenge, raw).map_err(error)
-}
-#[wasm_bindgen]
-pub fn bind_identity_for_peer(
-    material: &[u8],
-    challenge: &str,
-    raw: &str,
-    existing: Option<u32>,
-) -> Result<String, JsValue> {
-    let owner = local_owner(existing)?;
-    let bound = crate::peer_onboarding::bind_local(
-        material,
-        challenge,
-        raw,
-        tilo_delivery_protocol::clock::now_ns(),
-    )
-    .map_err(error)?;
-    let material = bound.material().to_vec();
-    let context = LOCAL_CONTEXTS
-        .with(|table| {
-            table.borrow_mut().insert(
-                bound.into_context(),
-                owner,
-                tilo_delivery_protocol::clock::now_ns(),
-            )
-        })
-        .map_err(error)?;
-    Ok(serde_json::json!({"material":material,"context":context}).to_string())
-}
-#[wasm_bindgen]
-pub fn cancel_local_onboarding(context: u32) {
-    LOCAL_CONTEXTS.with(|table| table.borrow_mut().cancel(context));
-}
-#[wasm_bindgen]
-pub fn peer_enrollment(raw: &str) -> Result<String, JsValue> {
-    let config: Enrollment = serde_json::from_str(raw).map_err(error)?;
-    let device = config
-        .certificate
-        .device_public_key
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    Ok(serde_json::json!({"profile":format!("certified:{}",config.bootstrap.room),"device":device,"room":config.bootstrap.room}).to_string())
-}
-fn storage_key(room: &str, app: &str, record: &str) -> StorageKey {
-    if record.is_empty() {
-        StorageKey::Primary {
-            package: app.into(),
-            workspace: room.into(),
-        }
-    } else {
-        StorageKey::Record {
-            package: app.into(),
-            workspace: room.into(),
-            record: record.into(),
-        }
-    }
-}
-fn install_records(peer: &Peer, state: &StatePeer) -> Result<(), String> {
-    crate::admitted_records::install(&peer.cache, state, peer._key.verifying_key().to_bytes())
-}
-
-fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Result<(), String> {
-    let mut journal = Journal::from_state(state, outbox.to_vec())?;
-    // Reader-first migration: never activate v3 here, or drop hydrated v3 metadata.
-    journal.storage = peer.journal_storage.borrow().clone();
-    let bytes = journal.encode()?;
-    peer.cache.put(
-        StorageKey::Admission {
-            workspace: state.room().into(),
-        },
-        bytes,
-        None,
-    )
-}
-/// The canonical record owner has already committed this document. Avoid a
-/// full save/load round trip merely to recover its existing CRDT graph.
-pub(crate) fn local_owned_document(
-    id: u32,
-    app: &str,
-    record: &str,
-    mut current: automerge::AutoCommit,
-) -> Result<(), String> {
-    if current.pending_ops() != 0 {
-        return Err("record mutation is still unfinished".into());
-    }
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or("certified peer is closed")?;
-        let before = peer
-            .state
-            .borrow()
-            .document_heads(app, record)
-            .ok_or("canonical native record not admitted")?;
-        if current.base_heads() == before {
-            return Ok(());
-        }
-        // LIVE_V1: this edit builds on any speculative forwarded changes.
-        live_api::promote_for_local_publication(&peer);
-        let next_revision = peer
-            .state_revision
-            .get()
-            .checked_add(1)
-            .ok_or("canonical Peer revision exhausted")?;
-        let delta = current.save_after(&before);
-        let mut candidate = peer.state.borrow().clone();
-        let message =
-            candidate.publish_incremental(app, record, delta, &peer._key, SystemTime::now())?;
-        // LIVE_V1: members get this exact signed item from the author's own
-        // ops track at once (before the IndexedDB commit and upload).
-        let live_forward = live_api::author_canonical(&peer, &message);
-        let mut outbox = peer.outbox.borrow().clone();
-        outbox.push(message);
-        let key = storage_key(candidate.room(), app, record);
-        let actor = peer
-            .cache
-            .get(&key)
-            .ok_or("record actor custody missing")?
-            .actor;
-        // Queue the record with the heads of its canonical owner, so batch
-        // capture and validation never decode these bytes to learn them.
-        peer.cache.put_document(key, &mut current, actor)?;
-        stage_journal(&peer, &candidate, &outbox)?;
-        *peer.state.borrow_mut() = candidate;
-        peer.state_revision.set(next_revision);
-        *peer.outbox.borrow_mut() = outbox;
-        live_api::author_published(&peer, live_forward);
-        report_light(&peer);
-        Ok(())
-    })
-}
-#[wasm_bindgen]
-pub fn peer_pending_writes(id: u32) -> Result<String, JsValue> {
-    PEERS.with(|peers| {
-        let peers = peers.borrow();
-        let peer = peers.get(&id).ok_or_else(|| error("closed peer"))?;
-        serde_json::to_string(
-            &peer
-                .cache
-                .pending_writes()
-                .iter()
-                .map(crate::browser::write_json)
-                .collect::<Vec<_>>(),
-        )
-        .map_err(error)
-    })
-}
-/// Recompute the read-only projection when a signed outbox envelope reaches
-/// its freshness deadline. This never publishes or changes durable custody.
-#[wasm_bindgen]
-pub fn peer_refresh_status(id: u32) -> Result<(), JsValue> {
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        if !peer.closed.get() {
-            report(&peer, "admitting", None);
-        }
-        Ok(())
-    })
-}
-#[wasm_bindgen]
-pub fn peer_committed(id: u32) -> Result<(), JsValue> {
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        if peer.cache.has_pending_writes() {
-            return Err(error("admission/record transaction not committed"));
-        }
-        if peer.closed.get() {
-            return Ok(());
-        }
-        delivery_api::queue_committed(&peer).map_err(error)?;
-        // Keep durable outgoing bytes until a validated governor checkpoint covers them.
-        // A queued transport send alone is not delivery acknowledgement.
-        let complete = crate::desktop::admission(&peer.state.borrow())
-            .is_ok_and(|admission| admission.complete());
-        report(&peer, if complete { "ready" } else { "admitting" }, None);
-        Ok(())
-    })
-}
-pub(crate) fn permissions(id: u32) -> Result<ui::permissions::PermissionContext, String> {
-    PEERS.with(|peers| {
-        let peer = peers.borrow().get(&id).cloned().ok_or("closed peer")?;
-        let (role, caps, person) = peer
-            .state
-            .borrow()
-            .permissions(peer._key.verifying_key().to_bytes(), SystemTime::now())?;
-        Ok(ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(role), &person),
-            caps,
-        ))
-    })
-}
-
-pub(crate) fn mark_failure(id: u32, failure: String) {
-    PEERS.with(|peers| {
-        if let Some(peer) = peers.borrow().get(&id) {
-            *peer.admission_failure.borrow_mut() = Some(failure.clone());
-            report(peer, "incomplete", Some(failure));
-        }
-    });
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BatchResult {
-    batch_id: String,
-    epoch: String,
-    observed_at_ms: f64,
-    result: BatchOutcome,
-}
-#[derive(Deserialize)]
-struct BatchOutcome {
-    ok: bool,
-    code: Option<String>,
-}
-fn encode_pending_batch<T>(
-    id: u32,
-    encode: impl FnOnce(
-        &str,
-        &[PendingWrite],
-        &[tilo_peer_state::DocumentRow],
-        Option<&str>,
-    ) -> Result<T, JsValue>,
-) -> Result<T, JsValue> {
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        let state = peer.state.borrow();
-        let records = state.rows();
-        let required = records
-            .iter()
-            .filter(|row| crate::desktop::definition(&row.app_id).is_some())
-            .map(|row| storage_key(state.room(), &row.app_id, &row.record_id))
-            .collect::<Vec<_>>();
-        // Only a cursor journal binds record heads at capture and reload.
-        let admitted = if peer.journal_storage.borrow().delivery.is_some() {
-            records.as_slice()
-        } else {
-            &[]
-        };
-        peer.batches
-            .borrow_mut()
-            .capture_transfer(
-                &peer.cache,
-                &required,
-                admitted,
-                peer.transport_generation.get(),
-                |revision| peer.admission_progress.borrow().batch_basis(revision),
-                |batch_id, writes, transfer| {
-                    encode(batch_id, writes, &records, transfer).map_err(|failure| {
-                        failure
-                            .as_string()
-                            .unwrap_or_else(|| "storage batch encoding failed".into())
-                    })
-                },
-            )
-            .map_err(error)
-    })
-}
-#[wasm_bindgen]
-pub fn peer_pending_batch(id: u32) -> Result<String, JsValue> {
-    encode_pending_batch(id, |id, writes, records, transfer| {
-        let values = writes
-            .iter()
-            .map(crate::browser::write_json)
-            .collect::<Vec<_>>();
-        let mut result = serde_json::json!({"id":id,"writes":values,"records":records});
-        if let Some(transfer) = transfer {
-            result["transferId"] = transfer.into();
-        }
-        Ok(result.to_string())
-    })
-}
-/// JS-owned typed buffers avoid expanding every binary byte into JSON digits.
-/// The Rust-owned batch remains the sole authority for acknowledgement.
-#[wasm_bindgen]
-pub fn peer_pending_batch_bytes(id: u32) -> Result<JsValue, JsValue> {
-    encode_pending_batch(id, |id, writes, records, transfer| {
-        let result = js_sys::Object::new();
-        let values = js_sys::Array::new();
-        for write in writes {
-            values.push(&crate::browser::write_bytes(write)?);
-        }
-        js_sys::Reflect::set(&result, &"id".into(), &id.into())?;
-        if let Some(transfer) = transfer {
-            js_sys::Reflect::set(&result, &"transferId".into(), &transfer.into())?;
-        }
-        js_sys::Reflect::set(&result, &"writes".into(), &values)?;
-        let records = js_sys::JSON::parse(&serde_json::to_string(records).map_err(error)?)?;
-        js_sys::Reflect::set(&result, &"records".into(), &records)?;
-        Ok(result.into())
-    })
-}
-#[wasm_bindgen]
-pub fn peer_bind_storage_epoch(id: u32, epoch: String) -> Result<(), JsValue> {
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        if peer.closed.get() {
-            return Err(error("closed peer"));
-        }
-        peer.batches.borrow_mut().bind_lease(&epoch).map_err(error)
-    })
-}
-#[wasm_bindgen]
-pub fn acknowledge_peer_storage_batch(id: u32, raw: String) -> Result<(), JsValue> {
-    let result: BatchResult = serde_json::from_str(&raw).map_err(error)?;
-    if result.epoch.is_empty()
-        || result.epoch.len() > 128
-        || !result.observed_at_ms.is_finite()
-        || result.observed_at_ms < 0.0
-    {
-        return Err(error("invalid storage batch observation"));
-    }
-    PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| error("closed peer"))?;
-        let basis = peer
-            .batches
-            .borrow_mut()
-            .settle(
-                &result.batch_id,
-                &result.epoch,
-                if result.result.ok {
-                    Ok(())
-                } else {
-                    Err(result
-                        .result
-                        .code
-                        .clone()
-                        .unwrap_or_else(|| "storage-transaction-failed".into()))
-                },
-            )
-            .map_err(error)?;
-        if result.result.ok {
-            peer.committed_at.set(Some(result.observed_at_ms));
-            peer.admission_progress.borrow_mut().committed(basis);
-        }
-        report_light(&peer);
-        Ok(())
-    })
-}
-fn required_read_failure(peer: &Peer, state: &StatePeer) -> Option<String> {
-    crate::desktop::admission(state)
-        .ok()?
-        .required
-        .iter()
-        .find_map(|record| {
-            state
-                .check_document_read(
-                    peer._key.verifying_key().to_bytes(),
-                    &record.app_id,
-                    &record.record_id,
-                    SystemTime::now(),
-                )
-                .err()
-        })
-}
-fn health(
-    peer: &Peer,
-    state: &StatePeer,
-    ready: bool,
-    reported_error: Option<&str>,
-    source: crate::admission_health::ReportSource,
-    outgoing_blocked: usize,
-    awaiting_governance: bool,
-) -> serde_json::Value {
-    // Metadata and borrowed bytes only: copying the committed journal and every
-    // record per report grew with the session (several reports per publication).
-    let journal_key = StorageKey::Admission {
-        workspace: state.room().into(),
-    };
-    let journal_status = peer.cache.status_meta(&journal_key);
-    let journal = peer
-        .cache
-        .with_committed(&journal_key, |_, bytes| {
-            peer.health_projection.borrow_mut().journal(&bytes.bytes)
-        })
-        .flatten();
-    let durable_failure = crate::admission_health::durable_admission_failure(
-        state,
-        peer._key.verifying_key().to_bytes(),
-        SystemTime::now(),
-        peer.admission_failure.borrow().clone(),
-        awaiting_governance,
-    );
-    let required_failure = crate::admission_health::permission_failure(
-        required_read_failure(peer, state),
-        awaiting_governance,
-    );
-    let durable_failure = durable_failure.or(required_failure);
-    let failure = crate::admission_health::reported_failure(
-        durable_failure.as_deref(),
-        reported_error,
-        source,
-        ready && state.pending_count() == 0,
-    );
-    let mut failures=failure.map(|text|{
-        let (code,message,recovery)=crate::admission_health::failure_policy(text,source,durable_failure.is_some(),peer.transport_connected.get());
-        serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some()||matches!(source,crate::admission_health::ReportSource::ReceiveRejection){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
-    }).into_iter().collect::<Vec<_>>();
-    if outgoing_blocked > 0 {
-        failures.push(serde_json::json!({
-            "id":"runtime:outgoing",
-            "code":"checkpoint-expired",
-            "scope":{"kind":"admission"},
-            "severity":"notice",
-            "message":crate::admission_health::OUTGOING_CHECKPOINT_MESSAGE,
-            "recovery":[{"kind":"refresh-checkpoint"}],
-            "occurredAtMs":js_sys::Date::now()
-        }));
-    }
-    if let Ok(admission) = crate::desktop::admission(state) {
-        for app in admission.unsupported {
-            failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));
-        }
-    }
-    let epoch = peer.batches.borrow().lease_epoch().map(str::to_owned);
-    let revision = |revision: u64| {
-        epoch
-            .as_ref()
-            .map(|epoch| serde_json::json!({"epoch":epoch,"revision":revision.to_string()}))
-    };
-    // Keys and sizes only: copying every queued document per report grew
-    // with the session.
-    let pending = peer.cache.pending_write_sizes();
-    let records=state.rows().iter().map(|row|{
-        let key=storage_key(state.room(),&row.app_id,&row.record_id);
-        let status=peer.cache.status_meta(&key);
-        let durable_heads=journal.as_ref().and_then(|journal| {
-            let heads=peer.cache.committed_document_heads(&key)?.ok()?.iter().map(ToString::to_string).collect::<Vec<_>>();
-            journal.match_document_heads(&row.app_id,&row.record_id,&heads)
-        });
-        let durable_basis=durable_heads.as_ref().map(|heads|serde_json::json!({"heads":heads}));
-        let is_durable=durable_basis.is_some()&&durable_heads.as_ref()==Some(&row.heads);
-        let failed=status.as_ref().is_some_and(|status|status.error.is_some())||journal_status.as_ref().is_some_and(|status|status.error.is_some());
-        let coverage=state.durable_coverage_with_current(&row.app_id,&row.record_id).ok().flatten().filter(|(receipt,_)|journal.as_ref().is_some_and(|journal|journal.receipts.get(&tilo_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
-        let covered=is_durable&&coverage.as_ref().is_some_and(|(_,current)|*current);
-        let receipt=coverage.map(|(receipt,_)|receipt);
-        let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();
-        let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
-        serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed_revision).and_then(&revision),"journalRevision":journal_status.as_ref().and_then(|status|status.committed_revision).and_then(&revision),"pendingWrites":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).map(|(_,bytes)|*bytes).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
-    }).collect::<Vec<_>>();
-    let admission_phase =
-        crate::admission_health::admission_phase(state, ready, durable_failure.as_deref());
-    serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"generation":peer.transport_generation.get().to_string(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"progressRevision":peer.admission_progress.borrow().revision().to_string(),"requiredRecords":crate::desktop::admission(state).map(|admission|admission.required.iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>()).unwrap_or_default(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
-}
-
-/// Read-only handoff from the committed admission owner to the retained desktop.
-pub(crate) fn desktop_state(id: u32) -> Result<StatePeer, String> {
-    PEERS.with(|peers| {
-        let peer = peers.borrow().get(&id).cloned().ok_or("closed peer")?;
-        let state = peer.state.borrow();
-        state.permissions(peer._key.verifying_key().to_bytes(), SystemTime::now())?;
-        let admission = crate::desktop::admission(&state)?;
-        if !admission.complete() {
-            return Err("canonical desktop records are not admitted".into());
-        }
-        if let Some(reason) = required_read_failure(&peer, &state) {
-            return Err(reason);
-        }
-        if let Some(reason) = state.incomplete_reason() {
-            return Err(reason);
-        }
-        Ok(state.clone())
-    })
-}
-
-/// One admission installation path for retained and immediate committed state.
-fn install_candidate(peer: &Peer, mut candidate: StatePeer) -> Result<(), String> {
-    let next_revision = peer
-        .state_revision
-        .get()
-        .checked_add(1)
-        .ok_or("canonical Peer revision exhausted")?;
-    let (mut outbox, reconciliation_error) =
-        match candidate.reconcile_outbox(&peer.outbox.borrow(), &peer._key, SystemTime::now()) {
-            Ok(outbox) => (outbox, None),
-            // Never discard newly accepted revocations/prerequisites
-            // merely because local outgoing recovery is forbidden.
-            Err(error) => (
-                peer.outbox
-                    .borrow()
-                    .iter()
-                    .filter(|message| !candidate.covers(message))
-                    .cloned()
-                    .collect(),
-                Some(error),
-            ),
-        };
-    // Acceptance may reconcile author sequences, but cannot retire the
-    // immutable original without an exact designated durable receipt.
-    for original in peer.outbox.borrow().iter() {
-        if !candidate.outbox_message_retired(original)
-            && !outbox.iter().any(|other| {
-                postcard::to_allocvec(other).ok() == postcard::to_allocvec(original).ok()
-            })
-        {
-            outbox.push(original.clone());
-        }
-    }
-    let install = if candidate.incomplete_reason().is_some() {
-        Ok(())
-    } else {
-        install_records(peer, &candidate)
-    };
-    install?;
-    stage_journal(peer, &candidate, &outbox)?;
-    let journal = StorageKey::Admission {
-        workspace: candidate.room().into(),
-    };
-    let revision = peer
-        .cache
-        .status_meta(&journal)
-        .filter(|status| !status.durable)
-        .map(|status| status.revision);
-    peer.admission_progress.borrow_mut().accepted(revision);
-    // A complete, unrefused admission (the steady state: every echo of this
-    // peer's own publications) changes no phase; its rows and health are
-    // refreshed by the full report at the commit boundary it now waits for
-    // (`peer_committed`), exactly as for a local publication. Anything that
-    // can change the phase or surface a failure still reports in full now.
-    let steady = reconciliation_error.is_none()
-        && candidate.incomplete_reason().is_none()
-        && crate::desktop::admission(&candidate).is_ok_and(|admission| admission.complete());
-    *peer.admission_failure.borrow_mut() = reconciliation_error;
-    *peer.outbox.borrow_mut() = outbox;
-    *peer.state.borrow_mut() = candidate;
-    peer.state_revision.set(next_revision);
-    crate::browser::refresh_peer_mounts(peer.id);
-    if steady {
-        report_light(peer);
-    } else {
-        report(peer, "admitting", None);
-    }
-    // LIVE_V1: rebase or promote forwarded changes over the durable install.
-    live_api::after_durable_install(peer);
-    Ok(())
-}
-
-fn action_context(peer: &Peer) -> Result<serde_json::Value, String> {
-    if peer.closed.get() || !peer.transport_connected.get() {
-        return Err("action transport disconnected".into());
-    }
-    if !peer.action_v2.get() {
-        return Err("state-only peer: actions unavailable".into());
-    }
-    let state = peer.state.borrow();
-    let target = state.authority();
-    let sender = peer._key.verifying_key().to_bytes();
-    state.permissions(target.device_public_key, SystemTime::now())?;
-    state.permissions(sender, SystemTime::now())?;
-    let own = state
-        .certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == sender)
-        .ok_or("sender certificate missing")?;
-    let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    Ok(
-        serde_json::json!({"room":state.room(),"sender":hex(sender),"senderRoot":hex(own.user_public_key),"target":hex(target.device_public_key),"targetRoot":hex(target.user_public_key),"certificate":serde_json::to_string(target).map_err(|e|e.to_string())?}),
-    )
-}
-#[wasm_bindgen]
-pub fn peer_action_notifications() -> bool {
-    true
-}
-#[wasm_bindgen]
-pub fn peer_action_context(id: u32) -> Result<String, JsValue> {
-    let peer = PEERS
-        .with(|peers| peers.borrow().get(&id).cloned())
-        .ok_or_else(|| error("closed peer"))?;
-    action_context(&peer)
-        .map(|value| value.to_string())
-        .map_err(error)
-}
-#[wasm_bindgen]
-pub fn peer_action_request(id: u32, message: String) -> Result<String, JsValue> {
-    use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
-    let peer = PEERS
-        .with(|peers| peers.borrow().get(&id).cloned())
-        .ok_or_else(|| error("closed peer"))?;
-    action_context(&peer).map_err(error)?;
-    let message: ActionMessage = serde_json::from_str(&message).map_err(error)?;
-    if !matches!(
-        message,
-        ActionMessage::CatalogueRefresh { .. }
-            | ActionMessage::InvokeBound { .. }
-            | ActionMessage::Status { .. }
-            | ActionMessage::Cancel { .. }
-    ) {
-        return Err(error("unsupported client request"));
-    }
-    let state = peer.state.borrow();
-    let action = DirectedAction {
-        room: state.room().parse().map_err(error)?,
-        request_id: uuid::Uuid::new_v4(),
-        source: peer._key.verifying_key().to_bytes(),
-        target: state.authority().device_public_key,
-        message,
-    };
-    let request = action.request_id;
-    peer.actions
-        .borrow_mut()
-        .insert(action.clone())
-        .map_err(error)?;
-    let result = delivery_api::queue_action(&peer, action);
-    if let Err(failure) = result {
-        peer.actions.borrow_mut().forget(request);
-        return Err(error(failure));
-    }
-    Ok(request.to_string())
-}
-#[wasm_bindgen]
-pub fn peer_action_response(id: u32, request: String) -> Result<Option<String>, JsValue> {
-    let peer = PEERS
-        .with(|peers| peers.borrow().get(&id).cloned())
-        .ok_or_else(|| error("closed peer"))?;
-    action_context(&peer).map_err(error)?;
-    peer.actions
-        .borrow_mut()
-        .take(request.parse().map_err(error)?)
-        .map(|value| Ok(crate::action_client::browser_response(value).to_string()))
-        .transpose()
-}
-#[wasm_bindgen]
-pub fn peer_action_forget(id: u32, request: String) {
-    if let (Some(peer), Ok(request)) = (
-        PEERS.with(|peers| peers.borrow().get(&id).cloned()),
-        request.parse(),
-    ) {
-        peer.actions.borrow_mut().forget(request);
+impl WasmPeer {
+    /// A toolkit transport over this session for the desktop's
+    /// `CollaborationManager::with_transport`.
+    #[allow(
+        dead_code,
+        reason = "consumed by the desktop mount (milestone 3), which lands separately"
+    )]
+    pub(crate) fn collab_transport(&self) -> tilo_browser_peer::transport::RelayCollabTransport {
+        tilo_browser_peer::transport::RelayCollabTransport::new(self.handle.clone())
     }
 }

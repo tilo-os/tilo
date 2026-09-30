@@ -59,7 +59,9 @@ pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
                 || !password.chars().any(|character| character.is_ascii_digit())
         })
         .count();
-    let now = tilo_clock::unix_now();
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
     let one_year = 365 * 24 * 60 * 60;
     VaultHealth {
         total: candidates.len(),
@@ -242,6 +244,11 @@ impl PasswordsModel {
 
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::live())
+}
+
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.passwords", app_root).as_definition("Passwords")
 }
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo(ShowcaseMode::Vault))

@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -517,32 +517,20 @@ impl PeopleScanProgress {
         self.last_error = Some(error);
     }
     fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        std::fs::read(path)
-            .ok()
+        Self::file()
+            .and_then(|file| file.read())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
     fn save(&self) {
-        let Some(path) = Self::path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if std::fs::create_dir_all(parent).is_ok()
-            && let Ok(bytes) = serde_json::to_vec(self)
-        {
-            let _ = atomic_file::write(&path, &bytes);
+        if let (Some(file), Ok(bytes)) = (Self::file(), serde_json::to_vec(self)) {
+            let _ = file.write(&bytes);
         }
     }
 
-    fn path() -> Option<std::path::PathBuf> {
-        let base = xdg_paths::xdg::state_home()?;
-        Some(base.join("tilo/photos/people-scan.json"))
+    fn file() -> Option<crate::files::StateFile> {
+        crate::files::StateFile::in_state("photos/people-scan.json")
     }
 }
 
@@ -1207,6 +1195,9 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    /// The chooser that delivers chosen files' contents, where files have no
+    /// path (a browser page).
+    contents_picker: Option<ui::portal::ContentsChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
     directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
@@ -2025,14 +2016,12 @@ impl PhotosApp {
         let (analysis_job_tx, analysis_job_rx) =
             std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        let analysis_tx = std::thread::Builder::new()
-            .name("photos-local-analysis".to_owned())
-            .spawn({
-                let content = content.clone();
-                move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
-            })
-            .ok()
-            .map(|_| analysis_job_tx);
+        let analysis_tx = ui::rt::spawn_thread("photos-local-analysis", {
+            let content = content.clone();
+            move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
+        })
+        .ok()
+        .map(|_| analysis_job_tx);
         // In memory until `new_persistent` swaps in the per-user preview cache:
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
@@ -2082,6 +2071,7 @@ impl PhotosApp {
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
             picker: None,
+            contents_picker: None,
             directory_picker: None,
             directory_picker_retain_exif_location: true,
             directory_import: None,
@@ -2316,15 +2306,25 @@ impl PhotosApp {
     /// path remains only in this process; the action writes portable metadata
     /// and the staged content hash into the shared document.
     pub fn open_path(&mut self, doc: &mut AutoCommit, path: &str) {
-        let bytes = bounded_file_bytes(path);
-        match bytes.as_deref().and_then(pixels::decode) {
+        self.open_bytes(doc, path, bounded_file_bytes(path).as_deref());
+    }
+
+    /// Import a photograph chosen by its contents, where it has no path: its
+    /// name labels it and its bytes live in the content store.
+    pub fn open_contents(&mut self, doc: &mut AutoCommit, name: &str, bytes: &[u8]) {
+        let bytes = (bytes.len() <= pixels::MAX_ENCODED_BYTES).then_some(bytes);
+        self.open_bytes(doc, name, bytes);
+    }
+
+    fn open_bytes(&mut self, doc: &mut AutoCommit, path: &str, bytes: Option<&[u8]>) {
+        match bytes.and_then(pixels::decode) {
             Some(img) => {
                 // Put the bytes in the content store before naming them, so
                 // the hash this document is about to carry is one this machine
                 // can already answer for — and one the room can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
-                let content = match self.content.put(bytes.as_deref().unwrap_or_default()) {
+                let content = match self.content.put(bytes.unwrap_or_default()) {
                     Ok(content) => content,
                     Err(error) => {
                         tracing::warn!(%error, "photos: could not store an opened original");
@@ -3384,8 +3384,8 @@ impl PhotosApp {
         let Some(feedback) = self.places_camera_feedback else {
             return 0.0;
         };
-        let value = feedback.current(Instant::now());
-        if feedback.done(Instant::now()) {
+        let value = feedback.current(ui::time::now());
+        if feedback.done(ui::time::now()) {
             self.places_camera_feedback = None;
             0.0
         } else {
@@ -3638,7 +3638,9 @@ impl PhotosApp {
             self.notice = Some(tr("photos-save-failed"));
             return false;
         };
-        if let Ok(()) = atomic_file::write(std::path::Path::new(path), &bytes) {
+        let saved = tilo_files::file_at(std::path::Path::new(path))
+            .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes));
+        if saved.is_ok() {
             self.notice = Some(format!("{} {path}", tr("photos-saved")));
             true
         } else {
@@ -4748,18 +4750,28 @@ impl PhotosApp {
             crate::actions::PhotosOperation::Open { path: None } => {
                 self.import_content = Some(LiveContent::read(doc));
                 self.picker_stale = false;
-                self.picker = Some(
-                    ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
-                        .thread_name("photos-portal-open")
-                        .filter(
-                            ui::portal::FileFilter::new(&tr("photos-filter-images"))
-                                .mimetype("image/png")
-                                .mimetype("image/jpeg")
-                                .mimetype("image/webp"),
+                let filter = ui::portal::FileFilter::new(&tr("photos-filter-images"))
+                    .mimetype("image/png")
+                    .mimetype("image/jpeg")
+                    .mimetype("image/webp");
+                if crate::files::native_paths() {
+                    self.picker = Some(
+                        ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
+                            .thread_name("photos-portal-open")
+                            .filter(filter)
+                            .all_files()
+                            .send(),
+                    );
+                } else {
+                    self.contents_picker = Some(
+                        ui::portal::PickRequest::open_multiple(
+                            &tr("photos-open-title"),
+                            &tr("photos-open"),
                         )
-                        .all_files()
-                        .send(),
-                );
+                        .filter(filter)
+                        .send_contents(),
+                    );
+                }
             }
             crate::actions::PhotosOperation::ImportDirectory {
                 path: None,
@@ -6943,23 +6955,21 @@ impl PhotosApp {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();
-        let spawn = std::thread::Builder::new()
-            .name("photos-directory-import".into())
-            .spawn(move || {
-                let result = crate::import::index_directory(
-                    &path,
-                    &content,
-                    crate::import::ImportOptions {
-                        retain_exif_location,
-                        ..crate::import::ImportOptions::default()
-                    },
-                    &worker_cancel,
-                    |progress| {
-                        let _ = sender.send(DirectoryImportEvent::Progress(progress));
-                    },
-                );
-                let _ = sender.send(DirectoryImportEvent::Finished(result));
-            });
+        let spawn = ui::rt::spawn_thread("photos-directory-import", move || {
+            let result = crate::import::index_directory(
+                &path,
+                &content,
+                crate::import::ImportOptions {
+                    retain_exif_location,
+                    ..crate::import::ImportOptions::default()
+                },
+                &worker_cancel,
+                |progress| {
+                    let _ = sender.send(DirectoryImportEvent::Progress(progress));
+                },
+            );
+            let _ = sender.send(DirectoryImportEvent::Finished(result));
+        });
         if spawn.is_err() {
             self.notice = Some("Photos could not start the folder indexing job".into());
             if let Some(invocation) = invocation {
@@ -7351,6 +7361,7 @@ impl PhotosApp {
         reason = "drains every portal picker channel with its outcome handling side by side"
     )]
     fn drain_picker(&mut self, doc: &mut AutoCommit) {
+        self.drain_contents_picker(doc);
         if let Some(rx) = self.directory_picker.as_ref() {
             match rx.try_recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
@@ -9493,7 +9504,7 @@ impl PhotosApp {
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
-                self.people_detail_transition.value(Instant::now())
+                self.people_detail_transition.value(ui::time::now())
             };
             scene.push_layer(
                 Fill::NonZero,
@@ -13984,8 +13995,78 @@ fn capture_day(captured_at: &str) -> String {
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
+impl PhotosApp {
+    /// Import the photographs a contents chooser delivered.
+    fn drain_contents_picker(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.contents_picker.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::ContentsOutcome::Failed("the file chooser stopped responding".into())
+            }
+        };
+        self.contents_picker = None;
+        let stale = std::mem::take(&mut self.picker_stale);
+        self.import_content = None;
+        let invocation = self.resource_invocation.take();
+        let result = match outcome {
+            ui::portal::ContentsOutcome::Picked(files) if stale => {
+                let message = format!(
+                    "Selected {} photos; import was invalidated by changed document content",
+                    files.len()
+                );
+                self.notice = Some(message.clone());
+                Err(("photos.stale_selection", message))
+            }
+            ui::portal::ContentsOutcome::Picked(files) => {
+                for file in files {
+                    self.open_contents(doc, &file.name, &file.bytes);
+                }
+                if self.notice.is_none() {
+                    Ok(())
+                } else {
+                    Err(("photos.open_failed", tr("photos-open-failed")))
+                }
+            }
+            ui::portal::ContentsOutcome::Cancelled => {
+                if let Some(invocation) = invocation {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("photo selection was cancelled".into()),
+                    });
+                }
+                return;
+            }
+            ui::portal::ContentsOutcome::Failed(message) => {
+                self.notice = Some(format!("{}: {message}", tr("photos-open-failed")));
+                Err(("photos.portal_failed", message))
+            }
+        };
+        if let Some(invocation) = invocation {
+            self.resource_result = Some(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err((code, message)) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: code.into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
+    }
+}
+
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
-    pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
+    crate::files::read_native(std::path::Path::new(path), pixels::MAX_ENCODED_BYTES as u64)
 }
 
 impl PhotosApp {
@@ -14327,8 +14408,8 @@ impl Widget for PhotosApp {
         !self.places_motion_reduced
             && (self
                 .places_camera_feedback
-                .is_some_and(|feedback| !feedback.done(Instant::now()))
-                || self.people_detail_transition.is_animating(Instant::now()))
+                .is_some_and(|feedback| !feedback.done(ui::time::now()))
+                || self.people_detail_transition.is_animating(ui::time::now()))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

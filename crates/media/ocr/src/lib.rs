@@ -327,7 +327,12 @@ pub fn recognize(image: &DynamicImage, language: &str) -> Result<Document, Error
 pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recognition, Error> {
     validate_language(language)?;
     let (prepared, deskew_degrees) = prepare(image)?;
-    let mut input = tempfile::Builder::new().suffix(".png").tempfile()?;
+    // The engine is a process reading a file; the page has neither, and
+    // `tempfile` would panic there looking for a temp dir.
+    let scratch = tilo_paths::temp_dir().ok_or(Error::Unavailable)?;
+    let mut input = tempfile::Builder::new()
+        .suffix(".png")
+        .tempfile_in(scratch)?;
     prepared.write_to(&mut input, ImageFormat::Png)?;
     recognize_path(input.path(), language).map(|document| Recognition {
         document,

@@ -109,13 +109,14 @@ fn fetch_rules(
         let _private_write = crate::storage::private_root_write_guard(directory)?;
         std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
         for (path, text) in &downloads {
-            atomic_file::write(path, text.as_bytes()).map_err(|_| "Cannot save filter cache")?;
+            tilo_files::native::atomic::write(path, text.as_bytes())
+                .map_err(|_| "Cannot save filter cache")?;
         }
-        let updated = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let updated = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .ok()
             .map(|duration| duration.as_secs());
-        let _ = atomic_file::write(
+        let _ = tilo_files::native::atomic::write(
             &directory.join("native-filter-updated.json"),
             &serde_json::to_vec(&updated).unwrap_or_default(),
         );
@@ -195,8 +196,8 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                         });
                     }
                     if downloaded {
-                        status.updated = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
+                        status.updated = ui::time::wall()
+                            .duration_since(ui::time::UNIX_EPOCH)
                             .ok()
                             .map(|d| d.as_secs());
                     }
@@ -314,13 +315,13 @@ mod tests {
             .unwrap();
         std::fs::write(&trigger, b"exit").unwrap();
         let removal_deadline = tilo_test_env::hang_deadline();
-        while root.exists() && std::time::Instant::now() < removal_deadline {
+        while root.exists() && ui::time::now() < removal_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!root.exists(), "helper exit must remove the private root");
         release_tx.send(()).unwrap();
         let worker_deadline = tilo_test_env::hang_deadline();
-        while status().busy && std::time::Instant::now() < worker_deadline {
+        while status().busy && ui::time::now() < worker_deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!status().busy, "delayed refresh worker did not finish");
@@ -442,7 +443,7 @@ mod tests {
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(engine.clone());
             let deadline = tilo_test_env::hang_deadline();
-            while status().busy && std::time::Instant::now() < deadline {
+            while status().busy && ui::time::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let result = status();
@@ -467,7 +468,7 @@ mod tests {
                 .write(true)
                 .open(path)
                 .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                .set_times(std::fs::FileTimes::new().set_modified(ui::time::UNIX_EPOCH))
                 .unwrap();
         }
         std::fs::write(

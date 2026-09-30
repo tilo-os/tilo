@@ -13,11 +13,10 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -1794,7 +1793,7 @@ impl ContactsApp {
     }
 
     fn show_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ui::time::now()));
         self.dirty = true;
     }
 
@@ -2737,11 +2736,11 @@ impl ContactsApp {
         }
         let mut total = 0_u64;
         for path in &paths {
-            let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-            if !metadata.is_file() {
+            let metadata = file_metadata(path)?;
+            if metadata.kind != tilo_files::Kind::File {
                 return Err("selected path is not a regular file".into());
             }
-            total = total.saturating_add(metadata.len());
+            total = total.saturating_add(metadata.len);
             if total > MAX_IMPORT_TOTAL_BYTES {
                 return Err(format!(
                     "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
@@ -2750,35 +2749,33 @@ impl ContactsApp {
         }
         let generation = self.advance_import_generation()?;
         let (sender, receiver) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("contacts-vcard-parser".into())
-            .spawn(move || {
-                let mut contacts = Vec::new();
-                let mut errors = 0;
-                for path in paths {
-                    match Self::read_import_file(&path) {
-                        Ok(text) => {
-                            let report = vcard::parse_vcards_report(&text);
-                            errors += report.skipped_cards + usize::from(report.limit_reached);
-                            for c in report.contacts {
-                                if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
-                                    contacts.push(c);
-                                } else {
-                                    errors += 1;
-                                    break;
-                                }
+        ui::rt::spawn_thread("contacts-vcard-parser", move || {
+            let mut contacts = Vec::new();
+            let mut errors = 0;
+            for path in paths {
+                match Self::read_import_file(&path) {
+                    Ok(text) => {
+                        let report = vcard::parse_vcards_report(&text);
+                        errors += report.skipped_cards + usize::from(report.limit_reached);
+                        for c in report.contacts {
+                            if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
+                                contacts.push(c);
+                            } else {
+                                errors += 1;
+                                break;
                             }
                         }
-                        Err(_) => errors += 1,
                     }
+                    Err(_) => errors += 1,
                 }
-                let _ = sender.send(ParsedImport {
-                    generation,
-                    contacts,
-                    errors,
-                });
-            })
-            .map_err(|error| error.to_string())?;
+            }
+            let _ = sender.send(ParsedImport {
+                generation,
+                contacts,
+                errors,
+            });
+        })
+        .map_err(|error| error.to_string())?;
         self.import_parse_rx = Some(receiver);
         Ok(())
     }
@@ -2796,19 +2793,17 @@ impl ContactsApp {
     }
 
     fn read_import_file(path: &std::path::Path) -> Result<String, String> {
-        let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-        if !metadata.is_file() {
+        let metadata = file_metadata(path)?;
+        if metadata.kind != tilo_files::Kind::File {
             return Err("selected path is not a regular file".into());
         }
-        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
                 "file exceeds the {MAX_IMPORT_FILE_BYTES}-byte import limit"
             ));
         }
-        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-        let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
-        file.take(MAX_IMPORT_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
+        let bytes = tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
@@ -3077,10 +3072,11 @@ impl ContactsApp {
             return;
         }
         let body = vcard::to_vcards(&contacts, version);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(path, body) {
+        let written = tilo_files::file_at(path).and_then(|(dir, name)| {
+            tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
+            tilo_files::blocking::save_document(&dir, &name, body.as_bytes())
+        });
+        match written {
             Ok(()) => self.show_toast(format!(
                 "Exported {} ({}) → {}",
                 contacts.len(),
@@ -9127,7 +9123,7 @@ impl ContactsApp {
     fn try_detail_double_click(&mut self, p: Point) -> bool {
         const DOUBLE_CLICK_MS: u128 = 400;
         const DOUBLE_CLICK_RADIUS: f64 = 6.0;
-        let now = Instant::now();
+        let now = ui::time::now();
         let is_double = self.last_detail_click.is_some_and(|(t0, p0)| {
             now.duration_since(t0).as_millis() <= DOUBLE_CLICK_MS
                 && p.distance(p0) <= DOUBLE_CLICK_RADIUS
@@ -10334,6 +10330,13 @@ impl ContactsApp {
 // =====================================================================
 // Tests
 // =====================================================================
+
+/// Size and kind of a file a chooser named.
+fn file_metadata(path: &std::path::Path) -> Result<tilo_files::Meta, String> {
+    tilo_files::file_at(path)
+        .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name))
+        .map_err(|error| error.to_string())
+}
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]

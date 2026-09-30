@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -506,7 +506,7 @@ impl GitClientApp {
         Self {
             actions: crate::resource::ActionSink::default(),
             flap,
-            last_flap_tick: Instant::now(),
+            last_flap_tick: ui::time::now(),
             hamburger_rect: Rect::ZERO,
             model,
             diffs,
@@ -807,7 +807,7 @@ impl GitClientApp {
     /// Called once per drawn frame so the slide + scrim fade are smooth and
     /// frame-rate independent.
     fn tick_flap(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64();
         self.last_flap_tick = now;
         self.flap.tick(self.layout_mode(), dt.min(0.1));

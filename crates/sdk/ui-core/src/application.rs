@@ -343,6 +343,17 @@ impl HostContext {
     pub fn secrets(&self) -> crate::secrets::SecretStore {
         self.services.secrets.store(&self.app_id)
     }
+    /// This app's private file areas (data, config, cache, state): the
+    /// per-user directories natively, the origin-private file system in a
+    /// page. See [`crate::storage`] for what belongs where.
+    pub fn files(&self) -> crate::storage::AppFiles {
+        crate::storage::AppFiles::for_app(&self.app_id)
+    }
+    /// This app's preferences: its own section of the desktop settings
+    /// document, named by the app id.
+    pub fn settings(&self) -> crate::storage::Settings {
+        crate::storage::Settings::for_app(&self.app_id)
+    }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
     /// A reserved or missing record cannot be read.

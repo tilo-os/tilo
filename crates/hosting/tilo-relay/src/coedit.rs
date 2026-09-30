@@ -59,6 +59,8 @@ pub struct RelayCoeditSession {
     client: RelayClient,
     workspace_id: u64,
     author: [u8; 32],
+    /// When the host was last heard from, as [`now_ns`].
+    last_heard_ns: std::sync::atomic::AtomicU64,
 }
 
 impl RelayCoeditSession {
@@ -83,12 +85,75 @@ impl RelayCoeditSession {
             client,
             workspace_id,
             author,
+            last_heard_ns: std::sync::atomic::AtomicU64::new(now_ns()),
         })
     }
 
-    /// Read support belongs to this exact negotiated connection.
-    pub fn supports_agent_reads_v1(&self) -> bool {
-        self.client.supports_agent_reads_v1()
+    /// Ask the host to replay the workspace's retained state again, as it
+    /// did for the first subscription (and answer `Ready` after it): for a
+    /// device that dropped history it could not use then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn resubscribe(&self) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::Subscribe {
+                workspace_id: self.workspace_id,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Join the workspace's live plane, where presence and previews of every
+    /// member (native, browser, agent) meet. Call after [`Self::join`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn live_join(&self) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::LiveJoin {
+                workspace_id: self.workspace_id,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Publish one canonical live frame to the workspace's live members.
+    /// Lossy: nothing is queued or retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn publish_live(&self, frame: Vec<u8>) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::Live {
+                workspace_id: self.workspace_id,
+                // The host overwrites it from the authenticated session.
+                from_device_public_key: self.author,
+                frame,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Ask the host for a `Pong`. A host that stops answering is gone even
+    /// when the connection underneath has not noticed, see
+    /// [`Self::silent_for`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn ping(&self) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::Ping)
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// How long nothing arrived from the host, keep-alives included.
+    pub fn silent_for(&self) -> std::time::Duration {
+        let heard = self
+            .last_heard_ns
+            .load(std::sync::atomic::Ordering::Relaxed);
+        std::time::Duration::from_nanos(now_ns().saturating_sub(heard))
     }
 
     /// Enable the private v2 lane on this same co-edit connection. Await its
@@ -299,6 +364,8 @@ impl RelayCoeditSession {
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
             let envelope = self.client.recv().await?;
+            self.last_heard_ns
+                .store(now_ns(), std::sync::atomic::Ordering::Relaxed);
             if matches!(&envelope,
                 Envelope::Delta { workspace_id, .. }
                 | Envelope::Presence { workspace_id, .. }
@@ -350,6 +417,16 @@ impl RelayCoeditSession {
                     ..
                 } if workspace_id == self.workspace_id => {
                     return Some(Inbound::RemoteAction {
+                        from: from_device_public_key,
+                        frame,
+                    });
+                }
+                Envelope::Live {
+                    workspace_id,
+                    from_device_public_key,
+                    frame,
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::Live {
                         from: from_device_public_key,
                         frame,
                     });

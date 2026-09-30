@@ -82,6 +82,15 @@ pub fn request_import() -> ImportChannel {
         .send_multiple()
 }
 
+/// The same chooser delivering the chosen files' contents, for a host whose
+/// files have no path (a browser page).
+pub fn request_import_contents() -> ui::portal::ContentsChannel {
+    PickRequest::open_multiple("Import media", "Import")
+        .filter(media_filter())
+        .all_files()
+        .send_contents()
+}
+
 /// The chooser filter for one export container, so the Save dialog offers the
 /// extension the encode will actually produce.
 fn container_filter(ext: &str) -> FileFilter {

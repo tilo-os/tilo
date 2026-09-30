@@ -23,7 +23,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -48,7 +48,7 @@ hex.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
+tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 mime_guess.workspace = true
 chrono = { workspace = true, default-features = true }
@@ -68,7 +68,7 @@ zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
@@ -92,7 +92,7 @@ fluent.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(unix)'.dev-dependencies]
-fs = { path = "../../crates/system/fs" }
+tilo-fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 

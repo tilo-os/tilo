@@ -321,3 +321,7 @@ pub(super) fn open(path: &Path, write: bool, create: bool, exclusive: bool) -> i
         Ok(file)
     }
 }
+
+pub(super) const fn owner_only(_metadata: &std::fs::Metadata) -> bool {
+    true
+}

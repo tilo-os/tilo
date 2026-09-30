@@ -109,7 +109,13 @@ impl RecentFiles {
     }
 }
 
-pub use tilo_clock::unix_now_ms as now_ms;
+pub fn now_ms() -> u64 {
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 #[cfg(test)]
 mod tests {

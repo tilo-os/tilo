@@ -18,7 +18,6 @@
 //! meaningless.
 
 use std::path::PathBuf;
-use std::time::Instant;
 
 use ui::framework::testing::HeadlessApp;
 use ui::headless::Driver;
@@ -106,7 +105,7 @@ impl Editor for HeadlessApp<WordProcessorApp> {
         harness.begin_profiling();
         harness.clear_profile_samples();
         let scans = tilo_doc::model::ordered_keys_scan_count();
-        let started = Instant::now();
+        let started = ui::time::now();
         harness.key(key);
         let wall = micros(started.elapsed());
         let scans = tilo_doc::model::ordered_keys_scan_count().saturating_sub(scans);
@@ -228,7 +227,7 @@ fn main() -> std::io::Result<()> {
     println!("size   open(s)   keystroke mean      p50      p95      max   enter mean");
     for megabytes in sizes {
         let path = document_of(megabytes)?;
-        let opened = Instant::now();
+        let opened = ui::time::now();
         let mut editor = if standalone {
             open_standalone(&path)?
         } else {
@@ -254,13 +253,13 @@ fn main() -> std::io::Result<()> {
             .cycle()
             .take(chars)
         {
-            let started = Instant::now();
+            let started = ui::time::now();
             editor.key(&ch.to_string());
             per_key.push(micros(started.elapsed()));
         }
         let mut enters = Vec::new();
         for _ in 0..10 {
-            let started = Instant::now();
+            let started = ui::time::now();
             editor.key("Enter");
             enters.push(micros(started.elapsed()));
             editor.key("x");

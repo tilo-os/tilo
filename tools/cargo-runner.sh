@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cargo's runner for Linux targets (.cargo/config.toml): `cargo test`,
+# Cargo's runner for Linux and macOS targets (.cargo/config.toml): `cargo test`,
 # `cargo bench`, `cargo nextest` and `cargo run` start every binary through
 # this script, locally and on a remote builder alike.
 #

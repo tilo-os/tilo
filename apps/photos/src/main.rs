@@ -302,7 +302,7 @@ fn render_scenario(
             &permission,
         );
         if settle_frames > 2 {
-            std::thread::sleep(std::time::Duration::from_millis(6));
+            let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(6));
         }
     }
 
@@ -314,8 +314,10 @@ fn render_scenario(
         &presence,
     );
 
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
+    if let Some(parent) = out.parent()
+        && let Ok((dir, name)) = tilo_files::file_at(parent)
+    {
+        let _ = tilo_files::blocking::create_dir_all(&dir, &name);
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);

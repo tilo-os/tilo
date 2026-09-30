@@ -24,6 +24,19 @@ use media::audio_runtime::{PersistentAudioPolicy, PersistentAudioPreferences, Re
 use settings_store::system_sounds::SystemSoundEvent;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1200);
+/// After the graph and preferences stay still, stop shelling `pw-dump`
+/// every 1.2 s. Hotplug still lands within this window; `R01`'s empty
+/// desktop must not keep `pw-dump` / `WirePlumber` in the session budget.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(8);
+const STABLE_POLLS_BEFORE_IDLE: u8 = 3;
+
+fn poll_interval(stable_polls: u8) -> Duration {
+    if stable_polls >= STABLE_POLLS_BEFORE_IDLE {
+        IDLE_POLL_INTERVAL
+    } else {
+        POLL_INTERVAL
+    }
+}
 
 #[derive(Debug)]
 pub struct SessionAudioPolicyOwner {
@@ -50,9 +63,17 @@ impl SessionAudioPolicyOwner {
                 let mut last_error = None;
                 let mut devices = DeviceRoster::default();
                 let mut last_graph: Option<AudioGraph> = None;
+                let mut last_prefs: Option<PersistentAudioPreferences> = None;
+                let mut stable_polls = 0_u8;
                 loop {
                     let prefs = load_preferences();
                     let graph = media::audio::enumerate();
+                    if last_graph.as_ref() == Some(&graph) && last_prefs == Some(prefs) {
+                        stable_polls = stable_polls.saturating_add(1);
+                    } else {
+                        stable_polls = 0;
+                    }
+                    last_prefs = Some(prefs);
                     for event in devices.observe(&graph) {
                         let _ = device_tx.send(event);
                     }
@@ -88,7 +109,7 @@ impl SessionAudioPolicyOwner {
                         }
                         last_error = error;
                     }
-                    if rx.recv_timeout(POLL_INTERVAL).is_ok() {
+                    if rx.recv_timeout(poll_interval(stable_polls)).is_ok() {
                         break;
                     }
                 }
@@ -325,6 +346,15 @@ mod tests {
     fn a_failed_enumeration_is_not_an_unplug() {
         assert!(!enumerated(&AudioGraph::default()));
         assert!(enumerated(&sinks_graph(vec![sink("a", "A", true)])));
+    }
+
+    #[test]
+    fn a_stable_graph_backs_off_pw_dump() {
+        assert_eq!(poll_interval(0), POLL_INTERVAL);
+        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE - 1), POLL_INTERVAL);
+        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE), IDLE_POLL_INTERVAL);
+        assert_eq!(poll_interval(u8::MAX), IDLE_POLL_INTERVAL);
+        assert!(IDLE_POLL_INTERVAL > POLL_INTERVAL);
     }
 
     #[test]

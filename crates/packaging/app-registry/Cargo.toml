@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../../crates/system/atomic-file" }
 tilo-app-package = { path = "../tilo-app-package" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem
@@ -31,7 +31,7 @@ tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 bytes.workspace = true

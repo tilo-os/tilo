@@ -5,7 +5,6 @@
 //! read; no received document can direct Camera to open an arbitrary local
 //! path.
 
-use std::io::Read;
 use std::path::Path;
 
 use tilo_content::ContentStore;
@@ -36,11 +35,7 @@ pub fn read(content: &ContentStore, id: &str) -> Option<Vec<u8>> {
 }
 
 pub fn store_file(content: &ContentStore, path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_MEDIA_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let bytes = crate::files::read_bounded(path, MAX_MEDIA_BYTES)?;
     store(content, &bytes)
 }
 

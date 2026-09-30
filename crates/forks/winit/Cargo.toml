@@ -1,0 +1,35 @@
+[package]
+name = "winit"
+version = "0.30.13"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Workspace facade: crates.io crates that depend on `winit` (accesskit_winit, smithay) get Tilo's fork, tilo-winit, and so the same types as Tilo's crates."
+
+# The facade is what `[patch.crates-io] winit` points at. Tilo's own crates
+# depend on `tilo-winit` directly (the workspace `winit` dependency), which is
+# what a published SDK crate names; nothing depends on this crate by path.
+
+[lib]
+name = "winit"
+path = "src/lib.rs"
+
+[dependencies]
+upstream = { package = "tilo-winit", version = "0.30.13", path = "../../../vendor/winit", default-features = false }
+
+[features]
+default = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"]
+android-game-activity = ["upstream/android-game-activity"]
+android-native-activity = ["upstream/android-native-activity"]
+mint = ["upstream/mint"]
+rwh_04 = ["upstream/rwh_04"]
+rwh_05 = ["upstream/rwh_05"]
+rwh_06 = ["upstream/rwh_06"]
+serde = ["upstream/serde"]
+wayland = ["upstream/wayland"]
+wayland-csd-adwaita = ["upstream/wayland-csd-adwaita"]
+wayland-csd-adwaita-crossfont = ["upstream/wayland-csd-adwaita-crossfont"]
+wayland-csd-adwaita-notitle = ["upstream/wayland-csd-adwaita-notitle"]
+wayland-dlopen = ["upstream/wayland-dlopen"]
+x11 = ["upstream/x11"]
+

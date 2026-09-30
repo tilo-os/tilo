@@ -31,7 +31,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
 | Previous/next workspace | Super+Page Up/Page Down | Workspace arrows/wheel |
-| Previous/next strip | Super+Shift+Up/Down | Strip navigation |
+| Previous/next strip | Super+Up/Down | Strip navigation |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Focus the Nth window of the strip | Super+1 … Super+9 | Select group/tab |
@@ -74,10 +74,11 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Close focused tab | Super+W | Tab close |
 | Reopen last closed tab (this workspace) | Super+Shift+T | Close toast's Undo |
 | Duplicate focused tab | Super+D | Tab action |
-| Maximize/restore focused window group | Super+Up | Frame maximize/restore |
+| Maximize/restore focused window group | Super+M | Frame maximize/restore |
 | Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
 | Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
 | Move focused window group left/right in the strip | Super+Shift+Left/Right | Drag the group |
+| Move focused window group to the strip above/below | Super+Shift+Up/Down | — |
 | Move focused window group to the previous/next display | Super+Ctrl+Shift+Left/Right | Drag the group onto the display |
 | Make focused window group narrower/wider | Super+- / Super+= | — |
 | Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
@@ -86,7 +87,11 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 Super tapped alone means Super pressed and released with no other key,
 click or scroll in between; any chord disarms it. Super+N is already the
 adjacent-window chord, so notifications take Super+A (the Windows Action
-Center key). Super+F makes a Wayland client full screen through
+Center key). Shift carries the focused group in the direction the bare
+arrow moves focus; carrying past the first or last strip does nothing, and
+the group lands after the destination strip's focused group. Super+M
+replaced Super+Up as the maximize default when Super+Up/Down took strips; a
+settings file that still holds a previous default takes the new one. Super+F makes a Wayland client full screen through
 `xdg_toplevel`; a Tilo app, which has no protocol fullscreen, maximizes its
 window group instead. Each resize step is 5% of the display's width. With
 one display, the move-to-display chords do nothing; displays are ordered left

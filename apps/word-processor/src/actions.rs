@@ -1453,7 +1453,48 @@ fn provide_resources_from(
     add_metadata_resources(&mut root, listed);
     add_style_resources(&mut root, listed);
     add_structural_resources(&mut root, listed);
-    vec![root]
+    vec![returning_changes(root)]
+}
+
+/// The edits a caller composes a document with answer with the blocks they
+/// changed ([`crate::semantic_read::changes`]), so it sees the result without
+/// reading the document again. Only these: every declared result grows the
+/// catalogue each open document publishes to the broker, whose reply is
+/// capped.
+const RETURNING_CHANGES: &[&str] = &[
+    "paste",
+    "set-paragraph-style",
+    "apply-named-style",
+    "insert-table",
+];
+
+/// A table's edits that answer with its new cells, whose ids the caller
+/// fills them through.
+const TABLE_RETURNING_CHANGES: &[&str] = &["append-row", "append-column"];
+
+fn returning_changes(mut root: Resource) -> Resource {
+    declare_changes(&mut root, RETURNING_CHANGES);
+    for table in root
+        .children
+        .iter_mut()
+        .filter(|child| child.kind == "word_processor.table")
+    {
+        declare_changes(table, TABLE_RETURNING_CHANGES);
+    }
+    root
+}
+
+fn declare_changes(resource: &mut Resource, ids: &[&str]) {
+    for action in &mut resource.actions {
+        if ids.contains(&action.id.as_str())
+            && action.kind == OperationKind::Document
+            && action.contract.result == ResultSpec::None
+        {
+            action.contract.result = ResultSpec::Json {
+                schema: serde_json::json!({"type": ["string", "null"]}),
+            };
+        }
+    }
 }
 
 /// The resource tree from the incrementally kept document state: its

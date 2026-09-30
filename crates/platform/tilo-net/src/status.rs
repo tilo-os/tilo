@@ -4,7 +4,8 @@
 //! [`Connectivity::Online`] means "worth trying", and a failed request
 //! remains the real answer. On the desktop it means a route to the public
 //! internet exists (IPv4 or IPv6); in a page it is `navigator.onLine`.
-//! Metering is known only in a page, from the Network Information API.
+//! Metering comes from `NetworkManager` on Linux and the Network Information
+//! API in a page; macOS does not say.
 
 /// Whether the device has a network path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -137,7 +138,95 @@ mod imp {
         };
         NetStatus {
             connectivity,
-            metered: None,
+            metered: metered::current(),
+        }
+    }
+
+    /// `NetworkManager`'s view of the active devices, asked through `nmcli`
+    /// at most once a minute (the watch polls every few seconds).
+    #[cfg(target_os = "linux")]
+    pub(crate) mod metered {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        use tilo_clock::Instant;
+
+        const FRESH: Duration = Duration::from_secs(60);
+        const DEADLINE: Duration = Duration::from_secs(3);
+        const MAX_OUTPUT: u64 = 256 * 1024;
+
+        static LAST: Mutex<Option<(Instant, Option<bool>)>> = Mutex::new(None);
+
+        pub(super) fn current() -> Option<bool> {
+            let mut last = LAST
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((at, answer)) = *last
+                && at.elapsed() < FRESH
+            {
+                return answer;
+            }
+            let answer = ask();
+            *last = Some((tilo_clock::now(), answer));
+            answer
+        }
+
+        fn ask() -> Option<bool> {
+            let mut child = Command::new("nmcli")
+                .args(["-t", "-f", "GENERAL.METERED", "device", "show"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let started = tilo_clock::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().ok()? {
+                    break status;
+                }
+                if started.elapsed() > DEADLINE {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            let mut text = String::new();
+            child
+                .stdout
+                .take()?
+                .take(MAX_OUTPUT)
+                .read_to_string(&mut text)
+                .ok()?;
+            status.success().then(|| parse(&text)).flatten()
+        }
+
+        /// `yes`/`yes (guessed)` on any device is metered; `no`/`no
+        /// (guessed)` on at least one, and none metered, is not; only
+        /// `unknown` says nothing.
+        pub(crate) fn parse(text: &str) -> Option<bool> {
+            let mut saw_known = false;
+            for line in text.lines() {
+                let value = line
+                    .split_once(':')
+                    .map_or("", |(_, value)| value)
+                    .trim()
+                    .to_ascii_lowercase();
+                if value.starts_with("yes") {
+                    return Some(true);
+                }
+                saw_known |= value.starts_with("no");
+            }
+            saw_known.then_some(false)
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    mod metered {
+        pub(super) const fn current() -> Option<bool> {
+            None
         }
     }
 
@@ -221,11 +310,28 @@ mod tests {
     fn the_route_probe_answers_without_sending() {
         // CI machines may be offline; the answer only has to be consistent.
         let status = current();
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(status.metered, None);
         assert_eq!(
             status.online(),
             status.connectivity != Connectivity::Offline
         );
         assert_eq!(watch().last().connectivity, status.connectivity);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn network_manager_answers_read_as_metered_or_not() {
+        use super::imp::metered::parse;
+        assert_eq!(
+            parse("GENERAL.METERED:no\nGENERAL.METERED:yes (guessed)\n"),
+            Some(true)
+        );
+        assert_eq!(
+            parse("GENERAL.METERED:no (guessed)\nGENERAL.METERED:unknown\n"),
+            Some(false)
+        );
+        assert_eq!(parse("GENERAL.METERED:unknown\n"), None);
+        assert_eq!(parse(""), None);
     }
 }

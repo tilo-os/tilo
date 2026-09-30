@@ -10,7 +10,7 @@
 //! Set `TILO_PDF_PROFILE=1` for the intra-`source::open` breakdown.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use ui::time::Instant;
 
 use pdf_viewer::PdfApp;
 use taffy::prelude::*;
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or((1280, 800));
 
     // ---- open (source::open runs synchronously in PdfApp::open) ----
-    let t_open = Instant::now();
+    let t_open = ui::time::now();
     let mut widget: Box<dyn Widget> = Box::new(PdfApp::open(&path));
     let open_ms = ms(t_open);
 
@@ -54,11 +54,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut state = ui::State::new();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     widget.sync(&mut state.doc, &state.root);
     let sync_ms = ms(t);
 
-    let t = Instant::now();
+    let t = ui::time::now();
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let build_ms = ms(t);
 
-    let t = Instant::now();
+    let t = ui::time::now();
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // First real paint: this is where rasterize_visible runs (the engine renders
     // the first visible page + any visible rail thumbnails).
-    let t = Instant::now();
+    let t = ui::time::now();
     let mut scene = Scene::new();
     widget.draw_with_presence(
         &mut scene,
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let draw1_ms = ms(t);
 
     // A second draw shows the warm-cache steady-state (bitmaps cached).
-    let t = Instant::now();
+    let t = ui::time::now();
     let mut scene2 = Scene::new();
     widget.draw_with_presence(
         &mut scene2,

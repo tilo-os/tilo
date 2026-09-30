@@ -66,7 +66,7 @@ fn configure_settled_capture_renderer() {
             reason = "Rust 2024 marks process-environment mutation unsafe; this one-shot headless renderer preference is installed before constructing any Store shot renderer"
         )]
         unsafe {
-            std::env::set_var("QUICK_UI_VELLO_CPU", "1");
+            std::env::set_var("TILO_UI_VELLO_CPU", "1");
         }
     });
 }
@@ -76,7 +76,7 @@ fn configure_settled_capture_renderer() {
 #[cfg(test)]
 fn settled_capture_renderer_scope() -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("QUICK_UI_VELLO_CPU", "1");
+    env.set("TILO_UI_VELLO_CPU", "1");
     env
 }
 

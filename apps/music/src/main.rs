@@ -413,7 +413,7 @@ fn probe_decode(url: &str) {
     }
     let mut max_ms = 0u64;
     for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(200));
         if let Some(p) = playbin.query_position::<gstreamer::ClockTime>() {
             max_ms = max_ms.max(p.mseconds());
         }
@@ -517,9 +517,8 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
 
 /// Headless benchmark: render the current view (`TILO_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
-/// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
+/// `TILO_UI_PERF` reports live. No GPU submit, no display — reproducible.
 fn run_bench(n: usize, viewport: (u32, u32)) {
-    use std::time::Instant;
     let mut frame = ShotFrame::new(viewport, Theme::dark());
     let mut widget = music::app_root_for_shot(""); // offline sample, hermetic
 
@@ -528,7 +527,7 @@ fn run_bench(n: usize, viewport: (u32, u32)) {
 
     let mut samples = Vec::with_capacity(n);
     for _ in 0..n {
-        let t0 = Instant::now();
+        let t0 = ui::time::now();
         let _ = render_widget_frame(&mut frame, widget.as_mut());
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
@@ -608,14 +607,14 @@ fn render_live_shot_to_png(
                 app.shot_play_top_result(&mut shot.state.doc);
                 break;
             }
-            std::thread::sleep(Duration::from_millis(80));
+            let _ = ui::rt::sleep_thread(Duration::from_millis(80));
         }
         for _ in 0..200 {
             let _ = render_widget_frame(&mut shot, &mut app);
             if app.images_idle() && app.shot_lyrics_ready() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(80));
+            let _ = ui::rt::sleep_thread(Duration::from_millis(80));
         }
     } else {
         // Browse views (Home / Artist / Album / Search): pump until the content
@@ -635,7 +634,7 @@ fn render_live_shot_to_png(
             if done && app.is_content_loaded_for_shot() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(80));
+            let _ = ui::rt::sleep_thread(Duration::from_millis(80));
         }
     }
 

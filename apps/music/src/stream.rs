@@ -1,7 +1,8 @@
 //! The non-blocking streaming worker.
 //!
 //! All network + extraction work — real `YouTube` Music search and audio-stream
-//! resolution — runs on a background thread so the UI thread never blocks. The
+//! resolution — runs on a background thread so the UI thread never blocks (in
+//! a browser page, which has no threads, as app tasks one request at a time). The
 //! app talks to it with two plain channels: it *sends* [`StreamRequest`]s
 //! (fire-and-forget) and *drains* [`StreamUpdate`]s once per frame via
 //! [`StreamWorker::poll`] (a non-blocking `try_iter`). The worker owns a
@@ -129,6 +130,15 @@ pub struct StreamWorker {
     tx: SyncSender<StreamRequest>,
     rx: Receiver<StreamUpdate>,
     startup_error: Option<String>,
+    /// Where there are no threads (a browser page): the backend and the
+    /// requests, answered one at a time as app tasks.
+    tasks: Option<Tasks>,
+}
+
+struct Tasks {
+    backend: std::sync::Arc<dyn MusicBackend>,
+    requests: std::sync::Arc<std::sync::Mutex<Receiver<StreamRequest>>>,
+    updates: Sender<StreamUpdate>,
 }
 
 impl StreamWorker {
@@ -156,19 +166,38 @@ impl StreamWorker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        let startup_error = std::thread::Builder::new()
-            .name("music-stream".into())
-            .spawn(move || run_worker(&req_rx, &up_tx, force_offline))
-            .err()
-            .map(|error| {
-                tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
-                format!("could not start music worker: {error}")
-            });
+        if !matches!(
+            ui::rt::availability(ui::rt::Feature::Threads),
+            ui::rt::Availability::Available
+        ) {
+            let backend: std::sync::Arc<dyn MusicBackend> =
+                std::sync::Arc::from(open_backend(&up_tx, force_offline));
+            return Self {
+                tx: req_tx,
+                rx: up_rx,
+                startup_error: None,
+                tasks: Some(Tasks {
+                    backend,
+                    requests: std::sync::Arc::new(std::sync::Mutex::new(req_rx)),
+                    updates: up_tx,
+                }),
+            };
+        }
+
+        let startup_error = ui::rt::spawn_thread("music-stream", move || {
+            run_worker(&req_rx, &up_tx, force_offline);
+        })
+        .err()
+        .map(|error| {
+            tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
+            format!("could not start music worker: {error}")
+        });
 
         Self {
             tx: req_tx,
             rx: up_rx,
             startup_error,
+            tasks: None,
         }
     }
 
@@ -189,7 +218,22 @@ impl StreamWorker {
                 "music worker is busy; wait for the current request or try again".to_string()
             }
             TrySendError::Disconnected(_) => "music worker is unavailable".to_string(),
-        })
+        })?;
+        if let Some(tasks) = &self.tasks {
+            let (backend, requests, updates) = (
+                std::sync::Arc::clone(&tasks.backend),
+                std::sync::Arc::clone(&tasks.requests),
+                tasks.updates.clone(),
+            );
+            // One queued request per task, answered in order.
+            drop(ui::rt::app().spawn_blocking(move || {
+                let next = requests.lock().ok().and_then(|queue| queue.try_recv().ok());
+                if let Some(request) = next {
+                    handle_request(backend.as_ref(), &updates, request);
+                }
+            }));
+        }
+        Ok(())
     }
 
     /// Non-blocking drain of any updates ready this frame.
@@ -205,6 +249,7 @@ impl StreamWorker {
             tx,
             rx,
             startup_error: Some("test worker startup failure".to_string()),
+            tasks: None,
         }
     }
 }
@@ -240,6 +285,13 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
 }
 
 fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, force_offline: bool) {
+    let backend = open_backend(up_tx, force_offline);
+    while let Ok(request) = req_rx.recv() {
+        handle_request(backend.as_ref(), up_tx, request);
+    }
+}
+
+fn open_backend(up_tx: &Sender<StreamUpdate>, force_offline: bool) -> Box<dyn MusicBackend> {
     // Build the data source once. `preferred_backend` picks live rustypipe if
     // compiled + reachable, else the offline sample.
     let backend = if force_offline {
@@ -256,10 +308,7 @@ fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, fo
         name: backend.name().to_string(),
         live: backend.is_live(),
     });
-
-    while let Ok(request) = req_rx.recv() {
-        handle_request(backend.as_ref(), up_tx, request);
-    }
+    backend
 }
 
 #[allow(
@@ -467,6 +516,7 @@ mod tests {
                 tx,
                 rx,
                 startup_error: None,
+                tasks: None,
             };
             for _ in 0..REQUEST_QUEUE_LIMIT {
                 worker

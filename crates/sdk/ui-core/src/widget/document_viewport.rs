@@ -997,9 +997,9 @@ impl Widget for DocumentViewport {
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_child(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_child(&theme, tr)
+        });
     }
 
     fn draw(

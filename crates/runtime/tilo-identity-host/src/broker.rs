@@ -87,8 +87,12 @@ pub struct IdentityBrokerHandle {
 
 impl Drop for IdentityBrokerHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(listener) = self.listener.take() {
+        self.stop.store(true, Ordering::Release);
+        // The listener sleeps in `accept`; one connection wakes it to see the
+        // flag. If nothing can connect it is not waited for.
+        if let Some(listener) = self.listener.take()
+            && UnixStream::connect(&self.path).is_ok()
+        {
             let _ = listener.join();
         }
         let _ = std::fs::remove_file(&self.path);
@@ -100,8 +104,8 @@ impl Drop for IdentityBrokerHandle {
 ///
 /// # Errors
 ///
-/// Returns an error if binding the unix socket at `path` or putting it into
-/// non-blocking mode fails, or if the listener thread cannot be spawned.
+/// Returns an error if binding the unix socket at `path` fails, or if the
+/// listener thread cannot be spawned.
 pub fn spawn(
     path: PathBuf,
     tree: Arc<dyn WorkspaceMembership>,
@@ -109,14 +113,14 @@ pub fn spawn(
 ) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
-    listener.set_nonblocking(true)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let listener_thread = thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
+            loop {
                 match listener.accept() {
+                    Ok(_) if thread_stop.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let tree = Arc::clone(&tree);
                         let channels = Arc::clone(&channels);
@@ -127,9 +131,7 @@ pub fn spawn(
                             tracing::warn!(%error, "identity broker could not spawn client worker");
                         }
                     }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => {
                         tracing::warn!(%error, "identity broker listener stopped");
                         break;
@@ -1046,5 +1048,71 @@ mod tests {
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
         drop(identity);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn thread_ids() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .expect("tasks")
+            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
+            .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn context_switches(tid: &str) -> u64 {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+            .expect("thread status")
+            .lines()
+            .filter(|line| line.contains("ctxt_switches"))
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_idle_listener_sleeps_until_a_client_arrives() {
+        let temp = tempfile::tempdir().expect("temp");
+        let socket = temp.path().join("identity.sock");
+        let before = thread_ids();
+        let broker = spawn(
+            socket.clone(),
+            Arc::new(WorkspaceTree::default().shared()),
+            Arc::new(()),
+        )
+        .expect("broker");
+        // A thread names itself once it runs, so it may not be named yet.
+        let waiting = std::time::Instant::now();
+        let listener = loop {
+            let named = thread_ids()
+                .difference(&before)
+                .find(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|comm| comm.trim() == "tilo-identity-b")
+                })
+                .cloned();
+            if let Some(tid) = named {
+                break tid;
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "the broker's listener thread"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        thread::sleep(Duration::from_millis(50));
+        let settled = context_switches(&listener);
+        thread::sleep(Duration::from_millis(400));
+        let woke = context_switches(&listener).saturating_sub(settled);
+        assert_eq!(woke, 0, "an idle listener woke {woke} times in 400 ms");
+
+        UnixStream::connect(&socket).expect("still accepts clients");
+        let started = std::time::Instant::now();
+        drop(broker);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "dropping the broker waited {:?} for its listener",
+            started.elapsed()
+        );
+        assert!(!socket.exists(), "the socket is removed with the broker");
     }
 }

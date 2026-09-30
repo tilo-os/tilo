@@ -3,7 +3,7 @@
 //! the app's throttle — so the very first `--shots` frame, which never
 //! ticks the throttle, renders the seeded sample data untouched.
 
-use std::time::Instant;
+use ui::time::Instant;
 
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
@@ -138,7 +138,7 @@ impl Sampler {
     /// computed as byte deltas since the previous call divided by the
     /// elapsed wall time.
     pub fn refresh(&mut self, model: &mut MonitorModel) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = self.last.map_or(1.0, |l| (now - l).as_secs_f32()).max(0.05);
 
         self.sys.refresh_cpu_all();

@@ -213,7 +213,7 @@ headless compositor and prints `READY <socket>`; `_control.py` is the socket cli
 rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five seconds.
 
 **Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
-Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
+Debug overlays need `TILO_UI_DEBUG` **and** `debug_assertions`.
 
 ## Dev VMs
 

@@ -6,7 +6,7 @@
 //!   cargo run -p browser --example adblock_blank_repro --features wpe --release -- both
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
@@ -69,8 +69,8 @@ fn main() {
     engine.send(WebViewCommand::Navigate(url));
 
     // Wait for the real page.
-    let deadline = Instant::now() + Duration::from_secs(25);
-    while Instant::now() < deadline {
+    let deadline = ui::time::now() + Duration::from_secs(25);
+    while ui::time::now() < deadline {
         if let Some((r, _, _)) = latest(&*engine) {
             if uniformity(&r) < 0.9 {
                 break;
@@ -97,7 +97,7 @@ fn main() {
                 // REPRO_LISTS=easylist,easyprivacy restricts to those lists
                 // (name prefix match); default = all cached lists.
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-                let dir = xdg_paths::cache_dir()
+                let dir = tilo_paths::cache_dir()
                     .unwrap()
                     .join("tilo-browser")
                     .join("filters");
@@ -195,7 +195,7 @@ fn main() {
 /// stylesheets), which is how a generic list can kill a page's own assets.
 fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-    let dir = xdg_paths::cache_dir()
+    let dir = tilo_paths::cache_dir()
         .unwrap()
         .join("tilo-browser")
         .join("filters");

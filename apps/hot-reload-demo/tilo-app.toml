@@ -5,6 +5,8 @@ category = "Utility"
 version = "0.1.0"
 kind = "app"
 runtime = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Demonstrates `tilo-app dev` loading new Rust into the running native process."
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -382,6 +382,7 @@ pub struct FrameBuilder {
     watch_configured_theme: bool,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
+    appearance_generation: u64,
     night_light: bool,
     night_light_temperature: u32,
     /// The day/night schedule an "Automatic" theme or a scheduled night light
@@ -624,6 +625,7 @@ impl FrameBuilder {
             watch_configured_theme: false,
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
+            appearance_generation: 0,
             night_light: false,
             night_light_temperature: 3_700,
             day_phase: None,
@@ -800,9 +802,15 @@ impl FrameBuilder {
             let pointer = std::ptr::from_ref(widget);
             if widget.is_focusable()
                 && widget.is_enabled()
-                && let Some((&node, _)) = node_map
-                    .iter()
-                    .find(|(_, mapped)| std::ptr::addr_eq(**mapped as *const dyn Widget, pointer))
+                && let Some((&node, _)) = node_map.iter().find(|(_, mapped)| {
+                    // `TileHost` children are `dyn AppWidget`; comparing the
+                    // full `dyn Widget` fat pointer misses the same heap
+                    // object because the vtables differ.
+                    std::ptr::eq(
+                        (**mapped as *const dyn Widget).cast::<()>(),
+                        pointer.cast::<()>(),
+                    )
+                })
             {
                 order.push(node);
             }
@@ -873,7 +881,84 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    fn widget_name(&self, id: NodeId) -> Option<&'static str> {
+        self.node_map.get(&id).map(|&widget| {
+            // SAFETY: this map belongs to the current, live layout tree.
+            unsafe { (*widget).name() }
+        })
+    }
+
+    fn active_tile_is_terminal(&self) -> bool {
+        let chrome = self.chrome();
+        let tree = chrome.tree();
+        let is_terminal = Self::workspace_active_tile_is_terminal(&tree);
+        drop(tree);
+        is_terminal
+    }
+
+    fn workspace_active_tile_is_terminal(tree: &crate::shell::state::WorkspaceTree) -> bool {
+        use crate::shell::state::{AppKind, TileContent};
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return false;
+        };
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .and_then(|sid| ws.strips.iter().find(|s| s.id == *sid))
+            .or_else(|| ws.strips.first());
+        let Some(strip) = strip else {
+            return false;
+        };
+        let group = tree
+            .desktop
+            .active_group_for(strip.id)
+            .and_then(|gid| strip.window_groups.iter().find(|g| g.id == gid))
+            .or_else(|| strip.window_groups.first());
+        let Some(group) = group else {
+            return false;
+        };
+        let tab = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first());
+        tab.is_some_and(|tab| match &tab.tile {
+            TileContent::AppPlaceholder {
+                kind: AppKind::Terminal,
+                ..
+            }
+            | TileContent::Stub {
+                kind: AppKind::Terminal,
+                ..
+            } => true,
+            TileContent::Foreign { app_id, .. } => app_id == "so.tilo.terminal",
+            _ => false,
+        })
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        // A focused Terminal must receive typing, including Space and Enter.
+        // Chrome controls come first in DFS and used to steal initial focus;
+        // Activate then opened workspace settings instead of sending CR.
+        if self.active_tile_is_terminal() {
+            // TileHost children are `dyn AppWidget`; chrome focus order
+            // compares `dyn Widget` fat pointers and used to miss the
+            // Terminal even though it is in the live node map.
+            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
+                let widget = unsafe { &***mapped };
+                widget.name() == "Terminal" && widget.is_focusable() && widget.is_enabled()
+            }) {
+                return Some(id);
+            }
+            if let Some(terminal) = order
+                .iter()
+                .copied()
+                .find(|id| self.widget_name(*id) == Some("Terminal"))
+            {
+                return Some(terminal);
+            }
+        }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
         // form's first control. Keep it in the Tab order for keyboard scrolling.
@@ -1750,7 +1835,12 @@ impl FrameBuilder {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
-            || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
+        {
+            return;
+        }
+        let appearance_generation = self.chrome.borrow().appearance_generation;
+        let appearance_changed = appearance_generation != self.appearance_generation;
+        if !appearance_changed && self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
         }
@@ -1760,11 +1850,13 @@ impl FrameBuilder {
         let phase_changed = self
             .day_phase
             .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
-        if stamp == self.theme_store_stamp && !phase_changed {
+        if stamp == self.theme_store_stamp && !phase_changed && !appearance_changed {
             return;
         }
         self.theme_store_stamp = stamp;
+        self.appearance_generation = appearance_generation;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
@@ -1776,6 +1868,8 @@ impl FrameBuilder {
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
+        self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
         self.theme_store_stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
@@ -1908,6 +2002,77 @@ impl FrameBuilder {
     /// it can idle instead of burning a core on an unchanged scene.
     pub fn needs_animation_frame(&self) -> bool {
         self.animation_demand().any()
+    }
+
+    pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
+        self.host.content_animating_leaves()
+    }
+
+    /// Who holds [`Self::next_wake_deadline`]: chrome sources by name, and
+    /// widgets by path. Empty when nothing will wake the loop. Allocates, so
+    /// only diagnostics and tests call it.
+    pub fn wake_deadline_owners(&self) -> Vec<String> {
+        let Some(due) = self.next_wake_deadline() else {
+            return Vec::new();
+        };
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
+        let mut owners = self.host.wake_deadline_owners(due);
+        for (_, surface) in &self.floating_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if holds(
+            self.osk_overlay
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
+        ) {
+            owners.push("osk".to_string());
+        }
+        if holds(self.chrome.borrow().window_transfers.next_poll()) {
+            owners.push("window-transfers".to_string());
+        }
+        owners
+    }
+
+    /// Paths to the deepest widgets asking for animation frames, host
+    /// sources by label; empty when the loop may idle. For tests and
+    /// diagnostics.
+    pub fn animation_owners(&self) -> Vec<String> {
+        let demand = self.animation_demand();
+        let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
+            .filter(|label| *label != "content")
+            .map(str::to_string)
+            .collect();
+        if demand.host & (1 << 10) != 0 {
+            owners.extend(
+                self.content_animating_leaves()
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+            );
+        }
+        for (_, surface) in &self.floating_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if demand.osk {
+            owners.push("osk".to_string());
+        }
+        owners
     }
 
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
@@ -2818,6 +2983,36 @@ impl FrameBuilder {
         // widget (editing controls may consume it), then activate only when it
         // was otherwise unhandled.
         if !handled
+            && let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && matches!(
+                key.logical_key,
+                Key::Named(NamedKey::Enter | NamedKey::Space)
+            )
+            && self.active_tile_is_terminal()
+            && let Some((&id, &widget)) = self
+                .node_map
+                .iter()
+                .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+        {
+            let taffy = self.taffy();
+            unsafe {
+                (*widget).handle_event(
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers,
+                        state,
+                        path: root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: id,
+                        taffy,
+                    },
+                );
+            }
+        }
+        if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
             && matches!(
@@ -3195,6 +3390,9 @@ mod tests {
         fn startup_keeps_unread_activity_passive() {
             let mut frame =
                 crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+            crate::shell::test_support::collaborator_renames_active_workspace(
+                &mut frame.chrome().tree_mut(),
+            );
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,
@@ -3673,6 +3871,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn super_s_moves_the_wheel_disc_to_the_pointer() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let before = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the docked wheel is addressable");
+        let at = Point::new(1180.0, 450.0);
+        fb.host_mut().note_pointer(at);
+        let chord = Modifiers::from(ModifiersState::SUPER);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        assert!(
+            fb.dispatch_event(
+                &key_press(Key::Character("s".into())),
+                &chord,
+                &mut doc,
+                &root,
+                &mut focus
+            ),
+            "Super+S is handled by the shell"
+        );
+        let summoned = fb
+            .chrome()
+            .wheel_summon()
+            .expect("Super+S writes chrome.wheel_summon");
+        assert!(
+            (summoned.x - at.x).abs() < 1.0 && (summoned.y - at.y).abs() < 1.0,
+            "summon follows the pointer, got {summoned:?}"
+        );
+        let _ = fb.paint_settled();
+        let after = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the summoned wheel stays addressable");
+        assert!(
+            (after.x1 - at.x).abs() < 2.0,
+            "the rim's right edge sits on the pointer so a shot at that point sees the wheel; \
+             got x1={} for pointer x={}",
+            after.x1,
+            at.x
+        );
+        assert!(
+            (after.x0 - before.x0).abs() > 50.0,
+            "the disc actually moved: docked {before:?} summoned {after:?}"
+        );
+    }
+
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }
@@ -4089,6 +4337,98 @@ mod tests {
     }
 
     #[test]
+    fn control_socket_typing_reaches_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        use winit::keyboard::SmolStr;
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(
+            fb.widget_name(focus.expect("a terminal tile must take initial focus")),
+            Some("Terminal"),
+            "chrome must not keep initial focus on a workspace pill"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let mut doc = AutoCommit::new();
+        for key in [
+            Key::Character(SmolStr::new_static("e")),
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+        ] {
+            assert!(
+                fb.dispatch_event(
+                    &key_press(key),
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "typed keys must be consumed on the production chrome path"
+            );
+        }
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"e \r",
+            "letters, Space and Enter must reach the PTY, not chrome Activate",
+        );
+    }
+
+    #[test]
     fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
         fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
             let (mut fb, _identity_dir) = onboarding_frame();
@@ -4405,9 +4745,79 @@ mod tests {
             );
         }
 
+        /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
+        /// clients; chrome fullscreen still wins so W07 sees
+        /// `fullscreen_group`. Maximize stays beside the wheel.
+        fn super_f_on_a_tilo_group_covers_the_wheel() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+            let during = fb.widget_registry();
+            let row = rect_named(&during, "GroupRow");
+            assert!(
+                row.width() >= fb.viewport().0 - 1.0,
+                "Super+F must cover the wheel; row width {} vs output {}",
+                row.width(),
+                fb.viewport().0,
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() <= 0.5,
+                "Super+F hides the top bar"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
+        super_f_on_a_tilo_group_covers_the_wheel();
+    }
+
+    #[test]
+    fn overview_and_workspace_switch_request_a_run_of_frames() {
+        fn overview_toggle_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "root-transition"),
+                "overview must request frames on the update that sees the toggle, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn workspace_switch_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "workspace-switch"),
+                "a workspace switch must request a run of frames; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        overview_toggle_requests_frames_before_draw();
+        workspace_switch_requests_frames_before_draw();
     }
 
     /// Look up a widget's rect by its *last* path segment
@@ -4479,6 +4889,140 @@ mod tests {
         let node = fb.focusable_order().into_iter().next();
         fb.note_keyboard_focus(node);
         assert_eq!(fb.keyboard_focus_rect, None);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_actions_repaint_quick_settings_chrome() {
+        use crate::shell::search::action_api::ActionArgs;
+        use crate::shell::search::providers::ActionsProvider;
+        use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| {
+            let user = {
+                let tree = chrome.tree();
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| chrome.local_user_for_room(&workspace.room))
+            };
+            if let Some(user) = user {
+                let mut tree = chrome.tree_mut();
+                if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                    workspace.set_owner(user);
+                }
+            }
+            chrome.overlays.quick_settings = true;
+        });
+        frame.relayout();
+
+        let chrome = frame.chrome_handle();
+        let provider = ActionsProvider::new();
+        let invoke = |id: &str| {
+            let row = {
+                let document = AutoCommit::new();
+                let state = chrome.borrow();
+                provider
+                    .query(SearchContext {
+                        needle: "",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    })
+                    .into_iter()
+                    .find(|row| row.id == id)
+                    .unwrap_or_else(|| panic!("{id} must be exported"))
+            };
+            let mut document = AutoCommit::new();
+            (row.on_open)(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
+        };
+
+        invoke("appearance.theme.light");
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        invoke("appearance.theme.dark");
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "invoking appearance.theme.light then dark must change the Quick Settings chrome the next paint uses, not only the settings file"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_file_write_repaint_quick_settings_chrome() {
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let write = |theme: &str| {
+            let mut values = serde_json::Map::new();
+            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+            settings_store::update_section("appearance", values).expect("write appearance");
+        };
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
+        frame.relayout();
+
+        write("light");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        write("dark");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "writing appearance.theme light then dark must change the Quick Settings chrome the next paint uses"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
     }
 }
 

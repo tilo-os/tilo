@@ -16,7 +16,8 @@
 //!   edits, so the palette, agents and scripts can start and cancel the task
 //!   exactly as the buttons do.
 //!
-//! The worker is a `std::thread`, so this example targets native platforms.
+//! The worker runs through `ui::background`: on a thread where the target has
+//! them, on the page's executor on the web.
 
 /// The application id.
 pub const APP_ID: &str = "so.tilo.example.background-task";
@@ -251,7 +252,9 @@ impl ResourceApp for App {
             // The worker gets a copy of its input, read from the resource now.
             let limit = live.with(|search| search.limit);
             let completion = task.begin(Progress::Running);
-            std::thread::spawn(move || {
+            let unavailable = sender.clone();
+            // A worker where the target has one; the page's executor otherwise.
+            let spawned = ui::background::Background::current().spawn("count-primes", move || {
                 let result = count_primes(limit, || completion.is_current());
                 let outcome = match result {
                     Some(count) => {
@@ -262,6 +265,11 @@ impl ResourceApp for App {
                 };
                 let _ = sender.send(outcome);
             });
+            if spawned.is_err() {
+                task.cancel(Progress::Idle);
+                let _ =
+                    unavailable.send(Err(String::from("Background work is not available here.")));
+            }
             Ok(receiver)
         })
     }

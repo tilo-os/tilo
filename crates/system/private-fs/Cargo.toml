@@ -2,12 +2,14 @@
 name = "private-fs"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "User-owned private files with native ownership and access checks"
 
 [dependencies]
-atomic-file = { path = "../atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../atomic-file" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

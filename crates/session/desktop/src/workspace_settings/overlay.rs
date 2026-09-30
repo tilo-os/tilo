@@ -1229,7 +1229,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            mark.inset(14.0),
+            mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -1248,7 +1248,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            close.inset(8.0),
+            close.inset(-8.0),
             ui::icons::Icon::X,
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -1592,7 +1592,7 @@ impl WorkspaceSettingsOverlay {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
-            let layout = permissions_pane_layout(ws, body_rect, model.apps);
+            let layout = permissions_pane_layout(ws, body_rect, model.apps, model.local_user);
             for row in &layout.rows {
                 self.revoke_rects
                     .push((row.cap_id.clone(), row.revoke_rect));
@@ -1607,7 +1607,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 transform,
                 body_rect,
-                (ws, model.apps),
+                (ws, model.apps, model.local_user),
                 &draft,
                 is_owner,
                 text_renderer,
@@ -1942,7 +1942,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            share_icon.inset(8.0),
+            share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,

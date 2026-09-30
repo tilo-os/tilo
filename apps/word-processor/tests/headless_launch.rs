@@ -7,8 +7,8 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let temporary = std::env::temp_dir().canonicalize().unwrap();
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let unique = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = temporary.join(format!(
@@ -72,7 +72,7 @@ impl Fixture {
             .stdout(Stdio::from(std::fs::File::create(stdout).unwrap()))
             .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
         let mut child = command.spawn().unwrap();
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;

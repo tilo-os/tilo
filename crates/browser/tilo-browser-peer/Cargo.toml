@@ -2,9 +2,11 @@
 name = "tilo-browser-peer"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "The browser as a Tilo peer: relay-mediated device certification, the certified relay session with its commit outbox and reconnect replay, the live presence plane, SessionHealth v1, and a CollabTransport for the toolkit."
+repository.workspace = true
+homepage.workspace = true
 
 # Portable: the same code runs natively (tests, headless peers) and in the
 # page. The page supplies the device signer (WebCrypto) and persistence
@@ -23,23 +25,33 @@ web-time = "1"
 tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
-blake3.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 rand.workspace = true
+blake3.workspace = true
 # The toolkit adapter: `CollabTransport` for `CollaborationManager::with_transport`.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
-channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
+# The browser is a channel member device, as native peers are.
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
+# The HTTPS carrier on the platform HTTP stack (`NetHttp`).
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true, features = ["http"] }
 
 [features]
 default = ["iroh"]
 # Reach the host over iroh as well as HTTPS (native peers). The page builds
 # without it, so the wasm bundle links no iroh.
 iroh = ["dep:iroh", "dep:iroh-base", "tilo-relay-client/iroh"]
-toolkit = ["dep:ui", "dep:channel-crypto"]
+toolkit = ["dep:ui"]
+# `NetHttp`: `HttpClient` over `tilo_net::Client`, on every target.
+net = ["dep:tilo-net"]
 
 [dev-dependencies]
+tilo-automerge-isolate.workspace = true
+automerge.workspace = true
+tilo-automerge.workspace = true
+test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true

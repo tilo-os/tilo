@@ -12,7 +12,7 @@
 //! joined a relative value against the process's working directory). So under a relative
 //! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
 //! another, silently. [`settings_path`] now resolves it once, following the spec, through
-//! the workspace's shared resolver (`xdg-paths`).
+//! the workspace's shared resolver (`tilo-paths`).
 //!
 //! # The shape on disk
 //!
@@ -71,7 +71,7 @@ const FILE: &str = "settings.json";
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
@@ -81,7 +81,7 @@ pub fn config_root_from(
     home: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo"),
     )
@@ -191,7 +191,42 @@ pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
     };
+    if let Some(reason) = std::env::current_exe().ok().and_then(|exe| {
+        unisolated_test_write(
+            &exe,
+            std::env::var_os("TILO_TEST_ENVIRONMENT").is_some(),
+            std::env::var_os("XDG_CONFIG_HOME").is_some(),
+        )
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing to write {}: {reason}", path.display()),
+        ));
+    }
     update_section_at(&path, name, values)
+}
+
+/// Why a write through the default path would land in the settings of whoever started this
+/// test harness, or `None`.
+///
+/// Cargo starts test binaries inside `tools/with-test-environment.sh` (a fresh HOME). A
+/// harness started by hand — `target/debug/deps/<crate>-<hash>` — keeps the caller's HOME,
+/// and a test that saves a setting would rewrite their real `settings.json`, as fixture
+/// values like a Do Not Disturb switch or a manual status once did. A test that points
+/// `XDG_CONFIG_HOME` at its own directory still writes there.
+fn unisolated_test_write(
+    exe: &Path,
+    in_test_environment: bool,
+    config_home_set: bool,
+) -> Option<&'static str> {
+    let harness = exe
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|dir| dir == "deps");
+    (harness && !in_test_environment && !config_home_set).then_some(
+        "a test harness outside tools/with-test-environment.sh would write the caller's own \
+         settings; run it through cargo or that script",
+    )
 }
 
 /// [`update_section`] against an explicit path.
@@ -209,12 +244,12 @@ pub fn update_section_at(
     write_atomic(path, &Value::Object(doc))
 }
 
-/// Serialise and replace the document. `atomic_file` does the crash-safe part: a truncated
+/// Serialise and replace the document. `tilo_files::native::atomic` does the crash-safe part: a truncated
 /// `settings.json` would reset every pane at once.
 fn write_atomic(path: &Path, doc: &Value) -> std::io::Result<()> {
     let mut body = serde_json::to_string_pretty(doc).map_err(std::io::Error::other)?;
     body.push('\n');
-    atomic_file::write_creating_parent(path, body.as_bytes())
+    tilo_files::native::atomic::write_creating_parent(path, body.as_bytes())
 }
 
 /// Read a `f64` at `section.key`, clamped into `range`, falling back to `default` when
@@ -255,6 +290,44 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn a_hand_started_test_harness_never_writes_the_callers_settings() {
+        // This test binary is itself a harness under `deps/`: with the test environment's
+        // marker and XDG_CONFIG_HOME gone, the default path is the fake caller's own
+        // `~/.config`, and the write must be refused before anything lands there.
+        let home = tmpdir();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &home)
+            .remove("XDG_CONFIG_HOME")
+            .remove("TILO_TEST_ENVIRONMENT");
+        let mut values = Map::new();
+        values.insert("do_not_disturb".into(), Value::Bool(true));
+        let error = update_section("notifications", values.clone())
+            .expect_err("a hand-started harness wrote the caller's settings");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!home.join(".config/tilo/settings.json").exists());
+
+        // A test that names its own config directory still writes there.
+        let config = home.join("own-config");
+        env.set("XDG_CONFIG_HOME", &config);
+        update_section("notifications", values).expect("an explicit config directory");
+        assert!(config.join("tilo/settings.json").is_file());
+        drop(env);
+        let _ = std::fs::remove_dir_all(&home);
+
+        // Installed binaries and `cargo run` targets are never harnesses.
+        for exe in ["/usr/bin/tilo-shell", "/work/target/debug/settings"] {
+            assert_eq!(
+                unisolated_test_write(Path::new(exe), false, false),
+                None,
+                "{exe}"
+            );
+        }
+        let harness = Path::new("/work/target/debug/deps/settings_store-0123456789abcdef");
+        assert!(unisolated_test_write(harness, false, false).is_some());
+        assert_eq!(unisolated_test_write(harness, true, false), None);
+    }
 
     pub(super) fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -311,7 +384,7 @@ mod tests {
         }
         // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
         {
-            let home = xdg_paths::home();
+            let home = tilo_paths::home();
             assert_eq!(
                 config_root(),
                 config_root_from(

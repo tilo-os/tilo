@@ -20,10 +20,10 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -58,7 +58,7 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The document-media capability over the content store, and the workspace
 # files mirrored into a folder where nothing mounts them.
-tilo-fs = { package = "fs", path = "../../system/fs" }
+tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
 # The one per-user index the host's own search reads.
@@ -75,7 +75,7 @@ tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
@@ -88,6 +88,10 @@ fuser.workspace = true
 launcher-macos = { path = "../../packaging/launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The device grants, as actions on the runtime's console socket.
+console-control = { path = "../../session/console-control" }
+# The runtime's own words (consent prompt, device grants), from Fluent.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 # The camera and microphone a confined app asks this runtime to capture.
 tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
 # The login Keychain keeps the channel-state key.
@@ -96,9 +100,10 @@ tilo-secrets = { path = "../../platform/tilo-secrets" }
 [dev-dependencies]
 # The steward channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
-# A real durable host a runtime joins rooms of.
+# The join protocol a runtime joins rooms over.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
+# The governor whose rooms a runtime joins.
+tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true
 tempfile.workspace = true

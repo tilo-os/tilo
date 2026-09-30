@@ -1,5 +1,5 @@
 [package]
-name = "thumbnail"
+name = "tilo-thumbnail"
 version = "0.1.0"
 edition = "2024"
 publish = true
@@ -16,6 +16,10 @@ description = "Shared thumbnail generation and content-addressed caching for fil
 # image. Generation yields raw RGBA + encoded PNG bytes; the UI layer converts
 # to `peniko::ImageData` at the edge.
 
+[lib]
+name = "thumbnail"
+path = "src/lib.rs"
+
 [features]
 default = []
 # PDF first-page rasterisation through tilo-pdf (the sandboxed PDF engine);
@@ -28,7 +32,7 @@ video = ["dep:media", "media/decode"]
 
 [dependencies]
 # Crash-safe replacement of on-disk thumbnails.
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.
@@ -38,7 +42,7 @@ blake3.workspace = true
 # The system content store the encoded previews are kept in.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
 # The per-user preview cache location.
-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }

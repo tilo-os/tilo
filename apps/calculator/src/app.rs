@@ -94,7 +94,7 @@ pub struct CalculatorApp {
     /// delivery. Individual custom-painted controls remain semantic children.
     host_focused: bool,
     /// Time + position of the last press, for double-click detection.
-    last_click: Option<ui::clock::Instant>,
+    last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
     seeded: bool,
@@ -110,7 +110,7 @@ pub struct CalculatorApp {
     /// When `Some`, an edit landed at this time and has not yet been sealed into
     /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
     /// coalesces into a single Ctrl+Z step once editing pauses.
-    last_edit_time: Option<ui::clock::Instant>,
+    last_edit_time: Option<ui::time::Instant>,
     node: Option<NodeId>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
@@ -547,7 +547,7 @@ impl CalculatorApp {
         }
 
         // Double-click detection (≤400 ms, within 5 px).
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         let double = self
             .last_click
             .is_some_and(|t| now.duration_since(t).as_millis() <= 400)
@@ -1562,7 +1562,7 @@ impl Widget for CalculatorApp {
             // Mark an uncommitted edit so `needs_commit` can seal it into an
             // undo checkpoint once editing pauses (character-key edits are not
             // committed by the App's per-event path, only coalesced here).
-            self.last_edit_time = Some(ui::clock::Instant::now());
+            self.last_edit_time = Some(ui::time::now());
         }
     }
 

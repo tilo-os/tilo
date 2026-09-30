@@ -10,6 +10,8 @@
 //!   plus the discovery and home-peer management messages;
 //! - [`certify`] — relay-mediated issuance of a `DeviceCert` to a device
 //!   that holds only its own key;
+//! - [`compaction`] — a member device's coverage statement for a sealed
+//!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
@@ -43,6 +45,7 @@
 pub mod agents;
 pub mod auth;
 pub mod certify;
+pub mod compaction;
 pub mod config;
 pub mod home_peer;
 pub mod live;
@@ -53,6 +56,7 @@ pub mod process_lease;
 pub mod retention;
 mod sig64;
 pub mod transport;
+pub mod voice;
 pub mod web;
 
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};

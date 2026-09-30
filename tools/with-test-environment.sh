@@ -6,7 +6,8 @@
 #   - LANG=C.UTF-8 with no other locale override, and TZ=UTC;
 #   - a fresh, empty HOME and XDG base directories (config, data, state,
 #     cache, runtime) that are deleted afterwards;
-#   - no desktop session: no display, keyring, audio or systemd socket, and
+#   - no desktop session: no display, keyring (on macOS, no login Keychain),
+#     audio or systemd socket, and
 #     both D-Bus addresses pointed at a socket that never exists. Code that
 #     falls back to the default session bus, the systemd user manager
 #     ($XDG_RUNTIME_DIR/systemd), logind or a portal fails to connect instead
@@ -104,6 +105,11 @@ unset "${session_vars[@]}"
 # code under test.
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$root/no-session-bus"
 export DBUS_SYSTEM_BUS_ADDRESS="unix:path=$root/no-system-bus"
+# macOS: tilo-secrets answers "no store" here instead of reaching the login
+# Keychain, and identity secrets, which never fall back there, stay in files.
+if [ "$(uname -s)" = Darwin ]; then
+    export TILO_IDENTITY_FILE_SECRETS=1
+fi
 
 if "$@"; then status=0; else status=$?; fi
 exit "$status"

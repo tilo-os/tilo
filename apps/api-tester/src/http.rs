@@ -2,14 +2,14 @@
 //!
 //! [`build_outgoing`] resolves a [`Request`] against the active
 //! environment's variables into a concrete, ready-to-send shape (URL with
-//! query string, header list, body bytes). [`send_blocking`] then performs
-//! the round-trip with `reqwest` and returns a [`ResponseData`]. The
+//! query string, header list, body bytes). [`send`] then performs the
+//! round-trip through `tilo_net` and returns a [`ResponseData`]. The
 //! builder is pure and unit-tested; the network call is isolated so the
 //! rest of the app never depends on a live connection — the screenshot
 //! seed uses [`sample_response`] instead.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::sync::OnceLock;
 
 use base64::Engine;
 
@@ -127,26 +127,39 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
     }
 }
 
-/// Perform the request and collect the response. Blocking — the caller
-/// runs it on a worker thread so the UI stays responsive.
-pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
-    let client = tilo_net::http::blocking_client()
-        .user_agent("tilo-api-tester/0.1")
-        .build()
-        .map_err(|e| e.to_string())?;
+/// The shared client. In a page, requests to sites that do not allow the
+/// page to read their responses go through the host's fetch proxy when it
+/// offers one.
+fn client() -> Result<&'static tilo_net::Client, String> {
+    static CLIENT: OnceLock<Result<tilo_net::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::Client::builder()
+                .user_agent("tilo-api-tester/0.1")
+                .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
 
-    let method = reqwest::Method::from_bytes(out.method.as_bytes())
+/// Perform the request and collect the response. The caller runs it on the
+/// app runtime so the UI stays responsive.
+pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
+    let client = client()?;
+    let method = tilo_net::Method::from_bytes(out.method.as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;
     let mut builder = client.request(method, &out.url);
     for (k, v) in &out.headers {
-        builder = builder.header(k, v);
+        builder = builder.header(k.as_str(), v.as_str());
     }
     if let Some(body) = &out.body {
         builder = builder.body(body.clone());
     }
 
-    let started = Instant::now();
-    let resp = builder.send().map_err(|e| e.to_string())?;
+    let started = ui::time::now();
+    let resp = builder.send().await.map_err(|e| describe(&e))?;
     let status = resp.status();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
     let headers: Vec<KeyValue> = resp
@@ -159,7 +172,7 @@ pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
         .find(|h| h.key.eq_ignore_ascii_case("content-type"))
         .map(|h| h.value.clone())
         .unwrap_or_default();
-    let body = resp.text().map_err(|e| e.to_string())?;
+    let body = resp.text().await.map_err(|e| describe(&e))?;
     let duration_ms = started.elapsed().as_millis() as u64;
 
     Ok(ResponseData {
@@ -171,6 +184,18 @@ pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
         body,
         content_type,
     })
+}
+
+/// A request error for the response pane, naming the fix for a browser that
+/// refused a cross-origin response.
+fn describe(error: &tilo_net::NetError) -> String {
+    if error.may_be_cors() && tilo_net::proxy::endpoint().is_none() {
+        format!(
+            "{error}. In a browser, this host has no fetch proxy to relay requests to sites that do not allow it."
+        )
+    } else {
+        error.to_string()
+    }
 }
 
 /// A representative populated response used to seed the headless

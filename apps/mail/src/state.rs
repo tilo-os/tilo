@@ -936,8 +936,8 @@ impl MailState {
 
 /// Wall-clock "now" in minutes since the Unix epoch.
 pub fn now_minutes() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| (d.as_secs() / 60) as i64)
 }
 

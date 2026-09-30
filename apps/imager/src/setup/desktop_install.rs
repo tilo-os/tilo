@@ -382,7 +382,7 @@ mod native {
         },
         path::Path,
         process::{Command, Stdio},
-        time::{Duration, Instant},
+        time::Duration,
     };
 
     const WRAPPER: &str = "/usr/libexec/tilo-session";
@@ -741,7 +741,7 @@ mod native {
         let mut err = Vec::new();
         let mut overflow = false;
         let mut capture_error = None;
-        let start = Instant::now();
+        let start = ui::time::now();
         let capture = loop {
             for result in [
                 capture_check(),

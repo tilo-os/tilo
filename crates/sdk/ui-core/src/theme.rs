@@ -655,9 +655,20 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let mut theme = Self::from_settings_json(text).unwrap_or_else(Self::dark);
-        let thick = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
+        let document = serde_json::from_str::<serde_json::Value>(text).ok();
+        // The accessibility switch is separate from the theme choice and wins
+        // over it, as it does for apps reading the appearance portal.
+        let high_contrast = document
+            .as_ref()
+            .and_then(|v| v.get("appearance")?.get("high_contrast")?.as_bool())
+            .unwrap_or(false);
+        let mut theme = if high_contrast {
+            Self::high_contrast()
+        } else {
+            Self::from_settings_json(text).unwrap_or_else(Self::dark)
+        };
+        let thick = document
+            .as_ref()
             .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
             .unwrap_or(false);
         theme.caret_width = if thick { 4.0 } else { 2.0 };
@@ -1778,6 +1789,27 @@ mod configured_theme {
                 Theme::configured_from(Some(&settings)).name,
                 Theme::high_contrast().name,
                 "a settings file asking for high contrast must produce it",
+            );
+
+            // The accessibility switch, whatever theme is chosen beside it.
+            std::fs::write(
+                &settings,
+                r#"{"appearance":{"theme":"Light","high_contrast":true}}"#,
+            )
+            .expect("write settings");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).name,
+                Theme::high_contrast().name,
+                "appearance.high_contrast must reach the shell's chrome",
+            );
+            std::fs::write(
+                &settings,
+                r#"{"appearance":{"theme":"Light","high_contrast":false}}"#,
+            )
+            .expect("write settings");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).name,
+                Theme::light().name
             );
         }
 

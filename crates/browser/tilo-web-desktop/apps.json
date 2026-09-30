@@ -1,0 +1,397 @@
+{
+  "schema": 1,
+  "applications": [
+    {
+      "id": "so.tilo.api-tester",
+      "name": "API Tester",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.calculator",
+      "name": "Calculator",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.calendar",
+      "name": "Calendar",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.camera",
+      "name": "Camera",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.chat",
+      "name": "Chat",
+      "category": "Network",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.clocks",
+      "name": "Clocks",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.contacts",
+      "name": "Contacts",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.diffmerge",
+      "name": "Diff & Merge",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.ebook",
+      "name": "E-Book Reader",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.feeds",
+      "name": "Feeds",
+      "category": "Network",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.hex-editor",
+      "name": "Hex Editor",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.image-editor",
+      "name": "Image Editor",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.maps",
+      "name": "Maps",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.music",
+      "name": "Music",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.notes",
+      "name": "Notes",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.passwords",
+      "name": "Passwords",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.pdf-viewer",
+      "name": "PDF Viewer",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.photos",
+      "name": "Photos",
+      "category": "Graphics",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.scratchpad",
+      "name": "Scratchpad",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.sheets",
+      "name": "Sheets",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.shortcuts",
+      "name": "Shortcuts",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.slides",
+      "name": "Slides",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.snippets",
+      "name": "Snippets",
+      "category": "Development",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.speed-test",
+      "name": "Speed Test",
+      "category": "System",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.themes",
+      "name": "Theme Studio",
+      "category": "System",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.totp",
+      "name": "TOTP",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.tube",
+      "name": "Tube",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.typst-editor",
+      "name": "Typst Editor",
+      "category": "Office",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.video-editor",
+      "name": "Video Editor",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.video-player",
+      "name": "Video Player",
+      "category": "Multimedia",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.weather",
+      "name": "Weather",
+      "category": "Utility",
+      "version": "0.1.0"
+    },
+    {
+      "id": "so.tilo.word-processor",
+      "name": "Word Processor",
+      "category": "Office",
+      "version": "0.1.0"
+    }
+  ],
+  "unavailable": [
+    {
+      "id": "so.tilo.backups",
+      "name": "Backups",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.browser",
+      "name": "Browser",
+      "category": "Network",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.code-editor",
+      "name": "Code Editor",
+      "category": "Development",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.containers",
+      "name": "Containers",
+      "category": "Development",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.db-client",
+      "name": "Database Client",
+      "category": "Development",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.disk-usage",
+      "name": "Disk Usage Analyzer",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.disks",
+      "name": "Disks",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.file-explorer",
+      "name": "Files",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.firewall",
+      "name": "Firewall",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.git-client",
+      "name": "Git",
+      "category": "Development",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.hot-reload-demo",
+      "name": "Hot reload",
+      "category": "Utility",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.imager",
+      "name": "Disk Imager",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.logs",
+      "name": "Logs",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.mail",
+      "name": "Mail",
+      "category": "Office",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.monitor",
+      "name": "System Monitor",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.print-centre",
+      "name": "Print Centre",
+      "category": "Utility",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.publisher",
+      "name": "App Publisher",
+      "category": "Utility",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.remote",
+      "name": "Remote Desktop",
+      "category": "Network",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.settings",
+      "name": "Personal Settings",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.store",
+      "name": "App Store",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.terminal",
+      "name": "Terminal",
+      "category": "System",
+      "platforms": [
+        "linux",
+        "macos"
+      ]
+    },
+    {
+      "id": "so.tilo.vpn",
+      "name": "VPN Studio",
+      "category": "Network",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
+      "id": "so.tilo.windows",
+      "name": "Windows Apps",
+      "category": "System",
+      "platforms": [
+        "tilo-os"
+      ]
+    }
+  ]
+}

@@ -446,7 +446,9 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
     state.commit_action(None, None);
 
-    let now = tilo_clock::unix_now_i64();
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     let base = now - 5 * 3600;
 
     // Session one: five more sentences, half a minute apart.
@@ -601,8 +603,10 @@ fn render_shot(
     // transient surfaces are painted.
     widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
+    if let Some(parent) = out.parent()
+        && let Ok(dir) = tilo_files::Dir::open(tilo_files::Location::Native(parent.to_path_buf()))
+    {
+        let _ = tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root());
     }
     OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     println!("word-processor: wrote shot to {}", out.display());

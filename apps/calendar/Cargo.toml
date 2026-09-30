@@ -17,7 +17,8 @@ path = "src/main.rs"
 fnv.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared multi-account store and encrypted secret vault. Settings owns writes;
 # credentials are sealed in the vault rather than the plaintext store.
@@ -43,20 +44,20 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Multistatus parsing and REPORT bodies are always built; the blocking HTTP
+# Multistatus parsing and REPORT bodies are always built; the async HTTP
 # client behind live CalDAV sync (REPORT and ETag-guarded PUT/DELETE) is gated
-# by `live`, so the default headless build stays off the TLS stack.
+# by `live`, so the headless build stays off the network stack.
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false }
+tilo-net = { path = "../../crates/platform/tilo-net", optional = true }
 # RFC 5545 content lines: folding, parameter quoting and TEXT escaping.
 pim-lines = { path = "../../crates/text/pim-lines" }
-workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The CalDAV transport runs on a background thread and is a no-op without a
+# The CalDAV transport runs on the app runtime and is a no-op without a
 # configured account.
 default = ["live"]
-live = ["tilo-dav/client"]
+live = ["tilo-dav/net", "dep:tilo-net"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -70,3 +71,7 @@ test-http = { path = "../../crates/dev/test-http" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

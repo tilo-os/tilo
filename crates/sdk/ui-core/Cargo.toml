@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -50,6 +50,10 @@ test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
 # can exercise the path.
 realtime-video = ["media/realtime"]
 presentation-feedback = ["dep:wgpu-hal"]
+# Persist DXC-compiled shaders between runs on Windows. It needs the patched
+# wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
+# for apps built on the published SDK.
+dx12-shader-cache = []
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
@@ -92,7 +96,7 @@ notifications = ["native", "tilo-host/notifications"]
 [dependencies]
 mime_guess.workspace = true
 fnv.workspace = true
-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
@@ -104,14 +108,16 @@ tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", 
 tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search", optional = true }
 # Test builds bound the pairing broker exchange with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build; the unix `native` build adds the launcher's device store below.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
+# `storage`: app files through tilo-files in tilo-paths' per-app locations.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
 # host must not resolve to a local path — and must be testable in every
@@ -136,11 +142,11 @@ capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
 runtime-identity = { version = "0.1.0", path = "../../runtime/runtime-identity", optional = true }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
-app-state = { version = "0.1.0", path = "../../system/app-state" }
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
+tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
 # tokenizer over two-face's extended syntax set, the packed set Typst already
 # links for raw blocks, so the runtime carries those bytes once.
@@ -277,12 +283,13 @@ rand_core.workspace = true
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = { version = "0.34.0", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
+# Built on tilo-winit, so it shares the toolkit's winit types when published.
+accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path = "../../../vendor/accesskit_winit", optional = true, default-features = false, features = ["accesskit_unix", "rwh_06", "tokio"] }
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-tts = { version = "0.1.0", path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 
 [target.'cfg(unix)'.dependencies]
 # Takes the launcher's content-store capability at launch (`launch.rs`).
@@ -311,7 +318,7 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 serial_test.workspace = true
-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point

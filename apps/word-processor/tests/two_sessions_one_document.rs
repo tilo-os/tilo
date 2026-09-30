@@ -35,8 +35,8 @@ fn temp_path(name: &str) -> PathBuf {
     p.push(format!(
         "wp-two-sessions-{}-{}-{name}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));

@@ -1027,6 +1027,49 @@ mod tests {
         assert_eq!(doc.get_heads(), heads);
     }
 
+    #[test]
+    fn set_slide_text_rewrites_a_slides_title_and_body_by_number_or_id() {
+        use tilo_actions::Action as _;
+        let mut doc = first_format_deck();
+        SlidesDoc::upgrade(&mut doc);
+        doc.commit();
+        let set = |slide: &str, title: Option<&str>, body: Option<&str>| {
+            crate::actions::SlidesAction::SetSlideText {
+                slide: slide.into(),
+                title: title.map(Into::into),
+                body: body.map(Into::into),
+            }
+        };
+        set("1", Some("Launch *plan*"), Some("Goals\n# Timeline\n"))
+            .apply(&mut doc)
+            .unwrap();
+        let deck = SlidesDoc::load(&doc).unwrap();
+        let texts: Vec<&str> = deck.slides[0]
+            .elements
+            .iter()
+            .take(2)
+            .map(|element| element.text.as_str())
+            .collect();
+        assert_eq!(texts, ["Launch *plan*", "Goals\n# Timeline"]);
+
+        set("slide-1", None, Some("Only the body"))
+            .apply(&mut doc)
+            .unwrap();
+        let deck = SlidesDoc::load(&doc).unwrap();
+        assert_eq!(deck.slides[0].elements[0].text, "Launch *plan*");
+        assert_eq!(deck.slides[0].elements[1].text, "Only the body");
+
+        // A slide that is not there, or empty text, writes nothing.
+        let heads = doc.get_heads();
+        assert!(set("9", Some("x"), None).apply(&mut doc).is_err());
+        assert!(set("1", Some("x"), Some(" ")).apply(&mut doc).is_err());
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(
+            SlidesDoc::load(&doc).unwrap().slides[0].elements[0].text,
+            "Launch *plan*"
+        );
+    }
+
     /// Deck round-trips, bounded text writes, positions and titles persist.
     #[test]
     fn deck_doc_round_trips_and_writes_bounded_text() {

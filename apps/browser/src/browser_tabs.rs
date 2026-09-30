@@ -4,12 +4,12 @@ use crate::BrowserWidget;
 use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::style_helpers::{auto, length};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::time::{Duration, Instant};
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -176,7 +176,7 @@ impl BrowserTabs {
         self.fullscreen_hint = None;
     }
     fn start_fullscreen_hint(&mut self) {
-        self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
+        self.fullscreen_hint_deadline = Some(ui::time::now() + FULLSCREEN_HINT_DURATION);
         self.fullscreen_hint = Some(Self::make_fullscreen_hint());
     }
     fn reconcile_active_content_fullscreen(&mut self) {
@@ -906,7 +906,7 @@ impl Widget for BrowserTabs {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
-            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
         {
             self.clear_fullscreen_hint();
             self.dirty = true;
@@ -1459,7 +1459,7 @@ impl Widget for BrowserTabs {
         dirty || page || self.bar.take_structure_dirty()
     }
     fn needs_animation_frame(&self) -> bool {
-        fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+        fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
             || self.bar.needs_animation_frame()
             || self.active().needs_animation_frame()
     }
@@ -1960,7 +1960,7 @@ mod tests {
 
         // Phase `fullscreen_hint_lifetime_is_exactly_three_seconds`.
         {
-            let entered = std::time::Instant::now();
+            let entered = ui::time::now();
             let deadline = entered + FULLSCREEN_HINT_DURATION;
             assert!(fullscreen_hint_visible(Some(deadline), entered));
             assert!(fullscreen_hint_visible(

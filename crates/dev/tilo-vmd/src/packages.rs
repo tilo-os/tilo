@@ -1,7 +1,7 @@
 //! `tilo-vmd install-packages`: third-party packages for verification,
 //! installed with the one package manager line the VM's image supports.
 //!
-//! On a bootc image (the dev image) `dnf install --transient` puts them in
+//! On a bootc image (the dev image, ostree- or composefs-backed) `dnf install --transient` puts them in
 //! a transient overlay on `/usr` that the next reboot discards, so nothing
 //! outlives the test and no image ever carries them. Sessions freeze their
 //! `/usr` when they start, so a slot sees the packages after its session
@@ -26,7 +26,9 @@ pub fn install_argv(
     if let Some(bad) = packages.iter().find(|p| !valid_package_name(p)) {
         return Err(format!("'{bad}' is not a package name"));
     }
-    let bootc = exists(Path::new("/run/ostree-booted"));
+    // A composefs-backed bootc system has no `/run/ostree-booted`; its deployments live
+    // under `/sysroot/composefs`.
+    let bootc = exists(Path::new("/run/ostree-booted")) || exists(Path::new("/sysroot/composefs"));
     let mut argv: Vec<String> = if exists(Path::new("/usr/bin/dnf")) {
         let mut argv = vec!["dnf", "install", "--assumeyes"];
         if bootc {
@@ -76,6 +78,13 @@ mod tests {
             argv.join(" "),
             "dnf install --assumeyes --transient --setopt=install_weak_deps=False -- xterm gtk4-devel-tools"
         );
+    }
+
+    #[test]
+    fn a_composefs_bootc_image_installs_transiently_too() {
+        let argv =
+            install_argv(&packages(), with(&["/usr/bin/dnf", "/sysroot/composefs"])).unwrap();
+        assert!(argv.contains(&"--transient".to_owned()), "{argv:?}");
     }
 
     #[test]

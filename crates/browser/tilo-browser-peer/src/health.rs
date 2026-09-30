@@ -1,6 +1,6 @@
 //! `PeerSnapshot` and `SessionHealth` v1, the shapes Cloud already codes
 //! against, derived from the relay session and the page store's save
-//! status instead of qOS delivery cursors.
+//! status.
 //!
 //! Serialized with camelCase field names so the page can hand the value to
 //! JavaScript unchanged.
@@ -433,6 +433,7 @@ mod tests {
             outgoing_pending: 0,
             device: [0; 32],
             generation: 7,
+            channels: String::new(),
         };
         serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
     }

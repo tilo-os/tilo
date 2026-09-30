@@ -314,6 +314,19 @@ impl MemberRecordWire {
 
 impl MemberRecord {
     pub(crate) fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
+        let sealed = self.seal(key)?;
+        atomic_file::write_private(path, &sealed).map_err(Error::Io)
+    }
+
+    pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
+        if fs::metadata(path)?.len() > MAX_SEALED_STATE {
+            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
+        }
+        Self::open_sealed(&fs::read(path)?, key)
+    }
+
+    /// This record sealed under `key`, as [`Self::save_sealed`] writes it.
+    pub(crate) fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {
         let record = match self {
             Self::Waiting(member) => {
                 let (name, signer, storage) = member.snapshot()?;
@@ -334,11 +347,25 @@ impl MemberRecord {
         file.record.zeroize_secret_material();
         let plaintext =
             Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
-        write_sealed(path, key, MEMBER_RECORD, &plaintext)
+        tilo_seal::envelope::seal(
+            &key.0,
+            Context::new(Label::ChannelMlsState, MEMBER_RECORD),
+            &plaintext,
+        )
+        .map_err(|_| Error::StateCrypto("state encryption failed"))
     }
 
-    pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        let plaintext = read_sealed(path, key, MEMBER_RECORD)?;
+    /// Open what [`Self::seal`] produced.
+    pub(crate) fn open_sealed(sealed: &[u8], key: &VaultKey) -> Result<Self> {
+        if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SEALED_STATE {
+            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
+        }
+        let plaintext = tilo_seal::envelope::open(
+            &key.0,
+            Context::new(Label::ChannelMlsState, MEMBER_RECORD),
+            sealed,
+        )
+        .map_err(|_| Error::StateCrypto("state authentication failed"))?;
         let file: MemberFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
         if file.version != MEMBER_RECORD_VERSION {
@@ -379,13 +406,4 @@ fn write_sealed(path: &Path, key: &VaultKey, record: &[u8], plaintext: &[u8]) ->
     )
     .map_err(|_| Error::StateCrypto("state encryption failed"))?;
     atomic_file::write_private(path, &sealed).map_err(Error::Io)
-}
-
-fn read_sealed(path: &Path, key: &VaultKey, record: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-    if fs::metadata(path)?.len() > MAX_SEALED_STATE {
-        return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
-    }
-    let bytes = fs::read(path)?;
-    tilo_seal::envelope::open(&key.0, Context::new(Label::ChannelMlsState, record), &bytes)
-        .map_err(|_| Error::StateCrypto("state authentication failed"))
 }

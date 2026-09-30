@@ -1,330 +1,545 @@
-//! Admitted canonical desktop requirements and retained portable host.
-use automerge::{ROOT, ReadDoc};
-use std::collections::BTreeMap;
-#[cfg(any(target_arch = "wasm32", test))]
-use tilo_desktop_model::apps::{AppCatalogue, OpenableApp};
-use tilo_desktop_model::{DesktopTree, RoomId};
-use tilo_peer_state::StatePeer;
-use ui::application::ApplicationDefinition;
-use ui::record::{RecordCheckout, RecordId};
+//! The session desktop in the page: `tilo-desktop-surface` over a
+//! `tilo-desktop-model` tree, with every tab an in-process application
+//! component registered through its `ApplicationDefinition`.
+//!
+//! The tree and the record each tab shows are kept per room in the profile's
+//! durable store ([`Persistence`]) and committed to `IndexedDB` with the
+//! records themselves, so a reload restores the same windows on the same
+//! documents. A profile with no stored desktop is seeded with a window per
+//! requested application.
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The installed definitions, in the catalogue's order.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn installed_applications() -> Vec<&'static ApplicationDefinition> {
-    crate::catalog::installed()
+use durable_store::{DurableStore, StorageKey, WriteOp};
+use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
+use tilo_desktop_surface::navigation::Application;
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use ui::application::{
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
+use ui::application_view::InstanceViewStore;
+use ui::permissions::{PermissionContext, UserId};
+use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use ui::widget::TileHost;
+
+/// Applications the page can open, in launcher order: the built-in Scratch,
+/// then every application the bundle registered from its manifests
+/// (`ui::application::registry`). The first is what a group's new-tab
+/// control opens.
+pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
+    let mut applications = vec![crate::scratch::definition()];
+    applications.extend(ui::application::registry::applications());
+    applications
 }
-/// The apps bundled into the browser runtime, as the desktop lists and
-/// validates opens.
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) struct Bundled;
 
-#[cfg(any(target_arch = "wasm32", test))]
-impl AppCatalogue for Bundled {
-    fn openable(&self) -> Vec<OpenableApp> {
-        installed_applications()
-            .into_iter()
-            .map(|definition| OpenableApp {
-                app_id: definition.app_id,
-                title: definition.title,
+pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
+    applications()
+        .into_iter()
+        .find(|definition| definition.app_id == app)
+}
+
+pub(crate) fn catalogue() -> Vec<Application> {
+    applications()
+        .into_iter()
+        .map(|definition| Application {
+            id: definition.app_id.into(),
+            label: definition.title.into(),
+        })
+        .collect()
+}
+
+/// Everything a tab's component is prepared with.
+pub(crate) struct Inputs {
+    pub owners: RecordOwners,
+    pub views: Rc<InstanceViewStore>,
+    pub device: String,
+    /// Seeds this desktop's share of the id space: the certified device
+    /// key when the mount has a peer (every browser's profile namespace may
+    /// be the same string), else the device namespace.
+    pub salt: String,
+    pub room: String,
+    pub author: String,
+    pub permissions: Rc<RefCell<PermissionContext>>,
+}
+
+/// State the mount and the tile source share.
+#[derive(Clone, Default)]
+pub(crate) struct Shared {
+    /// Every package's record owner opened so far, flushed with the mount.
+    pub stores: Rc<RefCell<Vec<RecordStore>>>,
+    pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    /// Set by any tab component's wake; the host relayouts before drawing.
+    pub woken: Arc<AtomicBool>,
+    /// The applications whose components woke the mount since it last
+    /// looked, for the frame metrics.
+    wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    /// The record each tab shows, once its component created or opened it.
+    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    /// A tab bound a record since the desktop was last saved.
+    records_changed: Rc<Cell<bool>>,
+    /// Tabs bound to a record that could not open yet: a peer's desktop
+    /// named it before the record itself arrived.
+    waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+}
+
+impl Shared {
+    /// Ask the host to run the surface's update pass before the next frame
+    /// (queued navigation, a replaced tree).
+    pub fn wake(&self) {
+        self.woken.store(true, Ordering::Release);
+    }
+
+    /// A record arrived: build the tabs still waiting for theirs again.
+    pub fn retry_waiting(&self, handle: &DesktopHandle) {
+        let waiting = std::mem::take(&mut *self.waiting.borrow_mut());
+        if waiting.is_empty() {
+            return;
+        }
+        for tab in waiting {
+            handle.rebuild(tab);
+        }
+        self.wake();
+    }
+
+    pub fn take_wake(&self) -> bool {
+        self.woken.swap(false, Ordering::AcqRel)
+    }
+
+    /// The applications whose components woke the mount since the last call.
+    pub fn take_wakers(&self) -> Vec<&'static str> {
+        std::mem::take(
+            &mut *self
+                .wakers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// The record `tab` shows, once its component bound one.
+    pub fn record_of(&self, tab: TabId) -> Option<String> {
+        self.records
+            .borrow()
+            .get(&tab)
+            .map(|checkout| checkout.id.as_str().to_owned())
+    }
+}
+
+struct Tiles {
+    inputs: Inputs,
+    shared: Shared,
+    stores: HashMap<&'static str, RecordStore>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Tiles {
+    fn store(&mut self, definition: &'static ApplicationDefinition) -> Result<RecordStore, String> {
+        if let Some(store) = self.stores.get(definition.app_id) {
+            return Ok(store.clone());
+        }
+        let store = self
+            .inputs
+            .owners
+            .open(definition.app_id, &self.inputs.room)
+            .map_err(|error| error.to_string())?;
+        self.stores.insert(definition.app_id, store.clone());
+        self.shared.stores.borrow_mut().push(store.clone());
+        Ok(store)
+    }
+
+    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+        let TileContent::LocalApp { app_id, .. } = &tab.tile else {
+            return Err("This window has no application in the browser".into());
+        };
+        let definition = application(app_id)
+            .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
+        let store = self.store(definition)?;
+        let saved = self.shared.records.borrow().get(&tab.id).cloned();
+        let (target, named_new) = match saved {
+            Some(checkout) => (
+                LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+                None,
+            ),
+            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None => self.unbound_target(definition, &store, tab.id)?,
+        };
+        let restore = self
+            .inputs
+            .views
+            .load(tab.id)
+            .map_err(|error| error.to_string())?
+            .map_or(RestoreInput::None, RestoreInput::Local);
+        let inputs = HostContextInputs {
+            records: store,
+            views: Rc::clone(&self.inputs.views),
+            device_id: self.inputs.device.clone(),
+            instance_id: tab.id,
+            permissions: Rc::clone(&self.inputs.permissions),
+            author: UserId(self.inputs.author.clone()),
+            action_context: tilo_actions::ActionContext::default(),
+        };
+        let context = match named_new {
+            Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+            None => HostContext::prepare(definition, inputs, &target),
+        }
+        .map_err(|error| error.to_string())?;
+        let destination = Rc::clone(&self.shared.images);
+        let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
+            Rc::new(move |max_dimension| {
+                let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
+                destination.borrow_mut().push(loader);
+                image
+            }),
+            || definition.instantiate(context, target, restore),
+        )
+        .map_err(|error| error.to_string())?;
+        let woken = Arc::clone(&self.shared.woken);
+        let wakers = Arc::clone(&self.shared.wakers);
+        let notify = Arc::clone(&self.notify);
+        let app_id = definition.app_id;
+        component
+            .mount(move |_| {
+                woken.store(true, Ordering::Release);
+                let mut wakers = wakers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !wakers.contains(&app_id) {
+                    wakers.push(app_id);
+                }
+                drop(wakers);
+                notify();
             })
+            .map_err(|error| error.to_string())?;
+        let record = component.record().clone();
+        let previous = self
+            .shared
+            .records
+            .borrow_mut()
+            .insert(tab.id, record.clone());
+        if previous.is_none_or(|previous| previous.id != record.id) {
+            self.shared.records_changed.set(true);
+        }
+        Ok(component)
+    }
+}
+
+impl Tiles {
+    /// What a tab no record is bound to opens: the room's default record
+    /// while no other window of the app shows it (the record a native
+    /// launch into the room opens too), otherwise a new one. The second
+    /// value names the default record when it has to be created.
+    fn unbound_target(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: &RecordStore,
+        tab: TabId,
+    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+        let default = RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone());
+        let taken = self
+            .shared
+            .records
+            .borrow()
+            .iter()
+            .any(|(other, checkout)| *other != tab && checkout.id == default.id);
+        if taken {
+            return Ok((LaunchTarget::New, None));
+        }
+        match store.try_open_record(&default) {
+            Ok(_) => Ok((
+                LaunchTarget::Record {
+                    checkout: default,
+                    reveal: None,
+                },
+                None,
+            )),
+            Err(ui::record::RecordOpenError::MissingRecord) => {
+                Ok((LaunchTarget::New, Some(default.id)))
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+impl TileSource for Tiles {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
+            return TileHost::new(notice);
+        }
+        match self.component(tab) {
+            Ok(component) => {
+                self.shared.waiting.borrow_mut().remove(&tab.id);
+                TileHost::from_component(component)
+            }
+            Err(detail) => {
+                if self.shared.records.borrow().contains_key(&tab.id) {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                }
+                TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail,
+                })
+            }
+        }
+    }
+
+    fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
+        let definition = applications().into_iter().next()?;
+        Some(app_tab(id, definition))
+    }
+
+    fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        Some(app_tab(id, application(app)?))
+    }
+
+    fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        applications()
+            .into_iter()
+            .map(|definition| tilo_desktop_search::providers::AppEntry {
+                id: definition.app_id.into(),
+                title: definition.title.into(),
+                category: None,
+                description: None,
+                unavailable: None,
+            })
+            .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
             .collect()
     }
 }
-/// Resolve an app id to its installed definition.
-pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    crate::catalog::resolve(app).ok()
-}
-/// Whether a persisted app id names a package whose room record is its
-/// package-primary route (Chat's workspace).
-pub(crate) fn opens_package_primary(app: &str) -> bool {
-    crate::catalog::scope(app) == Some(crate::catalog::RecordScope::PackagePrimary)
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Requirement {
-    pub app_id: String,
-    pub record_id: String,
-}
-pub(crate) struct Admission {
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub admitted_room: automerge::AutoCommit,
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub source_heads: Vec<[u8; 32]>,
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub tree: DesktopTree,
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub routes: BTreeMap<u64, String>,
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub required: Vec<Requirement>,
-    pub missing: Vec<Requirement>,
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub unsupported: Vec<String>,
-    pub(crate) pending: usize,
-}
-impl Admission {
-    pub fn complete(&self) -> bool {
-        self.missing.is_empty() && self.pending == 0
+
+fn app_tab(id: TabId, definition: &ApplicationDefinition) -> Tab {
+    Tab {
+        id,
+        title: definition.title.into(),
+        tile: TileContent::LocalApp {
+            app_id: definition.app_id.into(),
+            label: definition.title.into(),
+            note: String::new(),
+        },
     }
 }
-pub(crate) fn checkout(
-    definition: &'static ApplicationDefinition,
-    tab: u64,
-    routes: &BTreeMap<u64, String>,
-) -> Result<RecordCheckout, String> {
-    let app_id = definition.app_id;
-    let primary = opens_package_primary(app_id);
-    match routes.get(&tab) {
-        None => Ok(tilo_desktop::records::component_record(
-            app_id,
-            tab,
-            definition.record_kind.clone(),
-        )),
-        Some(record) if record.is_empty() && primary => Ok(RecordCheckout::package_primary(
-            definition.record_kind.clone(),
-        )),
-        Some(record) if !primary => Ok(RecordCheckout::new(
-            RecordId::parse(record).ok_or("invalid canonical ordinary record route")?,
-            definition.record_kind.clone(),
-        )),
-        _ => Err("invalid canonical package-primary record route".into()),
+
+/// This device's share of the desktop id space, so ids it mints never
+/// collide with another device's once trees merge.
+fn peer_salt(device: &str) -> u16 {
+    // FNV-1a folded to 16 bits: stable across builds and platforms.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in device.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let folded = (hash >> 16) ^ (hash & 0xffff);
+    u16::try_from(folded).unwrap_or(u16::MAX)
+}
+
+/// Where a room's desktop lives in the profile. Changing it orphans stored
+/// desktops.
+const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
+
+/// The stored form of a room's desktop.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredDesktop {
+    tree: DesktopTree,
+    /// `(tab, record id)` for every tab whose component bound a record.
+    records: Vec<(TabId, String)>,
+}
+
+/// Saves a mounted desktop to the profile whenever its tree or its tabs'
+/// records change. Writes are accepted by the durable store and committed
+/// to `IndexedDB` by the page's durable host.
+pub(crate) struct Persistence {
+    store: Rc<dyn DurableStore>,
+    key: StorageKey,
+    saved_revision: Cell<u64>,
+    records_changed: Rc<Cell<bool>>,
+    records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+}
+
+impl Persistence {
+    /// Write the desktop if it changed since the last save.
+    ///
+    /// # Errors
+    /// The store refused the write; the next change retries.
+    pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
+        let revision = handle.revision();
+        if revision == self.saved_revision.get() && !self.records_changed.get() {
+            return Ok(());
+        }
+        let stored = stored_desktop(handle, &self.records.borrow());
+        let bytes = serde_json::to_vec(&stored).map_err(|error| error.to_string())?;
+        self.store
+            .write(&self.key, WriteOp::Replace(bytes), None)
+            .map_err(|error| error.to_string())?;
+        self.saved_revision.set(revision);
+        self.records_changed.set(false);
+        Ok(())
     }
 }
-pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
-    let doc = state
-        .admitted_room()
-        .ok_or("waiting for admitted room governance")?;
-    if doc
-        .get(ROOT, "contents")
-        .map_err(|e| e.to_string())?
-        .is_none()
+
+fn stored_desktop(
+    handle: &DesktopHandle,
+    bindings: &HashMap<TabId, RecordCheckout>,
+) -> StoredDesktop {
+    handle.read(|tree| {
+        let mut live = std::collections::HashSet::new();
+        for workspace in &tree.workspaces {
+            for strip in &workspace.strips {
+                for group in &strip.window_groups {
+                    live.extend(group.tabs.iter().map(|tab| tab.id));
+                }
+            }
+        }
+        let mut records: Vec<(TabId, String)> = bindings
+            .iter()
+            .filter(|(tab, _)| live.contains(tab))
+            .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
+            .collect();
+        records.sort_unstable();
+        StoredDesktop {
+            tree: tree.clone(),
+            records,
+        }
+    })
+}
+
+/// The desktop as peers share it: the tree and each tab's record.
+pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
+    serde_json::to_value(stored_desktop(handle, &shared.records.borrow()))
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Take a desktop a peer shared: bind its tabs' records, then hand the tree
+/// to the surface's reconcile.
+///
+/// # Errors
+/// The value is not a shared desktop, or it has no workspace.
+pub(crate) fn apply_shared(
+    handle: &DesktopHandle,
+    shared: &Shared,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    let desktop: StoredDesktop =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    if desktop.tree.workspaces.is_empty() {
+        return Err("a desktop needs a workspace".into());
+    }
     {
-        return Err("waiting for canonical desktop topology".into());
+        let mut records = shared.records.borrow_mut();
+        for (tab, checkout) in stored_records(&desktop) {
+            if records
+                .get(&tab)
+                .is_none_or(|bound| bound.id != checkout.id)
+            {
+                records.insert(tab, checkout);
+                shared.records_changed.set(true);
+            }
+        }
     }
-    let mut tree = DesktopTree::default();
-    tilo_desktop_model::projection::apply_admitted_room(
-        &mut tree,
-        RoomId::parse(state.room()).ok_or("invalid room identity")?,
-        doc,
-    )?;
-    let routes = tilo_desktop_model::apps::record_routes(doc);
-    let mut required = Vec::new();
-    let mut missing = Vec::new();
-    let mut unsupported = Vec::new();
-    let rows = state.rows();
-    for workspace in &tree.workspaces {
+    handle.replace_tree(desktop.tree);
+    shared.wake();
+    Ok(())
+}
+
+fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDesktop> {
+    let stored = store.read(key).ok()??;
+    let desktop: StoredDesktop = serde_json::from_slice(&stored.bytes).ok()?;
+    (!desktop.tree.workspaces.is_empty()).then_some(desktop)
+}
+
+/// The record bindings of a stored desktop, for the tabs whose application
+/// the page still registers.
+fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
+    let mut apps = HashMap::new();
+    for workspace in &desktop.tree.workspaces {
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    let Some(app) = tilo_desktop_model::apps::canonical_app_id(&tab.tile) else {
-                        continue;
-                    };
-                    let Some(definition) = definition(&app) else {
-                        if !unsupported.contains(&app) {
-                            unsupported.push(app);
-                        }
-                        continue;
-                    };
-                    let checkout = checkout(definition, tab.id, &routes)?;
-                    let record = if checkout.id.is_package_primary() {
-                        String::new()
-                    } else {
-                        checkout.id.as_str().into()
-                    };
-                    let requirement = Requirement {
-                        app_id: definition.app_id.into(),
-                        record_id: record,
-                    };
-                    if !required.contains(&requirement) {
-                        if !rows.iter().any(|row| {
-                            row.app_id == requirement.app_id
-                                && row.record_id == requirement.record_id
-                                && !row.heads.is_empty()
-                        }) {
-                            missing.push(requirement.clone());
-                        }
-                        required.push(requirement);
+                    if let TileContent::LocalApp { app_id, .. } = &tab.tile {
+                        apps.insert(tab.id, app_id.clone());
                     }
                 }
             }
         }
     }
-    Ok(Admission {
-        #[cfg(any(target_arch = "wasm32", test))]
-        admitted_room: doc.clone(),
-        #[cfg(any(target_arch = "wasm32", test))]
-        source_heads: doc
-            .clone()
-            .get_heads()
-            .into_iter()
-            .map(|head| head.0)
-            .collect(),
-        #[cfg(any(target_arch = "wasm32", test))]
-        tree,
-        #[cfg(any(target_arch = "wasm32", test))]
-        routes,
-        #[cfg(any(target_arch = "wasm32", test))]
-        required,
-        missing,
-        #[cfg(any(target_arch = "wasm32", test))]
-        unsupported,
-        pending: state.pending_count(),
-    })
+    desktop
+        .records
+        .iter()
+        .filter_map(|(tab, record)| {
+            let definition = application(apps.get(tab)?)?;
+            let id = RecordId::parse(record)?;
+            Some((
+                *tab,
+                RecordCheckout::new(id, definition.record_kind.clone()),
+            ))
+        })
+        .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
-    use ed25519_dalek::SigningKey;
-    use tilo_desktop_model::*;
-    use tilo_peer_state::{SeedState, StatePeer};
-    fn state() -> (StatePeer, SigningKey) {
-        use tilo_user_identity::{
-            DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
-        };
-        let root = SigningKey::from_bytes(&[61; 32]);
-        let key = SigningKey::from_bytes(&[62; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "owner".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let room = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-        let seed = crate::fixture_seed(room, &cert, &[cert.clone()]).unwrap();
-        let mut peer = StatePeer::new(
-            room,
-            cert.clone(),
-            vec![cert],
-            RevocationList::new(),
-            web_time::SystemTime::now(),
-        )
-        .unwrap();
-        peer.install_seed(seed, &key, web_time::SystemTime::now())
-            .unwrap();
-        (peer, key)
-    }
-    fn install(peer: &mut StatePeer, key: &SigningKey, doc: &mut AutoCommit) {
-        doc.commit();
-        peer.install_seed(
-            SeedState {
-                room_changes: doc
-                    .get_changes(&[])
-                    .iter()
-                    .map(|c| c.raw_bytes().to_vec())
-                    .collect(),
-                documents: vec![],
-            },
-            key,
-            web_time::SystemTime::now(),
-        )
-        .unwrap();
-    }
-    #[test]
-    fn required_records_follow_admitted_topology_including_missing_notes_and_removal() {
-        let (mut peer, key) = state();
-        let mut doc = peer.admitted_room().unwrap().clone();
-        let strips = vec![Strip {
-            id: StripId((5 << 48) | 1),
-            name: "Documents".into(),
-            window_groups: vec![WindowGroup {
-                id: (5 << 48) | 2,
-                active_tab: (5 << 48) | 3,
-                width: WindowWidth::Normal,
-                maximized: false,
-                tabs: vec![
-                    Tab {
-                        id: (5 << 48) | 3,
-                        title: "Renamed Writer".into(),
-                        tile: TileContent::AppPlaceholder {
-                            kind: AppKind::Other("so.tilo.word-processor".into()),
-                            label: "Anything".into(),
-                        },
-                    },
-                    Tab {
-                        id: (5 << 48) | 4,
-                        title: "Notes".into(),
-                        tile: TileContent::AppPlaceholder {
-                            kind: AppKind::Other("so.tilo.notes".into()),
-                            label: "Notes".into(),
-                        },
-                    },
-                ],
-            }],
-        }];
-        tilo_desktop_model::projection::project_owned_contents(
-            &mut doc,
-            &strips,
-            5,
-            None,
-            tilo_desktop_model::projection::EmptyStrips::Skip,
-        )
-        .unwrap();
-        tilo_desktop_model::apps::bind_tab_record(
-            &mut doc,
-            tilo_desktop_model::StripId((5 << 48) | 1),
-            (5 << 48) | 2,
-            (5 << 48) | 3,
-            "tab:0000000000000001",
-        )
-        .map_err(|e| e.to_string())
-        .unwrap();
-        install(&mut peer, &key, &mut doc);
-        let admission = super::admission(&peer).unwrap();
-        assert_eq!(admission.required.len(), 2);
-        assert_eq!(admission.missing.len(), 1);
-        assert_eq!(admission.missing[0].app_id, "so.tilo.notes");
-        assert!(!admission.complete());
-        let mut strips = strips;
-        strips[0].window_groups[0].tabs.pop();
-        tilo_desktop_model::projection::project_owned_contents(
-            &mut doc,
-            &strips,
-            5,
-            None,
-            tilo_desktop_model::projection::EmptyStrips::Skip,
-        )
-        .unwrap();
-        install(&mut peer, &key, &mut doc);
-        let admission = super::admission(&peer).unwrap();
-        assert!(admission.complete());
-        assert_eq!(admission.required.len(), 1);
-        assert_eq!(admission.required[0].record_id, "tab:0000000000000001");
-    }
-    #[test]
-    fn empty_admitted_desktop_is_ready_but_unprojected_room_is_waiting() {
-        let (mut peer, key) = state();
-        assert!(admission(&peer).is_err());
-        let mut doc = peer.admitted_room().unwrap().clone();
-        doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
-        install(&mut peer, &key, &mut doc);
-        let admission = super::admission(&peer).unwrap();
-        assert!(admission.complete());
-        assert!(admission.required.is_empty());
-        assert_eq!(
-            admission.admitted_room.clone().get_heads(),
-            peer.admitted_room().unwrap().clone().get_heads()
-        );
-        assert_eq!(
-            admission.source_heads,
-            admission
-                .admitted_room
-                .clone()
-                .get_heads()
+/// Mount the room's desktop from the profile, or seed one: one workspace
+/// named after the room, one strip, a window per requested application
+/// (the first registered one by default).
+///
+/// # Errors
+/// Refuses an application id the page does not register.
+pub(crate) fn mount(
+    inputs: Inputs,
+    store: Rc<dyn DurableStore>,
+    apps: Option<&[String]>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
+    let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
+    let salt = peer_salt(&inputs.salt);
+    let shared = Shared::default();
+    let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
+        *shared.records.borrow_mut() = stored_records(&stored);
+        stored.tree
+    } else {
+        let definitions: Vec<&'static ApplicationDefinition> = match apps {
+            Some(ids) => ids
                 .iter()
-                .map(|head| head.0)
-                .collect::<Vec<_>>()
-        );
-    }
+                .map(|id| application(id).ok_or_else(|| format!("unsupported application {id}")))
+                .collect::<Result<_, _>>()?,
+            // Every registered app is in the launcher; a fresh desktop opens
+            // only the first.
+            None => applications().into_iter().take(1).collect(),
+        };
+        let mut minter = IdMinter::new(salt);
+        let tabs = definitions
+            .into_iter()
+            .map(|definition| app_tab(minter.mint(), definition))
+            .collect();
+        tilo_desktop_surface::seed_tree(&mut minter, "Workspace", tabs)
+    };
+    let persistence = Persistence {
+        store,
+        key,
+        saved_revision: Cell::new(0),
+        records_changed: Rc::clone(&shared.records_changed),
+        records: Rc::clone(&shared.records),
+    };
+    let tiles = Tiles {
+        inputs,
+        shared: shared.clone(),
+        stores: HashMap::new(),
+        notify,
+    };
+    let (surface, handle) = DesktopSurface::new(tree, salt, Box::new(tiles));
+    Ok((surface, handle, shared, persistence))
+}
 
-    #[test]
-    fn durable_chat_empty_route_uses_package_primary_checkout() {
-        let tab = 17;
-        let routes = BTreeMap::from([(tab, String::new())]);
-        let checkout = super::checkout(chat::definition(), tab, &routes).unwrap();
-        assert!(checkout.id.is_package_primary());
+/// Parse a `DesktopTree` (JSON) changed elsewhere, for
+/// [`DesktopHandle::replace_tree`].
+///
+/// # Errors
+/// The JSON is not a desktop tree, or it has no workspace.
+pub(crate) fn parse_tree(json: &str) -> Result<DesktopTree, String> {
+    let tree: DesktopTree = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    if tree.workspaces.is_empty() {
+        return Err("a desktop needs a workspace".into());
     }
+    Ok(tree)
 }

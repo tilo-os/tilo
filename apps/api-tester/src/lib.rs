@@ -1,7 +1,7 @@
 //! API Tester — a Postman/Insomnia-class HTTP client for Tilo.
 //!
 //! Build requests (method, URL, params, headers, auth, body), send them
-//! with `reqwest`, and inspect the response: status, timing, size, headers,
+//! through `tilo_net`, and inspect the response: status, timing, size, headers,
 //! and a pretty/raw/preview body with syntax-highlighted, collapsible JSON.
 //! Saved requests live in collections; `{{variable}}` placeholders resolve
 //! against the active environment. Collections, environments, the active
@@ -61,3 +61,10 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ApiTesterApp::new())
 }
 pub use resource::{ApiTester, ApiTesterShell};
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.api-tester", app_root)
+        .component_actions(actions::register)
+        .as_definition("API Tester")
+}

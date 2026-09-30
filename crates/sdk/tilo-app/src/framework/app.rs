@@ -268,8 +268,14 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
 
+/// The record a standalone launch opens: the default one of the definition's kind.
 #[cfg(not(target_arch = "wasm32"))]
-fn prepare<A: ResourceApp>(
+fn default_record_of(definition: &ApplicationDefinition) -> RecordCheckout {
+    RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
@@ -299,7 +305,7 @@ fn prepare<A: ResourceApp>(
         return host.prepare_default(
             definition,
             CAPTURE_INSTANCE,
-            default_record::<A>(),
+            default_record_of(definition),
             None,
             inputs,
         );
@@ -314,16 +320,20 @@ fn prepare<A: ResourceApp>(
         return host.prepare_default(
             definition,
             DATA_DIR_INSTANCE,
-            default_record::<A>(),
+            default_record_of(definition),
             None,
             inputs,
         );
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    native
-        .host_mut()
-        .prepare_default(definition, instance, default_record::<A>(), None, inputs)
+    native.host_mut().prepare_default(
+        definition,
+        instance,
+        default_record_of(definition),
+        None,
+        inputs,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -343,7 +353,7 @@ fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     LaunchSpec::from_definition(definition::<A>())
-        .component_host(prepare::<A>)
+        .component_host(prepare_definition)
         .native_services()
         .capture_scenario(capture::<A>)
         .shot_viewport(shot_viewport::<A>)
@@ -353,10 +363,22 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
 }
 
 #[cfg(feature = "native")]
+/// The launch specification of any application definition: the standard
+/// component host, record and launch modes, without a resource type's
+/// capture scenarios.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> LaunchSpec {
+    LaunchSpec::from_definition(definition)
+        .component_host(prepare_definition)
+        .native_services()
+        .allowed_options(&["--data-dir"])
+        .allowed_live_options(&["--data-dir"])
+}
+
 /// Run `A`: the live window, or `--shots`, `--headless` and the other
 /// standard launch modes. Needs the native runner (the default `native`
 /// feature); a host without it drives [`launch_spec`] itself.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn run<A: ResourceApp>() {
-    ui_core::launch::run_or_exit(&launch_spec::<A>());
+    crate::launch::run_or_exit(&launch_spec::<A>());
 }

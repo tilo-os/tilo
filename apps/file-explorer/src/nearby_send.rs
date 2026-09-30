@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::collaboration::{
     CollabEvent, CollabRequest, NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand,
@@ -59,7 +59,7 @@ impl Default for NearbySendState {
             pending: BTreeMap::new(),
             requests: VecDeque::new(),
             snapshot: NearbyTransferSnapshot::default(),
-            next_poll: Instant::now(),
+            next_poll: ui::time::now(),
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),
@@ -243,6 +243,11 @@ impl NearbySendState {
         snapshot: NearbyTransferSnapshot,
         open_picker: bool,
     ) -> Vec<NearbyUiEffect> {
+        // Background Snapshot polls keep the 2s wake. An identical roster
+        // must not look like a frame: the runner used to commit every reply.
+        if !open_picker && snapshot == self.snapshot {
+            return Vec::new();
+        }
         self.snapshot = snapshot;
         self.observed_phases.retain(|handle, _| {
             self.snapshot
@@ -407,6 +412,40 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn identical_background_snapshot_is_not_a_ui_effect() {
+        let mut state = NearbySendState::default();
+        state.poll_if_due(ui::time::now());
+        let request = state.take_requests().pop().expect("snapshot request");
+        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
+            panic!("wrong request");
+        };
+        let idle = NearbyTransferSnapshot::default();
+        let first = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+            request_id,
+            result: Ok(NearbyTransferReply::Snapshot {
+                snapshot: idle.clone(),
+            }),
+        });
+        assert!(
+            first.is_empty(),
+            "an empty idle roster must not open chrome"
+        );
+        state.poll_if_due(ui::time::now() + super::POLL_INTERVAL);
+        let request = state.take_requests().pop().expect("second snapshot");
+        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
+            panic!("wrong request");
+        };
+        let second = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+            request_id,
+            result: Ok(NearbyTransferReply::Snapshot { snapshot: idle }),
+        });
+        assert!(
+            second.is_empty(),
+            "an unchanged Nearby poll must not keep requesting frames"
+        );
     }
 
     #[test]

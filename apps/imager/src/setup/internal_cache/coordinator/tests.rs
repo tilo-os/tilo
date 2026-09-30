@@ -221,7 +221,7 @@ use std::{
     fs::{self, File},
     io::{Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 thread_local! {
@@ -310,7 +310,7 @@ fn wait(worker: &Worker, phase: Phase) -> Status {
             }
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "timeout waiting for {phase:?}: {:?}",
             m.status
         );
@@ -1043,7 +1043,7 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                 let t = worker.start(server.release(&bytes)).unwrap();
                 let deadline = tilo_test_env::hang_deadline();
                 while requested.load(Ordering::Acquire) < 2 {
-                    assert!(Instant::now() < deadline);
+                    assert!(ui::time::now() < deadline);
                     thread::sleep(Duration::from_millis(1));
                 }
                 worker.pause(&t).unwrap();
@@ -1102,7 +1102,7 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                 let deadline = tilo_test_env::hang_deadline();
                 let mut in_consumer = entered.0.lock().unwrap();
                 while !*in_consumer {
-                    let now = Instant::now();
+                    let now = ui::time::now();
                     assert!(now < deadline, "the worker never entered the consumer");
                     in_consumer = entered
                         .1
@@ -1148,7 +1148,7 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             worker.start(server.release(&bytes)).unwrap();
             wait(&worker, Phase::Ready);
             let shared = worker.shared.clone();
-            let now = Instant::now();
+            let now = ui::time::now();
             drop(worker);
             assert!(now.elapsed() < Duration::from_secs(3));
             assert_eq!(
@@ -1207,7 +1207,7 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
                 e.store(true, Ordering::Release);
                 let limit = tilo_test_env::hang_deadline();
                 while !cancel.is_cancelled() {
-                    if Instant::now() > limit {
+                    if ui::time::now() > limit {
                         return Err("consumer did not receive cancellation".into());
                     }
                     thread::yield_now();
@@ -1220,7 +1220,7 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             worker.consume(&token).unwrap();
             let deadline = tilo_test_env::hang_deadline();
             while !entered.load(Ordering::Acquire) {
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 thread::yield_now();
             }
             let shared = worker.shared.clone();

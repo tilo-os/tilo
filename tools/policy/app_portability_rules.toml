@@ -30,6 +30,13 @@ model-crates = "apps/*-model"
 model-rules = ["R1", "R2", "R3", "D1", "D2"]
 exempt-dirs = ["tests", "benches", "examples"]
 
+# Apps that declare every one of these platforms may contain none of these
+# findings: the gate fails on the first one, with no baseline allowance. Other
+# apps count them against the shrink-only baseline.
+[strict]
+platforms = ["linux", "macos", "web"]
+rules = ["R1", "R2", "R3", "R4", "W1", "W2", "W3"]
+
 # The only places where code may select a target. Everything else compiles
 # unchanged for every target.
 [target-cfg]
@@ -75,6 +82,9 @@ predicates = [
 exempt-cfg-attr = ["windows_subsystem"]
 # `[target.'cfg(...)']` and `[target.<triple>]` sections in Cargo.toml.
 cargo-target-sections = true
+# A target section naming only these is build plumbing, not platform code:
+# the workspace-hack's native feature set does not build for wasm32.
+build-only-target-dependencies = ["workspace-hack"]
 
 [rules.R2]
 summary = "uses an OS-specific interface"
@@ -105,6 +115,8 @@ severity = "error"
 # String literals that name a platform location.
 literal-prefixes = ["/proc/", "/sys/", "/dev/", "/run/", "/etc/", "/var/"]
 literal-contains = ["/usr/share/", "Library/", ".local/", ".config/"]
+# Web addresses are not local paths (`https://demo.local/clip.mp4`).
+exempt-literal-prefixes = ["http://", "https://"]
 # `env::var("NAME")` / `env::var_os("NAME")` for these names.
 env-functions = ["env::var", "env::var_os"]
 env-names = [
@@ -134,7 +146,9 @@ constructors = ["Command::new", "CommandSpec::new"]
 summary = "depends on a platform or SDK-internal crate"
 help = "depend on the platform crate (crates/platform/*) that wraps it, or reach it through `ui`"
 applies = "always"
-severity = "error"
+# The repository's apps still hold baselined dependencies of both kinds; the
+# gate's baseline shrinks them, so the lint reports them without failing.
+severity = "warn"
 # A trailing `*` matches any suffix.
 crates = [
     "libc",
@@ -154,17 +168,17 @@ crates = [
     "sysinfo",
     "tilo-bluez",
     "block-devices",
-    "sandbox-core",
+    "tilo-sandbox-core",
     "runtime-portal*",
     "runtime-identity",
     "runtime-collab",
     "tilo-content",
     "settings-store",
     # Absorbed into platform crates; their shims count down.
-    "xdg-paths",
-    "atomic-file",
+    "tilo-xdg-paths",
+    "tilo-atomic-file",
     "private-fs",
-    "advisory-lock",
+    "tilo-advisory-lock",
     "bounded-command",
     "host-fs",
     "host-info",
@@ -174,7 +188,7 @@ crates = [
 summary = "depends on a Tilo crate outside the app SDK and the platform crates"
 help = "use `ui` or a platform crate (crates/platform/*); other Tilo crates are SDK internals"
 applies = "always"
-severity = "error"
+severity = "warn"
 # Direct path dependencies (or workspace dependencies with a path) count
 # unless the package or its directory is listed here.
 # `runtime-dylib` is the optional backend of the app-level `thin` feature
@@ -224,8 +238,10 @@ paths = ["Instant::now", "SystemTime::now"]
 
 [rules.W3]
 summary = "uses the std filesystem or sockets, which fail on web"
-help = "use `tilo_files::Dir` / `tilo_net`; their `blocking` variants for desktop-only code"
+help = "use `tilo_files::Dir` / `tilo_net`, and `tilo_paths::AppPaths` for a directory; their `blocking` variants for desktop-only code"
 applies = "web"
 severity = "error"
 std-modules = ["fs", "net"]
-paths = ["File::open", "File::create", "OpenOptions::new"]
+# `env::temp_dir` panics on web rather than failing, even as a fallback
+# (`.unwrap_or_else(std::env::temp_dir)`).
+paths = ["File::open", "File::create", "OpenOptions::new", "env::temp_dir"]

@@ -674,10 +674,22 @@ impl<'a> ActionValidator<'a> {
 
     fn valid_clip_attrs(block: &crate::ClipBlock) -> bool {
         block.attrs.len() <= 16
-            && block
-                .attrs
-                .iter()
-                .all(|(key, value)| Self::valid_attr(key, &clip_attr(value)))
+            && block.attrs.iter().all(|(key, value)| {
+                let value = clip_attr(value);
+                Self::valid_attr(key, &value)
+                    || (block.kind == "cell" && Self::valid_cell_attr(key, &value))
+            })
+    }
+
+    /// A pasted cell's place: the table it belongs to (renamed on apply) and
+    /// its row and column.
+    fn valid_cell_attr(key: &str, value: &AttrVal) -> bool {
+        let dimension = i64::try_from(MAX_TABLE_DIMENSION).unwrap_or(i64::MAX);
+        match key {
+            "table" => matches!(value, AttrVal::Str(v) if Self::safe_name(v)),
+            "row" | "col" => matches!(value, AttrVal::Int(v) if (0..dimension).contains(v)),
+            _ => false,
+        }
     }
 
     /// Attributes whose absence is their default, so an edit may remove them.
@@ -1729,8 +1741,12 @@ fn apply_paste_fragment(
     );
     let mut current = selection.start_block.clone();
     let mut offset = selection.start;
+    // Pasted tables get ids of this document, so one never joins a table
+    // already here.
+    let mut tables = std::collections::BTreeMap::<String, String>::new();
     for (index, fragment) in blocks.iter().enumerate() {
-        if index > 0 {
+        let cell = fragment.kind == "cell";
+        if index > 0 || (cell && !adopt_first_style) {
             let text = match region {
                 Region::Body => tilo_doc::model::block_text(dm.doc, dm.c, &current),
                 other => tilo_doc::model::materialize_region(dm.doc, dm.c, other)
@@ -1767,7 +1783,7 @@ fn apply_paste_fragment(
             };
             add_mark_region(dm, region, &span, &mark.name, &value);
         }
-        if index > 0 || adopt_first_style {
+        if index > 0 || adopt_first_style || cell {
             set_kind_region(dm, region, &current, &fragment.kind);
             if let Some(level) = fragment.level {
                 set_attr_region(dm, region, &current, "level", &AttrVal::Int(level));
@@ -1779,7 +1795,16 @@ fn apply_paste_fragment(
                 set_attr_region(dm, region, &current, "align", &AttrVal::Str(align.clone()));
             }
             for (key, value) in &fragment.attrs {
-                set_attr_region(dm, region, &current, key, &clip_attr(value));
+                let value = match value {
+                    crate::ClipAttr::Str(pasted) if cell && key == "table" => AttrVal::Str(
+                        tables
+                            .entry(pasted.clone())
+                            .or_insert_with(|| dm.ids.mint())
+                            .clone(),
+                    ),
+                    other => clip_attr(other),
+                };
+                set_attr_region(dm, region, &current, key, &value);
             }
         }
         offset = offset.saturating_add(fragment.text.chars().count());

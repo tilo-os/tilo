@@ -202,7 +202,8 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
         // Reuse a checked-in PNG fixture to exercise the real decoder and
         // workspace-relative loader without network access.
         let fixture = include_bytes!("../../settings/shots/settings.png");
-        std::fs::write(root.join(storage::PAGES_DIR).join("image.png"), fixture)?;
+        crate::files::write(&root.join(storage::PAGES_DIR).join("image.png"), fixture)
+            .map_err(std::io::Error::other)?;
     }
     Ok(())
 }

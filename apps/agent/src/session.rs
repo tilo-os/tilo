@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tilo_actions::remote::RemoteActionMessage;
@@ -572,7 +572,7 @@ impl Session {
             enrolled_active: None,
             enrolled_sequence: 0,
             last_route: None,
-            asked_at: Instant::now(),
+            asked_at: ui::time::now(),
             broker_catalogue: tilo_actions::remote::CataloguePage::default(),
             catalogue_fetched: None,
             broker_surfaces: Vec::new(),
@@ -628,7 +628,7 @@ impl Session {
     /// a turn's own I/O — receiving from the broker, decoding a snapshot,
     /// applying an edit — fails.
     pub fn run(&mut self) -> Result<()> {
-        let joined = Instant::now();
+        let joined = ui::time::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
                 self.link.complete_publications(None)?;
@@ -980,7 +980,7 @@ impl Session {
                 )
             };
             self.live_applying(paragraph.first, paragraph.arguments, Some(rest));
-            let began = Instant::now();
+            let began = ui::time::now();
             let result =
                 self.run_task_step(run, index, *step_index, action, &arguments, stepped)?;
             *step_index += 1;
@@ -1090,9 +1090,9 @@ impl Session {
             )
         };
         if flush {
-            live.flush(Instant::now(), &mut send);
+            live.flush(ui::time::now(), &mut send);
         } else {
-            live.tick(Instant::now(), &mut send);
+            live.tick(ui::time::now(), &mut send);
         }
     }
 
@@ -1151,10 +1151,10 @@ impl Session {
         if !self.broker_surfaces.is_empty() {
             return Ok(());
         }
-        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
         let mut deferred = Vec::new();
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+        while ui::time::now() < deadline {
+            let remaining = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
@@ -1180,10 +1180,10 @@ impl Session {
     }
 
     fn wait_for_task_cancellation(&mut self, request_id: u64) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = ui::time::now() + Duration::from_secs(5);
         let mut deferred = Vec::new();
         loop {
-            let now = Instant::now();
+            let now = ui::time::now();
             if now >= deadline {
                 self.link.defer(deferred);
                 return Err(anyhow::anyhow!(
@@ -1249,7 +1249,7 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         };
-        let deadline = Instant::now() + TASK_STEP_WAIT;
+        let deadline = ui::time::now() + TASK_STEP_WAIT;
         loop {
             self.link.send(&request)?;
             match self.wait_for_task_action_reply(request_id, TASK_STEP_REPLY_WAIT)? {
@@ -1291,7 +1291,7 @@ impl Session {
                     return Ok(Err(TaskActionStop::Failed(error)));
                 }
             }
-            if Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Ok(Err(TaskActionStop::Failed(
                     "Task step did not settle before its deadline; its outcome is still unknown"
                         .into(),
@@ -1338,8 +1338,8 @@ impl Session {
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let mut interaction_sequence = 0_u64;
         self.publish_task_interaction(run, action, &update, interaction_sequence)?;
-        let deadline = Instant::now() + TASK_ACTION_WAIT;
-        while !update.is_terminal() && Instant::now() < deadline {
+        let deadline = ui::time::now() + TASK_ACTION_WAIT;
+        while !update.is_terminal() && ui::time::now() < deadline {
             if self.task_cancelled(run)? {
                 self.link.send(&CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Cancel { invocation },
@@ -1529,12 +1529,12 @@ impl Session {
         request_id: u64,
         wait: Duration,
     ) -> Result<Option<TaskReply>> {
-        let deadline = Instant::now() + wait;
+        let deadline = ui::time::now() + wait;
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.
             self.pump_turn();
-            let now = Instant::now();
+            let now = ui::time::now();
             if now >= deadline {
                 self.link.defer(deferred);
                 return Ok(None);
@@ -1618,7 +1618,7 @@ impl Session {
     /// could not be published.
     pub fn run_until(&mut self, deadline: Instant) -> Result<bool> {
         let mut acted = false;
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             acted |= self.step(Duration::from_millis(50))?;
             if acted && self.cfg.once {
                 break;
@@ -1638,7 +1638,7 @@ impl Session {
         // else would ever prompt a reply.
         if !self.has_primary_document() && self.asked_at.elapsed() >= REASK_EVERY {
             ask_for_document(&mut self.link)?;
-            self.asked_at = Instant::now();
+            self.asked_at = ui::time::now();
             tracing::debug!("asked the room for the document again");
         }
         match self.link.recv(wait)? {
@@ -1933,11 +1933,11 @@ impl Session {
         }
         // The broker's pushed directory travels on its own stream and may
         // be one frame behind the document that named the action.
-        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let deadline = ui::time::now() + TASK_CATALOGUE_WAIT;
         let mut deferred = Vec::new();
         let mut found = None;
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+        while ui::time::now() < deadline {
+            let remaining = deadline.saturating_duration_since(ui::time::now());
             match self.link.recv(remaining.min(Duration::from_millis(100)))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.set_broker_surfaces(surfaces);
@@ -2028,7 +2028,7 @@ impl Session {
             "fetched the action catalogue"
         );
         self.broker_catalogue = gathered;
-        self.catalogue_fetched = Some(Instant::now());
+        self.catalogue_fetched = Some(ui::time::now());
         Ok(())
     }
 
@@ -2059,7 +2059,7 @@ impl Session {
         mut update: tilo_actions::InvocationUpdate,
         deadline: Instant,
     ) -> Result<Result<tilo_actions::InvocationUpdate, String>> {
-        while !update.is_terminal() && Instant::now() < deadline {
+        while !update.is_terminal() && ui::time::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
             match self.observe(invocation)? {
                 Ok(latest) => update = latest,
@@ -2206,7 +2206,7 @@ impl Session {
         let update = match self.follow_invocation(
             invocation,
             update,
-            Instant::now() + Duration::from_secs(30),
+            ui::time::now() + Duration::from_secs(30),
         )? {
             Ok(update) => update,
             Err(error) => return Ok(Err(format!("I couldn't observe that action - {error}"))),
@@ -2260,11 +2260,11 @@ impl Session {
         &mut self,
         wanted: impl Fn(&RemoteActionMessage) -> bool,
     ) -> Result<Option<RemoteActionMessage>> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = ui::time::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         loop {
             self.pump_turn();
-            let now = Instant::now();
+            let now = ui::time::now();
             if now >= deadline {
                 self.link.defer(deferred);
                 return Ok(None);
@@ -2310,11 +2310,11 @@ impl Session {
         if !Self::settled(
             self.watching.get(&ins_id),
             &instruction_block.text,
-            Instant::now(),
+            ui::time::now(),
             self.cfg.settle,
         ) {
             self.watching
-                .insert(ins_id, (instruction_block.text.clone(), Instant::now()));
+                .insert(ins_id, (instruction_block.text.clone(), ui::time::now()));
             return Ok(false);
         }
         self.watching.remove(&ins_id);
@@ -3303,7 +3303,7 @@ mod tests {
                     enrolled_custody: managed.then_some(custody),
                     enrolled_active: managed.then_some(acceptance),
                     enrolled_sequence: 0,
-                    asked_at: Instant::now(),
+                    asked_at: ui::time::now(),
                     last_route: None,
                     broker_catalogue: tilo_actions::remote::CataloguePage::default(),
                     catalogue_fetched: None,
@@ -3557,7 +3557,7 @@ mod tests {
                 enrolled_custody: Some(custody),
                 enrolled_active: Some(acceptance),
                 enrolled_sequence: 0,
-                asked_at: Instant::now(),
+                asked_at: ui::time::now(),
                 last_route: None,
                 broker_catalogue: tilo_actions::remote::CataloguePage::default(),
                 catalogue_fetched: None,
@@ -3993,7 +3993,7 @@ mod tests {
     fn a_line_settles_only_once_unchanged_for_the_whole_wait() {
         // Case `a_zero_settle_never_waits`.
         {
-            let now = Instant::now();
+            let now = ui::time::now();
             assert!(Session::settled(None, "Scribe: table", now, Duration::ZERO));
             assert!(Session::settled(
                 Some(&("Scribe: table".to_string(), now)),
@@ -4005,7 +4005,7 @@ mod tests {
 
         // Case `the_first_sight_of_a_line_is_never_settled`.
         {
-            let now = Instant::now();
+            let now = ui::time::now();
             assert!(!Session::settled(
                 None,
                 "Scribe: table",
@@ -4016,7 +4016,7 @@ mod tests {
 
         // Case `a_line_that_changed_since_it_was_last_seen_is_not_settled`.
         {
-            let now = Instant::now();
+            let now = ui::time::now();
             let watched = ("Scribe: tab".to_string(), now);
             assert!(!Session::settled(
                 Some(&watched),
@@ -4029,7 +4029,7 @@ mod tests {
         // Case `unchanged_text_settles_once_the_wait_has_elapsed_and_not_before`.
         {
             let settle = Duration::from_millis(500);
-            let seen = Instant::now();
+            let seen = ui::time::now();
             let watched = ("Scribe: table".to_string(), seen);
             assert!(
                 !Session::settled(
@@ -4349,7 +4349,10 @@ mod tests {
             );
             let deadline = tilo_test_env::hang_deadline();
             let offers = loop {
-                assert!(Instant::now() < deadline, "both app catalogues must arrive");
+                assert!(
+                    ui::time::now() < deadline,
+                    "both app catalogues must arrive"
+                );
                 session.refresh_catalogue().unwrap();
                 let offers = Session::document_broker_offers(
                     &session.broker_catalogue,

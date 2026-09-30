@@ -54,6 +54,14 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ThemesApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.themes", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Theme Studio")
+}
+
 /// Build the root widget tree for a headless `--shots` capture at the given
 /// viewport width. The single-frame renderer has no live first frame to settle
 /// the responsive layout, so the layout class (docked vs. overlay) is seeded

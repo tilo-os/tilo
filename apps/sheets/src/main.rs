@@ -83,24 +83,12 @@ fn configure(app: &mut ui::App) {
 extern crate runtime_dylib;
 
 pub fn main() {
-    // The live workbook runs on the app framework. Shots, responsive-matrix,
-    // native-audit and explicit headless flags keep the standalone path.
-    let mut args = std::env::args().skip(1);
-    let mut standalone = false;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => {
-                standalone = true;
-            }
-            file if !file.starts_with('-') => standalone = true,
-            _ => {}
-        }
-    }
-    if !standalone {
-        ui::framework::run::<sheets::SheetsShell>();
+    if room_launch() {
+        ui::launch::run_or_exit(
+            &LaunchSpec::from_definition(sheets::definition())
+                .component_host(prepare_room_workbook)
+                .native_services(),
+        );
         return;
     }
     ui::launch::run_or_exit(
@@ -109,6 +97,30 @@ pub fn main() {
             .scenarios(SCENARIOS)
             .configure_app(configure),
     );
+}
+
+/// A launch into a room (not a screenshot). There Sheets opens the room's
+/// default record, the workbook every device's first Sheets window opens,
+/// browsers included; standalone it keeps the one workbook it always had.
+fn room_launch() -> bool {
+    std::env::var("TILO_WORKSPACE_ID").is_ok_and(|room| !room.trim().is_empty())
+        && !std::env::args().any(|arg| arg == "--shots" || arg == "--responsive-matrix")
+}
+
+fn prepare_room_workbook(
+    definition: &ui::application::ApplicationDefinition,
+    _args: &LaunchArgs,
+) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    let mut native = ui::application::NativeProcessHost::open(definition)?;
+    let instance_id = native.instance_id();
+    let workbook = ui::record::RecordCheckout::new(
+        ui::record::RecordId::room_default(),
+        definition.record_kind.clone(),
+    );
+    native
+        .host_mut()
+        .prepare_default(definition, instance_id, workbook, None, inputs)
 }
 
 /// Render one `--shots` scenario to a PNG.

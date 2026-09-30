@@ -15,8 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -904,7 +904,7 @@ impl MonitorApp {
         let model = MonitorModel::sample();
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, None, Instant::now(), Sampler::inert());
+        let mut app = Self::build(model, None, ui::time::now(), Sampler::inert());
         // The default tree starts collapsed. Select a row from that *visible*
         // projection rather than the globally busiest process, which may be a
         // hidden descendant. A detail pane with destructive controls must
@@ -926,7 +926,7 @@ impl MonitorApp {
     pub fn new_live() -> Self {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
-        let stale = Instant::now()
+        let stale = ui::time::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale, Sampler::new())
@@ -1000,7 +1000,7 @@ impl MonitorApp {
         let mut app = Self::build(
             MonitorModel::sample(),
             None,
-            Instant::now(),
+            ui::time::now(),
             Sampler::controlled(signal_probe),
         );
         app.prefs.auto_refresh = false;
@@ -1039,7 +1039,7 @@ impl MonitorApp {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
         self.process_search.refresh(&self.model.processes);
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
         self.clear_selection_if_filtered_out();
@@ -1487,7 +1487,7 @@ impl MonitorApp {
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
         self.copied_pid = Some(pid);
-        self.copied_at = Some(Instant::now());
+        self.copied_at = Some(ui::time::now());
         self.selected_pid = Some(pid);
     }
 
@@ -1701,7 +1701,9 @@ impl MonitorApp {
     }
 
     fn clock() -> String {
-        let secs = tilo_clock::unix_now();
+        let secs = ui::time::wall()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         format!(
             "{:02}:{:02}:{:02}",
             (secs / 3600) % 24,
@@ -4917,7 +4919,7 @@ impl MonitorApp {
             // Resuming starts a fresh cadence window. That avoids an immediate
             // surprise sample after the user intentionally paused inspection.
             if self.prefs.auto_refresh {
-                self.last_refresh = Instant::now();
+                self.last_refresh = ui::time::now();
             }
             return true;
         }
@@ -4926,7 +4928,7 @@ impl MonitorApp {
             // press-and-hold (open the option popover). Start the hold timer on
             // press; `draw` opens the popover once it crosses the threshold, and
             // `release_interval_press` cycles on an early release.
-            self.interval_press = Some(Instant::now());
+            self.interval_press = Some(ui::time::now());
             self.interval_hold_opened = false;
             return true;
         }
@@ -5212,7 +5214,7 @@ impl MonitorApp {
             "a" | "A" => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             // "s" sends SIGTERM (Stop) to the selection; "g" toggles the
@@ -5824,7 +5826,7 @@ impl Widget for MonitorApp {
             "monitor.auto-refresh" if activated => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             "monitor.kernel-threads" if activated => {
@@ -6229,7 +6231,7 @@ impl MonitorApp {
 
         // `needs_animation_frame` holds the host long enough to reach the
         // dwell deadline; this tick makes the tooltip visible when due.
-        let _ = self.tooltips.tick(Instant::now());
+        let _ = self.tooltips.tick(ui::time::now());
         if let Some((label, anchor)) = self.tooltips.visible() {
             draw_hover_tooltip(scene, t, text_renderer, theme, anchor, label, self.rect);
         }
@@ -6420,7 +6422,7 @@ impl MonitorApp {
                 .into_iter()
                 .find(|(rect, _)| rect.contains(self.last_cursor))
                 .map(|(rect, label)| (rect, label.to_string()));
-                let _ = self.tooltips.on_pointer(tooltip, Instant::now());
+                let _ = self.tooltips.on_pointer(tooltip, ui::time::now());
                 // A live scrollbar thumb drag follows the cursor.
                 if self.scroll_drag.is_some() {
                     self.apply_scroll_drag(self.last_cursor);
@@ -8131,7 +8133,7 @@ mod tests {
             let before = a.prefs.interval_ms;
             // Simulate a press that started well past the long-press threshold.
             a.interval_press = Some(
-                Instant::now()
+                ui::time::now()
                     .checked_sub(Duration::from_millis(LONG_PRESS_MS as u64 + 200))
                     .unwrap(),
             );
@@ -8905,7 +8907,7 @@ mod tests {
                 "toast active immediately after copying"
             );
             // The toast is time-limited: an old timestamp is no longer active.
-            a.copied_at = Instant::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
+            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
             assert!(
                 !a.copy_toast_active(),
                 "toast expires after its window (not a permanent caption)"

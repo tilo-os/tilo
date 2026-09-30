@@ -44,6 +44,9 @@ fn create_component(
             .initialize_new_record(crate::notebook::initialize_empty)
             .map_err(LaunchError::Record)?;
     }
+    // The sidebar resolves its strings while it is built, before the main
+    // panel would register the catalog.
+    crate::metadata::register_messages();
     let author = context.author().clone();
     let mut root = context
         .read_record(|doc| crate::NotesApp::from_document(doc, &author))

@@ -228,6 +228,10 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
 /// a multi-GPU host); [`push_gpu_selection`] narrows to one.
 const DRM_DIR: &str = "/dev/dri";
 
+/// Where a shell-issued startup trace may land: the app's state directory,
+/// never its home.
+const STARTUP_METRICS_PREFIX: &str = "/run/tilo/app/.local/state/startup-";
+
 /// Splice the compositor's GPU choice into the argv, before the
 /// entrypoint token. Three things: (1) a tmpfs over `/dev/dri` hides
 /// the manifest's grant, then only the chosen render node is bound
@@ -359,12 +363,14 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
         }
     }
-    // The shell owns this path and always points it inside the app's one
-    // writable bind. Preserve it across `--clearenv` so startup checkpoints
-    // survive a compositor crash or forced reboot. Refuse arbitrary paths:
-    // this diagnostic must never turn into a sandbox write primitive.
+    // The shell owns this path and always points it at the app's state
+    // directory inside its one writable bind — not the directory itself,
+    // which is the app's home and what Files shows. Preserve it across
+    // `--clearenv` so startup checkpoints survive a compositor crash or
+    // forced reboot. Refuse arbitrary paths: this diagnostic must never turn
+    // into a sandbox write primitive.
     if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
-        && value.starts_with("/run/tilo/app/startup-")
+        && value.starts_with(STARTUP_METRICS_PREFIX)
         && std::path::Path::new(&value)
             .extension()
             .is_some_and(|extension| extension == "json")
@@ -860,6 +866,7 @@ mod tests {
         MinimalManifest {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
+            localized_names: BTreeMap::default(),
             category: Some("Office".to_string()),
             icon: None,
             version: "0.1.0".to_string(),
@@ -1319,7 +1326,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(
                 "TILO_STARTUP_METRICS_PATH",
-                "/run/tilo/app/startup-42-dead_beef.json",
+                "/run/tilo/app/.local/state/startup-42-dead_beef.json",
             );
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
@@ -1332,8 +1339,24 @@ mod tests {
             );
             assert_eq!(
                 setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
-                Some("/run/tilo/app/startup-42-dead_beef.json")
+                Some("/run/tilo/app/.local/state/startup-42-dead_beef.json")
             );
+
+            // The app's home itself is what Files lists; a trace there is refused.
+            env.set(
+                "TILO_STARTUP_METRICS_PATH",
+                "/run/tilo/app/startup-42-dead_beef.json",
+            );
+            let argv = build_bwrap_argv(
+                &mk_manifest("off"),
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
 
             env.set("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
             let argv = build_bwrap_argv(

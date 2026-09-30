@@ -74,13 +74,13 @@ impl UserDirs {
             return Self::under(home);
         }
         Self {
-            home: xdg_paths::home(),
-            desktop: xdg_paths::desktop_dir(),
-            documents: xdg_paths::document_dir(),
-            downloads: xdg_paths::download_dir(),
-            music: xdg_paths::audio_dir(),
-            pictures: xdg_paths::picture_dir(),
-            videos: xdg_paths::video_dir(),
+            home: tilo_paths::home(),
+            desktop: tilo_paths::desktop_dir(),
+            documents: tilo_paths::document_dir(),
+            downloads: tilo_paths::download_dir(),
+            music: tilo_paths::audio_dir(),
+            pictures: tilo_paths::picture_dir(),
+            videos: tilo_paths::video_dir(),
         }
     }
 

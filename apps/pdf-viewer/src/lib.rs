@@ -54,6 +54,7 @@ pub mod resource;
 pub mod search_provider;
 pub mod text_layer;
 pub mod tiles;
+mod web_file;
 
 pub use app::PdfApp;
 pub use doc::PdfDoc;
@@ -89,6 +90,13 @@ pub fn app_root_open_with_content(
     content: tilo_content::ContentStore,
 ) -> Box<dyn Widget> {
     Box::new(PdfApp::open_with_content(path, content))
+}
+
+/// The app as every host mounts it: the reader and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.pdf-viewer", app_root)
+        .component_actions(actions::register)
+        .as_definition("PDF Viewer")
 }
 
 /// The bundled demonstration document with example markup — screenshots and

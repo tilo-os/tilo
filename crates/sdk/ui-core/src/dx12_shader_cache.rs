@@ -7,17 +7,17 @@
 )]
 
 // Bump whenever HAL cache semantics, compiler arguments or the codec change.
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dx12-shader-cache"))]
 const ABI: &[u8] = b"tilo-dxc-cache-v1/wgpu-hal-29.0.3/naga-29.0.3";
 
 mod codec;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dx12-shader-cache"))]
 use codec::{Entry, LIMIT, decode, encode};
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dx12-shader-cache"))]
 pub(crate) use platform::{CacheSession, CompilerIdentity, report};
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "dx12-shader-cache"))]
 mod platform {
     use super::*;
     use std::os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::AsRawHandle};
@@ -148,7 +148,7 @@ mod platform {
             if file_id(&loaded_file)? != compiler.file_id {
                 return None;
             }
-            let base = xdg_paths::env_dir("XDG_CACHE_HOME").or_else(xdg_paths::cache_dir)?;
+            let base = tilo_paths::env_dir("XDG_CACHE_HOME").or_else(tilo_paths::cache_dir)?;
             let directory = base.join("tilo").join("dx12-shaders");
             private_fs::directory(&directory).ok()?;
             // One bounded file per app, so updates replace stale revisions and

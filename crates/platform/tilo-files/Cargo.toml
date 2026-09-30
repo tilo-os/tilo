@@ -19,8 +19,8 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 
 # Native change notification (inotify, FSEvents), for `Dir::watch` on native
@@ -34,6 +34,10 @@ notify = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 # `flock(2)`, `FD_CLOEXEC` and `renameat2`/`renameatx_np` without hand-written FFI.
 rustix = { workspace = true, features = ["fs", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+# `path_identity`'s file URLs.
+url.workspace = true
 
 # The browser's origin-private file system and Web Locks, pinned to the
 # versions the browser runtime links so a page carries one copy.

@@ -118,6 +118,7 @@ impl ShellNetwork {
                 cluster_id.clone(),
                 record_id.clone(),
                 role,
+                input.retained(),
                 (**envelope).clone(),
             );
         }

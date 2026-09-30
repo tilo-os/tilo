@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
@@ -677,7 +677,7 @@ impl MusicApp {
         let (view, query) = Self::parse_initial_view();
         // A preset search query (`TILO_MUSIC_VIEW=search:…`) arms the debounce so
         // the live-shot loop dispatches it after the usual idle beat.
-        let preset_search_at = (!query.is_empty()).then(Instant::now);
+        let preset_search_at = (!query.is_empty()).then(ui::time::now);
         let mut search_input = TextInput::local()
             .with_kind(ui::widget::TextInputKind::Search)
             .with_plain_chrome()
@@ -758,7 +758,7 @@ impl MusicApp {
             playback_loaded: false,
             bound_track: None,
             playhead_ms: 0.0,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             shuffle_order: Vec::new(),
             shuffle_rng: seed_rng(),
             premute_volume: None,
@@ -1102,7 +1102,7 @@ impl MusicApp {
                                 "Saved “{}” for offline playback",
                                 self.track_label(&track_id)
                             ),
-                            Instant::now(),
+                            ui::time::now(),
                         ));
                     } else {
                         self.update_device_cache(&track_id, CacheState::Streamed);
@@ -1117,7 +1117,7 @@ impl MusicApp {
                     self.offline_errors.insert(track_id.clone(), error.clone());
                     self.settle_offline_track(&track_id, Some(error.clone()));
                     self.toast =
-                        Some((format!("Offline download failed: {error}"), Instant::now()));
+                        Some((format!("Offline download failed: {error}"), ui::time::now()));
                 }
             }
         }
@@ -1184,7 +1184,7 @@ impl MusicApp {
     fn report_device_profile_error(&mut self) {
         if let Err(error) = self.persist_device_profile() {
             self.playback_error = Some(error.clone());
-            self.toast = Some((error, Instant::now()));
+            self.toast = Some((error, ui::time::now()));
         }
     }
 
@@ -1768,14 +1768,14 @@ impl MusicApp {
                 self.cover_embed = Some(embed_cover_off_thread(path));
                 self.toast = Some((
                     "Preparing portable playlist cover…".to_string(),
-                    Instant::now(),
+                    ui::time::now(),
                 ));
             }
             PortalOutcome::Cancelled => {}
             PortalOutcome::Failed(reason) => {
                 self.toast = Some((
                     format!("Couldn\u{2019}t set cover: {reason}"),
-                    Instant::now(),
+                    ui::time::now(),
                 ));
             }
         }
@@ -1791,7 +1791,7 @@ impl MusicApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.cover_embed = None;
                 self.cover_embed_for = None;
-                self.toast = Some(("Couldn’t prepare playlist cover".into(), Instant::now()));
+                self.toast = Some(("Couldn’t prepare playlist cover".into(), ui::time::now()));
                 return;
             }
         };
@@ -1802,10 +1802,10 @@ impl MusicApp {
                 self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
                 self.reload_library(state);
                 self.art_urls.insert(playlist_id, url);
-                self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
+                self.toast = Some(("Playlist cover updated".to_string(), ui::time::now()));
             }
             (_, Err(reason)) => {
-                self.toast = Some((format!("Couldn’t set cover: {reason}"), Instant::now()));
+                self.toast = Some((format!("Couldn’t set cover: {reason}"), ui::time::now()));
             }
             (None, Ok(_)) => {}
         }
@@ -1815,7 +1815,7 @@ impl MusicApp {
     /// In-memory only (called from `draw`, which has no document handle); the
     /// updated position persists to the document on the next user event.
     fn tick(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         self.last_tick = now;
         self.expire_resource_stream_if_due(now);
         if (!self.pb.playing || self.pb.current.is_none()) && !self.audio.needs_poll() {
@@ -1842,7 +1842,7 @@ impl MusicApp {
                     .unwrap_or_else(|| "this track could not be played".to_string());
                 let message = format!("Can\u{2019}t play: {msg}");
                 self.playback_error = Some(message.clone());
-                self.toast = Some((message, Instant::now()));
+                self.toast = Some((message, ui::time::now()));
                 self.pb.playing = false;
                 self.audio.stop();
                 self.fail_resource_stream(
@@ -2297,7 +2297,7 @@ impl MusicApp {
                 if keep {
                     if let Err(error) = self.request_offline_download(&track) {
                         self.toast =
-                            Some((format!("Offline download failed: {error}"), Instant::now()));
+                            Some((format!("Offline download failed: {error}"), ui::time::now()));
                     }
                 } else {
                     if let Some(download) = self.downloads.remove(&track) {
@@ -2308,7 +2308,7 @@ impl MusicApp {
                     if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
                         self.toast = Some((
                             format!("Couldn’t remove offline media: {error}"),
-                            Instant::now(),
+                            ui::time::now(),
                         ));
                     }
                     self.update_device_cache(&track, CacheState::Streamed);
@@ -2358,7 +2358,7 @@ impl MusicApp {
             return;
         };
         if let Err(error) = self.apply_resource_remove_queue_item(index, &track) {
-            self.toast = Some((format!("Couldn’t update queue: {error}"), Instant::now()));
+            self.toast = Some((format!("Couldn’t update queue: {error}"), ui::time::now()));
         }
         self.persist_playback(state);
     }
@@ -2460,7 +2460,7 @@ impl MusicApp {
         // Invalidate the memoised query so the new results recompute, and
         // arm the debounced live search (live build surfaces real hits).
         self.search_cache = None;
-        self.search_edit_at = Some(Instant::now());
+        self.search_edit_at = Some(ui::time::now());
         self.scroll = 0.0;
         if self.drawer.is_overlay() {
             self.drawer.close();
@@ -2567,7 +2567,7 @@ impl MusicApp {
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
         self.cover_pick = Some(cover_request().send());
-        self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
+        self.toast = Some(("Choose a cover image\u{2026}".to_string(), ui::time::now()));
     }
 
     fn on_add_to_queue(&mut self, id: &str, state: &mut AutoCommit) {
@@ -2578,7 +2578,7 @@ impl MusicApp {
             .unwrap_or_default();
         self.toast = Some((
             format!("Added \u{201c}{label}\u{201d} to queue"),
-            Instant::now(),
+            ui::time::now(),
         ));
         self.persist_playback(state);
     }
@@ -2591,7 +2591,7 @@ impl MusicApp {
             .unwrap_or_default();
         self.toast = Some((
             format!("Playing \u{201c}{label}\u{201d} next"),
-            Instant::now(),
+            ui::time::now(),
         ));
         if self.pb.current.as_deref() == Some(id) {
             self.start_stream(id);
@@ -2615,7 +2615,7 @@ impl MusicApp {
             } else {
                 format!("Removed \u{201c}{label}\u{201d} from Liked Songs")
             },
-            Instant::now(),
+            ui::time::now(),
         ));
     }
 
@@ -2631,7 +2631,7 @@ impl MusicApp {
             } else {
                 format!("Removed \u{201c}{label}\u{201d} from your library")
             },
-            Instant::now(),
+            ui::time::now(),
         ));
     }
 
@@ -2656,7 +2656,7 @@ impl MusicApp {
             } else {
                 format!("Unfollowed {label}")
             },
-            Instant::now(),
+            ui::time::now(),
         ));
     }
 
@@ -2678,7 +2678,7 @@ impl MusicApp {
             .playlist(playlist)
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
+        self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), ui::time::now()));
     }
 
     /// Begin the new-playlist name prompt; `track` is set when this came from
@@ -2721,7 +2721,7 @@ impl MusicApp {
             } else {
                 format!("Created \u{201c}{name}\u{201d}")
             },
-            Instant::now(),
+            ui::time::now(),
         ));
     }
 
@@ -2755,7 +2755,7 @@ impl MusicApp {
             self.view = View::Playlists;
             self.scroll = 0.0;
         }
-        self.toast = Some(("Playlist deleted".into(), Instant::now()));
+        self.toast = Some(("Playlist deleted".into(), ui::time::now()));
     }
 
     fn on_toggle_queue(&mut self) {
@@ -2800,7 +2800,7 @@ impl MusicApp {
                 Ok(request) => Some(request),
                 Err(error) => {
                     self.playback_error = Some(error.clone());
-                    self.toast = Some((error, Instant::now()));
+                    self.toast = Some((error, ui::time::now()));
                     self.pb.playing = false;
                     self.audio.stop();
                     None
@@ -2819,7 +2819,7 @@ impl MusicApp {
             self.resolve_in_flight = 0;
             let message = "Can’t start audio: request identity space is exhausted".to_string();
             self.playback_error = Some(message.clone());
-            self.toast = Some((message, Instant::now()));
+            self.toast = Some((message, ui::time::now()));
             self.pb.playing = false;
             self.audio.stop();
             return None;
@@ -2855,7 +2855,7 @@ impl MusicApp {
                 self.resolve_in_flight = 0;
                 let message = format!("Can\u{2019}t start audio: {error}");
                 self.playback_error = Some(message.clone());
-                self.toast = Some((message, Instant::now()));
+                self.toast = Some((message, ui::time::now()));
                 self.pb.playing = false;
                 self.audio.stop();
                 None
@@ -2980,7 +2980,7 @@ impl MusicApp {
             } else {
                 self.audio.frames_rendered()
             },
-            Instant::now() + STREAM_START_TIMEOUT,
+            ui::time::now() + STREAM_START_TIMEOUT,
         ));
     }
 
@@ -3379,7 +3379,7 @@ impl MusicApp {
                         self.active_search_more.remove(&key);
                         self.toast = Some((
                             format!("Couldn\u{2019}t load more results: {error}"),
-                            Instant::now(),
+                            ui::time::now(),
                         ));
                     }
                 }
@@ -3432,7 +3432,7 @@ impl MusicApp {
                                 self.settle_offline_track(&cache_track, Some(error.clone()));
                                 self.toast = Some((
                                     format!("Offline download failed: {error}"),
-                                    Instant::now(),
+                                    ui::time::now(),
                                 ));
                             }
                         }
@@ -3451,7 +3451,7 @@ impl MusicApp {
                             .insert(cache_track.clone(), error.clone());
                         self.settle_offline_track(&cache_track, Some(error.clone()));
                         self.toast =
-                            Some((format!("Offline download failed: {error}"), Instant::now()));
+                            Some((format!("Offline download failed: {error}"), ui::time::now()));
                     } else {
                         self.apply_resolve_failure(&track_id, request_id, &error);
                     }
@@ -3567,7 +3567,7 @@ impl MusicApp {
         if self.pb.current.as_deref() == Some(track_id) {
             let message = format!("Can\u{2019}t stream: {error}");
             self.playback_error = Some(message.clone());
-            self.toast = Some((message, Instant::now()));
+            self.toast = Some((message, ui::time::now()));
             self.pb.playing = false;
             self.audio.stop();
         }
@@ -3760,7 +3760,7 @@ impl MusicApp {
                     ""
                 }
             ),
-            Instant::now(),
+            ui::time::now(),
         ));
     }
 
@@ -3836,7 +3836,7 @@ impl MusicApp {
         let Some(request_id) = self.next_worker_request_id() else {
             self.toast = Some((
                 "Couldn’t load more results: request identity space is exhausted".to_string(),
-                Instant::now(),
+                ui::time::now(),
             ));
             return;
         };
@@ -3848,7 +3848,7 @@ impl MusicApp {
             }) {
                 self.toast = Some((
                     format!("Couldn\u{2019}t load more results: {error}"),
-                    Instant::now(),
+                    ui::time::now(),
                 ));
                 return;
             }
@@ -3885,7 +3885,7 @@ impl MusicApp {
                     self.home_failed = true;
                     self.toast = Some((
                         format!("Couldn\u{2019}t load Home: {error}"),
-                        Instant::now(),
+                        ui::time::now(),
                     ));
                 }
             }
@@ -3907,7 +3907,7 @@ impl MusicApp {
                     self.failed_pages.insert(id.to_string());
                     self.toast = Some((
                         format!("Couldn\u{2019}t load artist: {error}"),
-                        Instant::now(),
+                        ui::time::now(),
                     ));
                 }
             }
@@ -3929,7 +3929,7 @@ impl MusicApp {
                     self.failed_pages.insert(id.to_string());
                     self.toast = Some((
                         format!("Couldn\u{2019}t load album: {error}"),
-                        Instant::now(),
+                        ui::time::now(),
                     ));
                 }
             }
@@ -3951,7 +3951,7 @@ impl MusicApp {
                     self.failed_pages.insert(id.to_string());
                     self.toast = Some((
                         format!("Couldn\u{2019}t load playlist: {error}"),
-                        Instant::now(),
+                        ui::time::now(),
                     ));
                 }
             }
@@ -5005,8 +5005,8 @@ fn home_item_to_hit(item: &HomeItem) -> TrackHit {
 /// A wall-clock-derived seed for the shuffle PRNG, so each session's shuffle
 /// order differs. Never zero (the xorshift step guards against it anyway).
 fn seed_rng() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
+    use ui::time::UNIX_EPOCH;
+    let nanos = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0x1234_5678, |d| d.as_nanos() as u64);
     nanos ^ 0x9E37_79B9_7F4A_7C15
@@ -5082,23 +5082,20 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
 }
 
 fn portable_cover_path(path: &Path) -> Result<String, String> {
-    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
-    if metadata.len() > MAX_COVER_SOURCE_BYTES {
+    let metadata = crate::files::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len > MAX_COVER_SOURCE_BYTES {
         return Err("image is larger than 8 MiB".to_string());
     }
-    let source = std::fs::read(path).map_err(|error| error.to_string())?;
+    let source = crate::files::read(path).map_err(|error| error.to_string())?;
     portable_cover_data_url(&source)
 }
 
 /// Run local disk I/O and decode/resize/encode work away from the UI thread.
 fn embed_cover_off_thread(path: PathBuf) -> Receiver<Result<String, String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    if let Err(error) = std::thread::Builder::new()
-        .name("music-cover-embed".to_string())
-        .spawn(move || {
-            let _ = sender.send(portable_cover_path(&path));
-        })
-    {
+    if let Err(error) = ui::rt::spawn_thread("music-cover-embed", move || {
+        let _ = sender.send(portable_cover_path(&path));
+    }) {
         let (fallback_sender, fallback_receiver) = std::sync::mpsc::channel();
         let _ = fallback_sender.send(Err(error.to_string()));
         return fallback_receiver;
@@ -5119,15 +5116,14 @@ fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
 }
 
 /// The transport the [`ImageStore`] uses to fetch cover bytes. Real HTTP under
-/// the `live` build (a shared blocking `reqwest` client with a connection
-/// pool); embedded portable PNG values render in every build, and the
-/// hermetic `--shots` path never opens a socket.
+/// the `live` build: a shared `tilo_net` client on the app runtime, which the
+/// store's loader waits on from its own worker; embedded portable PNG values
+/// render in every build, and the hermetic `--shots` path never opens a socket.
 #[cfg(feature = "live")]
 fn image_fetcher() -> ui::Fetcher {
-    use std::io::Read;
     use std::sync::OnceLock;
-    const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
+    static CLIENT: OnceLock<Option<tilo_net::Client>> = OnceLock::new();
     Arc::new(|url: &str| {
         if let Some(bytes) = embedded_cover_bytes(url) {
             return Some(bytes);
@@ -5135,31 +5131,28 @@ fn image_fetcher() -> ui::Fetcher {
         if !url.starts_with("https://") {
             return None;
         }
-        let client = CLIENT.get_or_init(|| {
-            tilo_net::http::blocking_client()
-                .timeout(std::time::Duration::from_secs(12))
-                .user_agent("Mozilla/5.0 (Tilo Music)")
-                .build()
-                .unwrap_or_default()
-        });
-        let resp = client.get(url).send().ok()?;
-        if !resp.status().is_success() {
-            return None;
-        }
-        if resp
-            .content_length()
-            .is_some_and(|len| len > MAX_COVER_BYTES)
-        {
-            return None;
-        }
-        // `Response::bytes` would allocate the complete body before checking
-        // its size. Read through a hard cap so a lying or absent
+        let client = CLIENT
+            .get_or_init(|| {
+                tilo_net::Client::builder()
+                    .timeout(std::time::Duration::from_secs(12))
+                    .user_agent("Mozilla/5.0 (Tilo Music)")
+                    .build()
+                    .ok()
+            })
+            .clone()?;
+        let url = url.to_owned();
+        // The body is read through a hard cap, so a lying or absent
         // Content-Length cannot turn cover art into an unbounded allocation.
-        let mut bytes = Vec::new();
-        resp.take(MAX_COVER_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        (!bytes.is_empty() && bytes.len() <= MAX_COVER_BYTES as usize).then_some(bytes)
+        let bytes = ui::rt::app()
+            .block_on(async move {
+                let resp = client.get(url).send().await.ok()?;
+                if !resp.status().is_success() {
+                    return None;
+                }
+                resp.bytes_limited(MAX_COVER_BYTES).await.ok()
+            })
+            .ok()??;
+        (!bytes.is_empty()).then(|| bytes.to_vec())
     })
 }
 

@@ -33,12 +33,16 @@ use std::sync::Mutex;
 /// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
 /// same logical file for all peers (the bytes hydrate per-peer on read).
-pub const WORKSPACE_ROOT: &str = "/var/workspace";
+pub use ::media::source::WORKSPACE_ROOT;
 
 /// Sub-directory under the workspace where the editor expects project media
 /// to be imported. Keeping imports under a single prefix makes the
 /// per-cluster sandbox allowlist a single grant rather than per-file.
 pub const MEDIA_PREFIX: &str = "media";
+
+/// Prefix of a media path naming the editor's own copy of a file imported by
+/// its contents (a browser page has no paths to store).
+pub const KEPT_PREFIX: &str = "tilo-kept";
 
 /// Whether a media reference's *content* is available locally yet. The CRDT
 /// always carries the reference (so the clip can be laid out, trimmed and

@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use crate::model::StreamSignal;
 
@@ -783,7 +783,7 @@ mod tests {
     fn the_publisher_coalesces_to_the_latest_value_and_sends_state_changes_at_once() {
         let mut live = LivePublisher::default();
         live.start();
-        let t0 = Instant::now();
+        let t0 = ui::time::now();
         let mut sent = Vec::new();
         live.set_state(LiveState::Replying, "Replying", None);
         for (ms, text) in [(0, "S"), (20, "Su"), (40, "Sur"), (60, "Sure")] {
@@ -832,19 +832,19 @@ mod tests {
         let mut live = LivePublisher::default();
         live.set_state(LiveState::Thinking, "Thinking", None);
         let mut calls = 0;
-        live.flush(Instant::now(), &mut |_| {
+        live.flush(ui::time::now(), &mut |_| {
             calls += 1;
             true
         });
         assert_eq!(calls, 0, "never started");
         live.start();
         live.set_state(LiveState::Thinking, "Thinking", None);
-        live.flush(Instant::now(), &mut |_| {
+        live.flush(ui::time::now(), &mut |_| {
             calls += 1;
             false
         });
         live.set_state(LiveState::Done, "Done", None);
-        live.flush(Instant::now(), &mut |_| {
+        live.flush(ui::time::now(), &mut |_| {
             calls += 1;
             true
         });
@@ -866,7 +866,7 @@ mod tests {
             },
         )]));
         let mut sent = Vec::new();
-        let mut at = Instant::now();
+        let mut at = ui::time::now();
         let mut feed = |live: &mut LivePublisher, stream: &mut PlanStream, signal| {
             stream.apply(live, signal);
             at += Duration::from_millis(200);
@@ -967,7 +967,7 @@ mod tests {
             },
         );
         let mut sent = Vec::new();
-        collect(&mut live, Instant::now(), &mut sent);
+        collect(&mut live, ui::time::now(), &mut sent);
         assert!(sent.is_empty(), "nothing known yet: {sent:?}");
         stream.apply(
             &mut live,
@@ -986,7 +986,7 @@ mod tests {
                 done: false,
             },
         );
-        collect(&mut live, Instant::now(), &mut sent);
+        collect(&mut live, ui::time::now(), &mut sent);
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].state, LiveState::Writing);
         assert_eq!(sent[0].label, "Type text · Brief");

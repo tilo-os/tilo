@@ -69,7 +69,7 @@ fn compact_heading_and_region_layout_stay_balanced() {
                 "{category:?}: first control {first:?} below {limit}"
             );
             let mut headings = Vec::new();
-            named(&*app, category.label(), &mut headings);
+            named(&*app, &category.label(), &mut headings);
             assert!(headings.iter().any(|r| r.y1 < first.y0));
         }
     }

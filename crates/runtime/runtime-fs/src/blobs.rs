@@ -719,9 +719,15 @@ impl BlobClient {
     ///
     /// Returns [`BlobError::Disconnected`] when no descriptor was inherited.
     pub fn from_environment() -> Result<Self, BlobError> {
-        let fd = runtime_portal::service_fd(BLOB_SERVICE)
-            .ok_or_else(|| BlobError::Disconnected("no document media service".into()))?;
-        Self::start(fd, false)
+        let connection = runtime_portal::connect_service_fd(BLOB_SERVICE).map_err(|error| {
+            BlobError::Disconnected(match error {
+                runtime_portal::NotAvailable::ServiceFdMissing => {
+                    "no document media service".into()
+                }
+                error => error.to_string(),
+            })
+        })?;
+        Self::start(connection.into_raw_fd(), false)
     }
 
     /// Wrap a connection whose handoff was already written for an app scope.

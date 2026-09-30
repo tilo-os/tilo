@@ -7,7 +7,7 @@ license.workspace = true
 description = "Durable lockdown policy store with ordered local observation, shared by the shell's Lockdown portal and its native media gates"
 
 [dependencies]
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 workspace-hack = { version = "0.1" }

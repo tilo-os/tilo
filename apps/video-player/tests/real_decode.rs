@@ -22,7 +22,7 @@
 )]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use media::{MediaEngine, Source};
 use ui::widget::Widget; // brings `sync` (the per-frame Widget method) into scope
@@ -98,8 +98,8 @@ fn write_sample_media(dir: &Path) -> Option<PathBuf> {
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nanos = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!(
         "tilo-vp-real-decode 日本語 #%-{}-{}-{}",
@@ -130,7 +130,7 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let mut saw_duration = false;
         let mut first_frame_dims: Option<(u32, u32)> = None;
         let deadline = tilo_test_env::hang_deadline();
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             for ev in engine.poll() {
                 if let media::MediaEvent::DurationKnown { .. } = ev {
                     saw_duration = true;
@@ -204,7 +204,7 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let root = automerge::ROOT;
 
         let deadline = tilo_test_env::hang_deadline();
-        while Instant::now() < deadline {
+        while ui::time::now() < deadline {
             app.sync(&mut doc, &root);
             if app.player().latest_frame().is_some() {
                 break;

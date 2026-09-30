@@ -3,7 +3,7 @@
 //!
 //! Two rules shape this module.
 //!
-//! **Writes are atomic.** A save goes through [`atomic_file::write`], which
+//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic::write`], which
 //! writes a sibling temp file, fsyncs it, and renames it over the target. A
 //! crash or a full disk therefore leaves either the old file or the new one,
 //! never a half-written source file. An editor that can truncate your code on a
@@ -18,7 +18,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use ui::time::SystemTime;
 
 /// Files larger than this are not opened as text buffers. The editor holds the
 /// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte
@@ -140,7 +140,8 @@ pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, 
             Err(e) => return Err(SaveError::Io(e)),
         }
     }
-    atomic_file::write_creating_parent(path, text.as_bytes()).map_err(SaveError::Io)?;
+    tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+        .map_err(SaveError::Io)?;
     Stamp::of(path).map_err(SaveError::Io)
 }
 

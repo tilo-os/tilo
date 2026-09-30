@@ -65,6 +65,11 @@ ARG RPMS_REF
 # when the image lacks it, so a toolchain bump that forgets this pin cannot
 # build a dev image with a different compiler. Fedora's rust package is not an
 # option: its version moves whenever the RPM snapshot is refreshed.
+# The Fedora bootc base os/Containerfile's builder-base starts from
+# (os/base-snapshot.env). The dev binaries compile on it with the production
+# builder's packages, as the production binaries do, so their compile needs
+# neither BASE_IMAGE nor its rootfs and can run while BASE_IMAGE is built.
+ARG BASE_REF
 ARG RUST_TOOLCHAIN_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 FROM ${RPMS_REF} AS rpms
@@ -83,7 +88,7 @@ FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
-     os/scripts/verify-boot-ordering.sh /tilo/os/scripts/
+     os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
 COPY Cargo.lock rust-toolchain.toml /tilo/
 
 # ---- The base, unsealed, with the builder's toolchain -------------------------
@@ -108,57 +113,45 @@ RUN rm /usr/lib/bootc/kargs.d/05-credentials.toml
 RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
 
-# The pinned Rust release, under /usr so it updates with the image (/usr/local
-# is /var/usrlocal on bootc, which an image update never touches). Linked into
-# /usr/bin rather than behind rustup proxies: tilo-vmd runs in-VM builds with
-# systemd's PATH, and without rustup nothing reinterprets rust-toolchain.toml.
+# The pinned Rust release and the production builder's packages but for its
+# Rust compiler (os/scripts/install-dev-toolchain.sh), plus sshd for `tilo-vm`
+# and rsync for worktree sync. openssh-server is the one package the production
+# image removes on purpose (the runtime crypto policy forbids an SSH server
+# there). The sealed base also removes openssh, so the frozen repo must carry
+# its exact matching core RPM even when the snapshot's original base already
+# had it installed.
+#
+# These layers are the bulk of a dev image, and they are the same for every
+# commit on one rootfs: with the clock fixed at SOURCE_DATE_EPOCH (rpm records
+# install times) and the build's mtimes clamped to it, their blobs are
+# identical and a registry that has them is not sent them again. ld.so.cache,
+# which lists the commit's own libraries too, is written by the next, small
+# layer instead.
 RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' /run/tilo-dev/rust-toolchain.toml)" \
-    && [ -n "$channel" ] \
-    && toolchain="$channel-$(uname -m)-unknown-linux-gnu" \
-    && if [ ! -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ]; then \
-         printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain, which rust-toolchain.toml pins (it has: %s).\n' \
-           "$toolchain" "$(ls /run/tilo-rust-toolchains | tr '\n' ' ')" >&2; \
-         printf 'Pin a tilo-builder index built from this rust-toolchain.toml (build-builder-image.yml tags it %s).\n' \
-           "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cp -a "/run/tilo-rust-toolchains/$toolchain" /usr/lib/rust-toolchain \
-    && for tool in /usr/lib/rust-toolchain/bin/*; do ln -s "$tool" "/usr/bin/${tool##*/}"; done \
-    && actual="$(rustc --version | awk '{print $2}')" \
-    && if [ "$actual" != "$channel" ]; then \
-         printf 'the dev image compiles with rustc %s, but rust-toolchain.toml pins %s\n' "$actual" "$channel" >&2; \
-         exit 1; \
-       fi \
-    && cargo --version
-
-# sshd for `tilo-vm`, rsync for worktree sync, and the production builder's
-# packages but for its Rust compiler (above). openssh-server is the one package
-# the production image removes on purpose (the runtime crypto policy forbids an
-# SSH server there). The sealed
-# base also removes openssh, so the frozen repo must carry its exact matching
-# core RPM even when the snapshot's original base already had it installed.
-#
-# This layer and the toolchain's above are the bulk of a dev image, and they
-# are the same for every commit on one rootfs: with the clock fixed at
-# SOURCE_DATE_EPOCH (rpm records install times) and the build's mtimes clamped
-# to it, their blobs are identical and a registry that has them is not sent
-# them again. ld.so.cache, which lists the commit's own libraries too, is
-# written by the next, small layer instead.
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh rust
 # tilo-rpm-snapshot-package: openssh
+# tilo-rpm-snapshot-package: openssh-server
+# tilo-rpm-snapshot-package: rsync
 ARG SOURCE_DATE_EPOCH=0
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
-    grep -v '^#' /run/tilo-dev/os/scripts/builder-packages.txt > /run/tilo-dev-builder-packages \
-    && [ -s /run/tilo-dev-builder-packages ] \
-    && LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo openssh-server rsync \
-    && xargs -r -a /run/tilo-dev-builder-packages env LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
-    && rm -f /run/tilo-dev-builder-packages \
-    && dnf clean all && /usr/libexec/tilo/finalize-rpmdb \
-    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache \
-    && rustc --version && cargo --version && sccache --version
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages openssh-server rsync
+RUN ldconfig
+
+# ---- The toolchain the dev binaries compile with ------------------------------
+# BASE_REF with the same Rust release and builder packages: what os/Containerfile's
+# builder-base links the production binaries against, from the same snapshot.
+FROM ${BASE_REF} AS dev-compile-toolchain
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/rustup/toolchains,target=/run/tilo-rust-toolchains,ro \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh rust
+ARG SOURCE_DATE_EPOCH=0
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-build-clock,source=/build-clock.so,target=/run/tilo-build-clock.so \
+    sh /run/tilo-dev/os/scripts/install-dev-toolchain.sh packages
 RUN ldconfig
 
 # Stage the selective Cargo inputs on scratch first. Copying each input into
@@ -176,6 +169,8 @@ COPY dist /build/dist
 COPY os/components.toml /build/os/components.toml
 COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh os/scripts/cargo-freshness.sh /build/os/scripts/
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
+COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 
 # ---- Dev binaries -----------------------------------------------------------
 # Compiled in the dev image's own toolchain, the same one in-VM builds use.
@@ -186,7 +181,7 @@ COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-
 # does; `content` (local builds, os/dev/build-dev-image.sh) keeps it and lets
 # os/scripts/cargo-freshness.sh mark exactly the changed sources newer, so an
 # unchanged crate is neither recompiled nor relinked.
-FROM dev-toolchain AS dev-builder
+FROM dev-compile-toolchain AS dev-builder
 WORKDIR /build
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \

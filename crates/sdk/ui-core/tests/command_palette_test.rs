@@ -58,7 +58,7 @@ fn command_palette_filters_and_registers_its_panel_edge() {
     // against the ground and visibly moves against the palette's own fill, at
     // 1× on the dark and the light preset alike. The declared `border_standard`
     // it replaced sat within rounding distance of `raised` on the dark preset
-    // and read as no edge at all. `QUICK_UI_SCREENSHOT_DIR` dumps
+    // and read as no edge at all. `TILO_UI_SCREENSHOT_DIR` dumps
     // `command_palette_{dark,light}.png`.
     {
         for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
@@ -112,7 +112,7 @@ fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
 }
 
 fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();

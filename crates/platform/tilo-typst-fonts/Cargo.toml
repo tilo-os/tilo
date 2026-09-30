@@ -1,0 +1,25 @@
+[package]
+name = "tilo-typst-fonts"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Typst's bundled fonts on every target: embedded in native builds, served by the host to a page by name."
+
+[lib]
+name = "tilo_typst_fonts"
+path = "src/lib.rs"
+
+[dependencies]
+
+# A page fetches the fonts as host data (`HOST_FONTS`) instead of carrying
+# megabytes of font tables in its module; every other build embeds them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+typst-assets = { version = "0.15", features = ["fonts"] }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -55,17 +55,7 @@ const DECODE_BUDGET: Duration = Duration::from_secs(30);
 /// `None` means no samples could be obtained — the caller must show that as
 /// absence, never as a stand-in shape.
 pub fn peaks_from_file(path: &Path, buckets: usize) -> Option<Vec<f32>> {
-    let len = std::fs::metadata(path).ok()?.len();
-    let data = if len <= READ_CAP {
-        std::fs::read(path).ok()?
-    } else {
-        use std::io::Read;
-        let mut f = std::fs::File::open(path).ok()?;
-        let mut buf = vec![0u8; READ_CAP as usize];
-        let n = f.read(&mut buf).ok()?;
-        buf.truncate(n);
-        buf
-    };
+    let data = crate::files::read_prefix(path, READ_CAP).ok()?;
     if let Some(p) = peaks_from_wav_bytes(&data, buckets) {
         return Some(p);
     }
@@ -180,10 +170,10 @@ fn pull_peak_windows(
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
-    let deadline = std::time::Instant::now() + DECODE_BUDGET;
+    let deadline = ui::time::now() + DECODE_BUDGET;
     let mut saw_any = false;
     loop {
-        if std::time::Instant::now() > deadline {
+        if ui::time::now() > deadline {
             break;
         }
         if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
@@ -429,7 +419,8 @@ impl WaveformCache {
             w.running = true;
             let work = self.work.clone();
             let tx = self.tx.clone();
-            std::thread::spawn(move || run_worker(&work, &tx));
+            // Without a thread (the page) waveforms are simply not drawn.
+            let _ = ui::rt::spawn_thread("video-editor-waveform", move || run_worker(&work, &tx));
         }
         drop(w);
         cv.notify_one();
@@ -717,7 +708,7 @@ mod tests {
             assert_eq!(cache.state(id), WaveformState::Pending);
 
             let deadline = tilo_test_env::hang_deadline();
-            while cache.has_pending() && std::time::Instant::now() < deadline {
+            while cache.has_pending() && ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
                 cache.drain();
             }
@@ -748,7 +739,7 @@ mod tests {
         };
         assert_eq!(cache.state(id), WaveformState::Unrequested);
         #[cfg(feature = "decode")]
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         cache.warm_blocking(id, &source);
         assert_eq!(cache.state(id), WaveformState::Unavailable);
         // The failed pipeline settles on its own error, not by holding the

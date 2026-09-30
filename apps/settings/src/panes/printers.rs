@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -185,7 +185,7 @@ impl PrintersPane {
             scanners: Vec::new(),
             refresh_rx: None,
             discover_rx: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             loading: false,
             discovering: false,
             confirm_remove: None,
@@ -213,7 +213,7 @@ impl PrintersPane {
             scanners,
             refresh_rx: None,
             discover_rx: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             loading: false,
             discovering: false,
             confirm_remove: None,
@@ -281,7 +281,7 @@ impl PrintersPane {
         if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh_rx = None;
             self.loading = false;
-            self.last_refresh = Instant::now();
+            self.last_refresh = ui::time::now();
             let mut errors = Vec::new();
             match result.printers {
                 Ok(value) => self.printers = value,

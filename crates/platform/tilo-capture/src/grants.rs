@@ -25,6 +25,15 @@ pub enum Decision {
 
 type Key = (String, String, &'static str);
 
+/// One recorded decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grant {
+    pub room: String,
+    pub app: String,
+    pub device: DeviceKind,
+    pub decision: Decision,
+}
+
 /// Every decision, persisted in one file of the host's profile.
 pub struct DeviceGrants {
     path: PathBuf,
@@ -80,10 +89,9 @@ impl DeviceGrants {
         })
     }
 
-    /// What was decided for `app` in `room` about `device`, if anything. A
-    /// file changed by another process is read again first; one that no
-    /// longer reads holds no decisions.
-    pub fn decision(&self, room: &str, app: &str, device: DeviceKind) -> Option<Decision> {
+    /// The decisions as the file holds them now: read again when another
+    /// process changed it; none when it no longer reads.
+    fn current(&self) -> std::sync::MutexGuard<'_, Loaded> {
         let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
         if modified(&self.path) != loaded.modified {
             *loaded = read(&self.path).unwrap_or(Loaded {
@@ -91,12 +99,40 @@ impl DeviceGrants {
                 decisions: BTreeMap::new(),
             });
         }
+        loaded
+    }
+
+    /// What was decided for `app` in `room` about `device`, if anything. A
+    /// file changed by another process is read again first; one that no
+    /// longer reads holds no decisions.
+    pub fn decision(&self, room: &str, app: &str, device: DeviceKind) -> Option<Decision> {
+        let loaded = self.current();
         let decision = loaded
             .decisions
             .get(&(room.to_owned(), app.to_owned(), device.name()))
             .copied();
         drop(loaded);
         decision
+    }
+
+    /// Every decision, in room, app and device order, as the file holds
+    /// it now.
+    pub fn list(&self) -> Vec<Grant> {
+        let loaded = self.current();
+        let grants = loaded
+            .decisions
+            .iter()
+            .filter_map(|((room, app, device), decision)| {
+                Some(Grant {
+                    room: room.clone(),
+                    app: app.clone(),
+                    device: DeviceKind::from_name(device)?,
+                    decision: *decision,
+                })
+            })
+            .collect();
+        drop(loaded);
+        grants
     }
 
     /// Record `decision`, durably.
@@ -294,6 +330,23 @@ mod tests {
         assert_eq!(
             reopened.decision("r", "a", DeviceKind::Microphone),
             Some(Decision::Deny)
+        );
+        assert_eq!(
+            reopened.list(),
+            [
+                Grant {
+                    room: "r".into(),
+                    app: "a".into(),
+                    device: DeviceKind::Camera,
+                    decision: Decision::Allow,
+                },
+                Grant {
+                    room: "r".into(),
+                    app: "a".into(),
+                    device: DeviceKind::Microphone,
+                    decision: Decision::Deny,
+                },
+            ]
         );
         assert!(reopened.revoke("r", "a", DeviceKind::Camera).unwrap());
         assert!(!reopened.revoke("r", "a", DeviceKind::Camera).unwrap());

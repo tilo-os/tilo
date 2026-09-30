@@ -46,6 +46,7 @@ pub mod merge_view;
 pub mod model;
 pub mod resource;
 pub mod samples;
+mod web_file;
 
 pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};
 pub use app::{DiffMergeApp, Mode};
@@ -72,6 +73,14 @@ pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
 
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.diffmerge", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Diff & Merge")
 }
 
 #[cfg(test)]

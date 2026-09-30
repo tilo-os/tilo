@@ -1402,7 +1402,7 @@ pub(super) mod tests {
         let deadline = tilo_test_env::hang_deadline();
         while !done(install.run_state()) {
             install.poll();
-            assert!(std::time::Instant::now() < deadline, "run did not finish");
+            assert!(ui::time::now() < deadline, "run did not finish");
             std::thread::sleep(Duration::from_millis(1));
         }
     }

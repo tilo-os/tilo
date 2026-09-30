@@ -287,6 +287,16 @@ fn author_is_local(author: &ui::widget::history::HistoryAuthor, local: &str) -> 
         || author.identity_short == ui::history_source::short_id(local)
 }
 
+/// The unread rows someone else wrote. Catch up answers "what did others
+/// do while I was away"; replaying the reader's own writes, including the
+/// desktop's first setup, answers nothing.
+fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEntry> {
+    rows.into_iter()
+        .map(WorkspaceHistoryEntry::timeline_entry)
+        .filter(|entry| !author_is_local(&entry.author, local))
+        .collect()
+}
+
 fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<ResumeSnapshot> {
     entries
         .iter()
@@ -369,10 +379,27 @@ fn draw_resume_card(
         at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
         None,
     );
+    // The button fits its label ("Fortsetzen →" is wider than "Resume →");
+    // the title and context take what it leaves.
+    let button_label = t("activity-resume-button");
+    let (label_w, _) = tr.measure_weighted(
+        &button_label,
+        theme.tokens.typography.scale.sm,
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+    let button_w = (f64::from(label_w) + 24.0).max(74.0);
+    let button = Rect::new(
+        rect.x1 - 10.0 - button_w,
+        rect.y0 + 19.0,
+        rect.x1 - 10.0,
+        rect.y0 + 49.0,
+    );
+    let text_w = text_width((button.x0 - 12.0 - (rect.x0 + 46.0)).max(0.0));
     let title = tr.elide_to_width(
         &resume.target.label,
         theme.tokens.typography.scale.sm,
-        text_width(rect.width() - 144.0),
+        text_w,
     );
     tr.draw_text_weighted(
         scene,
@@ -393,11 +420,7 @@ fn draw_resume_card(
             )
         },
     );
-    let context = tr.elide_to_width(
-        &context,
-        theme.tokens.typography.scale.sm,
-        text_width(rect.width() - 144.0),
-    );
+    let context = tr.elide_to_width(&context, theme.tokens.typography.scale.sm, text_w);
     tr.draw_text(
         scene,
         &context,
@@ -406,30 +429,15 @@ fn draw_resume_card(
         at(transform, rect.x0 + 46.0, rect.y0 + 46.0),
         None,
     );
-    let button = Rect::new(
-        rect.x1 - 84.0,
-        rect.y0 + 19.0,
-        rect.x1 - 10.0,
-        rect.y0 + 49.0,
-    );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.accent[5],
-        None,
-        &RoundedRect::from_rect(button, f64::from(theme.tokens.radii.sm)),
-    );
-    tr.draw_text_weighted(
+    ui::widget::Button::paint(
         scene,
-        &t("activity-resume-button"),
-        theme.tokens.typography.scale.sm,
-        theme
-            .tokens
-            .colors
-            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-        at(transform, button.x0 + 10.0, button.y0 + 8.0),
-        None,
-        ui::text_render::TextWeight::Medium,
+        transform,
+        tr,
+        theme,
+        &ui::widget::ButtonFace::new(button, &button_label)
+            .primary()
+            .text_size(theme.tokens.typography.scale.sm)
+            .radius(f64::from(theme.tokens.radii.sm)),
     );
 }
 
@@ -1101,6 +1109,55 @@ impl RoomActivityPane {
             self.expanded_brief = None;
             self.clear_comparison();
         }
+    }
+
+    /// What "new" is counted from in `workspace`. One this device has never
+    /// read starts from the history it holds now: a fresh install's own
+    /// setup or a joined workspace's past stays browsable, but is not news.
+    fn passive_frontier(&mut self, workspace: u64) -> WorkspaceSeenFrontier {
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !self.history_index.entries().is_empty()
+        {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            self.seen_frontiers.insert(workspace, frontier);
+            self.persist_frontiers();
+        }
+        self.seen_frontiers
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The tree-only feed's rows the active workspace's frontier has not
+    /// acknowledged, with the same first-sight baseline as
+    /// [`Self::passive_frontier`].
+    fn unseen_tree_rows(&mut self, rows: &[HistoryEntry]) -> Vec<HistoryEntry> {
+        let Some(workspace) = self.last_active else {
+            return rows.to_vec();
+        };
+        let id = |entry: &HistoryEntry| WorkspaceHistoryId {
+            origin: super::index::HistoryOrigin::DesktopTree,
+            change: entry.id,
+        };
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !rows.is_empty()
+        {
+            let frontier = self.seen_frontiers.entry(workspace).or_default();
+            for row in rows {
+                frontier.acknowledge(&id(row));
+            }
+            self.persist_frontiers();
+        }
+        let Some(frontier) = self.seen_frontiers.get(&workspace) else {
+            return rows.to_vec();
+        };
+        rows.iter()
+            .filter(|row| !frontier.acknowledged(&id(row)))
+            .cloned()
+            .collect()
     }
 
     fn persist_frontiers(&self) {
@@ -1878,12 +1935,16 @@ impl RoomActivityPane {
             } else {
                 self.host.local_author(self.source.authors_mut(), &actor)
             };
+            // The hue follows the person, as receipt rows' does: one person
+            // editing from this device and acting through a receipt is one
+            // colour, not one per key.
             if let Some(principal) = principal {
+                let hue = ui::history_source::stable_hue(&principal);
                 self.source.authors_mut().register(
                     &actor,
                     ui::widget::HistoryAuthor::new(
                         principal,
-                        ui::history_source::stable_hue(&actor),
+                        hue,
                         ui::history_source::short_id(&actor),
                     ),
                 );
@@ -2167,26 +2228,24 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        let passive = self
-            .seen_frontiers
-            .get(&tree.active.raw())
-            .cloned()
-            .unwrap_or_default();
-        let rows = self
-            .history_index
-            .unseen_detached(&passive, tree, &self.detached_records)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect::<Vec<_>>();
+        let passive = self.passive_frontier(tree.active.raw());
+        let local = self.local_user();
+        let rows = others_work(
+            self.history_index
+                .unseen_detached(&passive, tree, &self.detached_records),
+            &local,
+        );
         self.passive_unread = rows.len();
         self.passive_digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
-        let rows = self
-            .history_index
-            .unseen_detached(&self.catchup_frontier, tree, &self.detached_records)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect::<Vec<_>>();
+        let rows = others_work(
+            self.history_index.unseen_detached(
+                &self.catchup_frontier,
+                tree,
+                &self.detached_records,
+            ),
+            &local,
+        );
         self.digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
         if changed {
@@ -2290,11 +2349,7 @@ impl RoomActivityPane {
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
-        let passive_frontier = self
-            .seen_frontiers
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default();
+        let passive_frontier = self.passive_frontier(workspace);
         let unseen = |frontier: &WorkspaceSeenFrontier, tree: &mut T| {
             if let Some(local) = local {
                 self.history_index
@@ -2303,10 +2358,8 @@ impl RoomActivityPane {
                 self.history_index.unseen(frontier, tree, records)
             }
         };
-        let passive_rows: Vec<HistoryEntry> = unseen(&passive_frontier, tree)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect();
+        let local_user = self.local_user();
+        let passive_rows = others_work(unseen(&passive_frontier, tree), &local_user);
         self.passive_unread = passive_rows.len();
         self.passive_digest = ActivityDigest::from_entries_with_ranges(
             &passive_rows,
@@ -2320,10 +2373,7 @@ impl RoomActivityPane {
             .cloned()
             .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()))
             .map_or_else(ActivityDigest::default, |departure| {
-                let rows = unseen(&departure.frontier, tree)
-                    .into_iter()
-                    .map(WorkspaceHistoryEntry::timeline_entry)
-                    .collect::<Vec<_>>();
+                let rows = others_work(unseen(&departure.frontier, tree), &local_user);
                 ActivityDigest::from_entries_with_ranges(
                     &rows,
                     SystemTime::UNIX_EPOCH,
@@ -2331,10 +2381,7 @@ impl RoomActivityPane {
                     &self.named,
                 )
             });
-        let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect();
+        let catchup_rows = others_work(unseen(&self.catchup_frontier, tree), &local_user);
         self.digest = ActivityDigest::from_entries_with_ranges(
             &catchup_rows,
             SystemTime::UNIX_EPOCH,
@@ -2412,7 +2459,12 @@ impl RoomActivityPane {
 
     fn install_rows(&mut self, mut rows: Vec<HistoryEntry>) {
         let prior_selection = self.selected_ids();
-        let digest_rows = rows.clone();
+        let local = self.local_user();
+        let digest_rows: Vec<HistoryEntry> = rows
+            .iter()
+            .filter(|entry| !author_is_local(&entry.author, &local))
+            .cloned()
+            .collect();
         if let Some(entry) = self.external_entry.clone()
             && !rows.iter().any(|candidate| candidate.id == entry.id)
         {
@@ -2426,8 +2478,24 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
-        self.passive_unread = digest_rows.len();
-        self.passive_digest = self.digest.clone();
+        if self.history_index.entries().is_empty() {
+            let theirs: HashSet<HistoryEntryId> = digest_rows.iter().map(|row| row.id).collect();
+            let unseen: Vec<HistoryEntry> = self
+                .unseen_tree_rows(&rows)
+                .into_iter()
+                .filter(|row| theirs.contains(&row.id))
+                .collect();
+            self.passive_unread = unseen.len();
+            self.passive_digest = ActivityDigest::from_entries_with_ranges(
+                &unseen,
+                SystemTime::UNIX_EPOCH,
+                5,
+                &self.named,
+            );
+        } else {
+            self.passive_unread = digest_rows.len();
+            self.passive_digest = self.digest.clone();
+        }
         self.reset_narrative();
 
         // Filters and counts name the people history resolved; a change it
@@ -2460,7 +2528,9 @@ impl RoomActivityPane {
         if self.narrative_request == request {
             return;
         }
-        self.narrative = request.as_ref().map(ui::deterministic_narrative);
+        // The deterministic summary only restates the brief titles below
+        // it, so the card waits for prose that adds something.
+        self.narrative = None;
         self.narrative_request = request;
     }
 
@@ -3512,17 +3582,12 @@ impl RoomActivityPane {
         }
         let metrics = BriefCardMetrics::new(tr, theme);
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "tilo-deterministic";
             // Section-header role for the label (HIG §9.6: `xs`) — the former
             // `sm - 1` was an invented size — over up to two body lines, each
             // seated on its measured line so 200 % type grows the card.
             let label_size = type_size(tr, theme.tokens.typography.scale.xs);
             let body_size = type_size(tr, theme.tokens.typography.scale.sm);
-            let label = t(if generated {
-                "activity-summary-on-device"
-            } else {
-                "activity-summary-glance"
-            });
+            let label = t("activity-summary-on-device");
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure(&label, label_size, Some(inner_w));
             let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
@@ -3532,11 +3597,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(if generated {
-                    0.13
-                } else {
-                    0.07
-                }),
+                theme.tokens.colors.accent[5].with_alpha_factor(0.13),
                 None,
                 &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
             );
@@ -3636,7 +3697,7 @@ impl RoomActivityPane {
             let title_lines = tr.clamp_to_lines(
                 &brief.title,
                 type_size(tr, theme.tokens.typography.scale.base),
-                text_width(x1 - x0 - 24.0),
+                brief_text_width(x1 - x0),
                 2,
             );
             let collapsed_height = metrics.height(title_lines.len(), 0);
@@ -7054,7 +7115,8 @@ fn draw_brief_card(
     now: SystemTime,
 ) {
     let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let rail_x = rect.x0 + 20.0;
+    let rail_x = rect.x0 + BRIEF_RAIL_X;
+    let text_x = rect.x0 + BRIEF_TEXT_INSET;
     scene.stroke(
         &Stroke::new(2.0),
         transform,
@@ -7065,11 +7127,14 @@ fn draw_brief_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.raised,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
         None,
-        &vello::kurbo::Circle::new((rail_x, rect.y0 + 18.0), 8.0),
+        &vello::kurbo::Circle::new(
+            (rail_x, rect.y0 + m.pad + m.title_lh / 2.0),
+            BRIEF_RAIL_KNOB,
+        ),
     );
-    let width = text_width(rect.width() - 24.0);
+    let width = brief_text_width(rect.width());
     let title_lines = tr.clamp_to_lines(
         &brief.title,
         type_size(tr, theme.tokens.typography.scale.base),
@@ -7087,7 +7152,7 @@ fn draw_brief_card(
             theme.tokens.colors.text_primary,
             at(
                 transform,
-                rect.x0 + 12.0,
+                text_x,
                 rect.y0 + m.pad + small_count_to_f64(index) * m.title_lh,
             ),
             None,
@@ -7107,7 +7172,7 @@ fn draw_brief_card(
         tr,
         theme,
         &brief.authors,
-        rect.x0 + 12.0,
+        text_x,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
@@ -7144,11 +7209,7 @@ fn draw_brief_card(
         &provenance,
         type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
-        at(
-            transform,
-            rect.x0 + 12.0,
-            rect.y0 + m.provenance_top(title_count),
-        ),
+        at(transform, text_x, rect.y0 + m.provenance_top(title_count)),
         None,
     );
     if expanded {
@@ -7169,12 +7230,7 @@ fn draw_brief_card(
             ui::widget::Avatar::draw_at(
                 scene,
                 transform,
-                Rect::new(
-                    rect.x0 + 18.0,
-                    action_y - 2.0,
-                    rect.x0 + 34.0,
-                    action_y + 14.0,
-                ),
+                Rect::new(rail_x - 8.0, action_y - 2.0, rail_x + 8.0, action_y + 14.0),
                 &initial,
                 vello::peniko::Color::from_rgba8(r, g, b, 255),
                 theme,
@@ -7189,14 +7245,14 @@ fn draw_brief_card(
             let action_line = tr.elide_to_width(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
-                text_width(rect.width() - 58.0),
+                width,
             );
             tr.draw_text(
                 scene,
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 40.0, action_y),
+                at(transform, text_x, action_y),
                 None,
             );
             action_y += m.action_pitch();
@@ -7219,7 +7275,7 @@ fn draw_brief_card(
         },
         at(
             transform,
-            rect.x0 + 12.0,
+            text_x,
             rect.y0 + m.affordance_top(title_count, action_count),
         ),
         Some(width),
@@ -7326,8 +7382,8 @@ fn draw_work_session_boundary(
     // itself spatial: each half transfers the bordering action across it in
     // the direction shown, instead of repeating two long explanatory labels.
     let buttons = [
-        (into_newer, "↑  1 action", can_move_up),
-        (into_older, "1 action  ↓", can_move_down),
+        (into_newer, t("activity-session-move-newer"), can_move_up),
+        (into_older, t("activity-session-move-older"), can_move_down),
     ];
     for (button, label, enabled) in buttons {
         let shape = RoundedRect::from_rect(button, 13.0);
@@ -7350,7 +7406,7 @@ fn draw_work_session_boundary(
             &shape,
         );
         let label = tr.elide_to_width(
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             text_width(button.width() - 18.0),
         );
@@ -7432,6 +7488,19 @@ fn draw_brief_author_stack(
     } else {
         x + small_count_to_f64(badges) * 12.0 + 10.0
     }
+}
+
+/// A brief card's timeline rail, and the knob beside its title.
+const BRIEF_RAIL_X: f64 = 14.0;
+const BRIEF_RAIL_KNOB: f64 = 4.0;
+/// Where a brief card's text starts: clear of the rail, its knob, and the
+/// avatars expanded actions centre on it.
+const BRIEF_TEXT_INSET: f64 = 32.0;
+
+/// The width a brief card's lines wrap and elide to. The card is sized from
+/// the same width, so a title can't wrap differently from the card it fills.
+fn brief_text_width(card_width: f64) -> f32 {
+    text_width(card_width - BRIEF_TEXT_INSET - 12.0)
 }
 
 /// The vertical rhythm of one catch-up card, from measured line heights so

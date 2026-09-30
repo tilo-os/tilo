@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 
 use secret_vault::{Custody as KeyCustody, VaultFormat, VaultKey};
 use serde::{Deserialize, Serialize};
+use tilo_files::{Dir, FsError, Location, VPath, blocking};
 use zeroize::Zeroizing;
 
 use crate::model::{Account, Vault};
@@ -69,13 +70,10 @@ pub(crate) fn force_save_failure_for_test(fail: bool) {
     FORCE_SAVE_FAILURE.with(|forced| forced.set(fail));
 }
 
-/// Resolve `$XDG_DATA_HOME/tilo-authenticator`, then `$HOME/.local/share/...`
-/// (Windows: `LocalAppData`). Returns `None` when no user directory is
-/// available.
+/// `tilo-authenticator` in [`tilo_paths::legacy_data_home`], where existing
+/// vaults live. Returns `None` when no user directory is available.
 pub fn data_dir() -> Option<PathBuf> {
-    let base =
-        xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_home_or_local_app_data)?;
-    Some(base.join("tilo-authenticator"))
+    Some(tilo_paths::legacy_data_home()?.join("tilo-authenticator"))
 }
 
 /// Path of the encrypted vault (`.../tilo-authenticator/vault.enc`). This is
@@ -83,6 +81,19 @@ pub fn data_dir() -> Option<PathBuf> {
 /// checks against.
 pub fn vault_path() -> Option<PathBuf> {
     data_dir().map(|d| d.join("vault.enc"))
+}
+
+const VAULT_FILE: &str = "vault.enc";
+/// The legacy plaintext vault, migrated + removed on first load.
+const LEGACY_FILE: &str = "vault.json";
+
+/// The files below `dir`. Key custody needs the directory's path itself.
+fn files(dir: &Path) -> std::io::Result<Dir> {
+    Dir::open(Location::Native(dir.to_path_buf())).map_err(std::io::Error::other)
+}
+
+fn name(file: &str) -> VPath {
+    VPath::new(file).unwrap_or_else(|_| VPath::root())
 }
 
 /// Load the vault from disk. Returns an empty vault when nothing is stored
@@ -99,8 +110,35 @@ pub fn load() -> Vault {
 /// # Errors
 /// Returns storage, key-custody or integrity failures.
 pub fn load_checked() -> std::io::Result<Vault> {
-    let dir = data_dir().ok_or_else(|| std::io::Error::other("no user data directory"))?;
-    load_at_checked(&dir, key_custody())
+    match data_dir() {
+        Some(dir) => load_at_checked(&dir, key_custody()),
+        None => load_in(&page_files()?, &Keys::System),
+    }
+}
+
+/// Where the vault lives without a native data directory: the app's data
+/// location, which on the web is the page's storage.
+fn page_files() -> std::io::Result<Dir> {
+    Dir::open(tilo_paths::AppPaths::for_app("tilo-authenticator").data())
+        .map_err(std::io::Error::other)
+}
+
+/// Where the vault key comes from.
+enum Keys<'a> {
+    /// Custody beside a native vault directory, migrating a local key.
+    Native(&'a Path, KeyCustody),
+    /// The platform's secret store alone (the web's).
+    System,
+}
+
+impl Keys<'_> {
+    fn load(&self, store: &Dir) -> Option<VaultKey> {
+        match self {
+            Self::Native(dir, custody) => load_or_create_key(dir, *custody),
+            Self::System => FORMAT
+                .load_or_create_system_key(blocking::metadata(store, &name(VAULT_FILE)).is_ok()),
+        }
+    }
 }
 
 /// Persist the vault, sealed. `false` means changes remain in memory only.
@@ -109,7 +147,10 @@ pub fn save(vault: &Vault) -> bool {
     if FORCE_SAVE_FAILURE.with(std::cell::Cell::get) {
         return false;
     }
-    data_dir().is_some_and(|dir| save_at_with_custody(&dir, vault, key_custody()))
+    match data_dir() {
+        Some(dir) => save_at_with_custody(&dir, vault, key_custody()),
+        None => page_files().is_ok_and(|store| save_in(&store, vault, &Keys::System)),
+    }
 }
 
 /// Load the vault stored under `dir`.
@@ -124,16 +165,39 @@ fn load_at_with_custody(dir: &Path, custody: KeyCustody) -> Vault {
 }
 
 fn load_at_checked(dir: &Path, custody: KeyCustody) -> std::io::Result<Vault> {
-    let blob = match std::fs::read(dir.join("vault.enc")) {
-        Ok(blob) => blob,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vault::new()),
-        Err(error) => return Err(error),
-    };
-    let key = load_or_create_key(dir, custody)
-        .ok_or_else(|| std::io::Error::other("vault key unavailable"))?;
-    let plaintext =
-        open(&key, &blob).ok_or_else(|| std::io::Error::other("vault integrity check failed"))?;
-    parse_vault(&plaintext)
+    load_in(&files(dir)?, &Keys::Native(dir, custody))
+}
+
+fn load_in(store: &Dir, keys: &Keys<'_>) -> std::io::Result<Vault> {
+    let store = store.clone();
+    match blocking::read(&store, &name(VAULT_FILE)) {
+        Ok(blob) => {
+            let key = keys
+                .load(&store)
+                .ok_or_else(|| std::io::Error::other("vault key unavailable"))?;
+            let plaintext = open(&key, &blob)
+                .ok_or_else(|| std::io::Error::other("vault integrity check failed"))?;
+            return parse_vault(&plaintext);
+        }
+        Err(FsError::NotFound) => {}
+        Err(error) => return Err(std::io::Error::other(error)),
+    }
+
+    // Transparent upgrade: an older build left a plaintext vault. Parse it,
+    // re-seal it, and remove the cleartext original.
+    match blocking::read(&store, &name(LEGACY_FILE)) {
+        Ok(bytes) => {
+            let plaintext = Zeroizing::new(bytes);
+            let vault = parse_vault(&plaintext)?;
+            if !save_in(&store, &vault, keys) {
+                return Err(std::io::Error::other("vault migration was not saved"));
+            }
+            blocking::remove(&store, &name(LEGACY_FILE)).map_err(std::io::Error::other)?;
+            Ok(vault)
+        }
+        Err(FsError::NotFound) => Ok(Vault::new()),
+        Err(error) => Err(std::io::Error::other(error)),
+    }
 }
 
 #[cfg(test)]
@@ -142,23 +206,33 @@ fn save_at(dir: &Path, vault: &Vault) {
 }
 
 fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) -> bool {
-    if let Err(e) = std::fs::create_dir_all(dir) {
+    match files(dir) {
+        Ok(store) => save_in(&store, vault, &Keys::Native(dir, custody)),
+        Err(e) => {
+            tracing::warn!(error = %e, "authenticator: no data dir");
+            false
+        }
+    }
+}
+
+fn save_in(store: &Dir, vault: &Vault, keys: &Keys<'_>) -> bool {
+    let store = store.clone();
+    if let Err(e) = blocking::create_dir_all(&store, &VPath::root()) {
         tracing::warn!(error = %e, "authenticator: could not create data dir");
         return false;
     }
-    let Some(key) = load_or_create_key(dir, custody) else {
+    let Some(key) = keys.load(&store) else {
         tracing::warn!("authenticator: no vault key available; changes kept in memory only");
         return false;
     };
     // Loading an inaccessible vault yields an empty in-memory view. Do not
     // let a subsequent edit turn that recovery situation into data loss.
-    match std::fs::read(dir.join("vault.enc")) {
+    match blocking::read(&store, &name(VAULT_FILE)) {
         Ok(previous) if open(&key, &previous).is_none() => {
             tracing::warn!("authenticator: refusing to replace an unreadable existing vault");
             return false;
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) | Err(FsError::NotFound) => {}
         Err(error) => {
             tracing::warn!(%error, "authenticator: existing vault cannot be checked");
             return false;
@@ -179,7 +253,7 @@ fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) -> bool 
         tracing::warn!("authenticator: vault encryption failed");
         return false;
     };
-    if let Err(e) = atomic_file::write(&dir.join("vault.enc"), &blob) {
+    if let Err(e) = blocking::write_atomic(&store, &name(VAULT_FILE), &blob) {
         tracing::warn!(error = %e, "authenticator: vault write failed");
         false
     } else {
@@ -223,7 +297,11 @@ fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 /// Fresh-install check: true when no vault has been persisted yet, so the
 /// app shows the empty state rather than fabricating sample accounts.
 pub fn is_first_run() -> bool {
-    vault_path().is_none_or(|p| !p.exists())
+    let store = match data_dir() {
+        Some(dir) => files(&dir),
+        None => page_files(),
+    };
+    store.is_ok_and(|store| blocking::metadata(&store, &name(VAULT_FILE)).is_err())
 }
 
 /// Test/inspection helper: deserialize an account list from a JSON blob.

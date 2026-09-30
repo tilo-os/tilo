@@ -17,9 +17,15 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
 
+[package.names]
+de = "Kalender"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+[capabilities]
+optional = ["files.paths", "app-files", "secrets", "network.http", "network.fetch-proxy"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -17,7 +17,7 @@ path = "src/bin/tilo-desktop-scan.rs"
 [dependencies]
 thiserror = { workspace = true }
 url.workspace = true
-xdg-paths = { path = "../xdg-paths" }
+tilo-xdg-paths = { path = "../xdg-paths" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

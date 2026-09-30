@@ -7099,7 +7099,7 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(shell, vec![GestureAction::SwitchWorkspace(-1)]);
+            assert_eq!(shell, vec![GestureAction::SwitchStrip(-1)]);
             assert!(
                 !state
                     .events
@@ -7244,7 +7244,7 @@ mod tests {
             assert!(
                 state.events.iter().any(|e| matches!(
                     e,
-                    BackendEvent::ShellGesture(GestureAction::SwitchWorkspace(1))
+                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1))
                 )),
                 "the same preference that inverts scrolling inverts gestures"
             );

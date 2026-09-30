@@ -5,7 +5,7 @@
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests (e.g. `crates/sdk/ui-core/tests/icon_grid_test.rs`). Set
-//! `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
+//! `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(
     clippy::unwrap_used,
@@ -108,7 +108,7 @@ fn osk_renders_keys_and_toolbar() {
         "expected substantial painted content, got {non_bg} px"
     );
 
-    if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+    if let Ok(dir) = ui::env::var("TILO_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
         let path = std::path::Path::new(&dir).join("osk.png");
         // Reuse the toolkit's PNG writer so the test needs no `png` dep.

@@ -1141,6 +1141,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,
                 filters: opts.filters,
+                scope: None,
                 reply: tx,
             });
             driver.host_mut().pump_file_picker();
@@ -1474,8 +1475,8 @@ const THIRD_WIDTH_PERMILLE: u16 = 333;
 /// at the start, where the ease-out does most of its travelling.
 const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 
-/// Points along the 420 ms make-space curve to render. Evenly spaced,
-/// ending past the curve so the last one is the settled layout.
+/// Points along the make-space spring to render. Evenly spaced, ending
+/// past its settle so the last one is the settled layout.
 const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 
 /// Frames to let the motion finish before the settled capture.
@@ -2397,6 +2398,30 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("04-palette-closed"),
             ],
         },
+        // Apps of the manifest registry this host cannot run: on a Mac
+        // Firewall is listed as "Tilo OS only" and Enter opens nothing, while
+        // the desktop-only Terminal is not listed as unavailable.
+        Scenario {
+            name: "palette_unavailable_app",
+            description: "Search 'firewall' (Tilo OS only), press Enter, then search 'terminal'.",
+            actions: vec![
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("firewall"),
+                Action::Wait(2),
+                Action::Snapshot("01-unavailable-listed"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("02-after-enter"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("terminal"),
+                Action::Wait(2),
+                Action::Snapshot("03-desktop-only-app"),
+            ],
+        },
         Scenario {
             name: "palette_close_anim",
             description: "Open the palette, Escape, and capture the exit animation frames.",
@@ -3025,7 +3050,9 @@ fn build_scenarios() -> Vec<Scenario> {
             description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
             actions: vec![
                 Action::SeedRoomActivity { explore: true },
+                // As in the recap: let the strip ease the new group into view.
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Snapshot("01-explorer-three-panel"),
                 Action::Key(Key::Named(NamedKey::Home)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
@@ -3044,6 +3071,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedRoomActivity { explore: true },
                 Action::SelectRoomActivityEntry(0),
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Key(Key::Named(NamedKey::Home)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
@@ -3067,6 +3095,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedRoomActivity { explore: true },
                 Action::ShowRoomActivityReplay,
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Snapshot("01-replay-checkpoint"),
                 Action::Key(Key::Named(NamedKey::End)),
                 Action::Key(Key::Named(NamedKey::Enter)),

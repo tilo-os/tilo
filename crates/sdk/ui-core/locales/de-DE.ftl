@@ -104,6 +104,72 @@ history-media-too-many = Die früheren Medien überschreiten die Vorschaugrenze 
 history-media-too-large = Die früheren Medien sind zu groß
 history-media-over-limit = Die früheren Medien überschreiten die Vorschaugrenze von 128 MiB
 history-media-hash-mismatch = Die früheren Medien stimmen nicht mit ihrem gespeicherten Inhalts-Hash überein
+
+## History groups and catch-up briefs
+history-group-changes = { $count ->
+    [one] 1 Änderung
+   *[other] { $count } Änderungen
+}
+history-group-edits = { $count ->
+    [one] 1 Bearbeitung
+   *[other] { $count } Bearbeitungen
+}
+history-group-comments = { $count ->
+    [one] 1 Kommentar
+   *[other] { $count } Kommentare
+}
+history-group-access-changes = { $count ->
+    [one] 1 Berechtigungsänderung
+   *[other] { $count } Berechtigungsänderungen
+}
+history-group-deletions = { $count ->
+    [one] 1 Löschung
+   *[other] { $count } Löschungen
+}
+history-group-over = { $count } in { $span }
+history-group-chars = +{ $inserted } −{ $deleted } Zeichen
+history-group-from = ab „{ $summary }“
+history-group-named-by = benannt von { $name }
+history-span-minutes = { $count } Min.
+history-span-hours = { $count } Std.
+history-span-days = { $count ->
+    [one] 1 Tag
+   *[other] { $count } Tagen
+}
+history-authors-two = { $first } und { $second }
+history-authors-more = { $first }, { $second } + { $rest }
+history-outcome-access = Arbeitsbereichszugriff geändert
+history-outcome-discussion = Diskussion fortgesetzt
+history-outcome-discussed = { $resource } besprochen
+history-outcome-organized-content = Geteilte Inhalte aufgeräumt
+history-outcome-organized = { $resource } aufgeräumt
+history-outcome-updated-content = Geteilte Inhalte aktualisiert
+history-outcome-worked-on = An { $resource } gearbeitet
+history-outcome-workspace = Arbeitsbereich aktualisiert
+history-chip-all = Alle
+history-chip-edits = Bearbeitungen
+history-chip-edits-short = Bearb.
+history-chip-comments = Kommentare
+history-chip-comments-short = Komm.
+history-chip-access = Zugriff
+history-chip-access-short = Zugriff
+history-chip-deletions = Löschungen
+history-chip-deletions-short = Lösch.
+history-op-splice = Text / Struktur
+history-op-edit-meta = Metadaten
+history-op-move = Verschieben
+history-op-comment = Kommentare
+history-op-tombstone = Löschen
+history-op-restore = Wiederherstellen
+history-op-govern = Zugriff
+history-op-compaction = Prüfpunkte
+history-op-redact = Schwärzung
+history-selection-count = { $count ->
+    [one] 1 Änderung ausgewählt
+   *[other] { $count } Änderungen ausgewählt
+}
+history-selection-name = Benennen
+history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
@@ -205,6 +271,7 @@ block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+E
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
+widget-maximized-restore = Wiederherstellen
 tree-rename-field = Umbenennen
 tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
@@ -300,3 +367,20 @@ history-action-stale-cursor = Der Verlauf hat sich seit dieser Seite geändert. 
 history-action-unknown-entry = Diese Änderung ist nicht im Verlauf dieses Dokuments.
 history-action-unknown-session = Diese Vorschau ist nicht geöffnet.
 history-action-invalid = Diese Verlaufsanfrage ist ungültig.
+
+# Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
+palette-name = Befehlspalette
+palette-results = Ergebnisse
+palette-placeholder = Suchen…
+palette-hint-navigate = Navigieren
+palette-hint-select = Auswählen
+palette-hint-open = Öffnen
+palette-hint-run = Ausführen
+palette-hint-close = Schließen
+palette-result-count = { $count ->
+    [one] 1 Ergebnis
+   *[other] { $count } Ergebnisse
+}
+palette-empty = Nichts anzuzeigen
+palette-no-results = Keine Ergebnisse für „{ $query }“
+palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern

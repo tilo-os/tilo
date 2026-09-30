@@ -49,7 +49,8 @@ use tilo_actions::{
 use crate::doc::SheetsDoc;
 use crate::doc::{ChartKind, ChartSnapshot, CommentReply, CommentThread};
 use crate::model::{
-    Addr, CellFormat, Currency, DateStyle, TimeStyle, a1_to_addr, col_to_letters, letters_to_col,
+    Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle, a1_to_addr, col_to_letters,
+    letters_to_col,
 };
 use crate::settings::DocSettings;
 
@@ -182,6 +183,7 @@ const MAX_IMPORTED_SHEETS: usize = 64;
 /// than a normal paste, but still has a strict replay/history budget.
 pub const MAX_IMPORTED_CELLS: usize = 64 * 1024;
 const MAX_IMPORT_RAW_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IMPORT_SOURCE_BYTES: usize = 4 * 1024;
 const MAX_SHEET_NAME_CHARS: usize = 100;
 const TAB_COLOR_COUNT: u32 = 6;
 const MAX_ANNOTATION_BYTES: usize = 4 * 1024;
@@ -234,6 +236,10 @@ pub enum SheetsAction {
         /// second tab.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         replace_blank: bool,
+        /// The file the sheets were read from, recorded on each so opening
+        /// that file again reveals them instead of importing a copy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
     },
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
     /// the cell. When `fmt` is `Some`, the cell's display format is set to it in
@@ -667,11 +673,15 @@ impl Action for SheetsAction {
             SheetsAction::ImportSheets {
                 sheets,
                 replace_blank,
+                source,
             } => {
                 let blank = *replace_blank && workbook_is_blank(doc);
                 for imported in sheets {
                     let sheet =
                         SheetsDoc::add_sheet_with_id(doc, &imported.name, &imported.sheet_id);
+                    if let Some(source) = source {
+                        SheetsDoc::set_sheet_source(doc, sheet, source);
+                    }
                     apply_set_cells(doc, sheet, &imported.cells);
                 }
                 if blank && !sheets.is_empty() {
@@ -744,7 +754,7 @@ impl Action for SheetsAction {
                 rows.sort_unstable();
                 rows.dedup();
                 for at in rows.into_iter().rev() {
-                    restructure(doc, sheet, delete_row_map(at));
+                    restructure(doc, sheet, GridEdit::DeleteRow(at));
                 }
             }
             SheetsAction::AddSheet { name, new_sheet_id } => {
@@ -803,16 +813,24 @@ impl Action for SheetsAction {
                 SheetsDoc::set_sheet_color(doc, resolve_sheet(doc, sheet_id)?, *color);
             }
             SheetsAction::InsertRow { sheet_id, at, .. } => {
-                restructure(doc, resolve_sheet(doc, sheet_id)?, insert_row_map(*at));
+                restructure(doc, resolve_sheet(doc, sheet_id)?, GridEdit::InsertRow(*at));
             }
             SheetsAction::DeleteRow { sheet_id, at, .. } => {
-                restructure(doc, resolve_sheet(doc, sheet_id)?, delete_row_map(*at));
+                restructure(doc, resolve_sheet(doc, sheet_id)?, GridEdit::DeleteRow(*at));
             }
             SheetsAction::InsertColumn { sheet_id, at, .. } => {
-                restructure(doc, resolve_sheet(doc, sheet_id)?, insert_column_map(*at));
+                restructure(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    GridEdit::InsertColumn(*at),
+                );
             }
             SheetsAction::DeleteColumn { sheet_id, at, .. } => {
-                restructure(doc, resolve_sheet(doc, sheet_id)?, delete_column_map(*at));
+                restructure(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    GridEdit::DeleteColumn(*at),
+                );
             }
             SheetsAction::SetDocSettings {
                 currency,
@@ -1169,7 +1187,15 @@ fn validate_imported_sheets(doc: &Doc, sheets: &[ImportedSheet]) -> Result<(), A
 )]
 fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
     match action {
-        SheetsAction::ImportSheets { sheets, .. } => validate_imported_sheets(doc, sheets),
+        SheetsAction::ImportSheets { sheets, source, .. } => {
+            if source
+                .as_deref()
+                .is_some_and(|source| source.is_empty() || source.len() > MAX_IMPORT_SOURCE_BYTES)
+            {
+                return refuse("an import's source path is empty or too long");
+            }
+            validate_imported_sheets(doc, sheets)
+        }
         SheetsAction::SetStyle {
             sheet_id,
             c0,
@@ -1508,41 +1534,14 @@ fn valid_annotation(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-/// The `restructure` shift map for inserting a blank row above `at`.
-fn insert_row_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
-    move |(c, r)| Some((c, if r >= at { r + 1 } else { r }))
-}
-
-/// The `restructure` shift map for deleting row `at`.
-fn delete_row_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
-    move |(c, r)| match r.cmp(&at) {
-        std::cmp::Ordering::Equal => None,
-        std::cmp::Ordering::Greater => Some((c, r - 1)),
-        std::cmp::Ordering::Less => Some((c, r)),
-    }
-}
-
-/// The `restructure` shift map for inserting a blank column left of `at`.
-fn insert_column_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
-    move |(c, r)| Some((if c >= at { c + 1 } else { c }, r))
-}
-
-/// The `restructure` shift map for deleting column `at`.
-fn delete_column_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
-    move |(c, r)| match c.cmp(&at) {
-        std::cmp::Ordering::Equal => None,
-        std::cmp::Ordering::Greater => Some((c - 1, r)),
-        std::cmp::Ordering::Less => Some((c, r)),
-    }
-}
-
-/// Rebuild `sheet`'s populated cells through `map`: each cell moves to
-/// `map(addr)`, or is dropped when `map` returns `None`. The document's cells
+/// Rebuild `sheet`'s populated cells through `edit`: each cell moves to
+/// `edit.map_addr(addr)`, or is dropped when its row/column is deleted. The document's cells
 /// are read at the replay's base state and every op is emitted in a **sorted**
 /// order so two replicas produce the byte-identical change (a `HashMap`'s
 /// iteration order is not stable across replicas). Old cells are cleared before
 /// the new ones are written so an overlapping shift is lossless.
-fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) {
+fn restructure(doc: &mut Doc, sheet: usize, edit: GridEdit) {
+    let map = |addr| edit.map_addr(addr);
     let snap = SheetsDoc::snapshot_sheet(doc, sheet, APPLY_CURRENCY);
 
     let mut new_raw: HashMap<Addr, String> = HashMap::new();
@@ -1552,7 +1551,7 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
             // Structural changes move cell *relationships*, not merely the
             // formula-owning cell. `$` anchors only govern copy/fill, so row
             // and column inserts remap both anchored and relative references.
-            new_raw.insert(dst, crate::formula::remap_refs(raw, &map));
+            new_raw.insert(dst, crate::formula::remap_refs(raw, edit));
         }
     }
     for (addr, fmt) in &snap.fmt {
@@ -1595,7 +1594,7 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
     }
     // Charts and discussion anchors describe the same coordinate system as
     // cells, so structural edits must move them in this exact replay action.
-    SheetsDoc::remap_annotation_anchors(doc, sheet, map);
+    SheetsDoc::remap_annotation_anchors(doc, sheet, edit);
 }
 
 /// Register Sheets' action decoder for palette execution + remote replay.
@@ -1700,6 +1699,7 @@ pub fn import_sheets_action(
             })
             .collect(),
         replace_blank: false,
+        source: None,
     }
 }
 
@@ -2540,7 +2540,7 @@ pub fn column_label(col: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::CellFormat;
+    use crate::model::{CellFormat, CellValue};
     use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
@@ -2797,6 +2797,46 @@ mod tests {
         assert_eq!(extras[0].id.0, format!("sheets.range:{sheet_id}:A1"));
     }
 
+    /// Deleting a formula range's first or last row/column shrinks it;
+    /// only deleting all of it yields `#REF!`.
+    #[test]
+    fn deleting_a_range_edge_row_or_column_shrinks_the_formula_range() {
+        let mut doc = seeded();
+        let sheet_id = stable(&doc, 0);
+        // B2:B4 hold 1, 2, 4; D1 sums them and E1 sums row 3 across B:C.
+        for (row, value) in [(1, "1"), (2, "2"), (3, "4")] {
+            SheetsDoc::set_cell_raw(&mut doc, 0, (1, row), value);
+        }
+        SheetsDoc::set_cell_raw(&mut doc, 0, (2, 2), "8");
+        SheetsDoc::set_cell_raw(&mut doc, 0, (3, 0), "=SUM(B2:B4)");
+        SheetsDoc::set_cell_raw(&mut doc, 0, (4, 0), "=SUM($B3:C$3)");
+        let value = |doc: &mut Doc, addr| {
+            crate::formula::recalculate(&SheetsDoc::snapshot_sheet(doc, 0, APPLY_CURRENCY).raw)
+                .get(&addr)
+                .cloned()
+        };
+
+        // Deleting row 2, the range's first row, leaves B2:B3 = 2 + 4.
+        dispatch(&mut doc, &delete_row_action(0, sheet_id.clone(), 1));
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM(B2:B3)");
+        assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(6.0)));
+        // Deleting its last row leaves just B2.
+        dispatch(&mut doc, &delete_row_action(0, sheet_id.clone(), 2));
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM(B2:B2)");
+        assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(2.0)));
+
+        // E1 now reads `=SUM($B2:C$2)`; deleting column C, its last
+        // column, keeps the formula (now in D1) alive on B2 alone.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 0)), "=SUM($B2:C$2)");
+        dispatch(&mut doc, &delete_column_action(0, sheet_id.clone(), 2));
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM($B2:B$2)");
+        assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(2.0)));
+
+        // Deleting every row the range covers is the only way to break it.
+        dispatch(&mut doc, &delete_row_action(0, sheet_id, 1));
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (2, 0)), "=SUM(#REF!)");
+    }
+
     /// Cell/chart/row actions write through, keep stable targets and remap formulas.
     #[test]
     fn cell_and_chart_actions_write_values_and_keep_targets() {
@@ -2890,7 +2930,7 @@ mod tests {
             dispatch(&mut doc, &delete_column_action(0, sheet_id, 0));
             assert_eq!(
                 SheetsDoc::cell_raw(&mut doc, 0, (0, 3)),
-                "=SUM(#REF!:#REF!)",
+                "=SUM(#REF!)",
                 "a deleted referenced column is represented explicitly, never silently retargeted"
             );
         }
@@ -3031,6 +3071,7 @@ mod tests {
                 .collect();
             let mut action = SheetsAction::ImportSheets {
                 replace_blank: false,
+                source: None,
                 sheets: vec![ImportedSheet {
                     name: "At the import limit".into(),
                     sheet_id: Uuid::new_v4().to_string(),
@@ -3091,6 +3132,7 @@ mod tests {
             let before = doc.save();
             let action = SheetsAction::ImportSheets {
                 replace_blank: false,
+                source: None,
                 sheets: vec![
                     ImportedSheet {
                         name: "Would exist".into(),

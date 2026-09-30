@@ -161,6 +161,15 @@ impl Capture {
         let (app_end, runtime_end) = std::os::unix::net::UnixDatagram::pair()?;
         let exe = std::env::current_exe()?;
         let name = app.display_name.clone();
+        let ask = move |device: DeviceKind| {
+            let args = crate::i18n::device_args(&name, device);
+            tilo_dialogs::confined::Consent {
+                message: crate::i18n::t_args("device-consent-question", &args),
+                detail: crate::i18n::t_args("device-consent-detail", &args),
+                allow: crate::i18n::t("device-consent-allow"),
+                deny: crate::i18n::t("device-consent-deny"),
+            }
+        };
         let policy: std::sync::Arc<dyn Policy> =
             std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
                 grants: apps.device_grants()?,
@@ -170,13 +179,7 @@ impl Capture {
                 consent: move |device: DeviceKind| {
                     let mut helper = std::process::Command::new(&exe);
                     helper.arg(crate::cli::CONSENT_HELPER_ARG);
-                    tilo_dialogs::confined::ask_consent_in_helper(
-                        helper,
-                        &tilo_dialogs::confined::Consent {
-                            app: name.clone(),
-                            device: device.name().to_owned(),
-                        },
-                    )
+                    tilo_dialogs::confined::ask_consent_in_helper(helper, &ask(device))
                 },
             });
         let sources: std::sync::Arc<dyn Sources> = std::sync::Arc::new(SystemSources);

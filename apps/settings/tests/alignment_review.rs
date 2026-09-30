@@ -551,7 +551,7 @@ fn pane_cards_stack_on_the_s6_step_and_never_touch() {
         // The subtitle is the heading block's last line, so its bottom is the
         // block's bottom; the same whole-pixel rounding of a text line box
         // applies to it.
-        let subtitle = first_named(&*app, category.subtitle());
+        let subtitle = first_named(&*app, &category.subtitle());
         let heading_gap = outer[0].y0 - subtitle.y1;
         assert!(
             (heading_gap - f64::from(sp.s4)).abs() <= 1.0,

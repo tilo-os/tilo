@@ -22,7 +22,7 @@
 //! - for the immediate-mode painters, on the glyph runs they encode: every
 //!   run's font size at 2× is exactly the expected multiple of its 1× size.
 //!
-//! With `QUICK_UI_SCREENSHOT_DIR` set, each frame is also written under
+//! With `TILO_UI_SCREENSHOT_DIR` set, each frame is also written under
 //! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;

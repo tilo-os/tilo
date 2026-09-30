@@ -48,7 +48,7 @@ descendants record normally and can retain caches again until the outer layer
 proves stable. This keeps useful dirty-subtree rebuild caches during churn but
 collapses duplicate resident encodings in steady state.
 
-`QUICK_UI_PRESENT=1` prints the live values needed to quantify a particular
+`TILO_UI_PRESENT=1` prints the live values needed to quantify a particular
 app: acquire/encode/submit/present time, CPU encoded-scene bytes, path and draw
 stream counts, and full-surface GPU blit bytes. The reported scene byte count is
 the owned CPU stream/resource-record payload (referenced font and image blobs
@@ -157,6 +157,6 @@ full redraw.
 - A presented 4K frame still performs the 31.6 MiB GPU-local retained-target to
   swapchain blit. Eliminating that final full-surface touch requires compositor
   damage/buffer-age integration rather than an app-only optimization.
-- `QUICK_UI_VELLO_CPU=1` is a diagnostic/fallback for software or unusually
+- `TILO_UI_VELLO_CPU=1` is a diagnostic/fallback for software or unusually
   weak GPUs. It must be selected from target-hardware evidence; the normal
   hardware-GPU path remains the default.

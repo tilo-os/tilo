@@ -266,6 +266,12 @@ mod tests {
     use super::*;
     use crate::portal::CaptureSessionBinding;
     use crate::shell::realtime_session::VerifiedAppRegistration;
+
+    /// Long enough that a random 32-digit hex ID never contains its decimal or hex form by
+    /// chance, so the check below only fails for an ID derived from the serial.
+    const SERIAL: u32 = 3_987_654_321;
+    const NEXT_SERIAL: u32 = 3_987_654_322;
+
     fn graph(serial: u32) -> AudioGraph {
         AudioGraph {
             sources: vec![media::AudioDevice {
@@ -293,14 +299,14 @@ mod tests {
             next: AtomicU64::new(0),
             task: Mutex::new(None),
         };
-        devices.update(devices.sequence().unwrap(), Some((11, &graph(100))));
+        devices.update(devices.sequence().unwrap(), Some((11, &graph(SERIAL))));
         let id = broker.lock().unwrap().enumerate(CaptureKind::Microphone)[0]
             .id
             .clone();
         let old = devices.source(&id, 7).unwrap();
         assert!(
-            !id.contains("100"),
-            "public ID does not expose device serial"
+            !id.contains(&SERIAL.to_string()) && !id.contains(&format!("{SERIAL:x}")),
+            "public ID {id} does not expose device serial"
         );
         let app = VerifiedAppRegistration::new_verified("so.tilo.chat", "room").unwrap();
         let binding = CaptureSessionBinding::from_verified(&app, "call", "device").unwrap();
@@ -328,11 +334,11 @@ mod tests {
                 }),
             )
             .unwrap();
-        devices.update(devices.sequence().unwrap(), Some((11, &graph(100))));
+        devices.update(devices.sequence().unwrap(), Some((11, &graph(SERIAL))));
         assert!(Arc::ptr_eq(&old, &devices.source(&id, 7).unwrap()));
         assert!(broker.lock().unwrap().resolve(lease, &binding, now).is_ok());
         assert!(!revoked.load(Ordering::SeqCst));
-        devices.update(devices.sequence().unwrap(), Some((11, &graph(101))));
+        devices.update(devices.sequence().unwrap(), Some((11, &graph(NEXT_SERIAL))));
         assert!(revoked.load(Ordering::SeqCst));
         assert!(!old.current());
         assert!(devices.source(&id, 7).is_none());
@@ -353,7 +359,7 @@ mod tests {
         let replacement = devices.source(&replacement_id, 7).unwrap();
         // A new daemon may reuse both node and serial. Its identity still
         // retires every previously observed selection and lease.
-        devices.update(devices.sequence().unwrap(), Some((12, &graph(101))));
+        devices.update(devices.sequence().unwrap(), Some((12, &graph(NEXT_SERIAL))));
         assert!(!replacement.current());
         assert!(devices.source(&replacement_id, 7).is_none());
         assert_ne!(

@@ -28,7 +28,7 @@ hex.workspace = true
 # crate keys its groups by.
 collab-types = { version = "0.1.0", path = "../collab-types" }
 # Crash-safe, owner-only state replacement.
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 
 # OpenMLS. Pin the minor version so an upstream API change receives an
 # explicit review before it changes this crate's public surface.

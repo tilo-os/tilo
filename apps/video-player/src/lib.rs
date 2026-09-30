@@ -39,6 +39,7 @@ pub mod collab;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
+mod kept;
 mod preferences;
 pub mod resource;
 pub mod search;
@@ -76,6 +77,13 @@ fn media_handoff_transport_env() -> Option<(u64, bool)> {
         .ok()
         .is_some_and(|value| value == "1");
     Some((position, resume))
+}
+
+/// The app as every host mounts it: the live player and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.video-player", || app_root(None))
+        .component_actions(actions::register)
+        .as_definition("Video Player")
 }
 
 /// The headless `--shots` root: a player staged with a frame + revealed

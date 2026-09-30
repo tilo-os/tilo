@@ -2,9 +2,11 @@
 name = "tilo-relay-client"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 description = "Client side of the Tilo host + relay every peer shares: the frame codec both ends of a relay stream use, the co-edit payloads, device certification and the device-signer seam."
 license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
 
 # The relay session and co-edit clients live in `tilo-relay`, next to the
 # delivery, join and transport records they speak. This crate holds what a

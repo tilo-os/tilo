@@ -40,6 +40,9 @@ tokio-rustls = { workspace = true, optional = true }
 tokio-websockets = { version = "0.13.3", default-features = false, optional = true, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
 futures-util = { workspace = true, optional = true, features = ["sink"] }
 web-transport-quinn = { version = "0.12.1", default-features = false, optional = true, features = ["ring"] }
+# Peer-to-peer frame streams: iroh QUIC, length-prefixed frames.
+iroh = { workspace = true, optional = true }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", optional = true, features = ["tokio"] }
 
 # The browser: fetch, WebSocket and WebTransport, pinned to the versions the
 # browser runtime links so a page carries one copy.
@@ -86,6 +89,8 @@ ws = ["dep:tokio-websockets", "dep:tokio-rustls", "dep:futures-util"]
 webtransport = ["dep:web-transport-quinn"]
 # Raw TCP and UDP (and TLS over TCP) on the desktop; `Unsupported` on the web.
 sockets = ["dep:tokio-rustls"]
+# Peer-to-peer frame streams (`p2p`) on the desktop; `Unsupported` on the web.
+p2p = ["dep:iroh", "dep:wire-frame", "dep:serde_json"]
 
 # The loopback tests exercise every backend.
 [[test]]

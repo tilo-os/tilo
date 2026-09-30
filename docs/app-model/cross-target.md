@@ -1,168 +1,87 @@
-# Cross-target: same source → `.tapp` and Flatpak
+# Cross-target: one source for Linux, macOS and the web
 
-Tilo apps are engineered to run on stock Linux desktops too. The `runtime`
-SDK's graceful-degradation contract is the mechanism; this document is
-the recipe.
+A Tilo app is one Rust crate that builds unchanged for Linux, macOS and the
+web. The app holds no platform code: no target `cfg`, no `std::os`, no
+platform paths, no OS tools. The SDK (`ui`, the `tilo-app` package) picks a
+runner per target, and the platform crates under `crates/platform/` pick each
+service's backend. This page is the contract; the commands are in
+[`../app-development.md`](../app-development.md#linux-macos-and-the-web-from-one-source).
 
-## The contract
+## Build it
 
-Every SDK entry point that touches a system service returns
-`Result<T, NotAvailable>` and never panics. When no service is
-reachable, the app is expected to fall back to a local-only mode.
-Concretely:
-
-| Call                              | Tilo session                     | Stock Linux                       |
-| --------------------------------- | ------------------------------- | --------------------------------- |
-| `runtime::collab::try_connect`    | Returns a `CollabClient`.       | `Err(NotAvailable::ServiceFdMissing)` — collab tab disabled. |
-| `runtime::fs::try_connect`        | Returns an `FsClient`.          | `Err(NotAvailable::ServiceFdMissing)` — open files via `std::fs` under a fallback state dir. |
-| `runtime::identity::load`         | Returns the user's `SigningIdentity`. | `Err(NotAvailable::ServiceFdMissing)` — display "signed in as (anonymous)"; generate a session-local keypair if you need one. |
-| `runtime::portal_xdg::Notification::send` | Fires desktop notification (if the manifest declared `notifications = "via-host"`). | If a bus is reachable AND a portal frontend is present, fires; else `Err(PortalError::NotAvailable)` — fall back to in-app toast. |
-| `runtime::is_tilo_native()`        | `true` (`TILO_WORKSPACE_ID` set). | `false`.                          |
-
-The `tilo-hello` demo above proves this: the same binary run under
-`tilo-install run` outside a live Tilo session (no services, no bus in the
-sandbox) prints "unavailable (no fd — graceful)" for every service and
-"unavailable — graceful" for every portal call. No panic, no crash.
-
-## What to do in your code
-
-### Feature-detect, don't `unwrap`
-
-```rust
-// Bad — panics on stock Linux.
-let collab = runtime::collab::try_connect().unwrap();
-
-// Good — fall back to no collaboration.
-let collab_state = match runtime::collab::try_connect() {
-    Ok(client) => CollabState::Active(client),
-    Err(_)     => CollabState::Local,
-};
+```bash
+tilo-app check --target linux|macos|web   # portability, capabilities; cargo check where the host can
+tilo-app run --target web                 # serve and reload on change
+tilo-app build --target macos             # a signed development .app
+tilo-app package --target linux           # a signed .tapp
 ```
 
-### Prefer `runtime::` wrappers, but don't require them
+`tilo-app.toml` lists the targets (`platforms`, default all three). An app
+whose purpose is platform-specific (a terminal needs a PTY) narrows them with a
+`platform-reason`; `tilo-app` refuses to build it for anything else, and
+launchers show it as unavailable there.
 
-For filesystem work, the `cli` SDK's `resolve_workspace_path` picks
-between the FUSE tree and a per-package fallback dir. GUI apps should
-mirror the pattern: try `runtime::fs::try_connect()`, fall back to
-`dirs::data_dir().join(package_id).join(rel)` on `NotAvailable`.
+## Services go through the SDK
 
-That fallback needs no Tilo-specific branch. On stock Linux it resolves to
-`~/.local/share/<package-id>/`; under the Tilo launcher `XDG_DATA_HOME` is
-`/run/tilo/app/.local/share`, so the same call lands in the one directory
-the app was given. Do not try to pick a location yourself — a Tilo manifest
-cannot name a path, and an app that hard-codes one outside its own
-directory gets `EACCES` from Landlock.
+| Need | Call | Linux | macOS | Web |
+|---|---|---|---|---|
+| App files | `cx.files()` / `ui::storage::AppFiles` | `$XDG_DATA_HOME/<id>`, … | `~/Library/Application Support/<id>`, … | origin-private file system |
+| Preferences | `cx.settings()` / `ui::storage::Settings` | desktop `settings.json` section | same | the host's settings source |
+| Secrets | `cx.secrets()` / `ui::storage::secrets` | Secret Service | Keychain | wrapped IndexedDB |
+| Documents | resources and records (`ui::persist` for one-document apps) | Automerge, synced by the runtime | same | same |
+| Files the user picks | `ui::portal::PickRequest` | portal / GTK | open and save panels | file pickers (by contents) |
+| Network | `tilo_net` (`Client`, `status`, `ws`) | reqwest | reqwest | `fetch`, the host's fetch proxy |
+| Time, threads | `ui::time`, `tilo_rt` / `ui::background` | std | std | the page's clock and executor |
+| Notifications, location, camera, clipboard | `ui::notify`, `ui::location`, `tilo_capture`, `ui::clipboard` | each platform crate's backend | | |
+| The workspace mount, login and host name | `tilo_paths::workspace_root`, `tilo_paths::session` | | | none |
+| Owner-only files (keys, host-key stores) | `tilo_files::native::private` | mode 0600/0700 | same | refused |
+| This process's id, other processes' open files | `tilo_process` (`id`, `open_file_count`, `probe_process_table`) | std, `/proc` | std; no open-file count | `None` |
 
-### First-run UI
+What a target cannot provide is an `Unsupported` error at run time and a row in
+the crate's `CAPABILITIES` table, never a missing item at compile time. Handle
+it: grey the control out and say why. Where no crate offers what you need, add
+it to the platform crate with a backend per target instead of branching in the
+app.
 
-Use `runtime::is_tilo_native()` for cheap "which experience are we in"
-gating (welcome message, help text) — never as an authorization gate.
-To gate features, call `try_connect` and match on the
-result.
+## Capabilities
 
-## Manifest side-by-side
+`[capabilities]` in `tilo-app.toml` lists what the app uses, `required` or
+`optional`:
 
-The same source ships as:
-
-- A `.tapp` under `tilo-app-package pack --manifest manifest.toml --payload
-  payload/ --output my-app.tapp`.
-- A Flatpak using the standard `org.flatpak.Builder` YAML. The Flatpak
-  runs the same entrypoint binary, but the sandbox is Flatpak's rather
-  than Tilo's, and no `TILO_SVC_*_FD` env vars are set.
-
-Your Cargo.toml doesn't fork per target — same crate, same deps. Only
-the packaging metadata differs.
-
-### Flatpak example manifest fragment
-
-```yaml
-# my.example.hello.yml (excerpt)
-app-id: my.example.hello
-runtime: org.freedesktop.Platform
-runtime-version: '24.08'
-sdk: org.freedesktop.Sdk
-command: my-example-hello
-
-finish-args:
-  - --socket=wayland
-  - --socket=fallback-x11
-  - --share=ipc
-  - --talk-name=org.freedesktop.portal.Desktop
-
-modules:
-  - name: my-example-hello
-    buildsystem: simple
-    build-commands:
-      - install -Dm755 my-example-hello /app/bin/my-example-hello
+```toml
+[capabilities]
+required = ["network.http"]
+optional = ["files.open", "files.save", "app-files", "notifications"]
 ```
 
-Note the `--talk-name=org.freedesktop.portal.Desktop` — Flatpak's way of
-declaring D-Bus portal access, analogous to `[sandbox.portals]` in the
-Tilo manifest.
+`tilo-app check` and `build` fail when the code uses a capability the manifest
+does not list (the evidence table is `tools/policy/app_capability_usage.toml`:
+dependencies, feature selections, SDK paths), and when a required one is
+unavailable on a declared target. The fix-it names the line to add;
+`tilo-app add capability <name>` adds it. macOS takes entitlements and usage
+strings from this list, and a prompted service used without them ends the
+process.
 
-## Build both targets
+## What the gate checks
 
-For a codebase with one crate and one entrypoint binary, use this workflow for
-both package formats:
+`tools/policy/check_app_portability.py` (and `tilo-app check --lint`) reject
+platform code in an app that declares all three platforms (rules R1–R4 and the
+web traps W1–W3 are errors with no allowance). Apps narrowed to fewer
+platforms count their remaining sites against a shrink-only baseline.
+`tools/policy/check_app_capabilities.py` runs the capability check over every
+app in the same lane.
 
-```
-# Rust build (used by both flows)
-$ cargo build --release
-$ ls target/release/my-example-hello
+## Toolkit knobs
 
-# Tilo packaging
-$ cp target/release/my-example-hello payload/bin/
-$ tilo-app-package pack --manifest manifest.toml --payload payload --output my-app.tapp
+Debug, capture and benchmark switches are environment variables named
+`TILO_UI_*` (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, …), read through
+`ui::env`. The pre-rename `QUICK_UI_*` names still work and warn once per
+variable. [`../performance-flags.md`](../performance-flags.md) lists the
+rendering ones.
 
-# Flatpak packaging (same binary)
-$ flatpak-builder --repo=my-repo build-dir my.example.hello.yml
-```
+## Packaging
 
-Both distribution channels serve the same binary. The `.tapp` embeds a
-Tilo manifest describing the Tilo-specific sandbox; the Flatpak embeds a
-Flatpak manifest describing its own sandbox. The binary itself is
-sandbox-agnostic — it uses `runtime` SDK calls and gracefully degrades
-when they fail.
-
-## What to feature-flag out for stock Linux
-
-No feature flag is needed for the usual service-availability case. If you
-find yourself reaching for `#[cfg(feature = "tilo-native")]`, check whether
-the SDK already returns `NotAvailable` for that call on stock Linux.
-
-Cases where a feature flag might be justified:
-
-- Depending on a native library that is licensed for Tilo distribution
-  only. Split the crate; ship the Tilo-only variant.
-- Wanting a smaller binary for a Flatpak build (`--no-default-features
-  --features "core-only"`). Fine, but make sure the missing surface
-  fails gracefully at runtime rather than at compile time — a user who
-  installs the Flatpak on Tilo should still get the Tilo features.
-
-## What NOT to do
-
-- **Do not assume `runtime::collab::try_connect().is_err()` means "we
-  are on stock Linux"**. The service might be temporarily down. Handle
-  it as "no live collaboration right now" rather than "we are on a
-  different OS forever."
-- **Do not use `runtime::is_tilo_native()` to gate calls**. It's a
-  telemetry hint. The launcher can set `TILO_WORKSPACE_ID` in scenarios
-  where no service fd is available (integration tests, degraded boots).
-  `try_connect` is the source of truth.
-- **Do not swallow `NotAvailable` silently.** Surface it in the UI —
-  users on stock Linux should understand why "share" is greyed out.
-- **Do not `unwrap` a portal call** — the bus might be missing even
-  inside a Tilo session (if the manifest didn't declare the portal, the
-  launcher didn't plumb it, and the call returns `NotAvailable` by
-  design).
-
-## The single-manifest question
-
-Long-term, there is no reason a single `.tapp` couldn't also be
-convertible to a `.flatpak` bundle by tooling — the payload is the same
-and both manifests describe overlapping sandboxes. That tooling doesn't
-exist yet. Today, publishing to both channels means two build steps and
-two manifest files.
-
-Next: [`hello-world.md`](./hello-world.md) — the full recipe from
-`cargo new` to launched process.
+The same crate produces a `.tapp` (Linux), a `.app` zip (macOS) and an
+immutable web version (`dist/web/<app-id>/versions/<digest>/`); only the
+packaging metadata differs. See [`hello-world.md`](./hello-world.md) for the
+full recipe from `tilo-app new` to a launched app.

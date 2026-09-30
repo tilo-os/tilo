@@ -1,27 +1,43 @@
-//! Reconcile durable timer state with the Windows notification scheduler.
+//! Reconcile durable timer state with the platform's notification
+//! scheduler, where it keeps notifications for an app that is not running
+//! (`ui::notify::Feature::Schedule`).
 use crate::ClockState;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
-use std::time::SystemTime;
-use ui::host_notifications::{HostNotifications, ScheduledNotice};
+use ui::notify::{Notification, Notifier, Scheduled};
+use ui::time::SystemTime;
+
+/// What a click on a timer's notification opens.
+pub(crate) const TIMERS_URI: &str = "tilo-clocks:timers";
+/// What a click on an alarm's notification opens.
+pub(crate) const ALARMS_URI: &str = "tilo-clocks:alarms";
 
 pub(crate) trait Scheduler {
-    fn pending(&self) -> Result<Vec<ScheduledNotice>, String>;
+    fn pending(&self) -> Result<Vec<Scheduled>, String>;
     fn cancel(&self, id: &str) -> Result<(), String>;
     fn schedule(&self, id: &str, label: &str, end: SystemTime) -> Result<(), String>;
 }
 
-impl Scheduler for HostNotifications {
-    fn pending(&self) -> Result<Vec<ScheduledNotice>, String> {
+impl Scheduler for dyn Notifier {
+    fn pending(&self) -> Result<Vec<Scheduled>, String> {
         self.scheduled().map_err(|error| error.to_string())
     }
     fn cancel(&self, id: &str) -> Result<(), String> {
-        self.cancel_schedule(id).map_err(|error| error.to_string())
+        self.cancel_scheduled(id).map_err(|error| error.to_string())
     }
     fn schedule(&self, id: &str, label: &str, end: SystemTime) -> Result<(), String> {
-        HostNotifications::schedule(self, id, "Timer finished", label, end)
-            .map_err(|error| error.to_string())
+        let notification =
+            Notification::new(id, "Timer finished", label).with_activation(TIMERS_URI);
+        Notifier::schedule(self, &notification, end).map_err(|error| error.to_string())
     }
+}
+
+/// `at` on the platform clock (which has no chrono conversion on the web).
+fn system_time(at: DateTime<Utc>) -> SystemTime {
+    let millis = u64::try_from(at.timestamp_millis()).unwrap_or(0);
+    SystemTime::UNIX_EPOCH
+        .checked_add(std::time::Duration::from_millis(millis))
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 pub(crate) fn timer_id(id: uuid::Uuid) -> String {
@@ -33,7 +49,7 @@ pub(crate) fn timer_id(id: uuid::Uuid) -> String {
 
 pub(crate) fn reconcile(
     state: &mut ClockState,
-    host: &impl Scheduler,
+    host: &(impl Scheduler + ?Sized),
     now: DateTime<Utc>,
     mut persist: impl FnMut(&ClockState) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -43,7 +59,7 @@ pub(crate) fn reconcile(
     if state.native_timer_owners.is_empty() {
         return Ok(());
     }
-    // Record ownership before touching Windows. Deleting a timer or crashing
+    // Record ownership before touching the platform. Deleting a timer or crashing
     // after submission must not lose the ability to cancel its native alert.
     persist(state)?;
     let owned = state
@@ -61,15 +77,15 @@ pub(crate) fn reconcile(
     let pending = host.pending()?;
     let mut retained = pending
         .iter()
-        .map(|notice| notice.id.clone())
+        .map(|notice| notice.tag.clone())
         .collect::<HashSet<_>>();
     for pending in pending {
-        if owned.contains(&pending.id)
-            && !wanted.contains(&pending.id)
-            && pending.delivery_time > SystemTime::now()
+        if owned.contains(&pending.tag)
+            && !wanted.contains(&pending.tag)
+            && pending.at > ui::time::wall()
         {
-            host.cancel(&pending.id)?;
-            retained.remove(&pending.id);
+            host.cancel(&pending.tag)?;
+            retained.remove(&pending.tag);
         }
     }
     let mut result = Ok(());
@@ -81,7 +97,7 @@ pub(crate) fn reconcile(
         if end <= now {
             continue;
         }
-        match host.schedule(&timer_id(timer.id), &timer.label, end.into()) {
+        match host.schedule(&timer_id(timer.id), &timer.label, system_time(end)) {
             Ok(()) => {
                 timer.native_scheduled_end = Some(end);
                 retained.insert(timer_id(timer.id));
@@ -115,14 +131,14 @@ mod tests {
         fail_cancel: Cell<bool>,
     }
     impl Scheduler for TestScheduler {
-        fn pending(&self) -> Result<Vec<ScheduledNotice>, String> {
+        fn pending(&self) -> Result<Vec<Scheduled>, String> {
             Ok(self
                 .pending
                 .borrow()
                 .iter()
-                .map(|(id, end)| ScheduledNotice {
-                    id: id.clone(),
-                    delivery_time: *end,
+                .map(|(id, end)| Scheduled {
+                    tag: id.clone(),
+                    at: *end,
                 })
                 .collect())
         }
@@ -158,7 +174,7 @@ mod tests {
             host.schedule(
                 &foreign_id,
                 "Other profile",
-                SystemTime::now() + Duration::from_secs(3600),
+                ui::time::wall() + Duration::from_secs(3600),
             )
             .unwrap();
             reconcile(&mut ClockState::default(), &host, Utc::now(), |_| Ok(())).unwrap();
@@ -256,7 +272,7 @@ mod tests {
             state.native_timer_owners.insert(id);
             host.pending
                 .borrow_mut()
-                .insert(timer_id(id), SystemTime::now() - Duration::from_secs(60));
+                .insert(timer_id(id), ui::time::wall() - Duration::from_secs(60));
             reconcile(&mut state, &host, Utc::now(), |_| Ok(())).unwrap();
             assert!(
                 host.pending.borrow().contains_key(&timer_id(id)),

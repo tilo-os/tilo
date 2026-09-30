@@ -45,6 +45,32 @@ class SelectorTests(unittest.TestCase):
             package("collab-types", "collab-types"),
         ]}
 
+    def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
+        with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
+            self.setUp()
+            full = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            delta = ci_select.make_plan(self.metadata, self.root, ["middle/src/lib.rs"], 2)
+            self.assertEqual(delta["reached"], ["leaf", "middle"])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], ["leaf", "middle"])
+            self.assertLess(set(narrowed["tested"]), set(full["tested"]))
+            self.assertTrue(set(narrowed["tested"]) <= {"leaf", "middle"})
+            self.assertIn("re-check", narrowed["reason"])
+        with self.subTest(phase="a base change reaching nothing the pull request checks leaves nothing to run"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["docs/notes.md"], 2)
+            self.assertEqual(delta["reached"], [])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], [])
+            self.assertFalse(narrowed["rust_required"])
+        with self.subTest(phase="a repository-wide base change reaches everything"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
+            self.assertTrue(delta["full"])
+            self.assertEqual(delta["reached"], delta["selected"])
+
     def test_path_suites_and_declared_readers_select_what_their_inputs_reach(self):
         with self.subTest(phase='hermetic suites follow changed paths and run all when asked'):
             self.setUp()
@@ -271,7 +297,7 @@ class SelectorTests(unittest.TestCase):
         unrelated = plan(["qdoc/src/lib.rs"])
         self.assertFalse(unrelated["wasm_required"])
         self.assertEqual(unrelated["web_examples"], [])
-        build = plan(["crates/browser/tilo-browser-runtime/scripts/build-web-app.sh"])
+        build = plan(["crates/browser/tilo-browser-runtime/scripts/build.sh"])
         self.assertTrue(build["wasm_required"])
         self.assertEqual(build["web_examples"], ["example-counter"])
         with tempfile.TemporaryDirectory() as directory:
@@ -451,15 +477,16 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("fs", "tilo-cloud-host", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-relay", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone fs and the Cloud host would share the lighter shard.
-            seconds = {"tilo-action-broker": 900, "fs": 100, "tilo-cloud-host": 100, "light": 1}
+            # By time alone tilo-fs and the relay would share the lighter
+            # shard. Placement breaks equal weights by name, so theirs differ.
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-relay": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
-            self.assertIn({"tilo-cloud-host", "tilo-action-broker"}, placed)
-            self.assertTrue(any("fs" in names for names in placed))
+            self.assertIn({"tilo-relay", "tilo-action-broker"}, placed)
+            self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
                                         ci_select.TEST_SHARD_APART)

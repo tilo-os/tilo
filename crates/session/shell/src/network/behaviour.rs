@@ -17,7 +17,7 @@ pub fn peer_salt_from_keypair(key: &iroh::SecretKey) -> u16 {
 /// Fold an authenticated endpoint id to the numeric liveness handle carried
 /// by presence messages. Authority decisions retain the complete endpoint id.
 pub fn peer_liveness_handle(peer: &iroh::EndpointId) -> u64 {
-    fnv1a_64(peer.as_bytes())
+    neighbour_wire::peer_handle(peer.as_bytes())
 }
 
 fn fnv1a_64(bytes: &[u8]) -> u64 {

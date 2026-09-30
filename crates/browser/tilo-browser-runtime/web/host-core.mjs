@@ -22,17 +22,22 @@ export class MountRegistry {
   }
   shutdown() { for (const {token} of this.#entries.values()) this.remove(token); this.#closed = true; }
 }
-/** The durable record an ordinary application reopens in `room` when the host names none. A package-primary application always opens its one room document instead. */
-export function reopenedRecord(entries, application, room) {
-  if (application?.scope !== 'ordinary') return undefined;
-  return entries.map(entry => JSON.parse(entry.key)).find(key => key.type === 'record' && key.package === application.id && key.workspace === room)?.record;
-}
 export function physicalViewport(width, height, dpr) {
   if (!Number.isFinite(dpr) || dpr <= 0) throw Error('invalid device pixel ratio');
   return {width: Math.ceil(Math.max(0,width)*dpr), height: Math.ceil(Math.max(0,height)*dpr), dpr, suspended: width<=0 || height<=0};
 }
 export function wheelPixels(x,y,mode,width,height) {
   return [-x*(mode===1?16:mode===2?width:1), -y*(mode===1?16:mode===2?height:1)];
+}
+/** The runtime reads pixel and line wheel deltas itself but drops page
+ * deltas; a page-mode event is re-sent as the pixels it scrolls, with both
+ * axes, the pointer and every modifier. `undefined` for events the runtime
+ * reads as they are. */
+export function pageWheelAsPixels(event,width,height) {
+  if(event.deltaMode!==2)return undefined;
+  const [x,y]=wheelPixels(event.deltaX,event.deltaY,2,width,height);
+  return {deltaX:-x,deltaY:-y,deltaMode:0,clientX:event.clientX,clientY:event.clientY,
+    ctrlKey:event.ctrlKey,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,bubbles:false,cancelable:true};
 }
 const applicationCommands=new Set(['a','b','f','i','k','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
@@ -120,6 +125,15 @@ export function transactionComplete(transaction) {
   });
 }
 
+/** Desktop search's chords, as the native shell's: Super+K and Super+Space
+ * (Cmd on a Mac), and Ctrl+K where Ctrl is the command key. */
+export function isDesktopSearchShortcut(event,mac) {
+  if(event.repeat||event.isComposing||event.altKey||event.shiftKey)return false;
+  const key=String(event.key??'').toLowerCase();
+  if(key==='k'||event.code==='KeyK')return Boolean(event.metaKey)||(!mac&&Boolean(event.ctrlKey)&&!event.metaKey);
+  if(key===' '||event.code==='Space')return Boolean(event.metaKey)&&!event.ctrlKey;
+  return false;
+}
 /** Consume the chord only once the mounted desktop has accepted Search. */
 export function routeGlobalSearchShortcut(event,composing,open) {
   if(event.defaultPrevented||event.repeat||composing||event.isComposing||event.ctrlKey||event.shiftKey)return false;

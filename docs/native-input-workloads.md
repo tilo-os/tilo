@@ -2,7 +2,7 @@
 
 `TILO_NATIVE_SCENARIO=/absolute/path/scenario.json` enables a shared native input
 timeline in `App::run_with_setup`. Enable `TILO_PROFILE_OUT` to retain CPU frames
-and `QUICK_UI_PRESENT=1` to retain worker outcomes. The scheduler starts after
+and `TILO_UI_PRESENT=1` to retain worker outcomes. The scheduler starts after
 the first primary worker `Presented` outcome, uses absolute deadlines, and
 never moves future deadlines to accommodate a late callback.
 
@@ -670,7 +670,7 @@ assigns segment slots with atomicAdd; fine.wgsl fill_path sums those contributio
 in f32. Allocation/scheduling can change the accumulation order. No production
 shader or clipping geometry is changed on this basis.
 
-CPU preprocessing (`QUICK_UI_VELLO_CPU=1`) makes this exact matrix pass
+CPU preprocessing (`TILO_UI_VELLO_CPU=1`) makes this exact matrix pass
 (`clipped-cpu-preprocess-pixels.log`); Vello still uses GPU fine rasterization.
 The matrix now has two independent checks: stable CPU preprocessing requires
 four exact reference and clipped renders per case; normal GPU preprocessing

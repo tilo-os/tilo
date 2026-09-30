@@ -15,10 +15,10 @@ name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true

@@ -84,6 +84,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(AuthenticatorApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.totp", app_root)
+        .component_actions(actions::register)
+        .as_definition("TOTP")
+}
+
 /// Build the root widget seeded with a deterministic sample vault. Used by
 /// the `--shots` renderer and demos so the frame is populated and
 /// reproducible without touching (or leaking) the real on-disk vault.

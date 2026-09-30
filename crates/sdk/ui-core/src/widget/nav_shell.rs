@@ -912,9 +912,9 @@ impl NavShell {
     /// reaches `adjust_layout_with_measure` first and never lands here.
     fn resolve_panes_fallback(&mut self) {
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_children(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_children(&theme, tr)
+        });
     }
 
     fn apply_child_layout(

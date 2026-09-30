@@ -364,7 +364,7 @@ pub struct MailApp {
     /// can emit several events, while successful IMAP writes emit none besides
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
-    background_poll_deadline: Cell<Option<std::time::Instant>>,
+    background_poll_deadline: Cell<Option<ui::time::Instant>>,
     pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
@@ -392,7 +392,7 @@ pub struct MailApp {
     /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
     /// on its own instead of lingering forever.
     toast_text: Option<String>,
-    toast_deadline: Option<std::time::Instant>,
+    toast_deadline: Option<ui::time::Instant>,
 
     overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
@@ -972,7 +972,7 @@ impl MailApp {
         if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
             return Err("selected destination is outside a regular folder".into());
         }
-        atomic_file::write(path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(path, bytes).map_err(|error| error.to_string())
     }
 
     fn attachment_save_busy(&self) -> bool {
@@ -2356,7 +2356,7 @@ impl MailApp {
     /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
     /// status once the deadline passes. Parameterised on `now` so the timing is
     /// unit-testable without a real sleep.
-    fn expire_toast_at(&mut self, now: std::time::Instant) {
+    fn expire_toast_at(&mut self, now: ui::time::Instant) {
         let current = self.shared.borrow().status.clone();
         if current != self.toast_text {
             // The status changed (or was cleared): (re)arm the timer.
@@ -4901,7 +4901,7 @@ impl Widget for MailApp {
         self.drain_compose_attachment();
         self.compose.sync(state, path);
         // Fade out a transient status toast once its lifetime elapses.
-        self.expire_toast_at(std::time::Instant::now());
+        self.expire_toast_at(ui::time::now());
 
         let mem_seeded = self.shared.borrow().seeded;
         if mem_seeded {
@@ -5393,7 +5393,7 @@ impl Widget for MailApp {
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         // Worker and native-picker completions are not animation. Keep their
         // deadline fixed until sync consumes a tick, even with reduced motion.
         let pending = self.awaiting_engine
@@ -5402,9 +5402,10 @@ impl Widget for MailApp {
             || self.attachment_save_rx.is_some()
             || self.compose_attachment_rx.is_some();
         let background = pending.then(|| {
-            let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-                std::time::Instant::now() + std::time::Duration::from_millis(16)
-            });
+            let deadline = self
+                .background_poll_deadline
+                .get()
+                .unwrap_or_else(|| ui::time::now() + std::time::Duration::from_millis(16));
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });
@@ -8120,7 +8121,7 @@ mod tests {
         {
             // A "Synced N messages" toast must fade on its own, not linger forever.
             let (mut app, _doc) = app();
-            let t0 = std::time::Instant::now();
+            let t0 = ui::time::now();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
             app.expire_toast_at(t0); // first observation arms the deadline
             assert!(

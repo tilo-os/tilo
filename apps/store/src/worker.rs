@@ -383,7 +383,10 @@ fn handle(
             reason,
         } => {
             let result = moderation_registry(&registry_name).and_then(|registry| {
-                let now = tilo_clock::unix_now();
+                let now = ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 let mut nonce = [0_u8; 16];
                 SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
                     crate::moderation_client::ModerationClientError::Identity(error.to_string())
@@ -534,7 +537,10 @@ fn submit_report(
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
     let registry = moderation_registry(registry_name)?;
-    let now = tilo_clock::unix_now();
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let envelope_bytes = serde_json::to_vec(envelope)
         .map_err(|_| crate::moderation_client::ModerationClientError::InvalidResponse)?;
     let mut nonce = [0_u8; 16];
@@ -790,10 +796,10 @@ mod tests {
         // Case `request_and_drain_are_non_blocking`.
         {
             let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             let _ = worker.try_snapshot();
             assert!(started.elapsed() < Duration::from_millis(20));
         }

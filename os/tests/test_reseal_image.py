@@ -40,10 +40,19 @@ if args[:2] == ['image', 'inspect']:
                       'Architecture': os.environ.get('ARCH', 'arm64'), 'Os': 'linux'}]))
 elif args[:2] == ['build', '--help']:
     print('--source-date-epoch' if os.environ.get('PODMAN_MAJOR', '5') == '5' else '--timestamp')
+elif args[0] == 'create':
+    print('fixture-container')
+elif args[0] == 'cp':
+    if '/boot/EFI/Linux/.' in args[1]:
+        open(os.path.join(args[2], '7.2.7.efi'), 'wb').write(b'fixture')
+    else:
+        sys.exit(1)
+elif args[0] == 'rm':
+    pass
 elif args[0] == 'build':
     if '--iidfile' in args:
         open(args[args.index('--iidfile')+1], 'w').write('sha256:' + '2'*64)
-    sys.stdin.read()
+    open(os.environ['CONTAINERFILE'], 'w').write(sys.stdin.read())
 elif args[:2] != ['image', 'exists']: sys.exit(99)
 ''')
         (self.root / 'podman').chmod(0o755)
@@ -58,7 +67,8 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
         (self.root / 'dev').mkdir()
         (self.root / 'dev/uki-cmdline.py').write_text('')
         self.env = {'PATH': f'{self.root}:/usr/bin:/bin', 'HOME': str(self.root),
-                    'CALLS': str(self.root / 'calls'), 'FIXTURE': str(self.root)}
+                    'CALLS': str(self.root / 'calls'), 'FIXTURE': str(self.root),
+                    'CONTAINERFILE': str(self.root / 'Containerfile')}
 
     def run_script(self, immutable=True, image=IMAGE, epoch='1700000000', **environment):
         args = [image, 'a' * 128]
@@ -81,6 +91,11 @@ elif args[:2] != ['image', 'exists']: sys.exit(99)
                 self.assertIn(flag, build)
             self.assertNotIn('-t', build)
             self.assertIn('BASE_IMAGE=' + IMAGE, build)
+            containerfile = (self.root / 'Containerfile').read_text()
+            self.assertIn('COPY uki.efi /boot/EFI/Linux/7.2.7.efi', containerfile)
+            self.assertNotIn('RUN ', containerfile)
+            self.assertTrue(any('create' in call for call in calls))
+            self.assertTrue(any('cp' in call for call in calls))
         restart_fixture(self)
         with self.subTest(phase="podman5_clamps_to_the_epoch"):
             result, calls = self.run_script()

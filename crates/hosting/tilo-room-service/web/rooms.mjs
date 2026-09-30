@@ -1,40 +1,20 @@
-// Short-lived shared rooms (tilo-room-service) for a page running the web
-// core: the core with the relay peer and every app come from the signed
-// registry, verified in the page; the room carries only document commits,
+// Short-lived shared rooms (tilo-room-service) for a page running the
+// browser runtime bundle (`build.sh --bundle desktop`: the runtime with its
+// certified peer and every web app); the room carries only document commits,
 // certification and presence, and each browser renders everything itself.
-// It sits next to host.mjs and relay.mjs (the web runtime's page modules).
-import {configureRuntime, setAppResolver} from './host.mjs';
+// It sits next to the bundle's host.mjs and relay.mjs.
 import {connectRelayPeer} from './relay.mjs';
-import init, * as bindings from './registry_verifier.js';
-import {createVerifier} from './registry-verifier.mjs';
-import {createRegistryClient} from './registry-client.mjs';
 
 export const WRITER = 'so.tilo.word-processor';
 export const BOOKS = 'so.tilo.ebook';
-const RELAY_RUNTIME = 'so.tilo.runtime.web-relay';
 
 /**
- * Run the core with the relay peer and link apps from the signed registry
- * `config` names (`{baseUrl, ownerKeyHex, runtimeAbi, relayRuntimePackage}`,
- * by default ./registry.json next to this module). Call before the first
- * mount. Resolves to the registry client.
+ * Kept for pages written for registry-loaded cores: the bundle next to this
+ * module already carries the runtime and every web app, so there is nothing
+ * to resolve. Resolves to `null`.
  */
-export async function useRegistry(config) {
-  config ??= await (await fetch(new URL('./registry.json', import.meta.url), {cache: 'no-store'})).json();
-  await init({module_or_path: new URL('./registry_verifier_bg.wasm', import.meta.url)});
-  const registry = createRegistryClient({
-    baseUrl: config.baseUrl, ownerKeyHex: config.ownerKeyHex, runtimeAbi: config.runtimeAbi,
-    runtimePackage: config.relayRuntimePackage ?? RELAY_RUNTIME, verifier: createVerifier(bindings),
-  });
-  const core = registry.resolveRuntime();
-  const glue = core.then(({assets}) => {
-    const name = [...assets.keys()].find(key => key.endsWith('tilo_browser_runtime.js'));
-    if (!name) throw new Error('the registry core carries no glue asset');
-    return assets.get(name);
-  });
-  configureRuntime({glue, module: core.then(({module}) => module)});
-  setAppResolver(registry.resolveApp);
-  return registry;
+export async function useRegistry() {
+  return null;
 }
 
 /** `POST <api>/rooms`: `{roomId, origin, room, userPublicKey, expiresAt,

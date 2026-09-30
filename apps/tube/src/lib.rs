@@ -84,6 +84,17 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(TubeApp::empty())
 }
 
+/// The app as every host mounts it: the live root, which fetches the
+/// catalogue where the network worker can run.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    fn live_root() -> Box<dyn Widget> {
+        Box::new(TubeApp::new().online())
+    }
+    ui::launch::LaunchSpec::new("so.tilo.tube", live_root)
+        .component_actions(actions::register)
+        .as_definition("Tube")
+}
+
 /// `--shots` variant for a narrow viewport: the nav rail is forced open as an
 /// overlay flap with its dimming scrim, and starts from [`TubeApp::new`] (the
 /// sample catalogue) since a shot of an empty grid says nothing about the

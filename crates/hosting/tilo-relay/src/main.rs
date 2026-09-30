@@ -12,6 +12,8 @@
 //! - `room` (feature `web`) — a short-lived shared room: like `dev`, but it
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
+//! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
+//!   with `--agent-model settings|scripted|openai:<url>|cloud:<url>`.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
@@ -392,7 +394,7 @@ mod tests {
         // These paths model the firstboot-generated handoff while keeping the
         // test hermetic instead of writing under /etc or /var/lib.
         config.home_peer_bundle = bundle_path;
-        config.full_replica_status = status_path;
+        config.full_replica_status = status_path.clone();
         config.state_root = temp.path().join("relay-state");
         config.identity_root = temp.path().join("identity");
         config.services = ServiceCapabilities::home_peer();

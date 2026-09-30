@@ -615,7 +615,7 @@ fn render_live_shot_to_png(
     probe_pip: bool,
     args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use ui::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
 
     let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
@@ -645,7 +645,7 @@ fn render_live_shot_to_png(
     // web view's laid-out (physical) size — the first layout pass sends
     // the Resize, subsequent frames arrive at the right dimensions.
     // Then let the page settle briefly so late-loading content paints.
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = ui::time::now() + Duration::from_secs(45);
     let mut sized_frame_seen_at: Option<Instant> = None;
     let mut pip_probe_started = false;
     let mut pip_request = None;
@@ -737,7 +737,7 @@ fn render_live_shot_to_png(
                 }
             }
         }
-        if Instant::now() > deadline {
+        if ui::time::now() > deadline {
             return Err(format!("no sized painted frame from {url} within 45s").into());
         }
         std::thread::sleep(Duration::from_millis(100));

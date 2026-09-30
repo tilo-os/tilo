@@ -191,7 +191,7 @@ impl SecretServiceMlsVault {
     pub(crate) fn channel_state_key(&self) -> VaultKey {
         let mut hash = Sha256::new();
         hash.update(b"tilo.channel-state-key.v1");
-        hash.update(self.master_key.as_ref());
+        hash.update(self.master_key.as_slice());
         VaultKey::new(hash.finalize().into())
     }
 
@@ -222,7 +222,7 @@ impl SecretServiceMlsVault {
                 rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), bytes.as_mut());
                 secret_service_store(&locator, bytes.as_ref())?;
                 let verified = secret_service_load(&locator)?;
-                if verified.as_ref() != bytes.as_ref() {
+                if verified.as_slice() != bytes.as_slice() {
                     return Err(MlsAuthorityError::VaultUnavailable(
                         "the secret store did not return the newly stored MLS key".into(),
                     ));
@@ -397,7 +397,7 @@ impl MlsVaultProvider for SecretServiceMlsVault {
             MlsAuthorityError::VaultUnavailable("unregistered vault capability".into())
         })?;
         let signer_bytes = secret_service_load(&record.signer_locator)?;
-        let signer_array: [u8; 32] = signer_bytes.as_ref().try_into().map_err(|_| {
+        let signer_array: [u8; 32] = signer_bytes.as_slice().try_into().map_err(|_| {
             MlsAuthorityError::VaultUnavailable("stored MLS signer has invalid length".into())
         })?;
         let group = ChannelGroup::load_sealed(

@@ -29,8 +29,10 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 fnv.workspace = true
-xdg-paths = { path = "../../crates/system/xdg-paths" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
@@ -40,11 +42,11 @@ tilo-document = { path = "../../crates/doc/tilo-document" }
 # Comment replies are written in the SDK rich-text editor, embedded.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
-spellcheck = { path = "../../crates/text/spellcheck" }
+tilo-spellcheck = { path = "../../crates/text/spellcheck" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
-# Content addressing everywhere; the on-disk and device stores only natively
-# (the browser build keeps content in memory).
-tilo-content = { path = "../../crates/system/content", default-features = false }
+# Content addressing everywhere; the device store where the launcher hands
+# one over.
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true
@@ -69,12 +71,5 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-# The browser runtime embeds this app in wasm32, where the toolkit is the
-# portable build: no native desktop runner, no broker transport, no portal.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

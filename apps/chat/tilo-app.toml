@@ -22,6 +22,10 @@ runtime  = "tilo-runtime/2026.07"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["files.paths", "app-files", "network.sockets", "threads", "media.decode", "camera", "microphone", "screen-capture"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

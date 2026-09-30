@@ -16,6 +16,9 @@
 //! - [`access`]: whether a blocked access reads or writes.
 //!
 //! Nothing here is on the I/O path of a resident file.
+//!
+//! The kernel interfaces are Linux's; elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
 #![allow(
     clippy::missing_errors_doc,
     reason = "fallible functions return the io::Error of the syscall they wrap"

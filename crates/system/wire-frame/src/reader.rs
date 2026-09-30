@@ -9,11 +9,32 @@ use crate::{FrameError, Framing};
 ///
 /// The buffer keeps the capacity of the largest frame read so far, which is
 /// bounded by the framing's limit.
+///
+/// The async read is cancel-safe: the bytes of a partly read frame are kept
+/// in the reader, so a `select!` that drops [`read_frame_async`] for another
+/// branch resumes the same frame on the next call instead of losing its
+/// start and misreading the rest of the stream as a new prefix.
+///
+/// [`read_frame_async`]: Self::read_frame_async
 #[derive(Debug)]
 pub struct FrameReader<R> {
     inner: R,
     framing: Framing,
     buf: Vec<u8>,
+    #[cfg(feature = "tokio")]
+    partial: Partial,
+}
+
+/// How far the async read is into the current frame.
+#[cfg(feature = "tokio")]
+#[derive(Debug, Default)]
+struct Partial {
+    prefix: [u8; crate::PREFIX_BYTES],
+    prefix_filled: usize,
+    /// The payload length, once the prefix is complete; `buf` then holds
+    /// `payload_filled` of its bytes.
+    len: Option<usize>,
+    payload_filled: usize,
 }
 
 impl<R> FrameReader<R> {
@@ -23,6 +44,13 @@ impl<R> FrameReader<R> {
             inner,
             framing,
             buf: Vec::new(),
+            #[cfg(feature = "tokio")]
+            partial: Partial {
+                prefix: [0; crate::PREFIX_BYTES],
+                prefix_filled: 0,
+                len: None,
+                payload_filled: 0,
+            },
         }
     }
 
@@ -79,11 +107,48 @@ impl<R: tokio::io::AsyncRead + Unpin> FrameReader<R> {
     ///
     /// As [`Framing::read_async`].
     pub async fn read_frame_async(&mut self) -> Result<Option<&[u8]>, FrameError> {
-        let framed = self
-            .framing
-            .read_into_async(&mut self.inner, &mut self.buf)
-            .await?;
-        Ok(framed.then_some(self.buf.as_slice()))
+        use tokio::io::AsyncReadExt as _;
+        let partial = &mut self.partial;
+        let len = loop {
+            if let Some(len) = partial.len {
+                break len;
+            }
+            let Some(rest) = partial
+                .prefix
+                .get_mut(partial.prefix_filled..)
+                .filter(|rest| !rest.is_empty())
+            else {
+                let len = self.framing.decode_prefix(partial.prefix)?;
+                self.buf.clear();
+                self.buf.resize(len, 0);
+                partial.len = Some(len);
+                partial.payload_filled = 0;
+                continue;
+            };
+            match self.inner.read(rest).await {
+                Ok(0) if partial.prefix_filled == 0 => return Ok(None),
+                Ok(0) => return Err(FrameError::Truncated),
+                Ok(read) => partial.prefix_filled = partial.prefix_filled.saturating_add(read),
+                Err(error) => match crate::classify_prefix_error(error, partial.prefix_filled)? {
+                    crate::PrefixRead::Retry => {}
+                    crate::PrefixRead::Closed => return Ok(None),
+                },
+            }
+        };
+        while let Some(rest) = self
+            .buf
+            .get_mut(partial.payload_filled..len)
+            .filter(|rest| !rest.is_empty())
+        {
+            match self.inner.read(rest).await {
+                Ok(0) => return Err(FrameError::Truncated),
+                Ok(read) => partial.payload_filled = partial.payload_filled.saturating_add(read),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(crate::truncated(error)),
+            }
+        }
+        *partial = Partial::default();
+        Ok(Some(self.buf.as_slice()))
     }
 
     /// Read and decode the next postcard frame, or `None` on a clean close.

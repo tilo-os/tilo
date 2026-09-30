@@ -1,217 +1,248 @@
-//! One page-lifetime Winit loop. JS owns DOM/IndexedDB; this owns the real component and GPU.
-use js_sys::{Function, Reflect, Uint8Array};
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
-use ui::{
-    application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    },
-    application_view::InstanceViewStore,
-    headless::FrameHarness,
-    permissions::{Actor, PermissionContext, Role, UserId},
-    portable_storage::{PendingWrite, PortableStorage},
-    record::{RecordCheckout, RecordId, RecordOwners},
-};
-use wasm_bindgen::{JsCast, prelude::*};
-use winit::{
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    platform::web::{EventLoopExtWebSys, WindowAttributesExtWebSys},
-    window::{Window, WindowId},
-};
+//! One page-lifetime winit loop. JavaScript owns the DOM and `IndexedDB`; this
+//! owns the real application component, its frame pipeline and the GPU.
+//!
+//! Records and views live in `durable_store::MemoryStore` via
+//! [`crate::storage`]. A mount is the session desktop ([`crate::desktop`])
+//! unless the page names one application.
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::desktop_host::DesktopSources;
-#[cfg(feature = "cloud")]
-use crate::peer as cloud_peer;
-/// Without `cloud` no certified peer exists, so a mount that names one fails.
-#[cfg(not(feature = "cloud"))]
-mod cloud_peer {
-    const UNAVAILABLE: &str = "this runtime was built without the Cloud peer";
-    pub(super) fn permissions(_: u32) -> Result<ui::permissions::PermissionContext, String> {
-        Err(UNAVAILABLE.into())
-    }
-    pub(super) fn local_owned_document(
-        _: u32,
-        _: &str,
-        _: &str,
-        _: automerge::AutoCommit,
-    ) -> Result<(), String> {
-        Err(UNAVAILABLE.into())
-    }
-    pub(super) fn mark_failure(_: u32, _: String) {}
-}
+use js_sys::{Function, Reflect, Uint8Array};
+use ui::application::{
+    ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
+use ui::application_view::InstanceViewStore;
+use ui::headless::FrameHarness;
+use ui::permissions::{PermissionContext, UserId};
+use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
+use wasm_bindgen::{JsCast, prelude::*};
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
+use winit::window::{Window, WindowId};
+
+use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
 
 thread_local! {
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
-    static CACHES: RefCell<HashMap<(String,String), PortableStorage>> = RefCell::new(HashMap::new());
-    static CONTENT: RefCell<HashMap<(String,String), tilo_content::ContentStore>> = RefCell::new(HashMap::new());
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
-    static CLOSED: RefCell<crate::close_recovery::ClosedComponents> = RefCell::new(crate::close_recovery::ClosedComponents::default());
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
+    static SHARED_GPU: RefCell<Option<Rc<RefCell<SharedGpu>>>> = const { RefCell::new(None) };
+    /// Mount GPU setups, run one at a time: opening a workspace while another
+    /// sets up must not stack a second device creation on the first.
+    static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+    static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
-/// The `app` that mounts the canonical desktop rather than one application.
-const DESKTOP: &str = "desktop";
+
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Config {
-    /// An installed app id or alias (see `catalog`), or [`DESKTOP`].
-    app: String,
+    /// One application to mount on its own; absent (or `desktop`) mounts
+    /// the session desktop.
+    #[serde(default)]
+    app: Option<String>,
+    /// The desktop's initial windows, one per application id; every
+    /// registered application when absent.
+    #[serde(default)]
+    apps: Option<Vec<String>>,
     profile: String,
     device: String,
     room: String,
-    author: String,
+    /// Who edits; the local identity's person (a certified peer's user)
+    /// when absent.
+    #[serde(default)]
+    author: Option<String>,
     instance: u64,
+    /// The record to open; absent opens the instance's default record,
+    /// created on first use.
     record: Option<String>,
-    peer: Option<u32>,
+    /// Create a record even when the instance has a default one.
+    #[serde(default, rename = "newDocument")]
+    new_document: bool,
     #[serde(default)]
     mac: bool,
-    /// Milliseconds edits may wait before publication while typing continues.
-    /// Defaults to `PUBLICATION_WINDOW_MS`; zero publishes every changed frame.
+    /// A started certified peer (`WasmPeer.id`) whose room this mount's
+    /// records and desktop replicate through.
     #[serde(default)]
-    publication_window_ms: Option<u64>,
-    /// Milliseconds between semantics deliveries while the tree keeps changing
-    /// without a focus or structure change. Defaults to
-    /// `semantics_status::SEMANTICS_WINDOW_MS`; zero sends every changed tree.
+    peer: Option<u32>,
+    /// Milliseconds between semantics deliveries while the tree keeps
+    /// changing without a focus or structure change.
     #[serde(default)]
     semantics_window_ms: Option<u64>,
-    /// A file the page hands the app to open; its bytes are `mount`'s last
-    /// argument.
+    /// Render within WebKit's GPU memory: a smaller canvas backing store and
+    /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
-    open: Option<OpenRequest>,
-    /// With [`DESKTOP`] and no peer: the page's own desktop, seeded thus.
-    #[serde(default)]
-    local: Option<crate::local_desktop::Seed>,
-    /// The display name of the agent this mount acts as. `author` must then
-    /// be an agent task participant (`agent-task:<task>`).
-    #[serde(default)]
-    agent: Option<String>,
-    /// A relay peer (`WasmPeer.id`, feature `relay`) whose joined room is
-    /// `room`: the mount runs as a local one, and its records replicate
-    /// through the peer.
-    #[serde(default)]
-    relay: Option<u32>,
+    conservative_gpu: bool,
 }
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenRequest {
-    name: String,
-    media_type: String,
-}
-/// What a page may hand one mount's content store: an opened file each, up
-/// to the SDK's per-file bound, a few of them per page.
-fn content_limits() -> tilo_content::ContentLimits {
-    tilo_content::ContentLimits {
-        max_item_bytes: ui::application::MAX_OPEN_FILE_BYTES,
-        max_total_bytes: 4 * ui::application::MAX_OPEN_FILE_BYTES,
-        ..tilo_content::ContentLimits::default()
+
+impl Config {
+    fn author(&self) -> String {
+        self.author
+            .clone()
+            .unwrap_or_else(|| ui::collaboration::local_user_id().0)
     }
 }
-/// The content store every standalone mount of one profile/device cache
-/// shares for the page's lifetime, as they share its records.
-fn content_store(profile: &str, device: &str) -> tilo_content::ContentStore {
-    CONTENT.with_borrow_mut(|stores| {
-        stores
-            .entry((profile.into(), device.into()))
-            .or_insert_with(|| {
-                tilo_content::ContentStore::new(tilo_content::MemoryBackend::new(content_limits()))
-            })
-            .clone()
-    })
-}
-/// Default publication window. Changed records publish at most once per window
-/// while edits keep arriving; close, hide, focus loss, IME end and peer rebind
-/// publish immediately, so only a hard tab kill inside the window loses edits.
-/// Requires a native session peer with checkpoint cadence (2026-09-19): older
-/// natives re-published a multi-megabyte checkpoint per delta, and with sparser
-/// deltas the relay dropped them for backpressure and replayed the room on
-/// reconnect. Hosts and benchmarks can override with `publication_window_ms`.
-const PUBLICATION_WINDOW_MS: u64 = 100;
-fn publication_schedule(
-    window_ms: Option<u64>,
-) -> RefCell<crate::admitted_records::PublicationSchedule> {
-    RefCell::new(crate::admitted_records::PublicationSchedule::new(
-        std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS)),
-    ))
-}
-fn semantics_gate(window_ms: Option<u64>) -> RefCell<crate::semantics_status::SemanticsGate> {
-    RefCell::new(crate::semantics_status::SemanticsGate::new(
-        std::time::Duration::from_millis(
-            window_ms.unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS),
-        ),
-    ))
-}
-use crate::storage_key::DiskKey;
-use crate::viewport::{Viewport, ViewportState};
+
 struct Request {
     canvas: web_sys::HtmlCanvasElement,
     config: Config,
     fonts: JsValue,
     hydrated: JsValue,
     status: Function,
-    open: Option<Vec<u8>>,
 }
-struct Gpu {
+
+/// The page's one WebGPU device and vello renderer, shared by every mount.
+///
+/// A device per mount cost every opened workspace a second adapter, device
+/// and full pipeline compilation while the first stayed resident. In WebKit
+/// each device holds ~140 MB of its own and compiling vello's pipelines
+/// peaks near 200 MB, under a GPU-process limit (600 MB) that Safari's other
+/// tabs share.
+struct SharedGpu {
     cx: ui::gpu::RenderContext,
-    surface: vello::util::RenderSurface<'static>,
     renderer: vello::Renderer,
     failure: Arc<Mutex<Option<String>>>,
+    /// Mounts rendering with this device; a loss or error wakes each.
+    mounts: Arc<Mutex<Vec<u64>>>,
 }
+
+impl SharedGpu {
+    fn failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn detach(&self, id: u64) -> bool {
+        let mut mounts = self.mounts.lock().unwrap_or_else(PoisonError::into_inner);
+        mounts.retain(|&m| m != id);
+        mounts.is_empty()
+    }
+}
+
+/// One mount's surface on the shared device.
+struct Gpu {
+    shared: Rc<RefCell<SharedGpu>>,
+    surface: vello::util::RenderSurface<'static>,
+}
+
+impl Gpu {
+    fn failure(&self) -> Option<String> {
+        self.shared.try_borrow().ok().and_then(|s| s.failure())
+    }
+}
+
+/// Stop rendering `id` with the shared device, and release the device once
+/// no mount renders with it or it failed.
+fn release_gpu(id: u64, gpu: Gpu) {
+    // On WebGPU a dropped texture stays resident until JavaScript collects it.
+    gpu.surface.target_texture.destroy();
+    let (last, failed) = gpu
+        .shared
+        .try_borrow()
+        .map_or((false, false), |s| (s.detach(id), s.failure().is_some()));
+    if last || failed {
+        SHARED_GPU.with_borrow_mut(|shared| {
+            if shared.as_ref().is_some_and(|s| Rc::ptr_eq(s, &gpu.shared)) {
+                *shared = None;
+            }
+        });
+    }
+}
+
+struct GpuSetup {
+    id: u64,
+    generation: u64,
+    window: Arc<Window>,
+    caps: SurfaceCaps,
+}
+
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
-    published_records: std::cell::RefCell<crate::admitted_records::PublishedRecords>,
-    publication: RefCell<crate::admitted_records::PublicationSchedule>,
-    /// Decides which statuses carry the semantics tree: unchanged trees are
-    /// omitted, content-only changes are throttled, focus and structure
-    /// changes go out at once.
+    /// Which statuses carry the semantics tree: unchanged trees are omitted,
+    /// content-only changes are throttled, focus and structure changes go out
+    /// at once.
     semantics: RefCell<crate::semantics_status::SemanticsGate>,
-    peer_suspended: bool,
-    peer: Option<u32>,
-    /// The relay peer whose room this mount's records replicate through.
-    #[cfg_attr(
-        not(feature = "relay"),
-        allow(dead_code, reason = "read by the relay feature")
-    )]
-    relay: Option<u32>,
-    desktop: Option<crate::desktop_host::DesktopHandle>,
-    record: Option<crate::desktop_host::OwnedRecord>,
-    /// `record_version` of each record this mount shows (`record`, or its
-    /// desktop's windows) when it last drew or was re-synced; a change is
-    /// what re-syncs the page's other mounts of it.
-    record_versions: HashMap<(String, String), RecordVersion>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
-    storage: PortableStorage,
+    store: Rc<durable_store::MemoryStore>,
+    /// Every package record owner the mount opened, flushed together.
+    stores: Rc<RefCell<Vec<RecordStore>>>,
+    /// The single application's record; `None` for the desktop.
+    checkout: Option<RecordCheckout>,
+    desktop: Option<Desktop>,
     gpu: Option<Gpu>,
     pending: bool,
     viewport: ViewportState,
-    /// The scale of Winit's last `ScaleFactorChanged`. `devicePixelRatio`
-    /// changes a frame before the canvas's physical size follows it; pairing
-    /// the live ratio with the old size would lay one frame out at the wrong
-    /// logical width.
-    scale: f64,
+    caps: SurfaceCaps,
     hidden: bool,
     generation: u64,
     frames: u64,
     status: Function,
-    writes: HashMap<u64, PendingWrite>,
-    images: Vec<ui::image_store::HostImageLoader>,
+    images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     error: Option<String>,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
+    /// The peer this mount replicates through, and whether a peer's change
+    /// reached it since the last frame.
+    peer: Option<u32>,
+    replica_changed: Rc<std::cell::Cell<bool>>,
+    /// The focus presence last reported to the page.
+    focus_presence: RefCell<Option<serde_json::Value>>,
 }
+
+struct Desktop {
+    handle: tilo_desktop_surface::DesktopHandle,
+    shared: crate::desktop::Shared,
+    persistence: crate::desktop::Persistence,
+    /// Navigation commands name the mount generation they were issued for.
+    generation: String,
+}
+
+impl Mount {
+    fn flush_records(&self) {
+        for store in self.stores.borrow().iter() {
+            let _ = store.try_flush();
+        }
+        self.save_desktop();
+    }
+
+    /// Keep the room's desktop in the profile after anything moved it.
+    fn save_desktop(&self) {
+        if let Some(desktop) = &self.desktop
+            && let Err(error) = desktop.persistence.save(&desktop.handle)
+        {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "Browser runtime: desktop not saved: {error}"
+            )));
+        }
+    }
+}
+
 /// Glyphs one frame may encode. A full 4K screen of small text is far below
 /// this; only unculled off-screen content reaches it.
 const MAX_SCENE_GLYPHS: usize = 400_000;
-/// Encoded scene bytes one frame may hand to the renderer (before glyph
-/// outlines are resolved, which multiplies glyph cost).
+/// Encoded scene bytes one frame may hand to the renderer.
 const MAX_SCENE_BYTES: usize = 128 << 20;
+/// vello's adaptive scratch buffers, in total, above the viewport floors. A
+/// 60-window desktop at the capped canvas holds about 92 MiB of them, floors
+/// included. Safari kills its GPU process past 600 MB; with every buffer
+/// allowed a full 128 MiB binding, the renderer alone could reach 900 MB.
+const MAX_BUMP_BUDGET_BYTES: u64 = 128 << 20;
+/// The scratch budget under `conservative_gpu`.
+const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 32 << 20;
+/// The image atlas's side under `conservative_gpu`: 64 MB instead of vello's
+/// 256 MB maximum, which opening a photo-heavy app could reach in one frame.
+const CONSERVATIVE_IMAGE_ATLAS_MAX: u32 = 4096;
+
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
     let glyphs = encoding.resources.glyphs.len();
@@ -231,36 +262,75 @@ fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
         Ok(())
     }
 }
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a map_err adapter receives each error by value"
+)]
 fn error(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
-fn emit(f: &Function, v: serde_json::Value) {
+
+fn emit(f: &Function, v: &serde_json::Value) {
     emit_text(f, &v.to_string());
 }
+
 fn emit_text(f: &Function, text: &str) {
     let _ = f.call1(&JsValue::NULL, &JsValue::from_str(text));
 }
+
 fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
     PANIC_HOOK.call_once(|| {
         std::panic::set_hook(Box::new(|panic| {
-            web_sys::console::error_1(&JsValue::from_str(&format!(
+            // Only the first: later panics follow from the state it left
+            // borrowed, and would bury it.
+            if !crate::crash::report(panic) {
+                return;
+            }
+            // A JS Error carries the wasm call stack, which names the caller
+            // a std panic location does not.
+            web_sys::console::error_1(&js_sys::Error::new(&format!(
                 "Browser runtime panic: {panic}"
             )));
         }));
     });
-    if let Some(p) = LOOP.with_borrow(|p| p.clone()) {
+    if let Some(p) = LOOP.with_borrow(Clone::clone) {
         return Ok(p);
     }
-    crate::clipboard::install();
+    crate::host_services::install();
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
     event_loop.spawn_app(Runner);
     Ok(proxy)
 }
-/// Mount `config.app` on `canvas`. `open` holds the bytes of the file
-/// `config.open` names, which the app receives as an explicit open request.
+
+fn with_mount<R>(
+    id: u64,
+    run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
+) -> Result<R, JsValue> {
+    // After a panic the module keeps whatever the panic left borrowed; a
+    // later call from the page fails instead of panicking again.
+    if crate::crash::stopped() {
+        return Err(error(crate::crash::STOPPED));
+    }
+    MOUNTS.with(|mounts| {
+        let mut mounts = mounts
+            .try_borrow_mut()
+            .map_err(|_| error("the mount is busy (a call from inside the runtime)"))?;
+        run(mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?)
+    })
+}
+
+/// Mount an application on `canvas`. `config` is JSON (`app`, `profile`,
+/// `device`, `room`, `author`, `instance`, optional `record`, `mac`);
+/// `fonts` maps startup font file names to bytes; `hydrated` holds the
+/// namespace's stored rows. Statuses arrive on `status` as JSON text.
+///
+/// # Errors
+///
+/// Rejects during terminal shutdown or for malformed configuration.
 #[wasm_bindgen]
 pub fn mount(
     canvas: web_sys::HtmlCanvasElement,
@@ -268,36 +338,20 @@ pub fn mount(
     fonts: JsValue,
     hydrated: JsValue,
     status: Function,
-    open: Option<Uint8Array>,
 ) -> Result<u64, JsValue> {
-    if STOP.with_borrow(|s| s.is_some()) {
+    if crate::crash::stopped() {
+        return Err(error(crate::crash::STOPPED));
+    }
+    if STOP.with_borrow(Option::is_some) {
         return Err(error("terminal shutdown is still pending"));
     }
     let p = proxy()?;
     let id = NEXT.with_borrow_mut(|next| {
         let id = *next;
-        *next += 1;
+        *next = next.saturating_add(1);
         id
     });
-    let config: Config = serde_json::from_str(config).map_err(error)?;
-    // An unknown app rejects the mount itself, before any window or storage exists.
-    if config.app != DESKTOP {
-        let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
-        if let Some(request) = &config.open {
-            crate::catalog::check_opens(definition, &request.media_type).map_err(error)?;
-        }
-    } else if config.open.is_some() {
-        return Err(error("the desktop is not handed files to open"));
-    } else if config.local.is_some() && config.peer.is_some() {
-        return Err(error("a local desktop has no peer"));
-    }
-    if config.app != DESKTOP && config.local.is_some() {
-        return Err(error("only the desktop is seeded with `local`"));
-    }
-    if config.open.is_some() != open.is_some() {
-        return Err(error("an open request needs both its name and its bytes"));
-    }
-    let open = open.map(|bytes| bytes.to_vec());
+    let config = serde_json::from_str(config).map_err(error)?;
     REQUESTS.with_borrow_mut(|r| {
         r.insert(
             id,
@@ -307,83 +361,81 @@ pub fn mount(
                 fonts,
                 hydrated,
                 status,
-                open,
             },
         )
     });
     p.send_event(id).map_err(error)?;
     Ok(id)
 }
-/// The installed application a mount's `app` names (an app id or alias).
+
+/// Close one mount and return its remaining writes (`[{key, bytes, actor,
+/// revision}]`) for the page to commit and acknowledge.
+///
+/// # Errors
+///
+/// Propagates a failure to serialize the remaining writes.
 #[wasm_bindgen]
-pub fn application(app: &str) -> Result<String, JsValue> {
-    let definition = crate::catalog::resolve_mount(app).map_err(error)?;
-    Ok(crate::catalog::describe(definition).to_string())
-}
-/// Every application this build can mount standalone.
-#[wasm_bindgen]
-pub fn applications() -> String {
-    serde_json::Value::Array(
-        crate::catalog::installed()
-            .into_iter()
-            .map(crate::catalog::describe)
-            .collect(),
-    )
-    .to_string()
-}
-#[wasm_bindgen]
-pub fn close(id: u64) -> Result<String, JsValue> {
+pub fn close(id: u64) -> Result<JsValue, JsValue> {
     REQUESTS.with_borrow_mut(|r| r.remove(&id));
-    MOUNTS.with_borrow_mut(|m| {
-        let Some(mut mount)=m.remove(&id) else {return Ok("[]".into());};
-        mount.publish_with(id, true);
-        mount.frame.close_components();
-        let reports=mount.frame.take_component_close_reports();
-        for record in mount.owned_records(){let _=record.store.try_flush();}
-        let pending=mount.storage.pending_writes();
-        // Bytes stay in the shared cache until the host's transaction completes.
-        let writes=pending.iter().map(write_json).collect::<Vec<_>>();
-        emit(&mount.status,serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":writes.len()}));
-        CLOSED.with_borrow_mut(|closed|closed.retain(id,reports,mount.storage.clone()));
-        unconfigure(&mount.canvas);
-        mount.gpu.take();
-        serde_json::to_string(&writes).map_err(error)
-    })
+    let Some(mut mount) = MOUNTS.with_borrow_mut(|m| m.remove(&id)) else {
+        return Ok(js_sys::Array::new().into());
+    };
+    if let Some(peer) = mount.peer {
+        crate::replication::detach(peer, id);
+    }
+    mount.frame.close_components();
+    let reports = mount.frame.take_component_close_reports();
+    mount.flush_records();
+    let writes = crate::storage::drain(&mount.store)?;
+    emit(
+        &mount.status,
+        &serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":js_sys::Array::from(&writes).length()}),
+    );
+    unconfigure(&mount.canvas);
+    if let Some(gpu) = mount.gpu.take() {
+        release_gpu(id, gpu);
+    }
+    Ok(writes)
 }
+
 fn unconfigure(canvas: &web_sys::HtmlCanvasElement) {
     if let Ok(Some(context)) = canvas.get_context("webgpu")
         && let Ok(method) =
-            Reflect::get(&context, &"unconfigure".into()).and_then(|v| v.dyn_into::<Function>())
+            Reflect::get(&context, &"unconfigure".into()).and_then(JsCast::dyn_into::<Function>)
     {
         let _ = method.call0(&context);
     }
 }
+
+/// Terminal page-host teardown: close every mount, stop the loop, then call
+/// `done`. A later mount starts a fresh loop.
+///
+/// # Errors
+///
+/// Rejects a second shutdown while one is pending.
 #[wasm_bindgen]
 pub fn shutdown(done: Function) -> Result<(), JsValue> {
-    if STOP.with_borrow(|s| s.is_some()) {
+    if STOP.with_borrow(Option::is_some) {
         return Err(error("shutdown already pending"));
     }
     let ids = MOUNTS.with_borrow(|m| m.keys().copied().collect::<Vec<_>>());
     for id in ids {
         close(id)?;
     }
-    if CLOSED.with_borrow(|closed| closed.len() > 0) {
-        return Err(error(
-            "component close recovery must settle before terminal shutdown",
-        ));
-    }
     REQUESTS.with_borrow_mut(HashMap::clear);
     STOP.with_borrow_mut(|s| *s = Some(done));
-    if let Some(p) = LOOP.with_borrow(|p| p.clone()) {
+    if let Some(p) = LOOP.with_borrow(Clone::clone) {
         p.send_event(0).map_err(error)?;
     } else {
         finish_shutdown();
     }
     Ok(())
 }
+
 fn finish_shutdown() {
     LOOP.with_borrow_mut(|p| *p = None);
-    // Winit resets its creation guard after LoopExiting returns. The microtask runs after that.
+    // Winit resets its creation guard after LoopExiting returns; the
+    // microtask runs after that.
     if let Some(done) = STOP.with_borrow_mut(Option::take) {
         wasm_bindgen_futures::spawn_local(async move {
             let _ = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&JsValue::NULL))
@@ -392,11 +444,14 @@ fn finish_shutdown() {
         });
     }
 }
+
 struct Runner;
+
 impl ApplicationHandler<u64> for Runner {
     fn resumed(&mut self, _: &ActiveEventLoop) {}
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, id: u64) {
-        if id == 0 && STOP.with_borrow(|s| s.is_some()) {
+        if id == 0 && STOP.with_borrow(Option::is_some) {
             event_loop.exit();
             return;
         }
@@ -405,26 +460,23 @@ impl ApplicationHandler<u64> for Runner {
             if let Err(e) = begin(event_loop, id, request) {
                 emit(
                     &status,
-                    serde_json::json!({"phase":"failed","error":e.as_string().unwrap_or_else(||format!("{e:?}"))}),
+                    &serde_json::json!({"phase":"failed","error":e.as_string().unwrap_or_else(||format!("{e:?}"))}),
                 );
             }
-        } else {
-            MOUNTS.with_borrow_mut(|mounts| {
-                if let Some(m) = mounts.get_mut(&id) {
-                    let failure = m
-                        .gpu
-                        .as_ref()
-                        .and_then(|gpu| gpu.failure.lock().unwrap().clone());
-                    if let Some(failure) = failure {
-                        m.error = Some(failure);
-                        m.publish(id);
-                    } else {
-                        m.window.request_redraw();
-                    }
-                }
-            });
+            return;
         }
+        MOUNTS.with_borrow_mut(|mounts| {
+            if let Some(m) = mounts.get_mut(&id) {
+                if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
+                    m.error = Some(failure);
+                    m.publish(id);
+                } else {
+                    m.window.request_redraw();
+                }
+            }
+        });
     }
+
     fn window_event(&mut self, _: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
         MOUNTS.with_borrow_mut(|mounts| {
             let Some((&id, m)) = mounts.iter_mut().find(|(_, m)| m.window.id() == window_id) else {
@@ -438,12 +490,6 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
-                        m.scale = scale_factor;
-                    }
-                    if m.peer_suspended {
-                        return;
-                    }
                     if m.queue_resize() && !m.viewport.suspended() {
                         m.window.request_redraw();
                     }
@@ -456,14 +502,10 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Destroyed => {}
-                _ => {
-                    if m.peer_suspended {
-                        return;
-                    }
-                    let mut event = event;
-                    // The old layout is still displayed (stretched by CSS) until
-                    // redraw commits the requested viewport. Winit reports the
-                    // new physical coordinates, so map pointer/touch back to it.
+                mut event => {
+                    // The old layout stays on screen (stretched by CSS) until
+                    // redraw commits the requested viewport; map pointer and
+                    // touch coordinates back onto it.
                     match &mut event {
                         WindowEvent::CursorMoved { position, .. } => {
                             (position.x, position.y) =
@@ -477,217 +519,216 @@ impl ApplicationHandler<u64> for Runner {
                     }
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
-                    if let Some(desktop) = m.desktop.clone() {
-                        desktop.finish_local_activation(&mut m.frame);
-                    }
                     m.metric_end("input", start);
-                    if start.is_some() {
-                        if m.frame.last_send_skipped_relayout() {
-                            m.metrics.borrow_mut().count("relayout_skipped");
-                        }
-                        for path in m.frame.take_pointer_redraw_sources() {
-                            m.metrics.borrow_mut().note(&path);
-                        }
-                    }
-                    if matches!(event, WindowEvent::Focused(false)) {
-                        m.publish_records(id, true);
-                    }
-                    if start.is_some() {
-                        let demand = m.frame.frame_schedule();
-                        let mut metrics = m.metrics.borrow_mut();
-                        if demand.needs_redraw {
-                            metrics.count("input_demand.redraw");
-                        }
-                        if demand.needs_animation_frame {
-                            metrics.count("input_demand.animation");
-                        }
-                        if demand
-                            .next_wake_deadline
-                            .is_some_and(|wake| wake <= ui::clock::Instant::now())
-                        {
-                            metrics.count("input_demand.deadline");
-                        }
-                    }
                     m.pending = true;
                     m.window.request_redraw();
                 }
             }
-            propagate_record_change(mounts, id);
         });
     }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = ui::clock::Instant::now();
-        let mut deadline = None;
+        let now = ui::time::now();
+        let mut deadline: Option<ui::time::Instant> = None;
+        let mut wake =
+            |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
         MOUNTS.with_borrow(|mounts| {
-            for (&id, m) in mounts.iter() {
-                // Deferred publication runs when its window elapses, independently
-                // of presentation; otherwise the loop wakes for it.
-                // The RefCell borrow must end before publishing re-borrows it mutably.
-                let due = if m.peer_suspended {
-                    None
-                } else {
-                    m.publication.borrow().due()
-                };
-                if let Some(due) = due {
-                    if due <= now {
-                        let start = m.metric_start();
-                        m.publish_records(id, true);
-                        m.metric_end("publish_flush", start);
-                    } else {
-                        deadline =
-                            Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due)));
-                    }
-                }
+            for (&id, m) in mounts {
                 // A throttled semantics tree is delivered at its deadline even
-                // when no further frame is presented, so the accessibility DOM
-                // never lags the screen by more than one window.
-                let semantics_due = if m.peer_suspended || m.hidden || m.error.is_some() {
+                // when no further frame is presented.
+                let semantics_due = if m.hidden || m.error.is_some() {
                     None
                 } else {
                     m.semantics.borrow().due()
                 };
                 if let Some(due) = semantics_due {
                     if due <= now {
-                        let start = m.metric_start();
                         m.publish(id);
-                        m.metric_end("semantics_flush", start);
                     } else {
-                        deadline =
-                            Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due)));
+                        wake(due);
                     }
                 }
-                if m.peer_suspended
-                    || m.hidden
-                    || m.error.is_some()
-                    || m.gpu.is_none()
-                    || m.viewport.suspended()
-                {
+                if m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
                     continue;
                 }
-                let start = m.metric_start();
                 let output = m.frame.frame_schedule();
-                m.metric_end("schedule", start);
+                let desktop_woken = m
+                    .desktop
+                    .as_ref()
+                    .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
                 if m.pending
+                    || desktop_woken
                     || m.viewport.needs_present()
-                    || output.needs_redraw
+                    || output.queued_work
                     || output.needs_animation_frame
                 {
                     m.window.request_redraw();
                 }
-                if let Some(wake) = output.next_wake_deadline {
-                    if wake <= now {
+                if let Some(at) = output.next_wake_deadline {
+                    if at <= now {
                         m.window.request_redraw();
                     } else {
-                        deadline =
-                            Some(deadline.map_or(wake, |old: ui::clock::Instant| old.min(wake)));
+                        wake(at);
                     }
                 }
             }
         });
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
+
     fn exiting(&mut self, _: &ActiveEventLoop) {
         finish_shutdown();
     }
 }
-fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), JsValue> {
-    let Request {
-        canvas,
-        config,
-        fonts,
-        hydrated,
-        status,
-        open,
-    } = request;
-    if config.app == DESKTOP {
-        if config.local.is_some() {
-            return begin_local_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
-        }
-        #[cfg(feature = "cloud")]
-        return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
-        #[cfg(not(feature = "cloud"))]
-        return Err(error(
-            "the canonical desktop requires a runtime built with the Cloud peer, or `local`",
-        ));
+
+/// The single application `app` names; `None` for the session desktop.
+fn definition(
+    app: Option<&str>,
+) -> Result<Option<&'static ui::application::ApplicationDefinition>, JsValue> {
+    match app {
+        None | Some("desktop") => Ok(None),
+        Some("scratch") => Ok(Some(crate::scratch::definition())),
+        Some(app) => crate::desktop::application(app)
+            .map(Some)
+            .ok_or_else(|| error("unsupported application")),
     }
-    let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
-    let agent =
-        crate::mount_agent::mount_agent(&config.author, config.agent.as_deref()).map_err(error)?;
-    let author = config.author.clone();
-    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
-    attach_relay(&config, &storage)?;
-    let records = RecordOwners::portable(storage.clone())
+}
+
+/// What a mount presents, before the window and frame pipeline exist.
+struct Presentation {
+    root: Root,
+    stores: Rc<RefCell<Vec<RecordStore>>>,
+    checkout: Option<RecordCheckout>,
+    images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    desktop: Option<Desktop>,
+}
+
+enum Root {
+    Component(Box<ui::application::AppComponent>),
+    Desktop(Box<tilo_desktop_surface::DesktopSurface>),
+}
+
+fn present_desktop(
+    id: u64,
+    config: &Config,
+    dyn_store: Rc<dyn durable_store::DurableStore>,
+    permissions: Rc<RefCell<PermissionContext>>,
+) -> Result<Presentation, JsValue> {
+    let views = Rc::new(
+        InstanceViewStore::with_store(Rc::clone(&dyn_store), &config.device, &config.room)
+            .map_err(error)?,
+    );
+    let wake = proxy()?;
+    let (surface, handle, shared, persistence) = crate::desktop::mount(
+        crate::desktop::Inputs {
+            owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
+            views,
+            device: config.device.clone(),
+            salt: config
+                .peer
+                .and_then(crate::replication::device_of)
+                .unwrap_or_else(|| config.device.clone()),
+            room: config.room.clone(),
+            author: config.author(),
+            permissions,
+        },
+        dyn_store,
+        config.apps.as_deref(),
+        Arc::new(move || {
+            let _ = wake.send_event(id);
+        }),
+    )
+    .map_err(error)?;
+    Ok(Presentation {
+        root: Root::Desktop(Box::new(surface)),
+        stores: Rc::clone(&shared.stores),
+        checkout: None,
+        images: Rc::clone(&shared.images),
+        desktop: Some(Desktop {
+            handle,
+            shared,
+            persistence,
+            generation: format!("mount-{id}"),
+        }),
+    })
+}
+
+fn present_component(
+    definition: &'static ui::application::ApplicationDefinition,
+    config: &Config,
+    dyn_store: Rc<dyn durable_store::DurableStore>,
+    permissions: Rc<RefCell<PermissionContext>>,
+) -> Result<Presentation, JsValue> {
+    let record = RecordOwners::with_store(Rc::clone(&dyn_store))
         .open(definition.app_id, &config.room)
         .map_err(error)?;
-    let target = if crate::desktop::opens_package_primary(definition.app_id) {
-        let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
-        match records.try_open_record(&checkout) {
-            Ok(_) => LaunchTarget::Record {
-                checkout,
-                reveal: None,
-            },
-            Err(ui::record::RecordOpenError::MissingRecord) if config.peer.is_none() => {
-                LaunchTarget::PrimaryNew
-            }
-            Err(e) => return Err(error(e)),
-        }
-    } else if let Some(record) = &config.record {
-        LaunchTarget::Record {
-            checkout: RecordCheckout::new(
-                RecordId::parse(record).ok_or_else(|| error("invalid ordinary record"))?,
+    // The instance's default record, named by the host so a reload opens the
+    // same document, as a native launch does.
+    let default = RecordCheckout::new(
+        RecordId::derived("default", &RecordId::for_tab(config.instance)),
+        definition.record_kind.clone(),
+    );
+    let (checkout, named_new) = match &config.record {
+        Some(existing) => (
+            Some(RecordCheckout::new(
+                RecordId::parse(existing).ok_or_else(|| error("invalid record id"))?,
                 definition.record_kind.clone(),
-            ),
-            reveal: None,
-        }
-    } else {
-        LaunchTarget::New
+            )),
+            None,
+        ),
+        None if config.new_document || definition.keeps_room_record() => (None, None),
+        None => match record.try_open_record(&default) {
+            Ok(_) => (Some(default), None),
+            Err(ui::record::RecordOpenError::MissingRecord) => (None, Some(default.id)),
+            Err(open) => return Err(error(open)),
+        },
     };
-    let views = Rc::new(InstanceViewStore::portable(storage.clone(), &config.room).map_err(error)?);
+    let target = match checkout {
+        Some(checkout) => LaunchTarget::Record {
+            checkout,
+            reveal: None,
+        },
+        None if named_new.is_some() => LaunchTarget::New,
+        None => definition.unsaved_target(&record),
+    };
+    let views = Rc::new(
+        InstanceViewStore::with_store(dyn_store, &config.device, &config.room).map_err(error)?,
+    );
     let restore = views
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
-    // A local mount shares its records with the page's other mounts of the
-    // profile and device, so it writes as its author's own actor.
-    let shares_records = config.peer.is_none();
-    let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
-        cloud_peer::permissions(peer).map_err(error)?
-    } else {
-        PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Owner), &config.author),
-            vec![],
-        )
-    }));
-    let mut context = HostContext::prepare(
-        definition,
-        HostContextInputs {
-            records: records.clone(),
-            views,
-            device_id: config.device.clone(),
-            instance_id: config.instance,
-            permissions,
-            author: UserId(config.author),
-            action_context: tilo_actions::ActionContext::default(),
-        },
-        &target,
-    )
-    .map_err(error)?;
-    if shares_records {
-        context.write_as_author();
+    let context = match named_new {
+        Some(id) => HostContext::prepare_new_record(
+            definition,
+            HostContextInputs {
+                records: record.clone(),
+                views,
+                device_id: config.device.clone(),
+                instance_id: config.instance,
+                permissions,
+                author: UserId(config.author()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            id,
+        ),
+        None => HostContext::prepare(
+            definition,
+            HostContextInputs {
+                records: record.clone(),
+                views,
+                device_id: config.device.clone(),
+                instance_id: config.instance,
+                permissions,
+                author: UserId(config.author()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            &target,
+        ),
     }
-    context.provide_content(content_store(&config.profile, &config.device));
-    let opening = match (config.open, open) {
-        (Some(request), Some(bytes)) => {
-            let (file, receipt) =
-                ui::application::OpenFile::new(&request.name, &request.media_type, bytes)
-                    .map_err(error)?;
-            context.provide_open_file(file);
-            Some((request, receipt))
-        }
-        _ => None,
-    };
+    .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
-    let destination = loaders.clone();
+    let destination = Rc::clone(&loaders);
     let component = ui::ImageStore::with_host_factory_with_max_dimension(
         Rc::new(move |max_dimension| {
             let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
@@ -697,34 +738,45 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         || definition.instantiate(context, target, restore),
     )
     .map_err(error)?;
-    if let Some((request, receipt)) = opening {
-        emit(
-            &status,
-            serde_json::json!({"opened": {
-                "name": request.name,
-                "mediaType": request.media_type,
-                "resource": receipt.opened_resource(),
-            }}),
-        );
-    }
-    let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
-    crate::page_authors::note_mount(
-        records
-            .read(&checkout.id, |doc| doc.get_actor().clone())
-            .as_ref(),
-        &author,
-        agent.as_ref().map(|(_, label)| label.as_str()),
-    );
-    let record_versions = HashMap::from([(
-        (
-            definition.app_id.to_owned(),
-            checkout.id.as_str().to_owned(),
-        ),
-        records
-            .read(&checkout.id, record_version)
-            .unwrap_or_default(),
-    )]);
+    Ok(Presentation {
+        root: Root::Component(Box::new(component)),
+        stores: Rc::new(RefCell::new(vec![record])),
+        checkout: Some(checkout),
+        images: loaders,
+        desktop: None,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered mount: storage, records, presentation, fonts, window, frame pipeline"
+)]
+fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), JsValue> {
+    let Request {
+        canvas,
+        config,
+        fonts,
+        hydrated,
+        status,
+    } = request;
+    let definition = definition(config.app.as_deref())?;
+    let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
+    let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
+    let permissions = Rc::new(RefCell::new(PermissionContext::from_capabilities(
+        collab_types::caps::Actor::person(Some(collab_types::role::Role::Owner), config.author()),
+        Vec::new(),
+    )));
+    let Presentation {
+        root,
+        stores,
+        checkout,
+        images,
+        desktop,
+    } = match definition {
+        Some(definition) => present_component(definition, &config, dyn_store, permissions)?,
+        None => present_desktop(id, &config, dyn_store, permissions)?,
+    };
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -744,463 +796,306 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(error)?,
     );
     let size = window.inner_size();
-    let dpr = window.scale_factor();
-    let wake = proxy()?;
-    let mut frame = FrameHarness::from_component_with_wake_notifier(
-        component,
-        (
-            (size.width as f64 / dpr).max(1.0) as u32,
-            (size.height as f64 / dpr).max(1.0) as u32,
-        ),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::with_browser_font_system(system),
-        },
-        move || {
-            let _ = wake.send_event(id);
-        },
-    )
-    .map_err(error)?;
-    if let Some((participant, label)) = &agent {
-        frame.join_participant(participant, label);
-    }
+    let observed = Viewport {
+        width: size.width,
+        height: size.height,
+        dpr: window.scale_factor(),
+    };
+    let caps = if config.conservative_gpu {
+        SurfaceCaps::CONSERVATIVE
+    } else {
+        SurfaceCaps::STANDARD
+    };
+    let viewport = observed.bounded_by(caps);
+    let dpr = viewport.dpr;
+    let text_renderer = ui::TextRenderer::with_browser_font_system(system);
+    let mut frame = match root {
+        Root::Component(component) => {
+            let wake = proxy()?;
+            FrameHarness::from_component_with_wake_notifier(
+                *component,
+                viewport.logical_size(),
+                ComponentRunnerInputs {
+                    theme: ui::Theme::dark(),
+                    text_renderer,
+                },
+                move || {
+                    let _ = wake.send_event(id);
+                },
+            )
+            .map_err(error)?
+        }
+        Root::Desktop(surface) => {
+            if let Some(desktop) = &desktop {
+                desktop
+                    .handle
+                    .set_viewport_width(f64::from(viewport.logical_size().0));
+            }
+            FrameHarness::new_with_controlled_inputs(
+                ui::state::State::new(),
+                surface,
+                viewport.logical_size(),
+                ui::Theme::dark(),
+                text_renderer,
+                UserId(config.author()),
+            )
+        }
+    };
     frame.set_input_scale(dpr).map_err(error)?;
+    if desktop.is_some() {
+        // The desktop's own search answers the command chord.
+        frame.set_caller_palette_enabled(false);
+    }
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac {
         ui::platform::Platform::MacOs
     } else {
         ui::platform::Platform::Linux
     }));
+    let replica_changed = Rc::new(std::cell::Cell::new(false));
+    if let Some(peer) = config.peer {
+        let wake = proxy()?;
+        let attached = crate::replication::attach(
+            peer,
+            id,
+            crate::replication::Attachment {
+                stores: Rc::clone(&stores),
+                desktop: desktop
+                    .as_ref()
+                    .map(|d| (d.handle.clone(), d.shared.clone())),
+                changed: Rc::clone(&replica_changed),
+                notify: Arc::new(move || {
+                    let _ = wake.send_event(id);
+                }),
+            },
+        );
+        if !attached {
+            return Err(error("the peer has no replicated room"));
+        }
+    }
+    let window_ms = config
+        .semantics_window_ms
+        .unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS);
     let mount = Mount {
-        metrics: Default::default(),
-        published_records: Default::default(),
-        publication: publication_schedule(config.publication_window_ms),
-        semantics: semantics_gate(config.semantics_window_ms),
-        peer_suspended: false,
-        peer: config.peer,
-        relay: config.relay,
-        desktop: None,
-        record: Some(crate::desktop_host::OwnedRecord {
-            app: definition.app_id.into(),
-            store: records,
-            checkout,
-        }),
-        record_versions,
-        window: window.clone(),
+        metrics: RefCell::default(),
+        semantics: RefCell::new(crate::semantics_status::SemanticsGate::new(
+            ui::time::Duration::from_millis(window_ms),
+        )),
+        window: Arc::clone(&window),
         canvas,
         frame,
-        storage,
+        store,
+        stores,
+        checkout,
+        desktop,
         gpu: None,
         pending: true,
-        viewport: ViewportState::new(Viewport {
-            width: size.width,
-            height: size.height,
-            dpr,
-        }),
-        scale: dpr,
+        viewport: ViewportState::with_caps(observed, caps),
+        caps,
         hidden: false,
         generation: 1,
         frames: 0,
         status: status.clone(),
-        writes: HashMap::new(),
         images,
         error: None,
         oversized_scene: false,
+        peer: config.peer,
+        replica_changed,
+        focus_presence: RefCell::new(None),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
-    emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window);
+    emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
+    initialize_gpu(id, 1, window, caps);
     Ok(())
 }
-#[cfg(feature = "cloud")]
-fn begin_desktop(
-    event_loop: &ActiveEventLoop,
-    id: u64,
-    canvas: web_sys::HtmlCanvasElement,
-    config: Config,
-    fonts: JsValue,
-    hydrated: JsValue,
-    status: Function,
-) -> Result<(), JsValue> {
-    let peer = config
-        .peer
-        .ok_or_else(|| error("canonical desktop requires an admitted certified peer"))?;
-    let state = crate::peer::desktop_state(peer).map_err(error)?;
-    if state.room() != config.room {
-        return Err(error("desktop room binding mismatch"));
+
+fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCaps) {
+    GPU_SETUPS.with_borrow_mut(|setups| {
+        setups.push_back(GpuSetup {
+            id,
+            generation,
+            window,
+            caps,
+        });
+    });
+    if GPU_SETUP_RUNNING.replace(true) {
+        return;
     }
-    let admission = crate::desktop::admission(&state).map_err(error)?;
-    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
-    let permissions = crate::peer::permissions(peer).map_err(error)?;
-    let desktop = DesktopMount {
-        sources: DesktopSources {
-            admission,
-            storage,
-            permissions,
-            content: None,
-            local: None,
-        },
-        peer: Some(peer),
-    };
-    begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
+    wasm_bindgen_futures::spawn_local(async {
+        while let Some(setup) = GPU_SETUPS.with_borrow_mut(std::collections::VecDeque::pop_front) {
+            set_up_gpu(setup).await;
+        }
+        GPU_SETUP_RUNNING.set(false);
+    });
 }
-/// The page's own desktop: room documents it seeds, which only this mount
-/// holds, and the page's permissions as the standalone mounts have them.
-fn begin_local_desktop(
-    event_loop: &ActiveEventLoop,
-    id: u64,
-    canvas: web_sys::HtmlCanvasElement,
-    config: Config,
-    fonts: JsValue,
-    hydrated: JsValue,
-    status: Function,
-) -> Result<(), JsValue> {
-    let seed = config.local.clone().unwrap_or_default();
-    let local = crate::local_desktop::LocalDesktop::new(&config.room, &config.author, &seed)
-        .map_err(error)?;
-    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
-    attach_relay(&config, &storage)?;
-    let desktop = DesktopMount {
-        sources: DesktopSources {
-            admission: local.admission().map_err(error)?,
-            storage,
-            permissions: PermissionContext::from_capabilities(
-                Actor::person(Some(Role::Owner), &config.author),
-                vec![],
-            ),
-            content: Some(content_store(&config.profile, &config.device)),
-            local: Some(local),
-        },
-        peer: None,
-    };
-    begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
-}
-/// What a canonical desktop mount is built from: the desktop's own sources,
-/// and the peer serving it when the room is hosted elsewhere.
-struct DesktopMount {
-    sources: DesktopSources,
-    peer: Option<u32>,
-}
-fn begin_desktop_root(
-    event_loop: &ActiveEventLoop,
-    id: u64,
-    canvas: web_sys::HtmlCanvasElement,
-    config: Config,
-    fonts: JsValue,
-    status: Function,
-    desktop: DesktopMount,
-) -> Result<(), JsValue> {
-    let DesktopMount { sources, peer } = desktop;
-    let storage = sources.storage.clone();
-    let system = ui::font_catalog::FontCatalog::product("", "en-US")
-        .load_browser_startup_bytes(|name| {
-            Reflect::get(&fonts, &name.into())
-                .ok()
-                .filter(|v| !v.is_undefined())
-                .map(|v| Uint8Array::new(&v).to_vec())
-        })
-        .map_err(error)?;
-    let window = Arc::new(
-        event_loop
-            .create_window(
-                Window::default_attributes()
-                    .with_canvas(Some(canvas.clone()))
-                    .with_append(false)
-                    .with_prevent_default(true),
-            )
-            .map_err(error)?,
-    );
-    let size = window.inner_size();
-    let dpr = window.scale_factor();
-    let wake = proxy()?;
-    let (root, desktop) = crate::desktop_host::DesktopRoot::new(
-        sources,
-        &config.room,
-        &config.device,
-        &config.author,
-        config.instance,
-        Arc::new(move || {
-            let _ = wake.send_event(id);
-        }),
-    )
-    .map_err(error)?;
-    let mut frame = FrameHarness::new_with_controlled_inputs(
-        ui::state::State::new(),
-        Box::new(root),
-        (
-            (size.width as f64 / dpr).max(1.0) as u32,
-            (size.height as f64 / dpr).max(1.0) as u32,
-        ),
-        ui::Theme::dark(),
-        ui::TextRenderer::with_browser_font_system(system),
-        UserId(config.author),
-    );
-    frame.set_input_scale(dpr).map_err(error)?;
-    frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac {
-        ui::platform::Platform::MacOs
-    } else {
-        ui::platform::Platform::Linux
-    }));
-    desktop.sync_global_search(&mut frame);
-    let images = std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount = Mount {
-        metrics: Default::default(),
-        published_records: Default::default(),
-        publication: publication_schedule(config.publication_window_ms),
-        semantics: semantics_gate(config.semantics_window_ms),
-        peer_suspended: false,
-        peer,
-        relay: config.relay,
-        desktop: Some(desktop),
-        record: None,
-        record_versions: HashMap::new(),
-        window: window.clone(),
-        canvas,
-        frame,
-        storage,
-        gpu: None,
-        pending: true,
-        viewport: ViewportState::new(Viewport {
-            width: size.width,
-            height: size.height,
-            dpr,
-        }),
-        scale: dpr,
-        hidden: false,
-        generation: 1,
-        frames: 0,
-        status: status.clone(),
-        writes: HashMap::new(),
-        images,
-        error: None,
-        oversized_scene: false,
-    };
-    MOUNTS.with_borrow_mut(|mounts| mounts.insert(id, mount));
-    emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
-    initialize_gpu(id, 1, window);
-    Ok(())
-}
-fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            let size = window.inner_size();
-            let mut cx = ui::gpu::RenderContext::new();
-            let surface = cx
+
+/// The shared device and renderer, created with the first surface.
+async fn shared_gpu(
+    window: &Arc<Window>,
+    size: Viewport,
+    caps: SurfaceCaps,
+) -> Result<(Rc<RefCell<SharedGpu>>, vello::util::RenderSurface<'static>), String> {
+    let live = SHARED_GPU
+        .with_borrow(Clone::clone)
+        .filter(|s| s.try_borrow().is_ok_and(|s| s.failure().is_none()));
+    if let Some(shared) = live {
+        let surface = {
+            // Draws of other mounts skip a frame while this is held.
+            let mut guard = shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
+            guard
+                .cx
                 .create_surface(
-                    window.clone(),
+                    Arc::clone(window),
                     size.width.max(1),
                     size.height.max(1),
                     wgpu::PresentMode::Fifo,
                 )
                 .await
-                .map_err(|e| e.to_string())?;
-            let handle = &cx.devices[surface.dev_id];
-            let renderer = vello::Renderer::new(
-                &handle.device,
-                vello::RendererOptions {
-                    antialiasing_support: vello::AaSupport::area_only(),
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| e.to_string())?;
-            let p = proxy().map_err(|e| format!("{e:?}"))?;
-            let failure = Arc::new(Mutex::new(None));
-            let lost = failure.clone();
-            let lost_proxy = p.clone();
-            handle
-                .device
-                .set_device_lost_callback(move |reason, message| {
-                    *lost.lock().unwrap() = Some(format!(
-                        "WebGPU device lost: {reason:?}: {message}; call recover"
-                    ));
-                    let _ = lost_proxy.send_event(id);
-                });
-            let uncaptured = failure.clone();
-            handle.device.on_uncaptured_error(Arc::new(move |e| {
-                *uncaptured.lock().unwrap() = Some(format!("WebGPU error: {e}; call recover"));
-                let _ = p.send_event(id);
-            }));
-            Ok::<_, String>(Gpu {
-                cx,
-                surface,
-                renderer,
-                failure,
-            })
+                .map_err(|e| e.to_string())?
+        };
+        return Ok((shared, surface));
+    }
+    let mut cx = ui::gpu::RenderContext::new();
+    let surface = cx
+        .create_surface(
+            Arc::clone(window),
+            size.width.max(1),
+            size.height.max(1),
+            wgpu::PresentMode::Fifo,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let handle = cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or("WebGPU device missing")?;
+    let mut renderer = vello::Renderer::new(
+        &handle.device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    if caps == SurfaceCaps::CONSERVATIVE {
+        renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
+        renderer.set_bump_budget_grow_once(true);
+        renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
+    } else {
+        renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
+    }
+    let p = proxy().map_err(|e| format!("{e:?}"))?;
+    let failure = Arc::new(Mutex::new(None));
+    let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let wake = move |p: &EventLoopProxy<u64>, mounts: &Mutex<Vec<u64>>| {
+        for &id in mounts.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            let _ = p.send_event(id);
         }
-        .await;
-        let installed = MOUNTS.with_borrow_mut(|mounts|{
-            let Some(m)=mounts.get_mut(&id).filter(|m|m.generation==generation) else{return false;};
-            match result{Ok(gpu)=>{
-                emit(&m.status,serde_json::json!({"initialSurfaceSize":[gpu.surface.config.width,gpu.surface.config.height]}));
-                m.gpu=Some(gpu);
+    };
+    let (lost, lost_mounts, lost_proxy) = (Arc::clone(&failure), Arc::clone(&mounts), p.clone());
+    handle
+        .device
+        .set_device_lost_callback(move |reason, message| {
+            *lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+                "WebGPU device lost: {reason:?}: {message}; call recover"
+            ));
+            wake(&lost_proxy, &lost_mounts);
+        });
+    let (uncaptured, error_mounts) = (Arc::clone(&failure), Arc::clone(&mounts));
+    handle.device.on_uncaptured_error(Arc::new(move |e| {
+        *uncaptured.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(format!("WebGPU error: {e}; call recover"));
+        wake(&p, &error_mounts);
+    }));
+    let shared = Rc::new(RefCell::new(SharedGpu {
+        cx,
+        renderer,
+        failure,
+        mounts,
+    }));
+    SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    Ok((shared, surface))
+}
+
+async fn set_up_gpu(setup: GpuSetup) {
+    let GpuSetup {
+        id,
+        generation,
+        window,
+        caps,
+    } = setup;
+    let current =
+        MOUNTS.with_borrow(|mounts| mounts.get(&id).is_some_and(|m| m.generation == generation));
+    if !current {
+        return;
+    }
+    let size = window.inner_size();
+    let size = Viewport {
+        width: size.width,
+        height: size.height,
+        dpr: window.scale_factor(),
+    }
+    .bounded_by(caps);
+    let result = shared_gpu(&window, size, caps).await;
+    let installed = MOUNTS.with_borrow_mut(|mounts| {
+        let Some(m) = mounts.get_mut(&id).filter(|m| m.generation == generation) else {
+            return false;
+        };
+        match result {
+            Ok((shared, surface)) => {
+                if let Ok(s) = shared.try_borrow() {
+                    s.mounts
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(id);
+                }
+                emit(
+                    &m.status,
+                    &serde_json::json!({"initialSurfaceSize":[surface.config.width,surface.config.height]}),
+                );
+                m.gpu = Some(Gpu { shared, surface });
                 m.viewport.surface_installed();
                 m.queue_resize();
-                m.pending=true;m.window.request_redraw();
+                m.pending = true;
+                m.window.request_redraw();
                 true
-            },Err(e)=>{m.error=Some(format!("WebGPU unavailable: {e}"));m.publish(id);false}}
-        });
-        // GPU setup completes outside Winit dispatch. Wake an idle loop after
-        // releasing the mount borrow so the new generation actually presents.
-        if installed && let Ok(wake) = proxy() {
-            let _ = wake.send_event(id);
-        }
-    });
-}
-type RecordVersion = (Vec<automerge::ChangeHash>, usize);
-/// Committed heads and uncommitted operations: any edit moves one of them.
-fn record_version(doc: &automerge::AutoCommit) -> RecordVersion {
-    (doc.base_heads(), doc.pending_ops())
-}
-/// One record as the page's mounts share it: every mount of the same
-/// profile/device cache, app and record (standalone, or a window of a local
-/// desktop) edits one in-memory document.
-struct SharedRecord {
-    storage: ui::portable_storage::ProfileNamespace,
-    app: String,
-    record: RecordId,
-}
-impl SharedRecord {
-    fn shown_by(&self, mount: &Mount) -> bool {
-        *mount.storage.namespace() == self.storage
-            && mount
-                .owned_records()
-                .iter()
-                .any(|record| record.app == self.app && record.checkout.id == self.record)
-    }
-}
-/// Mount `origin` may have changed the records it shows. Nothing else wakes
-/// a component whose document another component edited, so re-run the frame
-/// passes of the page's other mounts of those records, which read the
-/// documents afresh, and have them present. Returns the mounts it re-synced.
-fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec<u64> {
-    let changed = mounts
-        .get_mut(&origin)
-        .map(Mount::take_record_changes)
-        .unwrap_or_default();
-    if changed.is_empty() {
-        return Vec::new();
-    }
-    #[cfg(feature = "relay")]
-    if let Some(relay) = mounts.get(&origin).and_then(|mount| mount.relay) {
-        crate::relay::publish_changes(relay);
-    }
-    let mut resynced = Vec::new();
-    for (&id, mount) in mounts.iter_mut().filter(|(id, mount)| {
-        **id != origin && changed.iter().any(|changed| changed.shown_by(mount))
-    }) {
-        // Heads first: only a change this re-sync itself makes echoes back.
-        let _ = mount.take_record_changes();
-        mount.frame.relayout();
-        mount.pending = true;
-        mount.window.request_redraw();
-        resynced.push(id);
-    }
-    resynced
-}
-/// Before a mount on a relay room opens its records: the room's documents
-/// that arrived earlier go into the mount's cache first.
-fn attach_relay(config: &Config, storage: &PortableStorage) -> Result<(), JsValue> {
-    match config.relay {
-        #[cfg(feature = "relay")]
-        Some(relay) => crate::relay::attach_cache(relay, &config.room, storage).map_err(error),
-        #[cfg(not(feature = "relay"))]
-        Some(_) => {
-            let _ = storage;
-            Err(error(
-                "a relay mount requires a runtime built with the relay peer",
-            ))
-        }
-        None => Ok(()),
-    }
-}
-/// A peer's change reached records the relay mounts of `relay` may show:
-/// re-run their frame passes, as for another mount's change.
-#[cfg(feature = "relay")]
-pub(crate) fn wake_relay_mounts(relay: u32) {
-    // Replication may run while a mount is being created; that mount opens
-    // its records afresh anyway.
-    let ids = MOUNTS.with(|mounts| {
-        let Ok(mut mounts) = mounts.try_borrow_mut() else {
-            return Vec::new();
-        };
-        mounts
-            .iter_mut()
-            .filter(|(_, mount)| mount.relay == Some(relay))
-            .map(|(&id, mount)| {
-                let _ = mount.take_record_changes();
-                mount.frame.relayout();
-                mount.pending = true;
-                mount.window.request_redraw();
-                id
-            })
-            .collect::<Vec<_>>()
-    });
-    wake(ids);
-}
-/// A redraw requested outside Winit's dispatch (from a call the page made)
-/// waits for the next event; a proxy event per mount delivers it now.
-fn wake(ids: impl IntoIterator<Item = u64>) {
-    if let Some(proxy) = LOOP.with_borrow(Clone::clone) {
-        for id in ids {
-            let _ = proxy.send_event(id);
-        }
-    }
-}
-impl Mount {
-    /// The shared records this mount shows whose heads moved since the last
-    /// call. A desktop window's record seen for the first time is not a change.
-    fn take_record_changes(&mut self) -> Vec<SharedRecord> {
-        let mut changed = Vec::new();
-        for record in self.owned_records() {
-            let Some(version) = record.store.read(&record.checkout.id, record_version) else {
-                continue;
-            };
-            let key = (record.app.clone(), record.checkout.id.as_str().to_owned());
-            match self.record_versions.insert(key, version.clone()) {
-                Some(previous) if previous != version => changed.push(SharedRecord {
-                    storage: self.storage.namespace().clone(),
-                    app: record.app,
-                    record: record.checkout.id,
-                }),
-                _ => {}
+            }
+            Err(e) => {
+                m.error = Some(format!("WebGPU unavailable: {e}"));
+                m.publish(id);
+                false
             }
         }
-        changed
+    });
+    // GPU setup completes outside winit dispatch. Wake an idle loop after
+    // releasing the mount borrow so the new generation actually presents.
+    if installed && let Ok(wake) = proxy() {
+        let _ = wake.send_event(id);
     }
+}
+
+impl Mount {
     fn metric_start(&self) -> Option<web_time::Instant> {
         self.metrics.borrow().begin()
     }
+
     fn metric_end(&self, stage: &'static str, start: Option<web_time::Instant>) {
         self.metrics.borrow_mut().end(stage, start);
     }
 
-    fn owned_records(&self) -> Vec<crate::desktop_host::OwnedRecord> {
-        if let Some(desktop) = &self.desktop {
-            desktop.records.borrow().values().cloned().collect()
-        } else {
-            self.record.iter().cloned().collect()
-        }
-    }
-    fn collect_desktop(&mut self) {
-        if let Some(desktop) = &self.desktop {
-            self.images
-                .extend(std::mem::take(&mut *desktop.images.borrow_mut()));
-            desktop.sync_global_search(&mut self.frame);
-        }
-    }
-
-    // ResizeObserver/Winit remains the sole source of viewport notifications.
-    // Reading the pair again at redraw also covers scale/size event ordering and
-    // changes which occurred while GPU initialization or peer recovery was pending.
+    // ResizeObserver/winit is the sole source of viewport notifications.
+    // Reading the pair again at redraw also covers scale/size event ordering
+    // and changes that occurred while GPU initialization was pending.
     fn queue_resize(&mut self) -> bool {
         let size = self.window.inner_size();
         let changed = self.viewport.request(Viewport {
             width: size.width,
             height: size.height,
-            dpr: self.scale,
+            dpr: self.window.scale_factor(),
         });
         self.pending |= changed;
         changed
     }
+
     fn draw(&mut self) -> Result<(), String> {
         let start = self.metric_start();
         let before = self.frames;
@@ -1215,52 +1110,115 @@ impl Mount {
         );
         result
     }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "configure, acquire, render, submit and present stay in one synchronous redraw"
+    )]
     fn draw_measured(&mut self) -> Result<(), String> {
-        let prepare_start = self.metric_start();
-        if self.peer_suspended || self.hidden || self.error.is_some() {
+        if self.hidden || self.error.is_some() {
             return Ok(());
         }
         self.queue_resize();
-        if self.viewport.suspended() || self.gpu.is_none() {
+        if self.viewport.suspended() {
             return Ok(());
         }
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Ok(());
+        };
         let viewport = self.viewport.requested();
-        self.collect_desktop();
-        // Inspect wake flags without rebuilding the old viewport first. Layout
-        // and input scale may advance only after acquisition succeeds below.
+        // What asked for this frame, when frame metrics are on.
+        let mut reasons = self.metrics.borrow().enabled().then(|| {
+            let mut reasons = Vec::new();
+            if self.pending {
+                reasons.push("input or host".to_owned());
+            }
+            reasons
+        });
+        // Desktop tabs' components and queued desktop changes wake the
+        // mount, not the frame harness. Relayout to take them, and present
+        // the new scene.
+        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
+            let wakers = desktop.shared.take_wakers();
+            if let Some(reasons) = &mut reasons {
+                if wakers.is_empty() {
+                    reasons.push("desktop wake".into());
+                }
+                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
+            }
+            self.frame.relayout();
+            self.pending = true;
+        }
+        // A peer's change merged into an open record.
+        if self.replica_changed.replace(false) {
+            if let Some(reasons) = &mut reasons {
+                reasons.push("replica change".into());
+            }
+            self.frame.relayout();
+            self.pending = true;
+        }
         let frame = self.frame.frame_schedule();
+        let due = frame
+            .next_wake_deadline
+            .is_some_and(|wake| wake <= ui::time::now());
+        if let Some(reasons) = &mut reasons {
+            if self.viewport.needs_present() {
+                reasons.push("viewport".into());
+            }
+            if frame.queued_work {
+                reasons.push("queued work".into());
+            }
+            if frame.needs_animation_frame || due {
+                reasons.extend(
+                    self.frame
+                        .frame_requesters()
+                        .into_iter()
+                        .map(|(path, demand)| match demand {
+                            ui::headless::FrameDemand::Animation => format!("animation: {path}"),
+                            ui::headless::FrameDemand::Deadline => format!("deadline: {path}"),
+                        }),
+                );
+            }
+        }
         self.pending |= self.viewport.needs_present()
-            || frame.needs_redraw
+            || frame.queued_work
             || frame.needs_animation_frame
-            || frame
-                .next_wake_deadline
-                .is_some_and(|wake| wake <= ui::clock::Instant::now());
+            || due;
         if !self.pending {
             return Ok(());
         }
-        self.metric_end("draw_prepare", prepare_start);
-        let acquire_start = self.metric_start();
-        let gpu = self.gpu.as_mut().expect("GPU checked above");
-        if let Some(reason) = gpu.cx.devices[gpu.surface.dev_id].loss_monitor().reason() {
+        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
+            // Another mount's GPU setup holds the shared device for a moment.
+            self.window.request_redraw();
+            return Ok(());
+        };
+        let shared = &mut *shared_guard;
+        let handle = shared
+            .cx
+            .devices
+            .get(gpu.surface.dev_id)
+            .ok_or("WebGPU device missing")?;
+        if let Some(reason) = handle.loss_monitor().reason() {
             return Err(format!(
                 "WebGPU device lost: {reason}; call recover to recreate the renderer"
             ));
         }
         // Configuration changes canvas.width/height on WebGPU, clearing its
         // displayed image. Keep configure -> acquire -> submit -> present in
-        // this synchronous redraw callback, with no destructive equal-size resize.
+        // this synchronous redraw callback, with no equal-size resize.
         if self
             .viewport
             .needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height)
         {
-            gpu.cx
+            shared
+                .cx
                 .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
         }
         let mut acquired = gpu.surface.surface.get_current_texture();
         if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
             && self.viewport.recover_outdated()
         {
-            gpu.cx.configure_surface(&gpu.surface);
+            shared.cx.configure_surface(&gpu.surface);
             acquired = gpu.surface.surface.get_current_texture();
         }
         let output = match acquired {
@@ -1271,82 +1229,62 @@ impl Mount {
             | wgpu::CurrentSurfaceTexture::Occluded => None,
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
+        drop(shared_guard);
+        let frame = &mut self.frame;
         let Some(output) = self
             .viewport
             .apply_for_acquired_texture(output, |viewport| {
-                self.frame.set_input_scale(viewport.dpr)?;
-                self.frame
+                frame.set_input_scale(viewport.dpr)?;
+                frame
                     .resize(viewport.logical_size())
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| format!("{e:?}"))
             })?
         else {
-            // Keep both the old input/layout geometry and pending work on a
-            // skipped acquisition. Winit coalesces the retry into the next rAF.
+            // Keep the old geometry and pending work on a skipped acquisition;
+            // winit coalesces the retry into the next animation frame.
             self.window.request_redraw();
             return Ok(());
         };
-        // Poll only after applying the new viewport. This avoids an old-size
-        // layout merely to discover work, followed by a second resize layout.
-        self.metrics
-            .borrow_mut()
-            .end("draw_acquire_resize", acquire_start);
-        let poll_start = self.metrics.borrow().begin();
-        if poll_start.is_some() {
-            let demand = self.frame.frame_schedule();
-            let mut metrics = self.metrics.borrow_mut();
-            if demand.needs_redraw {
-                metrics.count("draw_demand.redraw");
-            }
-            if demand.needs_animation_frame {
-                metrics.count("draw_demand.animation");
-            }
-            if demand
-                .next_wake_deadline
-                .is_some_and(|wake| wake <= ui::clock::Instant::now())
-            {
-                metrics.count("draw_demand.deadline");
-            }
+        if let Some(desktop) = &self.desktop {
+            desktop
+                .handle
+                .set_viewport_width(f64::from(viewport.logical_size().0));
         }
-        self.frame.poll_frame().map_err(|e| e.to_string())?;
-        if let Some(desktop) = &self.desktop
-            && let Err(error) = desktop.process_global_search(&mut self.frame)
-        {
-            desktop.errors.borrow_mut().push(error);
+        // Poll only after applying the new viewport, avoiding an old-size
+        // layout merely to discover work.
+        self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
+        self.save_desktop();
+        if let Some(peer) = self.peer {
+            crate::replication::publish(peer);
         }
-        self.metrics.borrow_mut().end("draw_poll", poll_start);
-        let snapshot_start = self.metrics.borrow().begin();
         let frame = self.frame.frame_render_input();
-        self.metrics
-            .borrow_mut()
-            .end("draw_snapshot", snapshot_start);
         // Never hand the renderer a scene it cannot resolve: an oversized
-        // encoding panics in vello's resolver (capacity overflow on wasm32)
-        // or exceeds WebGPU buffer limits, which took down the whole runtime
-        // after very large pastes. Keep the last presented frame, tell the
-        // user once, and keep the session (and its durable edits) alive.
+        // encoding overflows vello's resolver or WebGPU buffer limits. Keep the
+        // last presented frame, report once, and keep the session alive.
         if let Err(reason) = scene_within_limits(frame.scene) {
             if !self.oversized_scene {
                 self.oversized_scene = true;
                 web_sys::console::error_1(&JsValue::from_str(&reason));
-                if let Some(desktop) = &self.desktop {
-                    desktop.errors.borrow_mut().push(
-                        "This content is too large to display in full; recent edits are kept."
-                            .into(),
-                    );
-                }
             }
             self.pending = false;
             return Ok(());
         }
         self.oversized_scene = false;
-        let render_start = self.metrics.borrow().begin();
         let mut physical = vello::Scene::new();
         physical.append(
             frame.scene,
             Some(ui::scale::composite_transform(viewport.dpr)),
         );
-        let handle = &gpu.cx.devices[gpu.surface.dev_id];
-        gpu.renderer
+        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+        let mut shared_guard = gpu.shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
+        let shared = &mut *shared_guard;
+        let handle = shared
+            .cx
+            .devices
+            .get(gpu.surface.dev_id)
+            .ok_or("WebGPU device missing")?;
+        shared
+            .renderer
             .render_to_texture(
                 &handle.device,
                 &handle.queue,
@@ -1360,181 +1298,116 @@ impl Mount {
                 },
             )
             .map_err(|e| e.to_string())?;
-        let mut encoder = handle.device.create_command_encoder(&Default::default());
+        let mut encoder = handle
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         gpu.surface.blitter.copy(
             &handle.device,
             &mut encoder,
             &gpu.surface.target_view,
-            &output.texture.create_view(&Default::default()),
+            &output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
         );
         handle.queue.submit([encoder.finish()]);
+        drop(shared_guard);
         output.present();
-        self.metrics
-            .borrow_mut()
-            .end("draw_gpu_submit", render_start);
         self.viewport.did_present();
         self.pending = false;
-        self.frames += 1;
-        let publish_start = self.metric_start();
+        self.frames = self.frames.saturating_add(1);
+        if let Some(reasons) = reasons {
+            self.metrics.borrow_mut().presented(reasons);
+        }
         self.publish(0);
-        self.metric_end("draw_publish", publish_start);
         Ok(())
     }
-    /// Publish changed owned records to the peer, at most once per publication
-    /// window unless forced. Returns false after a failed publication, which has
-    /// already been reported.
-    fn publish_records(&self, _id: u64, force: bool) -> bool {
-        let Some(peer) = self.peer.filter(|_| !self.peer_suspended) else {
-            return true;
+
+    /// The published caret or selection as live selection anchors
+    /// (`{anchor, head}`, hex), for the page's live layer: the keyboard
+    /// focus's when it is in the focused window (or this mount's
+    /// application), else that window's editor caret
+    /// ([`tilo_desktop_surface::published_selection`]).
+    fn focus_presence_value(&self) -> Option<serde_json::Value> {
+        use ui::collaboration::PresencePayload;
+        let keyboard = self.frame.focus_presence();
+        let (key, payload) = match &self.desktop {
+            Some(desktop) => desktop.handle.published_selection(keyboard),
+            None => tilo_desktop_surface::published_selection(
+                keyboard,
+                &ui::presence::capability::subtree_presence(self.frame.root_widget()),
+            ),
+        }?;
+        let (start, end) = match payload {
+            PresencePayload::Caret { pos } => (pos, pos),
+            PresencePayload::Selection { start, end } => (start, end),
+            _ => return None,
         };
-        let changed: Vec<_> = self
-            .owned_records()
-            .into_iter()
-            .filter(|record| {
-                self.published_records.borrow().changed(
-                    peer,
-                    &record.app,
-                    &record.store,
-                    &record.checkout.id,
-                )
-            })
-            .collect();
-        if changed.is_empty() {
-            self.publication.borrow_mut().clear_due();
-            return true;
-        }
-        let now = ui::clock::Instant::now();
-        let decision = if force {
-            self.publication.borrow_mut().mark_published(now);
-            crate::admitted_records::PublicationDecision::Now
-        } else {
-            self.publication.borrow_mut().decide(now)
-        };
-        if let crate::admitted_records::PublicationDecision::Deferred(_) = decision {
-            if self.metric_start().is_some() {
-                self.metrics.borrow_mut().count("publish_deferred");
-            }
-            return true;
-        }
-        for record in changed {
-            let id = if record.checkout.id.is_package_primary() {
-                ""
-            } else {
-                record.checkout.id.as_str()
-            };
-            let published = self.published_records.borrow_mut().publish(
-                peer,
-                &record.app,
-                &record.store,
-                &record.checkout.id,
-                |document| cloud_peer::local_owned_document(peer, &record.app, id, document),
-            );
-            if let Err(error) = published {
-                cloud_peer::mark_failure(peer, error.clone());
-                emit(
-                    &self.status,
-                    serde_json::json!({"phase":"failed","error":error}),
-                );
-                return false;
-            }
-        }
-        true
+        let (anchor, head) = tilo_browser_peer::transport::presence_anchors(&key, start, end)?;
+        Some(
+            serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
+        )
     }
+
     fn publish(&self, id: u64) {
-        self.publish_with(id, false);
-    }
-    /// `force` publishes deferred edits now (close, hide, suspension, focus loss, IME end).
-    fn publish_with(&self, id: u64, force: bool) {
-        let records_start = self.metric_start();
-        if !self.publish_records(id, force) {
-            return;
-        }
-        self.metric_end("publish_records", records_start);
-        let output_start = self.metric_start();
-        let f = self.frame.frame_output();
-        self.metric_end("publish_frame_output", output_start);
-        let status_start = self.metric_start();
-        let heads = self
-            .record
-            .as_ref()
-            .and_then(|record| {
-                record.store.read(&record.checkout.id, |doc| {
-                    doc.base_heads()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                })
-            })
-            .unwrap_or_default();
-        let document = self
-            .record
-            .as_ref()
-            .and_then(|record| {
-                record.store.read(&record.checkout.id, |doc| {
-                    automerge::AutoSerde::from(doc)
-                        .serialize(serde_json::value::Serializer)
-                        .ok()
-                })
-            })
-            .flatten();
-        let setup_errors = self
-            .desktop
-            .as_ref()
-            .map(|desktop| desktop.errors.borrow().clone())
-            .unwrap_or_default();
-        // The frame retains the original close reports and their retry owners.
-        // Retry clones inspect current durability without discarding that custody.
-        let component_close_errors=self.frame.component_close_reports().iter().filter_map(|report|{
-            let mut report=report.clone();let _=report.retry_record();let _=report.retry_view();
-            (report.record_error.is_some()||report.view_error.is_some()||report.teardown_error.is_some()).then(||serde_json::json!({"record":report.record_error,"view":report.view_error,"teardown":report.teardown_error}))
-        }).collect::<Vec<_>>();
-        let pending_intents = self
-            .desktop
-            .as_ref()
-            .map(|desktop| desktop.session_requests.borrow().len())
-            .unwrap_or(0);
-        let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
+        let ime = self.frame.ime_window().map(|i| {
+            serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
+        });
+        let semantics = self.frame.inspection();
         // The semantics tree is the bulk of every status; the host keeps the
-        // last tree it received, so an unchanged tree is left out entirely and
-        // content-only changes while typing are throttled (see semantics_status).
+        // last tree it received, so an unchanged tree is left out and
+        // content-only changes while typing are throttled.
         let decision = self.semantics.borrow_mut().decide(
-            &f.semantics,
-            f.ime.as_ref(),
-            ui::clock::Instant::now(),
+            &semantics,
+            self.frame.ime_window().as_ref(),
+            ui::time::now(),
         );
-        let value = serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"ime":ime});
+        let applied = self.viewport.applied();
+        let value = serde_json::json!({
+            "phase": if self.error.is_some() { "failed" } else { "presented" },
+            "id": id,
+            "error": self.error,
+            "frames": self.frames,
+            "gpuGeneration": self.generation,
+            "logicalSize": applied.logical_size(),
+            "dpr": applied.dpr,
+            "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
+            "rootRect": semantics.root.rect,
+            "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
+            "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
+            "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            "ime": ime,
+        });
+        let mut value = value;
+        let presence = self.focus_presence_value();
+        if *self.focus_presence.borrow() != presence
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "focusPresence".into(),
+                presence.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.focus_presence.borrow_mut() = presence;
+        }
         let mut text = value.to_string();
-        use crate::semantics_status::SemanticsDecision;
-        match decision {
-            SemanticsDecision::Deliver { forced } => {
-                // Splice the already serialized tree into the status object
-                // instead of parsing it back into a Value and serializing twice.
-                let gate = self.semantics.borrow();
-                text.pop();
-                text.push_str(",\"semantics\":");
-                text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
-                text.push('}');
-                if forced && self.metric_start().is_some() {
-                    self.metrics.borrow_mut().count("semantics_forced");
-                }
-            }
-            SemanticsDecision::Deferred(_) => {
-                if self.metric_start().is_some() {
-                    self.metrics.borrow_mut().count("semantics_throttled");
-                }
-            }
-            SemanticsDecision::Unchanged => {
-                if self.metric_start().is_some() {
-                    self.metrics.borrow_mut().count("semantics_unchanged");
-                }
-            }
+        if let crate::semantics_status::SemanticsDecision::Deliver { .. } = decision {
+            // Splice the already serialized tree into the status object
+            // instead of parsing it back into a value and serializing twice.
+            let gate = self.semantics.borrow();
+            text.pop();
+            text.push_str(",\"semantics\":");
+            text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
+            text.push('}');
         }
         emit_text(&self.status, &text);
-        self.metric_end("publish_status", status_start);
     }
 }
-use automerge::transaction::Transactable;
-use serde::Serialize;
+
+/// Deliver an IME event (`start`, `preedit`, `commit`, `end`) from the
+/// page's hidden text editor.
+///
+/// # Errors
+///
+/// Rejects an unknown kind or a closed mount.
 #[wasm_bindgen]
 pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
     let event = match kind {
@@ -1544,25 +1417,24 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         "end" => winit::event::Ime::Disabled,
         _ => return Err(error("invalid IME event")),
     };
-    let resynced = MOUNTS.with_borrow_mut(|mounts| {
-        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended {
-            return Ok(Vec::new());
-        }
-        let start = m.metric_start();
+    with_mount(id, |m| {
         m.frame.send_host_event(&WindowEvent::Ime(event));
-        m.metric_end("input_ime", start);
-        if kind == "end" {
-            m.publish_records(id, true);
-        }
         m.pending = true;
         m.window.request_redraw();
-        Ok::<_, JsValue>(propagate_record_change(mounts, id))
-    })?;
-    wake(resynced);
-    Ok(())
+        Ok(())
+    })
 }
+
+/// Perform an accessibility action from the semantics DOM projection.
+///
+/// # Errors
+///
+/// Rejects an unsupported action, a closed mount, or a refused action.
 #[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
 pub fn semantic(
     id: u64,
     path: &str,
@@ -1581,57 +1453,63 @@ pub fn semantic(
         "selection" => Action::SetSelection { anchor, focus },
         _ => return Err(error("unsupported semantic action")),
     };
-    let resynced = MOUNTS.with_borrow_mut(|mounts| {
-        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended {
-            return Ok(None);
-        }
-        let desktop = m.desktop.clone();
-        crate::clipboard::during_input(&m.status, || match desktop {
-            Some(desktop) => {
-                desktop.perform_semantic_input(&mut m.frame, path, target.as_deref(), &action)
-            }
-            None => m
-                .frame
-                .perform_semantic_named(path, target.as_deref(), &action),
+    with_mount(id, |m| {
+        crate::clipboard::during_input(&m.status, || {
+            m.frame
+                .perform_semantic_named(path, target.as_deref(), &action)
         })
         .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
-        Ok::<_, JsValue>(Some(propagate_record_change(mounts, id)))
-    })?;
-    let Some(resynced) = resynced else {
-        return Ok(false);
-    };
-    wake(resynced);
-    Ok(true)
+        Ok(true)
+    })
 }
-/// The actions a standalone mount's application publishes, described as
+
+/// The actions the mount's application publishes, described as
 /// `tilo-control actions list` describes them. `resource` narrows to one
-/// resource and its children, including one the app resolves lazily.
-/// On a local desktop, the actions of one window's application: `window`
-/// (its tab id), else the focused window's.
+/// resource and its children, including one the app resolves lazily. On a
+/// desktop, the actions of one window's application: `window` (its tab id),
+/// else the focused window's.
+///
+/// # Errors
+///
+/// Rejects a closed mount, an unknown or absent window, or an unavailable
+/// application.
 #[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
 pub fn component_actions(
     id: u64,
     resource: Option<String>,
     window: Option<String>,
 ) -> Result<String, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let m = mounts.get(&id).ok_or_else(|| error("closed mount"))?;
+    with_mount(id, |m| {
         let instance = m.action_window(window.as_deref())?;
         let resources = m
             .frame
             .bound_resources_of(instance, resource.as_deref())
-            .map_err(door_error)?;
+            .map_err(|e| door_error(&e))?;
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
     })
 }
-/// Invoke one action a standalone mount's application publishes, through the
-/// bound door the palette, agents and assistive technology use: the address
-/// must be published now, the mount's permissions must allow it, its
-/// arguments must bind, and a confirmation policy requires `confirmed`.
+
+/// Invoke one action the mount's application publishes, through the bound
+/// door the palette, agents and assistive technology use: the address must
+/// be published now, the mount's permissions must allow it, its arguments
+/// must bind, and a confirmation policy requires `confirmed`. `window` is
+/// as in [`component_actions`].
+///
+/// # Errors
+///
+/// Rejects a closed mount, malformed arguments, or a refused action (the
+/// message starts with the door's error code).
 #[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
 pub fn invoke_component_action(
     id: u64,
     resource: &str,
@@ -1642,12 +1520,8 @@ pub fn invoke_component_action(
 ) -> Result<String, JsValue> {
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(arguments).map_err(error)?;
-    let (started, resynced) = MOUNTS.with_borrow_mut(|mounts| {
-        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    with_mount(id, |m| {
         let instance = m.action_window(window.as_deref())?;
-        if m.peer_suspended {
-            return Err(error("the mount is suspended"));
-        }
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: instance
                 .or_else(|| m.frame.component_instance_id())
@@ -1659,179 +1533,349 @@ pub fn invoke_component_action(
         } else {
             m.frame.invoke_bound_action(&address, &arguments)
         }
-        .map_err(door_error)?;
+        .map_err(|e| door_error(&e))?;
         // A following call sees the state this one left, not the last frame's.
         m.frame.relayout();
         m.pending = true;
-        Ok((started, propagate_record_change(mounts, id)))
-    })?;
-    wake(std::iter::once(id).chain(resynced));
-    Ok(match started {
-        ui::widget::ResourceOperationStart::Completed(output) => {
-            serde_json::json!({"state":"completed","output":output})
+        m.window.request_redraw();
+        Ok(match started {
+            ui::widget::ResourceOperationStart::Completed(output) => {
+                serde_json::json!({"state": "completed", "output": output})
+            }
+            ui::widget::ResourceOperationStart::Accepted => {
+                serde_json::json!({"state": "accepted"})
+            }
         }
-        ui::widget::ResourceOperationStart::Accepted => serde_json::json!({"state":"accepted"}),
-    }
-    .to_string())
+        .to_string())
+    })
 }
-const DESKTOP_ACTIONS: &str = "the canonical desktop's actions go through its certified peer";
+
+fn door_error(e: &tilo_actions::DoorError) -> JsValue {
+    error(format!("{}: {e}", e.code()))
+}
+
 impl Mount {
     /// The application instance a page's action call addresses: `None` for
-    /// a standalone mount's one app, a local desktop's `window` (tab id) or
-    /// else its focused window.
+    /// a single-application mount, a desktop's `window` (tab id) or else its
+    /// focused window.
     fn action_window(&self, window: Option<&str>) -> Result<Option<u64>, JsValue> {
         let Some(desktop) = &self.desktop else {
             return match window {
                 None => Ok(None),
-                Some(_) => Err(error("a standalone mount has no windows")),
+                Some(_) => Err(error("a single-application mount has no windows")),
             };
         };
-        if desktop.local.is_none() {
-            return Err(error(DESKTOP_ACTIONS));
-        }
-        let focused = desktop.navigation.borrow()["active"]["tab"]
-            .as_str()
-            .map(str::to_owned);
-        let window = window
-            .map(str::to_owned)
-            .or(focused)
-            .ok_or_else(|| error("no window is focused"))?;
-        window
-            .parse::<u64>()
-            .ok()
-            .filter(|tab| tab.to_string() == window)
-            .map(Some)
-            .ok_or_else(|| error("invalid window identity"))
+        let tab = match window {
+            Some(window) => window
+                .parse::<u64>()
+                .ok()
+                .filter(|tab| tab.to_string() == window)
+                .ok_or_else(|| error("invalid window identity"))?,
+            None => desktop
+                .handle
+                .read(tilo_desktop_surface::navigation::active_route)
+                .map(|route| route.tab)
+                .ok_or_else(|| error("no window is focused"))?,
+        };
+        Ok(Some(tab))
     }
 }
-fn door_error(e: tilo_actions::DoorError) -> JsValue {
-    error(format!("{}: {e}", e.code()))
-}
-/// The host needs the complete semantics tree now, for example when assistive
-/// technology focus enters the surface: the next status carries it even if
-/// the tree is unchanged or a content-only change is still inside its window.
+
+/// The next status carries the complete semantics tree, for example when
+/// assistive technology focus enters the surface.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn request_semantics(id: u64) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    with_mount(id, |m| {
         m.semantics.borrow_mut().request();
         m.publish(id);
         Ok(())
     })
 }
-pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
-    serde_json::json!({"key":serde_json::to_string(&DiskKey::from(&w.key)).unwrap_or_default(),"bytes":w.value.bytes,"actor":w.value.actor,"revision":crate::revision_wire_value(w.revision)})
-}
-/// Copy binary persistence payloads directly into JS-owned buffers. A view into
-/// WASM memory could be invalidated while IndexedDB awaits its transaction.
-pub(crate) fn write_bytes(w: &PendingWrite) -> Result<JsValue, JsValue> {
-    let value = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &value,
-        &"key".into(),
-        &serde_json::to_string(&DiskKey::from(&w.key))
-            .map_err(error)?
-            .into(),
-    )?;
-    js_sys::Reflect::set(
-        &value,
-        &"bytes".into(),
-        &js_sys::Uint8Array::from(w.value.bytes.as_slice()),
-    )?;
-    let actor = w
-        .value
-        .actor
-        .as_ref()
-        .map(|bytes| JsValue::from(js_sys::Uint8Array::from(bytes.as_slice())))
-        .unwrap_or(JsValue::NULL);
-    js_sys::Reflect::set(&value, &"actor".into(), &actor)?;
-    js_sys::Reflect::set(
-        &value,
-        &"revision".into(),
-        &crate::revision_wire_value(w.revision).into(),
-    )?;
-    Ok(value.into())
-}
+
+/// The desktop's `DesktopNavigationV1` snapshot as JSON; `None` for a
+/// single-application mount.
+///
+/// # Errors
+///
+/// Rejects a closed mount or a failure to serialize the snapshot.
 #[wasm_bindgen]
-pub fn pending_writes(id: u64) -> Result<String, JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let start = m.metric_start();
-        for record in m.owned_records() {
-            let _ = record.store.try_flush();
-        }
-        let writes = m.storage.pending_writes();
-        for w in &writes {
-            m.writes.insert(w.revision, w.clone());
-        }
-        let result = serde_json::to_string(&writes.iter().map(write_json).collect::<Vec<_>>())
-            .map_err(error);
-        m.metric_end("persistence", start);
-        result
+pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| {
+                serde_json::to_string(
+                    &d.handle
+                        .snapshot(&d.generation, crate::desktop::catalogue()),
+                )
+                .map_err(error)
+            })
+            .transpose()
     })
 }
+
+/// Where the desktop shows each record right now: `[{record, rect: [x0, y0,
+/// x1, y1]}]` for the active tab of every window in the shown strip, in the
+/// surface's CSS pixels. The page draws a collaborator's pointer inside the
+/// window of the record it is focused on. `None` for a single application.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn acknowledge(id: u64, revision: u64, failure: Option<String>) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let write = m
-            .writes
-            .remove(&revision)
-            .ok_or_else(|| error("unknown write revision"))?;
-        m.storage
-            .acknowledge(&write, failure.map_or(Ok(()), Err))
-            .map_err(error)
+pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| {
+                let windows: Vec<serde_json::Value> = d
+                    .handle
+                    .shown_tabs()
+                    .into_iter()
+                    .filter_map(|(tab, rect)| {
+                        let record = d.shared.record_of(tab)?;
+                        Some(serde_json::json!({
+                            "record": record,
+                            "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                        }))
+                    })
+                    .collect();
+                serde_json::to_string(&windows).map_err(error)
+            })
+            .transpose()
     })
 }
+
+/// Changes whenever the desktop tree or what the desktop presents beside it
+/// (pan, scroll, history, activity) does, so the page republishes
+/// navigation only when something moved. `0` for a single application.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
+    with_mount(id, |m| {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a revision counter stays far below 2^53 and is only compared for change"
+        )]
+        Ok(m.desktop
+            .as_ref()
+            .map_or(0.0, |d| d.handle.navigation_revision() as f64))
+    })
+}
+
+/// Dispatch a `DesktopNavigationCommand` (JSON). Acceptance queues the
+/// change for the next frame; the page observes it in later snapshots.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount, a malformed command, a
+/// stale generation, an absent target, or a command the desktop does not
+/// perform.
+#[wasm_bindgen]
+pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
+    let command: tilo_desktop_surface::navigation::Command =
+        serde_json::from_str(command).map_err(error)?;
+    if let tilo_desktop_surface::navigation::Command::Launch { app, .. } = &command
+        && crate::desktop::application(app).is_none()
+    {
+        return Err(error(format!("{app} is not available in the browser")));
+    }
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop navigation unavailable"))?;
+        desktop
+            .handle
+            .dispatch(&command, &desktop.generation)
+            .map_err(error)?;
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Open desktop search, or close it when open: the page's search shortcut
+/// and search control. The frame that follows shows the palette.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_search_toggle(id: u64) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop search unavailable"))?;
+        desktop.handle.toggle_search();
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Replace the desktop's tree with one changed elsewhere (`DesktopTree`
+/// JSON, for example from a peer). Tabs still present keep their running
+/// applications; the change is saved to the profile like a local one.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or a malformed tree.
+#[wasm_bindgen]
+pub fn desktop_apply_tree(id: u64, tree: &str) -> Result<(), JsValue> {
+    let tree = crate::desktop::parse_tree(tree).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop.handle.replace_tree(tree);
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// The desktop's current tree as `DesktopTree` JSON, for peers; `None` for
+/// a single-application mount.
+///
+/// # Errors
+///
+/// Rejects a closed mount or a failure to serialize the tree.
+#[wasm_bindgen]
+pub fn desktop_tree(id: u64) -> Result<Option<String>, JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| d.handle.read(serde_json::to_string).map_err(error))
+            .transpose()
+    })
+}
+
+/// A room member's presence from the page's live layer: `publisher` (the
+/// member's device, hex) with its participant `label`, `kind` (`person` or
+/// `agent`) and `color` (`#rrggbb`), and its caret or selection as the live
+/// anchors (hex) it published, or none when it has no selection. Editors
+/// draw the caret, labelled, in the next frame.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives optional JavaScript strings only as owned values"
+)]
+pub fn remote_presence(
+    id: u64,
+    publisher: &str,
+    label: &str,
+    kind: &str,
+    color: &str,
+    anchor: Option<String>,
+    head: Option<String>,
+) -> Result<(), JsValue> {
+    use ui::collaboration::PresencePayload;
+    let range = anchor.zip(head).and_then(|(anchor, head)| {
+        let anchor = tilo_relay_protocol::live::LiveAnchor {
+            cursor: hex::decode(anchor).ok()?,
+        };
+        let head = tilo_relay_protocol::live::LiveAnchor {
+            cursor: hex::decode(head).ok()?,
+        };
+        tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
+    });
+    with_mount(id, |m| {
+        let user = UserId(publisher.to_owned());
+        let presence = m.frame.presence_mut();
+        presence.set_participant_kind(&user, kind == "agent");
+        if !label.is_empty() {
+            presence.set_display_name(user.clone(), label);
+        }
+        presence.set_color_override(user, color);
+        match range {
+            Some((key, start, end)) => {
+                let payload = if start == end {
+                    PresencePayload::Caret { pos: start }
+                } else {
+                    PresencePayload::Selection { start, end }
+                };
+                presence.apply_remote_presence(publisher.to_owned(), key, payload);
+            }
+            None => presence.unregister_peer(publisher),
+        }
+        m.frame.relayout();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// A member left the room: forget its carets and name.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        m.frame.presence_mut().unregister_peer(publisher);
+        m.frame.relayout();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Take accepted writes for the page to commit (`[{key, bytes, actor,
+/// revision}]`).
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
+    with_mount(id, |m| {
+        m.flush_records();
+        crate::storage::drain(&m.store)
+    })
+}
+
+/// Recreate the surface, renderer and device without recreating documents.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn recover(id: u64) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+    with_mount(id, |m| {
         unconfigure(&m.canvas);
-        m.gpu = None;
-        m.generation += 1;
+        if let Some(gpu) = m.gpu.take() {
+            release_gpu(id, gpu);
+        }
+        m.generation = m.generation.saturating_add(1);
         m.error = None;
-        initialize_gpu(id, m.generation, m.window.clone());
-        Ok(())
-    })
-}
-#[wasm_bindgen]
-pub fn destroy_device(id: u64) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if let Some(g) = &m.gpu {
-            g.cx.devices[g.surface.dev_id].device.destroy();
-        }
-        m.error = Some("WebGPU device deliberately destroyed; recover is required".into());
-        m.publish(id);
+        initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
         Ok(())
     })
 }
 
-#[wasm_bindgen]
-pub fn acknowledge_storage(
-    profile: &str,
-    device: &str,
-    revision: u64,
-    failure: Option<String>,
-) -> Result<(), JsValue> {
-    CACHES.with_borrow(|c| {
-        let cache = c
-            .get(&(profile.into(), device.into()))
-            .ok_or_else(|| error("unknown storage namespace"))?;
-        if let Some(write) = cache
-            .pending_writes()
-            .into_iter()
-            .find(|w| w.revision == revision)
-        {
-            cache
-                .acknowledge(&write, failure.map_or(Ok(()), Err))
-                .map_err(error)?;
-        }
-        Ok(())
-    })
-}
-
+/// Run a copy, cut or paste inside the trusted DOM clipboard event.
+///
+/// # Errors
+///
+/// Rejects an unknown kind or a closed mount.
 #[wasm_bindgen]
 pub fn clipboard_event(
     id: u64,
@@ -1845,12 +1889,8 @@ pub fn clipboard_event(
         "cut" => "x",
         _ => return Err(error("invalid clipboard event")),
     };
-    let (handled, resynced) = crate::clipboard::during(transfer, || {
-        MOUNTS.with_borrow_mut(|mounts| {
-            let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-            if m.peer_suspended {
-                return Ok((false, Vec::new()));
-            }
+    crate::clipboard::during(transfer, || {
+        with_mount(id, |m| {
             let mut modifiers =
                 if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
                     winit::keyboard::ModifiersState::SUPER
@@ -1863,7 +1903,7 @@ pub fn clipboard_event(
             m.frame.send_host_event(&WindowEvent::ModifiersChanged(
                 winit::event::Modifiers::from(modifiers),
             ));
-            // A failed clipboard sink must never let a legacy cut delete the selection.
+            // A failed clipboard sink must never let a cut delete the selection.
             if kind == "cut" {
                 m.frame.key("c");
             }
@@ -1875,98 +1915,39 @@ pub fn clipboard_event(
             ));
             m.pending = true;
             m.window.request_redraw();
-            let handled = kind == "paste" || crate::clipboard::copied();
-            Ok::<_, JsValue>((handled, propagate_record_change(mounts, id)))
+            Ok(kind == "paste" || crate::clipboard::copied())
         })
-    })?;
-    wake(resynced);
-    Ok(handled)
-}
-
-/// Read actual rendered texture pixels to separate the compute pass from canvas presentation.
-#[wasm_bindgen]
-pub async fn probe_pixels(id: u64) -> Result<String, JsValue> {
-    let buffer = MOUNTS.with_borrow(|mounts| {
-        let m = mounts.get(&id).ok_or_else(|| error("closed mount"))?;
-        let gpu = m.gpu.as_ref().ok_or_else(|| error("GPU pending"))?;
-        let device = &gpu.cx.devices[gpu.surface.dev_id].device;
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tilo proof pixels"),
-            size: 512,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        for (row, (x, y)) in [
-            (10, 10),
-            (gpu.surface.config.width / 2, gpu.surface.config.height / 2),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &gpu.surface.target_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x, y, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: (row * 256) as u64,
-                        bytes_per_row: Some(256),
-                        rows_per_image: None,
-                    },
-                },
-                wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        gpu.cx.devices[gpu.surface.dev_id]
-            .queue
-            .submit([encoder.finish()]);
-        Ok::<_, JsValue>(buffer)
-    })?;
-    let (send, receive) = futures::channel::oneshot::channel();
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, move |result| {
-            let _ = send.send(result);
-        });
-    receive.await.map_err(error)?.map_err(error)?;
-    let bytes = buffer.slice(..).get_mapped_range();
-    let value = serde_json::json!({"topLeft":&bytes[0..4],"paperCenter":&bytes[256..260]});
-    drop(bytes);
-    buffer.unmap();
-    Ok(value.to_string())
-}
-
-#[wasm_bindgen]
-pub fn font_demands(id: u64) -> Result<String, JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        serde_json::to_string(&mount.frame.take_browser_font_demands()).map_err(error)
     })
 }
 
+/// Optional canonical fonts the last shaping pass needed, as a JSON array.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn font_demands(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        serde_json::to_string(&m.frame.take_browser_font_demands()).map_err(error)
+    })
+}
+
+/// Install one fetched optional font; the runtime verifies it against the
+/// canonical manifest.
+///
+/// # Errors
+///
+/// Rejects a closed mount or bytes that fail verification.
 #[wasm_bindgen]
 pub fn install_font(id: u64, name: &str, bytes: Vec<u8>) -> Result<bool, JsValue> {
-    let (changed, wake) = MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let changed = mount
-            .frame
-            .install_browser_font(name, bytes)
-            .map_err(error)?;
-        let wake = changed && crate::font_install_should_wake(mount.peer_suspended, mount.hidden);
+    let (changed, wake) = with_mount(id, |m| {
+        let changed = m.frame.install_browser_font(name, bytes).map_err(error)?;
+        let wake = changed && !m.hidden;
         if wake {
-            mount.pending = true;
-            mount.window.request_redraw();
+            m.pending = true;
+            m.window.request_redraw();
         }
-        Ok::<_, JsValue>((changed, wake))
+        Ok((changed, wake))
     })?;
     if wake {
         proxy()?.send_event(id).map_err(error)?;
@@ -1974,22 +1955,30 @@ pub fn install_font(id: u64, name: &str, bytes: Vec<u8>) -> Result<bool, JsValue
     Ok(changed)
 }
 
+/// A font fetch failed; demand is re-reported by a later frame.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn font_failed(id: u64) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        mount.frame.browser_font_failed();
+    with_mount(id, |m| {
+        m.frame.browser_font_failed();
         Ok(())
     })
 }
 
+/// Image URLs the application asked for, as `[{loader, url}]`.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn asset_requests(id: u64) -> Result<String, JsValue> {
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        m.collect_desktop();
+    with_mount(id, |m| {
         let requests = m
             .images
+            .borrow_mut()
             .iter_mut()
             .enumerate()
             .flat_map(|(loader, images)| {
@@ -2002,46 +1991,48 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
         serde_json::to_string(&requests).map_err(error)
     })
 }
+
+/// Deliver fetched image bytes (or `None` for a failed fetch).
+///
+/// # Errors
+///
+/// Rejects a closed mount or an unknown loader.
 #[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives JavaScript bytes only as an owned value"
+)]
 pub fn complete_asset(
     id: u64,
     loader: usize,
     url: &str,
     bytes: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
-    if let (Some(hash), Some(bytes)) = (url.strip_prefix("tilo-blob://"), bytes.as_ref())
-        && !tilo_content::verify(hash, bytes)
-    {
-        return Err(error("asset bytes do not match their content hash"));
-    }
-    MOUNTS.with_borrow_mut(|m| {
-        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let loader = m
+    with_mount(id, |m| {
+        let complete = m
             .images
+            .borrow_mut()
             .get_mut(loader)
-            .ok_or_else(|| error("unknown image loader"))?;
-        let complete = loader.complete(url, bytes.as_deref()) && loader.loaded(url);
+            .ok_or_else(|| error("unknown image loader"))?
+            .complete(url, bytes.as_deref());
+        // A decoded image changes what widgets measure and draw.
+        m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
         Ok(complete)
     })
 }
 
+/// Publish the DOM event's modifier snapshot before winit dispatches its key.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn retry_asset(id: u64, loader: usize, url: &str) -> Result<bool, JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        let loader = mount
-            .images
-            .get_mut(loader)
-            .ok_or_else(|| error("unknown image loader"))?;
-        Ok(loader.retry(url))
-    })
-}
-
-/// Publish the DOM event's modifier snapshot before Winit dispatches its key.
-/// Winit web reports ModifiersChanged after KeyboardInput in the pinned fork.
-#[wasm_bindgen]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "mirrors KeyboardEvent's four modifier flags"
+)]
 pub fn modifiers(
     id: u64,
     control: bool,
@@ -2055,24 +2046,19 @@ pub fn modifiers(
     flags.set(M::ALT, alt);
     flags.set(M::SHIFT, shift);
     flags.set(M::SUPER, meta);
-    MOUNTS.with_borrow_mut(|mounts| {
-        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended {
-            return Ok(());
-        }
+    with_mount(id, |m| {
         m.frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(flags),
         ));
         Ok(())
     })
 }
+
+/// Follow `document.visibilityState`.
 #[wasm_bindgen]
 pub fn visible(id: u64, visible: bool) {
     MOUNTS.with_borrow_mut(|mounts| {
         if let Some(m) = mounts.get_mut(&id) {
-            if !visible {
-                m.publish_records(id, true);
-            }
             m.hidden = !visible;
             if visible {
                 m.pending = true;
@@ -2082,419 +2068,40 @@ pub fn visible(id: u64, visible: bool) {
     });
 }
 
-/// A newly acquired cross-tab lease must hydrate durable bytes afresh. A lease
-/// retained for a failed close never reaches this boundary.
+/// Names applications requested through `ui::host_data` since the last
+/// call, as a JSON array, for the page to fetch from the bundle's `data/`.
+///
+/// # Errors
+///
+/// Propagates a serialization failure.
 #[wasm_bindgen]
-pub fn refresh_storage_lease(profile: &str, device: &str) -> Result<(), JsValue> {
-    CACHES.with_borrow_mut(|caches| {
-        let key = (profile.to_owned(), device.to_owned());
-        if let Some(cache) = caches.get(&key) {
-            if !cache.pending_writes().is_empty() {
-                return Err(error(
-                    "unsaved actor state retains custody; retry recovery first",
-                ));
-            }
-            if MOUNTS.with_borrow(|mounts| {
-                mounts
-                    .values()
-                    .any(|m| m.storage.namespace() == cache.namespace())
-            }) {
-                return Err(error("cannot refresh an active storage lease"));
-            }
-        }
-        caches.remove(&key);
-        Ok(())
-    })
+pub fn data_requests() -> Result<String, JsValue> {
+    serde_json::to_string(&ui::host_data::take_requests()).map_err(error)
 }
 
-/// Retry component-level owners first; retries may enqueue additional durable bytes.
+/// Supply requested data, verified by the page against the bundle's
+/// manifest, and relayout every mount so the requester sees it.
 #[wasm_bindgen]
-pub fn prepare_close(id: u64) -> Result<String, JsValue> {
-    let (writes, errors) = CLOSED.with_borrow_mut(|closed| closed.prepare(id));
-    serde_json::to_string(&serde_json::json!({"writes":writes.iter().map(write_json).collect::<Vec<_>>(),"errors":errors})).map_err(error)
-}
-/// Only release captured view envelopes after the host acknowledged durable writes.
-#[wasm_bindgen]
-pub fn finish_close(id: u64) -> Result<(), JsValue> {
-    CLOSED
-        .with_borrow_mut(|closed| closed.finish(id))
-        .map_err(error)
-}
-#[wasm_bindgen]
-pub fn component_close_count() -> usize {
-    CLOSED.with_borrow(|closed| closed.len())
+pub fn install_data(name: &str, bytes: Vec<u8>) {
+    ui::host_data::install(name, bytes);
+    relayout_all();
 }
 
-pub(crate) fn load_cache(
-    profile: &str,
-    device: &str,
-    hydrated: &JsValue,
-) -> Result<PortableStorage, JsValue> {
-    let storage = CACHES.with_borrow_mut(|c| {
-        let key = (profile.to_owned(), device.to_owned());
-        if let Some(cache) = c.get(&key) {
-            return Ok(cache.clone());
-        }
-        let cache = PortableStorage::new(profile, device).map_err(error)?;
-        c.insert(key, cache.clone());
-        Ok::<_, JsValue>(cache)
-    })?;
-    for entry in js_sys::Array::from(hydrated).iter() {
-        let key = Reflect::get(&entry, &"key".into())?.as_string();
-        let bytes = Uint8Array::new(&Reflect::get(&entry, &"bytes".into())?).to_vec();
-        let actor = Reflect::get(&entry, &"actor".into())?;
-        crate::storage_key::hydrate_entry(
-            &storage,
-            key.as_deref(),
-            bytes,
-            (!actor.is_null() && !actor.is_undefined()).then(|| Uint8Array::new(&actor).to_vec()),
-        )
-        .map_err(error)?;
-    }
-    Ok(storage)
+/// Report that requested data cannot be fetched.
+#[wasm_bindgen]
+pub fn data_failed(name: &str, reason: &str) {
+    ui::host_data::fail(name, reason);
+    relayout_all();
 }
 
-#[cfg(feature = "cloud")]
-pub(crate) fn refresh_peer_mounts(peer: u32) {
-    let state = crate::peer::desktop_state(peer);
-    let permissions = crate::peer::permissions(peer);
+fn relayout_all() {
     MOUNTS.with_borrow_mut(|mounts| {
-        for mount in mounts.values_mut().filter(|mount| mount.peer == Some(peer)) {
-            if let Some(desktop) = &mount.desktop {
-                // A retained document is not a continuing read grant. Withdraw history
-                // until a successful admission is reconciled, including record-level loss.
-                if state.is_err() || permissions.is_err() {
-                    desktop.invalidate_history();
-                }
-                if let Ok(permissions) = &permissions {
-                    *desktop.permissions.borrow_mut() = permissions.clone();
-                }
-                match (&state, &permissions) {
-                    (Ok(state), Ok(permissions)) => {
-                        if let Err(error) = desktop.admit(state, permissions.clone()) {
-                            desktop.invalidate_history();
-                            desktop.errors.borrow_mut().push(error);
-                        } else {
-                            mount.peer_suspended = false;
-                        }
-                    }
-                    (Err(reason), _)
-                        if reason.contains("forbidden") || reason.contains("revoked") =>
-                    {
-                        mount.peer_suspended = true;
-                        desktop.errors.borrow_mut().push(reason.clone());
-                    }
-                    (_, Err(reason)) => {
-                        mount.peer_suspended = true;
-                        desktop.errors.borrow_mut().push(reason.clone());
-                    }
-                    _ => {}
-                }
-            }
-            // A presenting mount applies the queued admission in its next frame
-            // (the admission inbox marks the desktop for redraw, and the draw
-            // path collects desktop/search state around its relayout). An
-            // immediate relayout here ran the whole update/layout/draw pipeline
-            // inside every delivery callback, including each echo of this
-            // peer's own edits, and the next frame repeated it. Mounts that
-            // cannot draw now (hidden, suspended, failed, no GPU yet) keep the
-            // immediate application so their component state stays current.
-            let presents = !mount.hidden
-                && !mount.peer_suspended
-                && mount.error.is_none()
-                && mount.gpu.is_some()
-                && !mount.viewport.suspended();
-            if !presents {
-                mount.frame.relayout();
-                mount.collect_desktop();
-            }
-            mount.pending = true;
-            mount.window.request_redraw();
-        }
-    });
-}
-
-#[cfg(feature = "cloud")]
-#[wasm_bindgen]
-pub fn rebind_peer(old: u32, new: u32) {
-    MOUNTS.with_borrow_mut(|mounts| {
-        for mount in mounts.values_mut().filter(|mount| mount.peer == Some(old)) {
-            mount.peer = Some(new);
-            mount.peer_suspended = false;
-            mount.publication.borrow_mut().reset();
-            mount.queue_resize();
+        for mount in mounts.values_mut() {
             mount.frame.relayout();
             mount.pending = true;
             mount.window.request_redraw();
         }
     });
-}
-
-#[cfg(feature = "cloud")]
-#[wasm_bindgen]
-pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
-    if suspended {
-        prepare_peer_remote(peer).map_err(error)?;
-    }
-    MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){mount.peer_suspended=suspended;emit(&mount.status,serde_json::json!({"phase":if suspended{"suspended"}else{"presented"},"inputSuspended":suspended}));});
-    Ok(())
-}
-
-#[cfg(feature = "cloud")]
-pub(crate) fn prepare_peer_remote(peer: u32) -> Result<(), String> {
-    MOUNTS.with_borrow(|mounts| {
-        for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
-            for record in mount.owned_records() {
-                let document = crate::admitted_records::prepare_remote_owned(
-                    &record.store,
-                    &record.checkout.id,
-                )?;
-                let id = if record.checkout.id.is_package_primary() {
-                    ""
-                } else {
-                    record.checkout.id.as_str()
-                };
-                crate::peer::local_owned_document(peer, &record.app, id, document)?;
-            }
-        }
-        Ok(())
-    })
-}
-
-/// Caller projection is supplied only by the session's durable private client.
-#[wasm_bindgen]
-pub fn caller_actions(id: u64, json: &str) -> Result<(), JsValue> {
-    let resources = crate::action_palette::resources(json).map_err(error)?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("action surface disposed"))?;
-        mount.frame.set_caller_actions(resources);
-        mount.pending = true;
-        mount.window.request_redraw();
-        Ok(())
-    })
-}
-
-#[wasm_bindgen]
-pub fn take_caller_action(id: u64) -> Result<Option<String>, JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("action surface disposed"))?;
-        if mount.peer_suspended {
-            return Ok(None);
-        }
-        mount
-            .frame
-            .take_caller_operation()
-            .map(|pending| {
-                crate::action_palette::request(pending)
-                    .map(|value| value.to_string())
-                    .map_err(error)
-            })
-            .transpose()
-    })
-}
-
-/// IDs stay inside an opaque JSON string until native Rust decodes the command.
-#[wasm_bindgen]
-pub fn pending_desktop_command(id: u64) -> Result<Option<String>, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let mount = mounts.get(&id).ok_or_else(|| error("desktop disposed"))?;
-        if mount.peer_suspended { return Ok(None); }
-        mount.desktop.as_ref().and_then(|desktop| desktop.session_requests.borrow().first().cloned().map(|request| (desktop, request)))
-            .map(|(desktop, (invocation, command))| {
-                let mut value = serde_json::json!({
-                    "invocation": invocation, "command": serde_json::to_string(&command).map_err(error)?,
-                });
-                // Optimistic reorder: where the group lands, measured before the
-                // local move, for the remote members' live ghost.
-                if let Some(preview) = desktop.speculation.borrow().preview(invocation) {
-                    value["preview"] = serde_json::json!({"group": preview.group.to_string(), "dx": preview.dx, "width": preview.width, "height": preview.height});
-                }
-                serde_json::to_string(&value).map_err(error)
-            }).transpose()
-    })
-}
-
-/// The host's command bridge reports terminal outcomes, so queued pure
-/// reorders may render optimistically (see `desktop_host/speculation.rs`).
-#[wasm_bindgen]
-pub fn desktop_speculation_enable(id: u64, enabled: bool) -> Result<(), JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let mount = mounts.get(&id).ok_or_else(|| error("desktop disposed"))?;
-        if let Some(desktop) = &mount.desktop {
-            desktop.speculation.borrow_mut().enabled = enabled;
-        }
-        Ok(())
-    })
-}
-
-/// Terminal outcome of a queued desktop command (its Rust invocation): a
-/// failure snaps an optimistic command back to durable state; a success lets
-/// it retire once durable state shows it. `receipt` is the success value (or
-/// a committed-desktop notice) whose `opened` binds an optimistic open to its
-/// committed window. `None` without a receipt only schedules a frame that
-/// re-checks the confirmation hold and deadlines.
-#[wasm_bindgen]
-pub fn desktop_command_settled(
-    id: u64,
-    invocation: &str,
-    succeeded: Option<bool>,
-    receipt: Option<String>,
-) -> Result<bool, JsValue> {
-    let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
-    let opened = receipt
-        .and_then(|receipt| serde_json::from_str(&receipt).ok())
-        .and_then(|value| crate::desktop_host::opened_window(&value));
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("desktop disposed"))?;
-        let Some(desktop) = &mount.desktop else {
-            return Ok(false);
-        };
-        let mut speculation = desktop.speculation.borrow_mut();
-        if speculation.is_empty() {
-            return Ok(false);
-        }
-        let changed = match (succeeded, opened) {
-            (None, None) => true,
-            _ => speculation.settle(invocation, succeeded, opened, web_time::Instant::now()),
-        };
-        drop(speculation);
-        if changed {
-            mount.pending = true;
-            mount.window.request_redraw();
-        }
-        Ok(changed)
-    })
-}
-
-#[wasm_bindgen]
-pub fn acknowledge_desktop_command(id: u64, invocation: &str) -> Result<(), JsValue> {
-    let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("desktop disposed"))?;
-        if let Some(desktop) = &mount.desktop {
-            let mut pending = desktop.session_requests.borrow_mut();
-            if pending.first().is_some_and(|(id, _)| *id == invocation) {
-                pending.remove(0);
-            }
-        }
-        mount.pending = true;
-        mount.window.request_redraw();
-        Ok(())
-    })
-}
-
-#[wasm_bindgen]
-pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
-        Ok(mount
-            .desktop
-            .as_ref()
-            .map(|d| d.navigation.borrow().to_string()))
-    })
-}
-#[wasm_bindgen]
-pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
-        Ok(mount
-            .desktop
-            .as_ref()
-            .map(|d| d.navigation_revision.get())
-            .unwrap_or(0)
-            .to_string())
-    })
-}
-#[wasm_bindgen]
-pub fn desktop_input_ownership(id: u64) -> Result<String, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
-        let desktop = mount.desktop.as_ref().ok_or_else(|| error("Desktop navigation unavailable"))?;
-        Ok(serde_json::json!({
-            "sequence": mount.frame.input_ownership_sequence().to_string(),
-            "activation": desktop.activation_sequence.get().to_string(),
-            "owner": mount.frame.inspection().keyboard_focus_owner,
-            "ime": mount.frame.ime_window().map(|i| serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})),
-        }).to_string())
-    })
-}
-
-#[wasm_bindgen]
-pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValue> {
-    let command = serde_json::from_str(command).map_err(error)?;
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("Desktop disposed"))?;
-        if mount.peer_suspended {
-            return Err(error("Desktop unavailable while peer is suspended"));
-        }
-        let desktop = mount
-            .desktop
-            .clone()
-            .ok_or_else(|| error("Desktop navigation unavailable"))?;
-        let invocation = desktop.navigate(&mut mount.frame, command).map_err(error)?;
-        mount.pending = true;
-        mount.window.request_redraw();
-        Ok(invocation)
-    })
-}
-
-#[wasm_bindgen]
-pub fn desktop_command_search(id: u64, generation: &str, query: &str) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("Desktop disposed"))?;
-        if mount.peer_suspended {
-            return Err(error("Desktop suspended"));
-        }
-        let desktop = mount
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop search unavailable"))?;
-        if desktop.navigation.borrow()["generation"].as_str() != Some(generation) {
-            return Err(error("Stale desktop surface"));
-        }
-        if query.len() > 512 {
-            return Err(error("Search is too long"));
-        }
-        mount.frame.open_caller_search(query).map_err(error)?;
-        mount.pending = true;
-        mount.window.request_redraw();
-        Ok(())
-    })
-}
-
-/// Full system search; the caller-only commands opener remains separate.
-#[wasm_bindgen]
-pub fn desktop_global_search(id: u64, generation: &str, query: &str) -> Result<(), JsValue> {
-    MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts
-            .get_mut(&id)
-            .ok_or_else(|| error("Desktop disposed"))?;
-        if mount.peer_suspended {
-            return Err(error("Desktop suspended"));
-        }
-        let desktop = mount
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop search unavailable"))?;
-        desktop
-            .open_global_search(&mut mount.frame, generation, query)
-            .map_err(error)?;
-        mount.pending = true;
-        mount.window.request_redraw();
-        Ok(())
-    })
 }
 
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.
@@ -2503,26 +2110,28 @@ pub fn configure_frame_metrics(enabled: bool) {
     MOUNTS.with_borrow_mut(|mounts| {
         for mount in mounts.values_mut() {
             mount.metrics.borrow_mut().configure(enabled);
-            mount.frame.set_pointer_redraw_diagnostics(enabled);
-            // Per-pass layout timing (sync, build/compute, apply, draw, input) for
-            // every frame the harness renders while metrics are on.
             if enabled {
                 mount.frame.begin_profiling();
-            } else {
-                mount.frame.end_profiling();
             }
         }
     });
 }
+
+/// Drain captured stage timings and per-pass layout profiles, per mount.
+///
+/// # Errors
+///
+/// Propagates a serialization failure.
 #[wasm_bindgen]
 pub fn take_frame_metrics() -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|mounts| {
-        let samples: Vec<_> = mounts.iter_mut().map(|(id, mount)| {
-            let mut metrics = mount.metrics.borrow_mut();
-            let passes = mount.frame.take_profile_samples();
-            let relayout = mount.frame.last_relayout();
-            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "notes": metrics.take_notes(), "redrawSources": mount.frame.redraw_sources(), "layoutPasses": passes, "lastRelayout": {"rebuilt": relayout.rebuilt, "measured": relayout.measured, "markedDirty": relayout.marked_dirty, "markedLeaves": relayout.marked_leaves}})
-        }).collect();
+        let samples: Vec<_> = mounts
+            .iter_mut()
+            .map(|(id, mount)| {
+                let mut metrics = mount.metrics.borrow_mut();
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples()})
+            })
+            .collect();
         serde_json::to_string(&samples).map_err(error)
     })
 }

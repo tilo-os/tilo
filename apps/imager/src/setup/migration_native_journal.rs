@@ -10,7 +10,6 @@ use std::{
     io::{self, Seek},
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
-    time::SystemTime,
 };
 use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 const MAGIC: &[u8; 8] = b"TILOJL3\n";
@@ -211,7 +210,7 @@ impl<'a> NativeJournal<'a> {
             _ => return Err(changed("native destination must be fresh")),
         }
         let header = Header {
-            operation: format!("{}-{:?}", std::process::id(), SystemTime::now()),
+            operation: format!("{}-{:?}", std::process::id(), ui::time::wall()),
             source: plan.identity.clone(),
             revision: plan.revision()?,
             selected_root: plan.identity.root.clone(),

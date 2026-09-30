@@ -3316,7 +3316,7 @@ mod tests {
     use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
     use crate::setup::internal_download::tests::{Server, response};
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
-    use std::time::{Duration, Instant};
+    use ui::time::Duration;
 
     #[cfg(windows)]
     const TEST_SOURCE_ROOT: &str = r"C:\setup-source";
@@ -3811,7 +3811,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal download timed out");
+                assert!(ui::time::now() < deadline, "internal download timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(app.status, "Download ready");
@@ -3840,7 +3840,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal release timed out");
+                assert!(ui::time::now() < deadline, "internal release timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(app.status, "Kept for later");
@@ -3955,7 +3955,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal download timed out");
+                assert!(ui::time::now() < deadline, "internal download timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(server.requests().len(), 3);
@@ -4693,7 +4693,7 @@ mod tests {
                     break observed;
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "embedded completed issue page was not publicly observable"
                 );
                 std::thread::yield_now();

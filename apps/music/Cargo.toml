@@ -13,6 +13,12 @@ path = "src/lib.rs"
 name = "music"
 path = "src/main.rs"
 
+# The page build has no GStreamer and no live catalogue yet: the player
+# plays through the page's media element (tilo-media), and search, stream
+# resolution and lyrics wait for tilo-net's fetch backend.
+[package.metadata.tilo]
+web-features = []
+
 [features]
 thin = ["dep:runtime-dylib"]
 # The default app includes live search, stream resolution, and audio output.
@@ -25,18 +31,17 @@ audio = ["dep:gstreamer", "dep:tokio"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-net", "dep:rquickjs"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking"]
 # Enable network lyrics without the full live backend; live already enables them.
-lyrics = ["dep:reqwest", "dep:tilo-net"]
+lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
 [dependencies]
 fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
-host-info = { path = "../../crates/system/host-info" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: document-mutating library edits (playlist create/rename/
 # delete, add/remove/reorder track, like/save/follow) are replayable actions the
@@ -53,7 +58,7 @@ url.workspace = true
 base64.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Portal-selected cover art is normalised through the shared preview decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hex.workspace = true
@@ -66,18 +71,15 @@ taffy.workspace = true
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
+# Network status (whether the connection is metered, for prefetch) always;
+# HTTP with `live` or `lyrics`.
+tilo-net = { path = "../../crates/platform/tilo-net" }
 gstreamer = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
-workspace-hack = { version = "0.1" }
-
-[target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
-# QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.
-rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
 
 [dev-dependencies]
 serial_test.workspace = true
@@ -87,3 +89,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

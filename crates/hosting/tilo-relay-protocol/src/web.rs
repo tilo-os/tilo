@@ -43,6 +43,39 @@ pub const MAX_POLL_MS: u32 = 25_000;
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 /// Most envelopes one `/events` answer carries.
 pub const MAX_PAGE_ENVELOPES: usize = 256;
+/// Payload bytes after which an `/events` answer ends (it always carries at
+/// least one envelope). A late join's checkpoint and tail, or a segmented
+/// multi-megabyte document, then stream as a series of bounded pages, each
+/// acknowledged before the next.
+pub const MAX_PAGE_BYTES: usize = 1024 * 1024;
+
+/// Approximate wire size of `envelope`: its opaque payload plus a fixed
+/// allowance for keys and framing. Bounds pages and session buffers without
+/// encoding every envelope twice.
+pub fn envelope_bytes(envelope: &Envelope) -> usize {
+    const OVERHEAD: usize = 160;
+    let payload = match envelope {
+        Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
+        Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
+        Envelope::Presence { payload, .. } => payload.len(),
+        Envelope::Compacted { statement, .. } => statement.len(),
+        Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
+        Envelope::NotAuthorised { reason, .. }
+        | Envelope::RemoteActionUndeliverable { reason, .. }
+        | Envelope::CommitRefused { reason, .. }
+        | Envelope::VoiceRefused { reason, .. } => reason.len(),
+        Envelope::VoiceGranted { grant, .. } => grant
+            .participants
+            .len()
+            .saturating_add(grant.subscriptions.len())
+            .saturating_mul(200)
+            .saturating_add(grant.endpoint.len()),
+        Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
+        Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
+        _ => 0,
+    };
+    payload.saturating_add(OVERHEAD)
+}
 
 /// What a page needs to know about the host before it has a certificate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +115,45 @@ pub struct SessionGrant {
     /// The session ends here at the latest; the device then runs the
     /// handshake again.
     pub expires_at_ns: u64,
+}
+
+/// The host accepts [`crate::transport::Envelope::SubscribeFrom`] and issues
+/// [`crate::transport::Envelope::Position`]s.
+pub const FEATURE_RESUME: u64 = 1;
+
+/// The host accepts [`crate::transport::Envelope::CompactVolunteer`] and
+/// [`crate::transport::Envelope::Compacted`], and may send volunteers
+/// [`crate::transport::Envelope::CompactRequest`].
+pub const FEATURE_COMPACTION: u64 = 2;
+
+/// The host governs calls in its rooms: it accepts
+/// [`crate::transport::Envelope::VoiceCall`],
+/// [`crate::transport::Envelope::VoiceJoin`] and
+/// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
+pub const FEATURE_VOICE: u64 = 4;
+
+/// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
+/// host's feature bits. A device that predates the features reads the grant
+/// and ignores the rest.
+///
+/// # Errors
+///
+/// Returns an error if postcard fails to encode.
+pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, postcard::Error> {
+    let mut bytes = postcard::to_allocvec(grant)?;
+    bytes.extend(postcard::to_allocvec(&features)?);
+    Ok(bytes)
+}
+
+/// Decode a `/session/finish` answer into the grant and the host's feature
+/// bits, which are `0` from a host that predates them.
+///
+/// # Errors
+///
+/// Returns an error if the grant does not decode.
+pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
+    let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
+    Ok((grant, postcard::from_bytes(rest).unwrap_or(0)))
 }
 
 /// Host-signed position in one session's event stream.

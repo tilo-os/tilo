@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -1066,6 +1066,8 @@ pub struct VideoEditorApp {
     export_status: ExportStatus,
     /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
+    /// A contents chooser, where files have no path (a browser page).
+    import_contents_rx: Option<ui::portal::ContentsChannel>,
     /// A short, honest status line shown after an import attempt (how many
     /// clips landed, which files were refused and why, or why the portal
     /// round-trip failed). Never a fake success, and it carries its own
@@ -1486,6 +1488,7 @@ impl VideoEditorApp {
             export: ExportSettings::default(),
             export_status: ExportStatus::Idle,
             import_rx: None,
+            import_contents_rx: None,
             import_notice: None,
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
@@ -1502,7 +1505,7 @@ impl VideoEditorApp {
             mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
             mix: crate::audio::MixSnapshot::default(),
             mix_sig: None,
-            meter_tick: Instant::now(),
+            meter_tick: ui::time::now(),
             doc_heads: Vec::new(),
             compositor: None,
             composited: None,
@@ -1513,14 +1516,14 @@ impl VideoEditorApp {
             hover_media: None,
             last_click_media: None,
             pending_rename: None,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             rect: Rect::ZERO,
             actions: crate::resource::ActionSink::default(),
             clipboard: Vec::new(),
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            flap_tick: ui::time::now(),
             bin_menu: ContextMenu::new(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
@@ -2450,7 +2453,7 @@ impl VideoEditorApp {
     /// mixer already measured the block, and the whole point is to carry that
     /// number rather than compute a second opinion on the paint path.
     fn pump_mix_meter(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.meter_tick).as_secs_f64();
         self.meter_tick = now;
         let sig = crate::audio::mix_signature(&self.project);
@@ -2559,7 +2562,7 @@ impl VideoEditorApp {
 
     // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         let dur = self.project.duration();
@@ -2614,7 +2617,7 @@ impl VideoEditorApp {
             self.inspector_flap.snap(inspector_open);
             return;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
         self.flap_tick = now;
         self.bin_flap.tick(layout, dt);
@@ -2721,12 +2724,12 @@ impl VideoEditorApp {
         // is a state with nothing on screen for it.
         if self.shuttle != 0.0 {
             self.shuttle = 0.0;
-            self.last_tick = Instant::now();
+            self.last_tick = ui::time::now();
             self.playback.chase_playhead = true;
             return;
         }
         self.playback.playing = !self.playback.playing;
-        self.last_tick = Instant::now();
+        self.last_tick = ui::time::now();
         if self.playback.playing && self.playhead >= self.project.duration() {
             self.playhead = 0.0;
         }
@@ -2752,7 +2755,7 @@ impl VideoEditorApp {
             self.shuttle = dir;
         }
         self.playback.playing = false; // shuttle and play are mutually exclusive
-        self.last_tick = Instant::now();
+        self.last_tick = ui::time::now();
     }
 
     // ---- mutations (dispatched as replayable actions) --------------------
@@ -4992,7 +4995,84 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some(Notice::ok("Choose media to import…"));
-        self.import_rx = Some(portal::request_import());
+        if crate::files::native_paths() {
+            self.import_rx = Some(portal::request_import());
+        } else {
+            self.import_contents_rx = Some(portal::request_import_contents());
+        }
+    }
+
+    /// Import the files a contents chooser delivered: probed from their
+    /// bytes, which are kept in the editor's cache location, and named in
+    /// the project by that copy.
+    fn drain_import_contents(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.import_contents_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::ContentsOutcome::Failed("the file chooser stopped responding".into())
+            }
+        };
+        self.import_contents_rx = None;
+        match outcome {
+            ui::portal::ContentsOutcome::Picked(files) => {
+                let mut report = ImportReport::default();
+                for file in files {
+                    match self.try_import_contents(doc, &file.name, file.bytes) {
+                        Ok(()) => report.added += 1,
+                        Err(reason) => report.refused.push((file.name, reason)),
+                    }
+                }
+                self.import_notice = Some(import_report_notice(&report));
+            }
+            ui::portal::ContentsOutcome::Cancelled => self.import_notice = None,
+            ui::portal::ContentsOutcome::Failed(reason) => {
+                self.import_notice = Some(Notice::failed(reason));
+            }
+        }
+    }
+
+    fn try_import_contents(
+        &mut self,
+        doc: &mut AutoCommit,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        if bytes.len() > crate::files::KEEP_LIMIT {
+            return Err(format!(
+                "is larger than {} MB, the most a browser page imports",
+                crate::files::KEEP_LIMIT / (1024 * 1024)
+            ));
+        }
+        let probed = probe::probe_bytes(&bytes, Path::new(name)).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4();
+        let token = id.simple().to_string();
+        let palette = (self.project.media.len() as u8) % 7;
+        let item = MediaItem {
+            id,
+            name: name.to_owned(),
+            kind: probed.kind,
+            duration: probed.duration,
+            width: probed.width,
+            height: probed.height,
+            fps: probed.fps,
+            palette,
+            // The kept copy's name in the cache location; no decoder here
+            // reads it yet, so the preview draws the clip from its metadata.
+            path: format!("{}/{token}", crate::media::KEPT_PREFIX),
+            hydration: crate::media::Hydration::Projected,
+            text: None,
+            has_audio: probed.has_audio,
+        };
+        crate::files::keep_imported(token, bytes);
+        self.project.media.push(item.clone());
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.selected_media = Some(id);
+        Ok(())
     }
 
     #[expect(
@@ -5196,6 +5276,7 @@ impl VideoEditorApp {
     /// Drain any pending imports (queued deterministic files first, then a
     /// portal outcome), bringing each chosen file into the bin as a real clip.
     fn drain_import(&mut self, doc: &mut AutoCommit) {
+        self.drain_import_contents(doc);
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
             let report = self.import_files(doc, &paths);

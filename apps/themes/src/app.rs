@@ -16,7 +16,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -278,7 +278,7 @@ impl ThemesApp {
             // Seed wide so the first frame (and the default 1280px shot) builds
             // the docked layout without a structure round-trip.
             build_width: BREAKPOINT,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             gallery_toggle,
             gallery_toggle_hidden,
             toggle_shows_close: false,
@@ -577,7 +577,7 @@ impl ThemesApp {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
-                Ok(_) => {
+                Ok(()) => {
                     self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
                     Ok(())
@@ -1678,7 +1678,7 @@ impl Widget for ThemesApp {
         // Advance the reveal animation (frame-rate-independent; `needs_redraw`
         // keeps frames flowing while it settles).
         let layout = self.layout_class();
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64();
         self.last_tick = now;
         self.gallery_flap.tick(layout, dt);

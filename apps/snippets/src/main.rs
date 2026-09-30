@@ -41,13 +41,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 extern crate runtime_dylib;
 
 fn install_locales() -> Result<(), ui::i18n::I18nError> {
-    ui::i18n::I18nManager::install_system(
-        "en-US",
-        &[
-            ("en-US", include_str!("../locales/en-US.ftl")),
-            ("de-DE", include_str!("../locales/de-DE.ftl")),
-        ],
-    )
+    ui::i18n::I18nManager::install_system("en-US", snippets::LOCALES)
 }
 
 fn wants_standalone() -> bool {

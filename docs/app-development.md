@@ -98,6 +98,28 @@ A standalone app builds the code this repository tests:
 - A `.gitignore` for `target/`, and a git repository of its own when the app
   is not created inside one already.
 
+`--sdk-version` builds the app on the published SDK instead:
+`ui = { package = "tilo-app", version = "0.1.0" }` from crates.io (or the
+registry Cargo's source replacement names), with no `[patch]` and no seeded
+lockfile. Without a value it requires the version the CLI was built with. The
+toolchain, target flags and profiles are the same. Such an app always links
+the toolkit statically (`--static`): the shared toolkit library comes from a
+Tilo tree, not from crates.io. Three optional features need the workspace's
+patched crates and do not build on the published SDK: `presentation-feedback`
+and `dx12-shader-cache` (both on wgpu-hal) and `tilo-media`'s `pipewire`
+feature on PipeWire headers newer than libspa-sys 0.10.1 handles (Fedora 44).
+None is on by default.
+
+Until the SDK is on crates.io, `tools/sdk/publish_check.py --verify` packages
+and builds every SDK crate, and `tools/sdk/local_registry.py <dir>` turns the
+result into a local registry an app builds against:
+
+```bash
+cargo build \
+  --config 'source.crates-io.replace-with="tilo-sdk"' \
+  --config 'source.tilo-sdk.local-registry="<dir>"'
+```
+
 Without `--id`, an app outside this repository is named `local.dev.<name>`.
 That name cannot be published. Choose an id in a namespace you control before
 you package the app.
@@ -799,25 +821,25 @@ level `[package.isa]` names for it (`tilo-app new` declares `v3` and
 
 ### The web
 
-In the browser the toolkit is a WebAssembly core, and an app is a small side
-module the page links into it at run time, as a thin app links the toolkit
-the OS ships:
+In the browser the runtime is one WebAssembly module, and `wasm32` has no
+dynamic linking, so an app's web build is the runtime bundle with the app
+linked in and registered:
 
 ```bash
-tilo-app build --platform web      # target/web: the core, the app and index.html
-tilo-app dev --platform web        # serve it on http://127.0.0.1:4321/, rebuild on save
-tilo-app package --platform web    # dist/<pkg>-web-wasm32.tapp
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app dev --platform web        # serve it, rebuild and reload on save
+tilo-app package --target web      # the bundle in the immutable layout Cloud serves
 ```
 
 Nothing in the app is web-specific: the build registers the `definition()`
-that `ui::dev_reload_entry!` defines, as component apps export theirs. It
-comes from the SDK checkout the app builds against
-(`crates/browser/tilo-browser-runtime`, see its `WEB_RUNTIME.md`): the app is
-built as a member of a workspace that mirrors the checkout, so every crate it
-shares with the core compiles to the core's symbols, and a crate it needs with
-features the core lacks is named and refused. The first build compiles and
-links the core, a few minutes; later builds keep it while nothing under it
-changed, and `--app-only` relinks only the app against the core already built.
+that `ui::dev_reload_entry!` defines, as component apps export theirs. A
+small generated crate under the target directory depends on the runtime from
+the SDK checkout the app builds against (`crates/browser/tilo-browser-runtime`,
+see its `WEB_RUNTIME.md`) and on the app, and builds into the app
+workspace's target directory, so the runtime compiles once and later builds
+relink only what changed. `build --target web --bundle app` is the same
+build; Tilo's own apps also build into the shared desktop bundle
+(`--bundle desktop`).
 
 The core the build links exports what the app imports. The core the registry
 serves is built for Tilo's own web apps, so a package that imports something
@@ -861,6 +883,74 @@ what the Android host does not provide.
 
 `tilo-app keys new`, `tilo-app apply` and `tilo-app publish` take a package to
 the store; [Publish a Tilo app](publishing.md) walks through them.
+
+### Linux, macOS and the web from one source
+
+`run`, `build` and `package` take `--target linux|macos|web`. The app source
+does not change: `tilo-app` selects the runner and the platform crates select
+each backend. Linux and macOS artifacts build on their own OS; the web builds
+anywhere.
+
+```bash
+tilo-app run --target macos            # a signed development .app, launched
+tilo-app run --target web              # serve, rebuild on change, reload the page
+tilo-app build --target linux          # target/tilo-app/linux/<app>/<bin>
+tilo-app package --target linux        # a signed .tapp (thin against the shared runtime in this repository)
+tilo-app package --target macos        # a zipped .app; Developer ID + notarization with TILO_MAC_* / TILO_NOTARY_* set
+tilo-app package --target web          # dist/web/<app-id>/versions/<digest>/
+```
+
+`tilo-app.toml` narrows the targets with `platforms = ["linux", "macos"]` and a
+`platform-reason`; the default is all three. `tilo-app check --target <t>` runs
+the portability and capability checks for a target on any host. In an app that
+keeps all three targets, platform code (a target `cfg`, `std::os`, a platform
+path or OS tool, a thread or clock that panics in a page) is an error, not a
+baseline entry: move it into the platform crates under `crates/platform/`
+(`tilo-paths`, `tilo-files`, `tilo-process`, `tilo-net`, …), which select a
+backend per target, and call them. See
+[`app-model/cross-target.md`](app-model/cross-target.md) for the service table.
+For `package`, a `--target` value other than `linux`, `macos` or `web` is a
+Rust target triple.
+
+### Files, preferences and secrets
+
+Everything an app keeps outside its documents goes through `ui::storage`, the
+same API on every target. With a `HostContext` use its methods; they are scoped
+to the app the host prepared.
+
+| What | Call | Backed by |
+|---|---|---|
+| Documents (collaborative) | resources and records; `ui::persist` for a one-document app | Automerge records |
+| App files: imports, caches, databases | `cx.files().data()` / `.config()` / `.cache()` / `.state()` → `tilo_files::Dir` (`ui::storage::AppFiles::for_app(id)` without a context) | `tilo_paths::AppPaths`: per-user directories natively, the origin-private file system in a page |
+| Preferences | `cx.settings()` (the app's section) or `ui::storage::Settings::section("locale")` for a shared one: `load`, `bool`, `string`, `update` | the desktop settings document (`settings-store`), or the host's source |
+| Secrets | `cx.secrets()` (`ui::storage::secrets(id)`) | `tilo-secrets`: Secret Service, Keychain, wrapped IndexedDB |
+
+Apps do not depend on `settings-store`, `app-state`, `xdg-paths` or
+`atomic-file`: those are the SDK's internals (the last two are deprecated
+shims over `tilo-paths` and `tilo_files::native::atomic`). The exceptions are
+the Settings app, which owns the settings document, and Notes' capture
+fault-injection scenario, which locates its record on disk. Desktop-only code
+that must name a native path uses `tilo_paths` and `tilo_files::native`
+(`native::private` for owner-only files such as keys).
+
+### Capabilities
+
+`[capabilities]` in `tilo-app.toml` lists every capability the code uses, as
+`required` (the app cannot work without it; every declared target must provide
+it) or `optional` (the app degrades where it is missing):
+
+```toml
+[capabilities]
+required = ["network.http"]
+optional = ["files.open", "app-files", "clipboard"]
+```
+
+`tilo-app check`, `build`, `run` and `package` fail before compiling when the
+code uses one the manifest does not list, naming the site and the fix
+(`tilo-app add capability <name>`); the policy gate
+(`tools/policy/check_app_capabilities.py`) enforces the same table,
+`tools/policy/app_capability_usage.toml`. macOS packaging derives entitlements
+and usage strings from the list.
 
 ## The app shape
 
@@ -1402,7 +1492,7 @@ scope from the identity of the thing being changed:
 
 | State | Canonical home | Identity / permission scope | Replication |
 |---|---|---|---|
-| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
+| Package preference or account configuration shared with collaborators | package `state.automerge` through `ui::persist` (device-local preferences use `cx.settings()`) | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
 | Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
 | Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
 | Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |
@@ -2485,6 +2575,12 @@ headless launch path used by generated projects. Prefer semantic assertions
 over pixel coordinates: inspect roles, names, selected/expanded state, and
 focus after dispatching keyboard or pointer input. Use deterministic rendering
 only for visual behavior that semantics cannot express.
+
+The toolkit's debug and capture switches are `TILO_UI_*` environment
+variables (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, `TILO_UI_VELLO_CPU`, …); the
+rendering ones are listed in [`performance-flags.md`](performance-flags.md).
+Read one from app or test code with `ui::env::var`. The old `QUICK_UI_*`
+names still work and warn once per variable; new scripts use the new names.
 
 For a post-layout inspection without opening a window, write the widget and
 accessibility tree directly. `inspect` writes `inspect.json` in the app root by

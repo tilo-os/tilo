@@ -8,7 +8,7 @@ description = "Portable filesystem operations that only some hosts provide: perm
 
 [dependencies]
 trash = "5.2.6"
-xdg-paths = { path = "../xdg-paths" }
+tilo-xdg-paths = { path = "../xdg-paths" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]

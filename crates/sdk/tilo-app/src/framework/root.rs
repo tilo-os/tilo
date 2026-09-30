@@ -331,6 +331,14 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         ));
         resources
     }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[ui_core::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
+    }
 }
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
