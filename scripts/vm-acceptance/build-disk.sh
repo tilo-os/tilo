@@ -5,22 +5,26 @@
 #
 # usage: build-disk.sh <commit-ish> <out.qcow2>
 #
-#   TILO_DISK_BUILDER   ssh destination of the rcargo builder (e.g. fedora@builder)
+#   TILO_DISK_BUILDER   ssh destination of the remote builder (e.g. fedora@builder)
+#   TILO_DISK_CARGO     a cargo drop-in that runs `run` on that builder (e.g. "<drop-in> --on-builder")
+#   TILO_DISK_CARGO_ENV prefix the drop-in strips from variables it forwards to the builder
+#                       (empty: SOURCE_DATE_EPOCH is exported as it is)
 #   TILO_DISK_SCRATCH   scratch directory on the builder for image storage and output
-#   TILO_DISK_MIRRORS   glob of rcargo worktree mirrors on the builder
-#                       (default /srv/rcargo/p/*/w/*)
+#   TILO_DISK_MIRRORS   glob of the drop-in's worktree mirrors on the builder, each with the
+#                       commit's tree under src/ and its build under target/
 #   TILO_DISK_OCI       an OCI layout already built from <commit> on the builder: skip the
 #                       image build and write the disk from it
 #   RPMS_REF, KERNEL_RPMS_REF   optional overrides; build-image.sh resolves both otherwise
 #
-# Nothing is compiled here: the OS image is built by `rcargo --on-builder run -p tilo-vm --
+# Nothing is compiled here: the OS image is built by `$TILO_DISK_CARGO run -p tilo-vm --
 # image build`, the disk by os/dev/build-image.sh on the builder, and only the qcow2 is copied.
 set -euo pipefail
 
-[ $# -eq 2 ] || { sed -n '2,15p' "$0"; exit 2; }
+[ $# -eq 2 ] || { sed -n '2,18p' "$0"; exit 2; }
 : "${TILO_DISK_BUILDER:?set TILO_DISK_BUILDER to the ssh destination of the builder}"
 : "${TILO_DISK_SCRATCH:?set TILO_DISK_SCRATCH to a scratch directory on the builder}"
-MIRRORS=${TILO_DISK_MIRRORS:-/srv/rcargo/p/*/w/*}
+: "${TILO_DISK_MIRRORS:?set TILO_DISK_MIRRORS to the glob of worktree mirrors on the builder}"
+MIRRORS=$TILO_DISK_MIRRORS
 out=$(realpath -m "$2")
 repo=$(git rev-parse --show-toplevel)
 sha=$(git -C "$repo" rev-parse --verify "$1^{commit}")
@@ -35,7 +39,10 @@ marker=
 if [ -z "${TILO_DISK_OCI:-}" ]; then
   echo "== image for ${sha:0:12} (SOURCE_DATE_EPOCH=$sde)"
   marker=$(ssh "$TILO_DISK_BUILDER" 'm=$(mktemp); echo "$m"')
-  (cd "$wt" && RCARGO_ENV_SOURCE_DATE_EPOCH=$sde rcargo --on-builder run -p tilo-vm -- image build)
+  : "${TILO_DISK_CARGO:?set TILO_DISK_CARGO to a cargo drop-in that runs on the builder}"
+  # shellcheck disable=SC2086 # TILO_DISK_CARGO is a command line: the drop-in and its flags
+  (cd "$wt" && env "${TILO_DISK_CARGO_ENV:-}SOURCE_DATE_EPOCH=$sde" $TILO_DISK_CARGO \
+    run -p tilo-vm -- image build)
 fi
 
 echo "== disk"
