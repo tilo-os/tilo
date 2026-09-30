@@ -427,7 +427,7 @@ pub fn install_joined_device(
         .iter()
         .any(|known| known.device_public_key == local_cert.device_public_key)
     {
-        certificates.push(local_cert);
+        certificates.push(local_cert.clone());
     }
     certificates.push(cert.clone());
     let target_store =
@@ -436,7 +436,7 @@ pub fn install_joined_device(
         target_store.remember_certificate(&identity_id, known)?;
     }
     local_store.remember_certificate(&identity_id, cert.clone())?;
-    copy_home_peers(layout.local_home_peers, &target_system, &identity_id)?;
+    copy_home_peers(layout.local_home_peers, &target_system, &local_cert)?;
     Ok(cert)
 }
 
@@ -501,11 +501,12 @@ fn safe_account_name(name: &str) -> bool {
 fn copy_home_peers(
     source: &Path,
     target_system: &IdentityPaths,
-    identity_id: &str,
+    local_cert: &DeviceCert,
 ) -> io::Result<()> {
+    let identity_id = hex::encode(local_cert.user_public_key);
     let bytes = match fs::read(source) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error),
     };
     if bytes.len() > 1024 * 1024 {
@@ -514,12 +515,34 @@ fn copy_home_peers(
             "home-peer registry exceeds 1 MiB",
         ));
     }
-    let entries: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let own: Vec<_> = entries
-        .into_iter()
-        .filter(|entry| entry.user_public_key == identity_id)
-        .collect();
+    let mut own: Vec<tilo_relay_protocol::HomePeerRegistration> = if bytes.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    };
+    own.retain(|entry| entry.user_public_key == identity_id);
+    let device_id = hex::encode(local_cert.device_public_key);
+    let topic = tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
+    let already_dialable = own.iter().any(|entry| {
+        entry.relay_service_node_id == device_id && entry.relay_workspace_ids.contains(&topic)
+    });
+    if !already_dialable {
+        own.push(tilo_relay_protocol::HomePeerRegistration {
+            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: device_id.clone(),
+            relay_service_node_id: device_id,
+            relay_endpoint: None,
+            label: if local_cert.device_label.trim().is_empty() {
+                "Setup machine".into()
+            } else {
+                local_cert.device_label.trim().to_string()
+            },
+            user_public_key: identity_id,
+            device_cert: Some(local_cert.clone()),
+            relay_workspace_ids: vec![topic],
+        });
+    }
     let encoded = serde_json::to_vec_pretty(&own)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let parent = target_system
@@ -1132,8 +1155,12 @@ mod tests {
             &std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(copied.len(), 1);
         assert_eq!(copied[0].user_public_key, identity_id);
+        let topic = tilo_relay_protocol::personal_continuity_workspace_id(&user);
+        assert!(copied.iter().any(|entry| {
+            entry.relay_service_node_id == hex::encode(local_cert.device_public_key)
+                && entry.relay_workspace_ids.contains(&topic)
+        }));
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
