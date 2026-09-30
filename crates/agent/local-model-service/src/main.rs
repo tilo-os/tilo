@@ -1142,7 +1142,7 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     // to this process exactly once.
     let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
     let actual = listener.local_addr().map_err(|error| error.to_string())?;
-    if actual.as_pathname().is_some_and(|path| path != expected) {
+    if actual.as_pathname() != Some(expected) {
         return Err("systemd model-manager listener has an unexpected path".into());
     }
     // The manager starts Podman/model processes. Keep the authenticated
