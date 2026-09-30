@@ -1217,7 +1217,7 @@ pub fn write_trusted_identities_projection(
     let final_path = trusted_identities_dir()
         .join(room.to_string())
         .join(TRUSTED_IDENTITIES_FILE);
-    atomic_file::write_private(&final_path, &bytes)?;
+    tilo_files::native::atomic::write_private(&final_path, &bytes)?;
     Ok(final_path)
 }
 

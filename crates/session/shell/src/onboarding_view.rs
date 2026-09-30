@@ -220,7 +220,7 @@ fn store_progress(identity_dir: &std::path::Path, stage: PersistedStage) -> std:
         stage,
     })
     .map_err(|error| std::io::Error::other(error.to_string()))?;
-    atomic_file::write_with_mode(&progress_path(identity_dir), &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(&progress_path(identity_dir), &bytes, 0o600)
 }
 
 fn clear_progress(identity_dir: &std::path::Path) -> std::io::Result<()> {
@@ -3807,7 +3807,7 @@ mod tests {
             schema_version: 1,
             secret_ref: None,
         };
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             &directory.join("primary.json"),
             &record.to_json_bytes().expect("fixture identity JSON"),
             0o600,
@@ -4016,7 +4016,7 @@ mod tests {
         // Phase `unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup`.
         {
             let directory = TempDir::new().expect("progress directory");
-            atomic_file::write_with_mode(
+            tilo_files::native::atomic::write_with_mode(
                 &progress_path(directory.path()),
                 br#"{"version":99,"stage":"identity-ready"}"#,
                 0o600,

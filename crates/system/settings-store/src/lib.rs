@@ -597,16 +597,16 @@ mod tests {
 #[cfg(all(test, unix))]
 mod parent_durability_tests {
     use super::*;
-    use atomic_file::test_support::{
+    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::test_support::{
         ProvisionCheckpoint, with_provision_failure, with_provision_observer,
     };
-    use atomic_file::{DirectoryState, directory_state};
-    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::{DirectoryState, directory_state};
 
     #[test]
     fn public_update_preserves_file_publication_phase_and_visible_format() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
-        use atomic_file::{PublicationState, publication_state};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::{PublicationState, publication_state};
         for (point, state, visible) in [
             (
                 Checkpoint::BeforePublish,
