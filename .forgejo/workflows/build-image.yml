@@ -1989,13 +1989,16 @@ jobs:
       # pulls, collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
-        timeout-minutes: 30
+        timeout-minutes: 40
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
           ARCH: ${{ matrix.arch }}
           COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          LENOVO_FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
+          LENOVO_FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
         run: |
           set -euo pipefail
           started=$(date +%s)
@@ -2003,33 +2006,41 @@ jobs:
           # tilo-vm refuses a base older than the VM's; its config carries
           # the fixed dev epoch, so the commit time orders dev bases.
           created="$SOURCE_DATE_ISO"
-          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
           cache=()
           if [[ $COMPILER_CACHE == shared ]]; then
             cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
                    --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
-          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
-            -f os/Containerfile.dev \
-            --build-arg "BASE_IMAGE=$base" \
-            --build-arg "RPMS_REF=$RPMS_REF" \
-            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
-            --build-arg "TILO_BASE_CREATED=$created" \
-            --build-arg TILO_CARGO_FRESHNESS=clean \
-            --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
-            --build-arg TILO_DEV_RUST_LTO=off \
-            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-            "${cache[@]}" \
-            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.base.name=$base" \
-            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
-            --label sh.tilo.dev.base-trust=integration \
-            --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
-            .
-          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          # build_dev PROFILE IMAGE [BUILD-ARG...]: the dev image, or a board's.
+          build_dev() {
+            local profile=$1 image=$2
+            shift 2
+            metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+            docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+              -f os/Containerfile.dev \
+              --build-arg "BASE_IMAGE=$base" \
+              --build-arg "RPMS_REF=$RPMS_REF" \
+              --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+              --build-arg "TILO_BASE_CREATED=$created" \
+              --build-arg TILO_CARGO_FRESHNESS=clean \
+              --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
+              --build-arg TILO_DEV_RUST_LTO=off \
+              --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              --build-arg "TILO_HARDWARE_PROFILE=$profile" \
+              "$@" \
+              "${cache[@]}" \
+              --label "org.opencontainers.image.version=$DEV_SERIES-${profile/generic/ci}" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --label "org.opencontainers.image.base.name=$base" \
+              --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+              --label sh.tilo.dev.base-trust=integration \
+              --metadata-file "$metadata" \
+              --output "type=image,name=$image,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
+              .
+            digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          }
+          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+          build_dev generic "$child"
           echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
           DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
             DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
@@ -2037,6 +2048,39 @@ jobs:
             BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
             ./os/dev/publish-dev-disk.sh
           echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+
+          # The Lenovo 83ED board dev image: the board layer on this dev image,
+          # with the firmware its release takes from the same pinned artifact.
+          # Until it has run on real hardware, a failure here warns instead of
+          # failing the lane that already published the generic dev image.
+          if [[ $ARCH == aarch64 && -n $LENOVO_FIRMWARE_REF ]]; then
+            set +e
+            (
+            set -euo pipefail
+            board_started=$(date +%s)
+            firmware_authfile=$(mktemp "${RUNNER_TEMP:-/tmp}/tilo-firmware-auth.XXXXXX")
+            login_store=$(mktemp -d "${RUNNER_TEMP:-/tmp}/tilo-firmware-login.XXXXXX")
+            trap 'sudo -n rm -rf -- "$firmware_authfile" "$login_store"' EXIT
+            printf '{}\n' > "$firmware_authfile"
+            printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+              --root "$login_store/graph" --runroot "$login_store/run" login code.tilo.so \
+              --authfile "$firmware_authfile" --username "${{ github.actor }}" --password-stdin
+            sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \
+              python3 os/dev/hardware-firmware-artifact.py import \
+              --reference "$LENOVO_FIRMWARE_REF" \
+              --manifest-sha256 "$LENOVO_FIRMWARE_MANIFEST_SHA256" \
+              --profile lenovo-83ed --architecture aarch64 \
+              --repo "$GITHUB_WORKSPACE" > /dev/null
+            sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
+            board="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-lenovo-83ed"
+            build_dev lenovo-83ed "$board" \
+              --build-arg "TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:lenovo-83ed-dev"
+            echo "::notice::Lenovo 83ED dev image built in $(( $(date +%s) - board_started ))s: $board ($digest)"
+            )
+            board_status=$?
+            set -e
+            [[ $board_status == 0 ]] || echo "::warning::the Lenovo 83ED dev image failed to build"
+          fi
 
       - name: Publish the rootfs base for the runners' seed
         id: rootfs-publish
