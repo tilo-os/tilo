@@ -532,7 +532,15 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             let mut value =
                 json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args });
             if let Some(device) = device {
-                value["device"] = serde_json::Value::String(device.clone());
+                let Some(object) = value.as_object_mut() else {
+                    return Err(ParseError::Usage(
+                        "action invocation payload is not an object".into(),
+                    ));
+                };
+                object.insert(
+                    "device".to_string(),
+                    serde_json::Value::String(device.clone()),
+                );
             }
             value
         }

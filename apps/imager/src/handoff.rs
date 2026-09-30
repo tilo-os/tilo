@@ -457,10 +457,12 @@ mod tests {
             home_peers: &home_peers,
         };
         let dir = tempfile::tempdir().unwrap();
-        let mut profile = InstallProfile::default();
-        profile.wifi_ssid = "studio".into();
-        profile.device_label = "orange-pi".into();
-        profile.enroll_local_identity = true;
+        let profile = InstallProfile {
+            wifi_ssid: "studio".into(),
+            device_label: "orange-pi".into(),
+            enroll_local_identity: true,
+            ..InstallProfile::default()
+        };
 
         apply_setup_handoff(dir.path(), &profile, "correct-horse", &local).unwrap();
 
@@ -541,8 +543,10 @@ mod tests {
             system: &local_system,
             home_peers: &home_peers,
         };
-        let mut profile = InstallProfile::default();
-        profile.wifi_ssid = "studio".into();
+        let profile = InstallProfile {
+            wifi_ssid: "studio".into(),
+            ..InstallProfile::default()
+        };
         let err = stage_setup_handoff(&profile, "", &local).unwrap_err();
         assert!(err.contains("Wi-Fi password"));
     }

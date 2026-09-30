@@ -1292,6 +1292,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one enrollment scenario keeps the two fleets, the copied rooms, and the absent root secret together"
+    )]
     fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
         use ed25519_dalek::Signer;
         use tilo_relay_protocol::HomePeerRegistration;
@@ -1489,7 +1493,7 @@ mod tests {
                 relay_service_node_id: hex::encode([7_u8; 32]),
                 relay_endpoint: None,
                 label: "home".into(),
-                user_public_key: identity_id.clone(),
+                user_public_key: identity_id,
                 device_cert: None,
                 relay_workspace_ids: vec![1],
             }])

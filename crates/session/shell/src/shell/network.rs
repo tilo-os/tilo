@@ -2742,8 +2742,7 @@ impl ShellNetwork {
         let online = self
             .live_room_peers
             .lock()
-            .map(|peers| peers.contains(&(topic, endpoint)))
-            .unwrap_or(false);
+            .is_ok_and(|peers| peers.contains(&(topic, endpoint)));
         if !online {
             return Err("the enrolled device is not online yet".into());
         }
@@ -2786,11 +2785,13 @@ impl ShellNetwork {
                 }
             }
         }
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "workspace state is unavailable".to_string())?;
-        let local = replica.tree.read().rooms();
+        let local = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "workspace state is unavailable".to_string())?;
+            replica.tree.read().rooms()
+        };
         enrolled
             .into_iter()
             .find(|room| local.iter().any(|candidate| candidate == room))
@@ -6840,7 +6841,7 @@ mod tests {
             &hex::encode(device),
             tilo_actions::remote::RemoteActionTarget {
                 provider: format!("workspace:{room}"),
-                address: address.clone(),
+                address,
             },
             tilo_actions::remote::InvokeArgument::None,
         )
@@ -7469,12 +7470,12 @@ mod tests {
         let person = crate::shell::collab_broker_capnp::principal_id_for_root(
             root.verifying_key().to_bytes(),
         );
-        let (workspace, room) = remote_action_room(&person, &person);
+        let (workspace, enrolled) = remote_action_room(&person, &person);
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
         net.require_peer_identity = true;
-        let topic = room_topic_id(room);
+        let topic = room_topic_id(enrolled);
         authenticated_personal_peer_on_topic(
             &net,
             &root,
@@ -7487,7 +7488,7 @@ mod tests {
                 tilo_actions::remote::InvokeRequest {
                     invocation: tilo_actions::InvocationId::new(),
                     target: tilo_actions::remote::RemoteActionTarget {
-                        provider: format!("workspace:{room}"),
+                        provider: format!("workspace:{enrolled}"),
                         address: tilo_actions::ActionAddress::new("app.so.tilo.files", "open"),
                     },
                     argument: tilo_actions::remote::InvokeArgument::None,
@@ -7512,7 +7513,10 @@ mod tests {
             .expect("inbound")
             .clone();
         assert_eq!(inbound.len(), 1);
-        assert_eq!(inbound[0].caller.room(), Some(room.to_string().as_str()));
+        assert_eq!(
+            inbound[0].caller.room(),
+            Some(enrolled.to_string().as_str())
+        );
     }
 
     #[test]
