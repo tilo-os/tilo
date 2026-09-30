@@ -375,7 +375,9 @@ fn send(writer: &Mutex<UnixStream>, reply: &Reply) {
 
 fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
     let mut frame = Vec::new();
-    let limit = u64::try_from(MAX_FRAME_BYTES).unwrap_or(u64::MAX) + 1;
+    let limit = u64::try_from(MAX_FRAME_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
     let count = reader.by_ref().take(limit).read_until(b'\n', &mut frame)?;
     if count == 0 {
         return Ok(None);
@@ -415,8 +417,8 @@ mod tests {
     /// beside them it was given nothing in.
     fn session() -> Session {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let (inbox, outbox, elsewhere) = (root.join("in"), root.join("out"), root.join("home"));
+        let base = dir.path().canonicalize().unwrap();
+        let (inbox, outbox, elsewhere) = (base.join("in"), base.join("out"), base.join("home"));
         for folder in [&inbox, &outbox, &elsewhere] {
             std::fs::create_dir(folder).unwrap();
         }
@@ -442,7 +444,7 @@ mod tests {
             let present = Arc::clone(&present);
             Arc::new(move || present.load(Ordering::Acquire))
         };
-        let socket = root.join("chooser.sock");
+        let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(
             socket.clone(),
             ChooserContext {
@@ -520,7 +522,9 @@ mod tests {
 
     /// The chooser the service put on screen, once it has.
     fn shown(session: &Session) -> FilePickerRequest {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("ten seconds fit in an Instant");
         loop {
             if let Some(request) = session.pickers.drain().pop() {
                 return request;
@@ -531,7 +535,9 @@ mod tests {
     }
 
     fn open_request(session: &Session) -> OpenRequest {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("ten seconds fit in an Instant");
         loop {
             if let Some(request) = session.service.drain_opens().pop() {
                 return request;
