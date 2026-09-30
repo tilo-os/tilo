@@ -11,6 +11,8 @@
 #     --root-max 40G          optional root partition ceiling
 #     --rootfs btrfs|ext4     root filesystem (default: btrfs)
 #     --esp 2G                ESP size
+#     --boot-gap 16M          free space before the ESP (Rockchip loader gap)
+#     --rockchip-loader DIR   idbloader.img + u-boot.itb written into that gap
 #     --retain 3              rollback generations the ESP must hold (see below)
 #     --uki-budget 160M       per-generation kernel budget used by that check
 #     --karg K=V              extra kernel argument (repeatable; unsealed only)
@@ -107,6 +109,7 @@ root_podman() {
 
 IMAGE=""; OUTDIR=""
 COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ROOT_MAX=""; ROOTFS=btrfs; ESP_SIZE=2G
+BOOT_GAP=""; ROCKCHIP_LOADER=""
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
@@ -126,6 +129,8 @@ while [ $# -gt 0 ]; do
     --root-max) ROOT_MAX="$2"; shift ;;
     --rootfs) ROOTFS="$2"; shift ;;
     --esp) ESP_SIZE="$2"; shift ;;
+    --boot-gap) BOOT_GAP="$2"; shift ;;
+    --rockchip-loader) ROCKCHIP_LOADER="$2"; shift ;;
     --retain) RETAIN="$2"; shift ;;
     --uki-budget) UKI_BUDGET="$2"; shift ;;
     --karg) KARGS+=("--karg" "$2"); shift ;;
@@ -139,18 +144,37 @@ while [ $# -gt 0 ]; do
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) if [ -z "$IMAGE" ]; then IMAGE="$1"; elif [ -z "$OUTDIR" ]; then OUTDIR="$1";
        else die "unexpected argument: $1"; fi ;;
   esac
   shift
 done
-[ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
+[ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,22p' "$0"; exit 1; }
 case "$ROOTFS" in
   btrfs|ext4) ;;
   *) die "--rootfs must be btrfs or ext4, got: $ROOTFS" ;;
 esac
+if [ -n "$BOOT_GAP" ]; then
+  case "${BOOT_GAP^^}" in
+    *M|*MIB) boot_gap_mib="${BOOT_GAP%%[Mm]*}" ;;
+    *G|*GIB) boot_gap_mib=$(( ${BOOT_GAP%%[Gg]*} * 1024 )) ;;
+    *) die "--boot-gap must be a whole number of MiB or GiB, got: $BOOT_GAP" ;;
+  esac
+  [[ "$boot_gap_mib" =~ ^[0-9]+$ ]] || die "--boot-gap must be a whole number of MiB or GiB, got: $BOOT_GAP"
+  [ "$boot_gap_mib" -ge 16 ] || die "--boot-gap must be at least 16M so a Rockchip loader fits before the ESP"
+fi
+if [ -n "$ROCKCHIP_LOADER" ]; then
+  [ -n "$BOOT_GAP" ] || die "--rockchip-loader requires --boot-gap"
+  [ -d "$ROCKCHIP_LOADER" ] && [ ! -L "$ROCKCHIP_LOADER" ] \
+    || die "--rockchip-loader must name a regular directory"
+  for loader_name in idbloader.img u-boot.itb; do
+    loader_path="$ROCKCHIP_LOADER/$loader_name"
+    [ -f "$loader_path" ] && [ ! -L "$loader_path" ] \
+      || die "--rockchip-loader is missing $loader_name"
+  done
+fi
 
 if [ -n "$FIRSTBOOT_SEED" ]; then
   [ -f "$FIRSTBOOT_SEED" ] && [ ! -L "$FIRSTBOOT_SEED" ] \
@@ -249,7 +273,6 @@ to_mib() {
     *) die "cannot parse size: $1" ;;
   esac
 }
-
 # --- backend ------------------------------------------------------------------
 # A UKI in the image means bootc selects the composefs backend by itself, and
 # the install must agree — so detect rather than make the caller remember.
@@ -550,6 +573,13 @@ fi
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
+if [ -n "$BOOT_GAP" ]; then
+  # systemd-repart places padding after a partition and starts the first one
+  # at 1 MiB. A 15 MiB unformatted hole fills 1 MiB..16 MiB, which is where
+  # U-Boot is stored; the ESP then starts at LBA 32768.
+  printf '[Partition]\nType=linux-generic\nLabel=rockchip-loader\nSizeMinBytes=15M\nSizeMaxBytes=15M\n' \
+    > "$DEFS/00-rockchip-gap.conf"
+fi
 printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=%s\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
   "$ROOTFS" "$ROOT_MIN" > "$DEFS/02-root.conf"
 if [ -n "$ROOT_MAX" ]; then
@@ -563,35 +593,71 @@ sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
   --definitions="$DEFS" --size="$SIZE" "$RAW"
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
+# Partition nodes exist before udev has probed their filesystems. The boot-gap
+# layout is identified by those filesystem types, so wait until the probe lands.
+sudo -n blockdev --rereadpt "$LOOP" 2>/dev/null || true
+sudo -n udevadm settle 2>/dev/null || true
+if [ -n "$BOOT_GAP" ]; then
+  root_dev=""
+  esp_dev=""
+  for _ in 1 2 3 4 5; do
+    root_dev=""
+    esp_dev=""
+    while read -r part fstype; do
+      case "$fstype" in
+        vfat)
+          [ -z "$esp_dev" ] || die "boot-gap disk has more than one FAT partition"
+          esp_dev="$part" ;;
+        btrfs|ext4)
+          [ -z "$root_dev" ] || die "boot-gap disk has more than one root filesystem"
+          root_dev="$part" ;;
+      esac
+    done < <(lsblk -ln -o PATH,FSTYPE "$LOOP")
+    [ -n "$root_dev" ] && [ -n "$esp_dev" ] && break
+    sleep 0.5
+    sudo -n udevadm settle 2>/dev/null || true
+  done
+  [ -n "$root_dev" ] && [ -n "$esp_dev" ] \
+    || die "boot-gap disk is missing its ESP or root filesystem"
+else
+  root_dev="${LOOP}p2"
+  esp_dev="${LOOP}p1"
+fi
 sudo -n udevadm settle 2>/dev/null || true
 # Kata exposes the scanned partitions in sysfs but does not run udev to
 # materialize their /dev nodes. Keep the validated nodes alive through mounts
 # and bootc install, then release them before detaching the loop device.
-coproc LOOP_NODE_HOLDER { sudo -n python3 -u "$SCRIPT_DIR/hold-loop-partition-nodes.py" "$LOOP"; }
+# A Rockchip disk has the loader hole plus the ESP and root. The holder
+# refuses a loop whose sysfs partitions are not exactly the ones it was given.
+holder_args=("$LOOP")
+if [ -n "$BOOT_GAP" ]; then
+  holder_args+=("3")
+fi
+coproc LOOP_NODE_HOLDER { sudo -n python3 -u "$SCRIPT_DIR/hold-loop-partition-nodes.py" "${holder_args[@]}"; }
 LOOP_NODE_HOLDER_PID=$!
 LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
 LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
 IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
 [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
 mkdir -p "$MNT"
-sudo -n mount "${LOOP}p2" "$MNT"
+sudo -n mount "$root_dev" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
 sudo -n mkdir -p "$ESP_AT"
 if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
-   && sudo -n mount "${LOOP}p1" "$ESP_AT" 2>"$OUTDIR/.esp-mount.log"; then
-  msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $ESP_AT"
+   && sudo -n mount "$esp_dev" "$ESP_AT" 2>"$OUTDIR/.esp-mount.log"; then
+  msg "2/4 mounted $root_dev -> $MNT, $esp_dev -> $ESP_AT"
 else
   if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
      && grep -qw vfat /proc/filesystems 2>/dev/null; then
-    die "mounting the vfat ESP ${LOOP}p1 at $ESP_AT failed even though this kernel
+    die "mounting the vfat ESP $esp_dev at $ESP_AT failed even though this kernel
   advertises vfat support. Refusing to hide a disk or mount failure behind the
   userspace ESP fallback. See $OUTDIR/.esp-mount.log"
   fi
   command -v mcopy >/dev/null \
     || die "this kernel cannot mount vfat and mcopy is unavailable; install mtools"
-  ESP_UUID="$(sudo -n blkid -s UUID -o value "${LOOP}p1")"
+  ESP_UUID="$(sudo -n blkid -s UUID -o value "$esp_dev")"
   [[ "$ESP_UUID" =~ ^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$ ]] \
-    || die "could not read the formatted ESP UUID from ${LOOP}p1"
+    || die "could not read the formatted ESP UUID from $esp_dev"
   # bootc's empty-root verifier requires /boot (or /boot/efi) to be a mount
   # point and rejects every unrelated directory inside the target root. Keep
   # the bind source outside $MNT on a real host filesystem with a UUID. bootc
@@ -614,7 +680,7 @@ else
     || die "could not apply safe options to the ESP staging bind mount"
   ESP_STAGE_BIND_MOUNTED=1
   ESP_STAGED=1
-  msg "2/4 mounted ${LOOP}p2 -> $MNT; staging ESP files at $ESP_AT for mtools"
+  msg "2/4 mounted $root_dev -> $MNT; staging ESP files at $ESP_AT for mtools"
 fi
 
 # --- install ------------------------------------------------------------------
@@ -838,9 +904,9 @@ if [ "$ESP_STAGED" = 1 ]; then
   fi
   rm -rf "$ESP_VERIFY"
   mkdir -p "$ESP_VERIFY"
-  msg "copying finalized ESP payload to ${LOOP}p1 with mtools"
-  sudo -n mcopy -s -p -m -i "${LOOP}p1" "${esp_entries[@]}" ::/
-  sudo -n mcopy -s -p -m -i "${LOOP}p1" '::/*' "$ESP_VERIFY/"
+  msg "copying finalized ESP payload to $esp_dev with mtools"
+  sudo -n mcopy -s -p -m -i "$esp_dev" "${esp_entries[@]}" ::/
+  sudo -n mcopy -s -p -m -i "$esp_dev" '::/*' "$ESP_VERIFY/"
   sudo -n chown -R "$(id -u):$(id -g)" "$ESP_VERIFY"
   (
     cd "$ESP_AT"
@@ -879,7 +945,7 @@ fi
 # do not silently export from the temporary WSL ESP staging copy.
 if [ -n "$DIRECT_BOOT_DIR" ]; then
   [ "$ESP_STAGED" = 0 ] || die "direct boot bundle needs the installed ESP mounted as vfat"
-  esp_partuuid="$(sudo -n blkid -s PARTUUID -o value "${LOOP}p1")"
+  esp_partuuid="$(sudo -n blkid -s PARTUUID -o value "$esp_dev")"
   [ -n "$esp_partuuid" ] || die "installed ESP has no GPT partition UUID"
   # A sealed image boots its one UKI; an unsealed one (the dev image) boots
   # the kernel and initrd its one BLS entry names, on the same ESP.
@@ -906,6 +972,12 @@ fi
 
 cleanup
 trap - EXIT
+
+if [ -n "$ROCKCHIP_LOADER" ]; then
+  msg "installing the Rockchip loader into the leading gap of $RAW"
+  python3 "$SCRIPT_DIR/install-rockchip-loader.py" \
+    "$RAW" "$ROCKCHIP_LOADER/idbloader.img" "$ROCKCHIP_LOADER/u-boot.itb"
+fi
 
 # --- qcow2 --------------------------------------------------------------------
 if [ "$KEEP_RAW" = 1 ]; then
