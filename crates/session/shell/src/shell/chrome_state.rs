@@ -712,6 +712,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Window-management operations an action asked for. The overlay host
+    /// drains them on its next update and runs each exactly as its chord
+    /// would, since the focused group's widgets live there.
+    shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -850,6 +854,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1022,6 +1027,19 @@ impl ChromeState {
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_toggle_requested)
+    }
+
+    /// Run `action` as if its chord had been pressed once, on the overlay
+    /// host's next update.
+    pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        self.shortcut_action_requests.push(action);
+        self.bump();
+    }
+
+    pub fn take_shortcut_action_requests(
+        &mut self,
+    ) -> Vec<settings_store::hardware::ShortcutAction> {
+        std::mem::take(&mut self.shortcut_action_requests)
     }
 
     pub fn request_input_source(&mut self, index: usize) {

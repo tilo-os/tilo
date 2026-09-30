@@ -112,8 +112,11 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     for mutation in &offline {
         peer.publish(route(), mutation).unwrap();
     }
-    wait_for("both edits in the persisted outbox", || {
-        let queued = store.load().is_some_and(|record| record.outbox.len() == 2);
+    // The outbox persists an edit before the link to the stopped host has
+    // reported its end, so wait for the peer to see the host gone as well.
+    wait_for("both edits in the persisted outbox, the host gone", || {
+        let queued = store.load().is_some_and(|record| record.outbox.len() == 2)
+            && peer.status().phase != TransportPhase::Connected;
         async move { queued.then_some(()) }
     })
     .await;

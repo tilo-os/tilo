@@ -575,6 +575,7 @@ EXAMPLE_APPS = "examples/apps/"
 WEB_BUILD_INPUTS = (
     "crates/browser/tilo-browser-runtime/scripts/",
     "crates/dev/tilo-app-cli/src/web.rs",
+    "crates/dev/tilo-app-cli/src/targets/",
     "crates/dev/tilo-app-cli/src/portability.rs",
     "tools/ci/build-web-examples.sh",
 )
