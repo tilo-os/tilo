@@ -156,7 +156,7 @@ if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
 fi
 # A zero clock is what a non-git mirror produces. DNF then rejects every RPM
-# header. rcargo sets this from the real checkout; refuse the fallback.
+# header. A cargo drop-in sets this from the real checkout; refuse the fallback.
 case "$SOURCE_DATE_EPOCH" in
   ''|0|*[!0-9]*)
     die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
