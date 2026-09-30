@@ -36,16 +36,31 @@ refuses 'adds an arbitrary unit drop-in' 'may not write /etc/systemd/system/gett
   sh -c 'mkdir -p "$0/systemd/system/getty@.service.d" && echo x > "$0/systemd/system/getty@.service.d/x.conf"'
 refuses 'replaces the sudo PAM stack' 'may not write /etc/pam.d/sudo' \
   sh -c 'mkdir -p "$0/pam.d" && echo x > "$0/pam.d/sudo"'
+refuses 'links the diagnostic script outside the overlay' 'diagnostics script must be a regular file' \
+  sh -c 'ln -s /etc/passwd "$0/tilo-validation-diagnostics.sh"'
 refuses 'holds a device node' 'contains a special file' \
   sh -c 'mkdir -p "$0/verity.d" && mkfifo "$0/verity.d/x.crt"'
+
+# The release gate's diagnostic service must pass the overlay policy. Use an
+# intentionally missing helper to stop at the next preflight without a build.
+allowed_overlay="$work/diagnostics-allowed"
+mkdir -p "$allowed_overlay"
+printf '%s\n' 'printf diagnostics' > "$allowed_overlay/tilo-validation-diagnostics.sh"
+out="$("$disk" localhost/tilo-test "$work/out-diagnostics" \
+  --etc-overlay "$allowed_overlay" --bootc-helper "$work/missing-helper" 2>&1)"
+if [ $? -ne 0 ] && grep -Fq -- '--bootc-helper must name an executable regular, non-symlink file' <<<"$out"; then
+  ok 'the validation diagnostic script passes overlay preflight'
+else
+  bad "the validation diagnostic script did not pass overlay preflight: $out"
+fi
 
 # The unit merges only a signed root partition and binds to the disk vm.sh
 # attaches; the device unit name is the systemd escape of its by-id path.
 escaped="$(python3 -c 'print("dev-" + "disk/by-id/virtio-tilo-validation".replace("-", "\\x2d").replace("/", "-") + ".device")')"
 if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq -- '--image-policy=root=signed+absent:usr=absent:=unused+absent' "$access" \
-   && grep -Fq 'serial=tilo-validation' "$vm" \
-   && grep -Fq 'format=raw,if=virtio,readonly=on,serial=tilo-validation' "$vm" \
+   && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
+   && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \
    && grep -Fq 'ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw' "$access"; then
   ok 'the validation unit merges only the signed extension on the disk vm.sh attaches'
 else
@@ -67,6 +82,8 @@ fi
 # when asked; the image still carries no SSH server.
 if grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then' "$workflow" \
    && grep -Fq './os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"' "$workflow" \
+   && grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic && '\''${{ matrix.arch }}'\'' == aarch64 ]]; then' "$workflow" \
+   && grep -Fq './os/tests/validation_drive_qemu.sh' "$workflow" \
    && grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
    && grep -Fq 'openssh-server' "$repo/os/scripts/verify-runtime-crypto-packages.sh" \
    && ! grep -Eq 'dnf install[^&]*openssh-server' "$image"; then

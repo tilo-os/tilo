@@ -31,7 +31,8 @@
 #                            live installer's writable /var for offline installs
 #     --etc-overlay DIR       add files to THIS disk's installed /etc (release
 #                            gate only; os/dev/validation-access.sh). Limited to
-#                            systemd/system, verity.d and pam.d/sshd
+#                            systemd/system, verity.d, pam.d/sshd, and the
+#                            validation-only boot diagnostic script
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #     --direct-boot-bundle DIR
 #                            export this dev disk's installed UKI sections
@@ -194,14 +195,19 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
 fi
 
 # The overlay only ever adds validation access to a gate's own disk copy: a
-# unit, the trust anchor for its extension, and sshd's PAM stack. Anything else
-# is refused rather than silently written into an installed /etc.
+# unit, the trust anchor for its extension, sshd's PAM stack, and its boot
+# diagnostic script. Anything else is refused rather than silently written
+# into an installed /etc.
 if [ -n "$ETC_OVERLAY" ]; then
   [ -d "$ETC_OVERLAY" ] && [ ! -L "$ETC_OVERLAY" ] \
     || die "--etc-overlay must name a regular directory"
   while IFS= read -r entry; do
     case "$entry" in
       systemd/system/*.service|systemd/system/*.target.wants/*.service|verity.d/*.crt|pam.d/sshd) ;;
+      tilo-validation-diagnostics.sh)
+        [ -f "$ETC_OVERLAY/$entry" ] && [ ! -L "$ETC_OVERLAY/$entry" ] \
+          || die "--etc-overlay diagnostics script must be a regular file"
+        ;;
       *) die "--etc-overlay may not write /etc/$entry" ;;
     esac
   done < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n')
@@ -319,12 +325,13 @@ elif [ "$COMPOSEFS" = no ] && [ "$WANTS_SYSTEMD_BOOT" = yes ]; then
 fi
 
 # bib's implicit kargs, which nothing in the image supplies: `rw` because bootc
-# mounts the root read-only otherwise, and the two consoles because that is how
+# mounts the root read-only otherwise, and the framebuffer and architecture's
+# serial consoles because that is how
 # a headless boot leaves a log the VM toolkit can read (os/dev/vm.sh serial).
 # A sealed image cannot take kargs here at all, so for that layout they have to
 # be in the image's own kargs.d — the message below says so.
 if [ ${#KARGS[@]} -eq 0 ] && [ "$HAS_UKI" = no ] && [ "$DEFAULT_KARGS" = yes ]; then
-  KARGS=(--karg rw --karg console=tty0 --karg console=ttyS0)
+  KARGS=(--karg rw --karg console=tty0 --karg console=ttyAMA0 --karg console=ttyS0)
 fi
 
 if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
@@ -624,6 +631,18 @@ else
   esp_dev="${LOOP}p1"
 fi
 sudo -n udevadm settle 2>/dev/null || true
+# systemd-repart lays the partitions out in definition order: with the boot gap
+# the loader hole is p1, so the ESP and root move up by one. Their filesystem
+# types are checked by probing the nodes below, not through udev, which Kata
+# does not run.
+if [ -n "$BOOT_GAP" ]; then
+  esp_dev="${LOOP}p2"
+  root_dev="${LOOP}p3"
+else
+  esp_dev="${LOOP}p1"
+  root_dev="${LOOP}p2"
+fi
+sudo -n udevadm settle 2>/dev/null || true
 # Kata exposes the scanned partitions in sysfs but does not run udev to
 # materialize their /dev nodes. Keep the validated nodes alive through mounts
 # and bootc install, then release them before detaching the loop device.
@@ -639,6 +658,14 @@ LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
 LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
 IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
 [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
+if [ -n "$BOOT_GAP" ]; then
+  [ "$(sudo -n blkid -p -s TYPE -o value "$esp_dev")" = vfat ] \
+    || die "boot-gap disk: $esp_dev is not the FAT ESP"
+  case "$(sudo -n blkid -p -s TYPE -o value "$root_dev")" in
+    btrfs|ext4) ;;
+    *) die "boot-gap disk: $root_dev is not the root filesystem" ;;
+  esac
+fi
 mkdir -p "$MNT"
 sudo -n mount "$root_dev" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
@@ -743,7 +770,7 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   publishes to a local registry for that reason — check the push above succeeded.
   Full log: $LOG"
   fi
-  want="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$LOG" | tail -1)"
+  want="$(composefs_expected_digest "$LOG")"
   if [ -n "$want" ]; then
     die "the UKI's sealed composefs digest is not the one install computed (bootc#2334).
   \`bootc container ukify\` and \`bootc install\` disagree on the digest of the same

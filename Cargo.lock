@@ -13167,7 +13167,6 @@ dependencies = [
  "tilo-action-broker",
  "tilo-actions",
  "tilo-advisory-lock",
- "tilo-agent-control-protocol",
  "tilo-app-state",
  "tilo-atomic-file",
  "tilo-automation",
@@ -13185,6 +13184,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-search",
+ "tilo-dialogs",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -13214,7 +13214,6 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
- "tilo-workspace-host",
  "tilo-xdg-paths",
  "tokio",
  "tokio-util",
@@ -14513,7 +14512,6 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-advisory-lock",
- "tilo-agent-control-protocol",
  "tilo-atomic-file",
  "tilo-automation",
  "tilo-automerge",
@@ -14528,7 +14526,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
- "tilo-workspace-host",
  "tilo-xdg-paths",
  "tokio",
  "tokio-util",
@@ -14564,28 +14561,6 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "tempfile",
-]
-
-[[package]]
-name = "tilo-agent-control-protocol"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-agent-control-service"
-version = "0.1.0"
-dependencies = [
- "collab-types",
- "tilo-action-broker",
- "tilo-agent-control-protocol",
- "tilo-desktop-model",
- "workspace-hack",
 ]
 
 [[package]]
@@ -14921,9 +14896,11 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-moq",
  "tilo-net",
+ "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -15080,88 +15057,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-cloud-enrollment"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek 3.0.0",
- "postcard",
- "serde",
- "serde_json",
- "tilo-delivery-protocol",
- "tilo-peer-state",
- "tilo-relay-protocol",
- "tilo-user-identity",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-cloud-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "channel-crypto",
- "chat",
- "chrono",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "iroh",
- "iroh-base",
- "launcher",
- "libc",
- "moq-net",
- "postcard",
- "private-fs",
- "qdoc",
- "rand 0.10.1",
- "reqwest",
- "runtime-collab",
- "runtime-identity",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-action-broker",
- "tilo-actions",
- "tilo-advisory-lock",
- "tilo-agent-control-protocol",
- "tilo-agent-control-service",
- "tilo-app-package",
- "tilo-atomic-file",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-automerge-isolate",
- "tilo-clock",
- "tilo-cloud-enrollment",
- "tilo-delivery-protocol",
- "tilo-desktop-model",
- "tilo-model-gateway",
- "tilo-moq",
- "tilo-net",
- "tilo-peer-state",
- "tilo-relay",
- "tilo-seal",
- "tilo-secret-vault",
- "tilo-test-env",
- "tilo-ui",
- "tilo-user-identity",
- "tilo-workspace-host",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "web-time",
- "web-transport-quinn",
- "wire-frame",
- "word-processor",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "tilo-connected-protocol"
 version = "0.1.0"
 dependencies = [
@@ -15254,7 +15149,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-actions",
- "tilo-agent-control-protocol",
  "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-peer-state",
@@ -15354,50 +15248,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-device-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "channel-crypto",
- "chat",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "iroh",
- "iroh-base",
- "libc",
- "notes",
- "postcard",
- "qdoc",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-automerge",
- "tilo-automerge-isolate",
- "tilo-delivery-protocol",
- "tilo-desktop-model",
- "tilo-moq",
- "tilo-peer-state",
- "tilo-relay",
- "tilo-test-env",
- "tilo-ui",
- "tilo-user-identity",
- "tilo-workspace-host",
- "tokio",
- "tracing-subscriber",
- "url",
- "uuid",
- "web-time",
- "web-transport-quinn",
- "word-processor",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-dialogs"
 version = "0.1.0"
 dependencies = [
@@ -15411,6 +15261,8 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "open",
+ "serde",
+ "serde_json",
  "tempfile",
  "tilo-rt",
  "tracing",
@@ -15977,7 +15829,6 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
- "tilo-agent-control-protocol",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -16089,7 +15940,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-actions",
- "tilo-agent-control-protocol",
  "tilo-agent-participant",
  "tilo-app-package",
  "tilo-atomic-file",
@@ -16331,7 +16181,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
- "tilo-workspace-host",
  "tilo-xdg-paths",
  "tokio",
  "tracing",
@@ -16868,66 +16717,6 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
-]
-
-[[package]]
-name = "tilo-workspace-host"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "brotli",
- "bytes",
- "calculator",
- "channel-crypto",
- "chat",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "hex",
- "http-body-util",
- "hyper",
- "hyper-util",
- "iroh",
- "iroh-base",
- "iroh-relay",
- "libc",
- "moq-net",
- "notes",
- "postcard",
- "quinn",
- "rand 0.10.1",
- "rcgen",
- "runtime-collab",
- "runtime-identity",
- "rustls",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-action-broker",
- "tilo-actions",
- "tilo-atomic-file",
- "tilo-automerge",
- "tilo-automerge-isolate",
- "tilo-clock",
- "tilo-delivery-protocol",
- "tilo-desktop-model",
- "tilo-moq",
- "tilo-native-media-control",
- "tilo-peer-state",
- "tilo-relay",
- "tilo-test-env",
- "tilo-ui",
- "tilo-user-identity",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "web-time",
- "web-transport-quinn",
- "word-processor",
- "workspace-hack",
 ]
 
 [[package]]

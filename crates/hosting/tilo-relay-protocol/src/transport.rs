@@ -420,6 +420,72 @@ pub enum Envelope {
         #[serde(with = "crate::sig64")]
         signature: [u8; 64],
     },
+
+    /// Start, end or moderate a call of a room the host governs (see
+    /// [`crate::voice`]). Requires an accepted `Subscribe` and the room's
+    /// owner or an administrator. Answered with [`Envelope::VoiceCallResult`].
+    /// Sent only to a host that advertised voice.
+    VoiceCall {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Caller-chosen id echoed in the answer.
+        request: [u8; 16],
+        /// The change.
+        operation: crate::voice::CallOperation,
+    },
+
+    /// The outcome of [`Envelope::VoiceCall`] `request`.
+    VoiceCallResult {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The request's id.
+        request: [u8; 16],
+        /// The call as governance now records it, or why the change was
+        /// refused.
+        result: Result<crate::voice::CallState, String>,
+    },
+
+    /// Join an active call, or with `participation`, repeat an earlier join
+    /// as its heartbeat. Requires an accepted `Subscribe`. Answered with
+    /// [`Envelope::VoiceGranted`] or [`Envelope::VoiceRefused`].
+    VoiceJoin {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// The participation to continue; `None` joins afresh.
+        participation: Option<[u8; 32]>,
+    },
+
+    /// A participation's current grant: the answer to a join, and sent
+    /// unasked when the call's roster or this participation's directions
+    /// change.
+    VoiceGranted {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The grant.
+        grant: Box<crate::voice::VoiceGrant>,
+    },
+
+    /// The device may not be in the call (any more).
+    VoiceRefused {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// Human-readable reason.
+        reason: String,
+    },
+
+    /// Leave a call.
+    VoiceLeave {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The call.
+        call: [u8; 32],
+        /// The participation that ends.
+        participation: [u8; 32],
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The

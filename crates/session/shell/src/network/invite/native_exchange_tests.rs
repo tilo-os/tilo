@@ -7,11 +7,9 @@ use crate::network::actor::HostIdentity;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_delivery_protocol::workspace_join::{
-    WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
-};
+use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::enroll::prepare_and_complete;
+use tilo_joined_room::testing::governor::TestGovernor;
 use tilo_joined_room::testing::ns as now_ns;
 use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join::{self, JoinTransportRequest};
@@ -19,14 +17,10 @@ use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::RevocationList;
-use tilo_workspace_host::{
-    SessionOwner,
-    collaboration::{CollaborationService, IssueInvitationRequest},
-};
 
 #[path = "native_exchange_tests/refresh.rs"]
 mod refresh;
-type ActualAuthority = Arc<Mutex<Option<(SessionOwner, CollaborationService)>>>;
+type ActualAuthority = Arc<Mutex<Option<TestGovernor>>>;
 
 #[derive(Clone)]
 struct ActualService {
@@ -46,26 +40,14 @@ impl WorkspaceJoinService for ActualService {
         remote: [u8; 32],
         request: JoinTransportRequest,
     ) -> JoinTransportResponse {
-        let now = now_ns(SystemTime::now()).unwrap();
         let mut state = self.authority.lock().unwrap();
-        let Some((owner, service)) = state.as_mut() else {
+        let Some(governor) = state.as_mut() else {
             return JoinTransportResponse::Error {
                 code: 503,
                 message: "fixture join service retired".into(),
             };
         };
-        let result = match request {
-            JoinTransportRequest::Inspect { signed_invitation } => {
-                service.inspect(owner, &signed_invitation, now).map(|join| {
-                    JoinTransportResponse::Inspection(join::JoinInspection {
-                        invite_id: join.invite_id(),
-                        grant: join.grant().clone(),
-                    })
-                })
-            }
-            JoinTransportRequest::Challenge(request) => service
-                .challenge(owner, remote, request, now)
-                .map(JoinTransportResponse::Challenge),
+        match request {
             JoinTransportRequest::Complete(request) => {
                 // An actual native store must already contain these exact signed bytes.
                 let pending = self
@@ -85,21 +67,10 @@ impl WorkspaceJoinService for ActualService {
                 );
                 self.saw_persisted_complete
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                service
-                    .complete(owner, remote, request, now)
-                    .map(|completion| JoinTransportResponse::Complete(completion.bootstrap))
+                governor.handle(remote, JoinTransportRequest::Complete(request))
             }
-            _ => {
-                return JoinTransportResponse::Error {
-                    code: 400,
-                    message: "unexpected membership operation".into(),
-                };
-            }
-        };
-        result.unwrap_or_else(|error| JoinTransportResponse::Error {
-            code: 403,
-            message: error.to_string(),
-        })
+            request => governor.handle(remote, request),
+        }
     }
 }
 
@@ -120,23 +91,13 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
 )]
 async fn actual_exchange(restart: bool) {
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::{
-        DeviceCapabilities,
-        persist::{IdentityPaths, read_device_key},
-        sign_device_cert,
-    };
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let mut remote_owner =
-        SessionOwner::initialize(&directory.path().join("actual-authority")).unwrap();
-    let governor = remote_owner.peer().authority().clone();
-    let governor_key =
-        read_device_key(&IdentityPaths::under(remote_owner.root().join("identity")).device_privkey)
-            .unwrap();
-    let host = remote_owner.host_certificate().clone();
-    let host_key = read_device_key(
-        &IdentityPaths::under(remote_owner.root().join("host-identity")).device_privkey,
-    )
-    .unwrap();
+    let mut remote_owner = TestGovernor::new();
+    let governor = remote_owner.governor().clone();
+    let governor_key = remote_owner.governor_key().clone();
+    let host = remote_owner.host().clone();
+    let host_key = remote_owner.host_key().clone();
     let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .relay_mode(iroh::RelayMode::Disabled)
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -144,21 +105,9 @@ async fn actual_exchange(restart: bool) {
         .bind()
         .await
         .unwrap();
-    let room = RoomId::parse(remote_owner.peer().room()).unwrap();
+    let room = RoomId::parse(remote_owner.room()).unwrap();
     let topic = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
-        version: 1,
-        mode: WorkspaceHostMode::CertifiedHost,
-        room: room.to_string(),
-        workspace_id: topic,
-        governing_authority: governor.clone(),
-        endpoint_addr: server.addr(),
-        host_user_public_key: host.user_public_key,
-        host_device_certificate: host.clone(),
-        packet_relay_url: "https://relay.invalid".into(),
-    }
-    .transport_hint(&host_key)
-    .unwrap();
+    let hint = remote_owner.hint(server.addr());
     let device_key = SigningKey::from_bytes(&[81; 32]);
     let root_key = SigningKey::from_bytes(&[82; 32]);
     let mut device = DeviceCert {
@@ -171,29 +120,21 @@ async fn actual_exchange(restart: bool) {
         signature: [0; 64],
     };
     sign_device_cert(&mut device, &root_key).unwrap();
-    let service = CollaborationService::new(vec![hint.clone()]);
     let now = now_ns(SystemTime::now()).unwrap();
-    let issued = service
-        .issue(
-            &mut remote_owner,
-            governor.device_public_key,
-            IssueInvitationRequest {
-                request_id: [83; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: Some(device.user_public_key),
-                invitee_name: Some("Native receiver".into()),
-                expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
-            },
-            now,
-        )
-        .unwrap();
+    let signed_invitation = remote_owner.issue(
+        vec![hint],
+        MemberRole::Editor,
+        Some(device.user_public_key),
+        Some("Native receiver".into()),
+        now.checked_add(60_000_000_000).unwrap(),
+    );
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let actual = ActualService {
-        authority: Arc::new(Mutex::new(Some((remote_owner, service)))),
+        authority: Arc::new(Mutex::new(Some(remote_owner))),
         receiving_owner: Arc::new(Mutex::new(Some(receiving_owner.clone()))),
         room,
         saw_persisted_complete: saw.clone(),
@@ -207,7 +148,6 @@ async fn actual_exchange(restart: bool) {
         let authority = actual_authority.lock().unwrap();
         let authority = authority.as_ref().unwrap();
         let mut room_document = authority
-            .0
             .peer()
             .admitted_room()
             .expect("actual admitted room")
@@ -275,7 +215,7 @@ async fn actual_exchange(restart: bool) {
         identity.clone(),
         topic,
         Some(local),
-        join::encode_invitation_text(&issued.signed_invitation),
+        join::encode_invitation_text(&signed_invitation),
         receiving_owner.clone(),
     )
     .await;
@@ -297,12 +237,10 @@ async fn actual_exchange(restart: bool) {
         let state = actual_authority.lock().unwrap();
         let state = state.as_ref().unwrap();
         (
-            state.0.peer().governed_access(SystemTime::now()).unwrap(),
+            state.governed_access(SystemTime::now()).unwrap(),
             state
-                .0
                 .outgoing()
-                .iter()
-                .map(|entry| (entry.bytes.to_vec(), entry.kind))
+                .map(|(bytes, kind)| (bytes.to_vec(), kind))
                 .collect::<Vec<_>>(),
         )
     };

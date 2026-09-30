@@ -45,6 +45,9 @@ for tool in "$cc" make dtc bison flex swig python3 bc; do
 done
 python3 -c 'import elftools' >/dev/null 2>&1 || missing="$missing python3-pyelftools"
 python3 -c 'import setuptools' >/dev/null 2>&1 || missing="$missing python3-setuptools"
+# U-Boot's pylibfdt is a Python extension; it needs the interpreter's headers.
+python3 -c 'import os, sysconfig; raise SystemExit(not os.path.exists(os.path.join(sysconfig.get_paths()["include"], "Python.h")))' \
+  || missing="$missing python3-devel"
 [ -f /usr/include/openssl/engine.h ] || missing="$missing openssl-devel-engine"
 [ -f /usr/include/gnutls/gnutls.h ] || missing="$missing gnutls-devel"
 if [ -n "$missing" ]; then
