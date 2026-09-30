@@ -146,10 +146,7 @@ fn frame_retention(cleartext: &[u8]) -> ContentRetention {
 
 /// Stable `NeighbourMsg` peer handle of a device.
 pub fn peer_id(device: &[u8; 32]) -> u64 {
-    let digest = blake3::derive_key("tilo-browser-peer-id-v1", device);
-    u64::from_le_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-    ])
+    neighbour_wire::peer_handle(device)
 }
 
 /// Sign one cleartext document frame (one element of

@@ -12,6 +12,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 name=tilo-session
 version=$(<"$repo_root/dist/VERSION")
+# Published packages are release 1; dist/rpm/host-update.sh names the commit.
+release=${TILO_RPM_RELEASE:-1}
+[[ $release =~ ^[0-9][0-9A-Za-z._+~]*$ ]] || { echo "invalid TILO_RPM_RELEASE: $release" >&2; exit 1; }
 
 run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
@@ -128,6 +131,7 @@ rpmbuild_cmd=(
     rpmbuild -bb
     --define "_topdir $out"
     --define "tilo_version $version"
+    --define "tilo_release $release"
     "$out/SPECS/$name.spec"
 )
 if command -v rpmbuild >/dev/null 2>&1; then

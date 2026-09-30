@@ -185,12 +185,64 @@ fn enrol(
     Ok(cert)
 }
 
+/// The first wait before reopening a lost approver session; it doubles up
+/// to [`APPROVER_RETRY_MAX`].
+const APPROVER_RETRY_MIN: Duration = Duration::from_millis(250);
+const APPROVER_RETRY_MAX: Duration = Duration::from_secs(10);
+/// A session that lasted this long starts the next wait from the minimum.
+const APPROVER_SETTLED: Duration = Duration::from_secs(30);
+
+/// Keep a dev approver answering for as long as the host runs. A session
+/// that fails (the network changed under it, a path closed, the host was
+/// slow to answer) is logged and reopened with `connect` after a backoff;
+/// it never ends the host.
+async fn approve_forever<C, F>(mut connect: C, root: &SigningKey) -> std::convert::Infallible
+where
+    C: FnMut() -> F,
+    F: std::future::Future<Output = anyhow::Result<tilo_relay_client::Approver>>,
+{
+    let mut wait = APPROVER_RETRY_MIN;
+    loop {
+        let opened = tokio::time::Instant::now();
+        let error = match connect().await {
+            Ok(approver) => match approve_every_browser(approver, root).await {
+                Err(error) => error,
+                Ok(never) => match never {},
+            },
+            Err(error) => error.context("connect the dev approver"),
+        };
+        if opened.elapsed() >= APPROVER_SETTLED {
+            wait = APPROVER_RETRY_MIN;
+        }
+        tracing::warn!(error = %format!("{error:#}"), retry_in = ?wait, "dev approver session lost; reopening it");
+        tokio::time::sleep(wait).await;
+        wait = wait.saturating_mul(2).min(APPROVER_RETRY_MAX);
+    }
+}
+
+/// The relay's address with its bound sockets on loopback too, so an
+/// approver in the same process keeps a path when the machine's network
+/// addresses change.
+fn loopback_addr(relay: &Relay) -> iroh::EndpointAddr {
+    let mut addr = relay.node_addr();
+    for socket in relay.bound_sockets() {
+        let ip = match socket.ip() {
+            std::net::IpAddr::V4(ip) if ip.is_unspecified() => std::net::Ipv4Addr::LOCALHOST.into(),
+            std::net::IpAddr::V6(ip) if ip.is_unspecified() => std::net::Ipv6Addr::LOCALHOST.into(),
+            ip => ip,
+        };
+        addr = addr.with_ip_addr(SocketAddr::new(ip, socket.port()));
+    }
+    addr
+}
+
 /// Certify every browser device that asks, as the dev user root, and
-/// approve every agent grant a page asks for with its delegation.
+/// approve every agent grant a page asks for with its delegation, until
+/// the session fails.
 async fn approve_every_browser(
     mut approver: tilo_relay_client::Approver,
     root: &SigningKey,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::convert::Infallible> {
     loop {
         let agents = approver
             .list_agent_proposals()
@@ -265,17 +317,26 @@ async fn approve_every_browser(
     }
 }
 
-/// What a page (or Cloud's `dev:tilo`) needs to connect: one JSON line on
+/// What a page (or Cloud's `dev:tilo`) needs to connect, and the Iroh
+/// address a native runtime names in `TILO_COLLAB_HOST`: one JSON line on
 /// stdout, and instructions on stderr.
-fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) {
+fn announce(
+    web: &WebHandle,
+    iroh: &iroh::EndpointAddr,
+    user: &[u8; 32],
+    allowed: &[String],
+    state: &Path,
+) {
     let localhost = format!("https://localhost:{}", web.addr.port());
     let user = hex::encode(user);
+    let iroh = serde_json::to_string(iroh).unwrap_or_default();
     println!(
         "{}",
         serde_json::json!({
             "origin": web.origin,
             "localhostOrigin": localhost,
             "plainOrigin": web.plain_origin,
+            "irohAddr": iroh,
             "userPublicKey": user,
             "certificateSha256": web.certificate_sha256,
             "allowedOrigins": allowed,
@@ -288,7 +349,8 @@ fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) 
          allowed origins:     {}\n  state:               {}\n\n\
          Cloud console:\n  npm run dev:tilo -- --port 9998 --host-origin {localhost} --user-public-key {user}\n\n\
          Open {localhost} in that browser once and accept the development certificate;\n\
-         WebTransport pins it by hash.\n",
+         WebTransport pins it by hash.\n\n\
+         Native runtime (its identity must be this user root):\n  TILO_COLLAB_HOST='{iroh}'\n",
         allowed.join(" "),
         state.display(),
     );
@@ -354,22 +416,37 @@ pub async fn dev(
         .serve_web(web_config(&web_args, listen, &state))
         .await
         .context("start the browser listener")?;
-    announce(&web, &user, &web_args.allowed_origins, &state);
+    announce(
+        &web,
+        &relay.node_addr(),
+        &user,
+        &web_args.allowed_origins,
+        &state,
+    );
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await
         .context("bind the approver's endpoint")?;
-    let approver = tilo_relay_client::Approver::connect(
-        &endpoint,
-        relay.node_addr(),
-        approver_cert,
-        &approver_key,
-        &RevocationList::new(),
-    )
-    .await
-    .context("connect the dev approver")?;
+    let connect = || {
+        let (endpoint, cert, key, host) = (
+            &endpoint,
+            approver_cert.clone(),
+            &approver_key,
+            loopback_addr(relay),
+        );
+        async move {
+            Ok(tilo_relay_client::Approver::connect(
+                endpoint,
+                host,
+                cert,
+                key,
+                &RevocationList::new(),
+            )
+            .await?)
+        }
+    };
     tokio::select! {
-        result = approve_every_browser(approver, &root) => result?,
+        never = approve_forever(connect, &root) => match never {},
         result = shutdown => result?,
     }
     drop(web);
@@ -582,4 +659,133 @@ pub async fn room(
     endpoint.close().await;
     hosted.shutdown().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_relay_client::{CertificationOutcome, request_certification};
+    use tilo_user_identity::{CERTIFICATION_SCHEMA_VERSION, CertificationRequest};
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&rand::random())
+    }
+
+    async fn endpoint() -> iroh::endpoint::Endpoint {
+        iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    /// A browser asks the host for a certificate; the dev approver answers.
+    async fn certify_a_browser(relay: &Relay, user: [u8; 32]) -> CertificationOutcome {
+        let device = key();
+        let now = tilo_clock::unix_now_ns();
+        let request = CertificationRequest {
+            version: CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Browser".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: rand::random(),
+            issued_at_ns: now.saturating_sub(1_000_000_000),
+            expires_at_ns: now.saturating_add(60_000_000_000),
+            signature: [0; 64],
+        }
+        .sign(&device)
+        .unwrap();
+        let browser = endpoint().await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(20),
+            request_certification(&browser, relay.node_addr(), request, |_| {}),
+        )
+        .await
+        .expect("the approver never answered")
+        .unwrap();
+        browser.close().await;
+        outcome
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_approver_connection_is_reopened_and_the_host_keeps_serving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [root, host, approver_key] = [key(), key(), key()];
+        let user = root.verifying_key().to_bytes();
+        let host_cert = enrol(&root, &host, "dev host", DeviceCapabilities::host()).unwrap();
+        let approver_cert = enrol(
+            &root,
+            &approver_key,
+            "dev approver",
+            DeviceCapabilities::primary(),
+        )
+        .unwrap();
+        let relay = Relay::start(
+            tilo_relay::RelayConfig {
+                state_root: tmp.path().join("relay"),
+                identity_root: tmp.path().join("identity"),
+                ..Default::default()
+            },
+            RelayIdentity {
+                user_public_key: user,
+                device_signing_key: host,
+                device_cert: host_cert,
+                revocations: RevocationList::new(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Every session gets an endpoint of its own, handed to the test so
+        // it can cut the connection from under the approver.
+        let (sessions_tx, mut sessions) = tokio::sync::mpsc::unbounded_channel();
+        let host_addr = loopback_addr(&relay);
+        let approving = tokio::spawn(async move {
+            let connect = || {
+                let (sessions_tx, cert, key, host) = (
+                    sessions_tx.clone(),
+                    approver_cert.clone(),
+                    approver_key.clone(),
+                    host_addr.clone(),
+                );
+                async move {
+                    let endpoint = endpoint().await;
+                    let _ = sessions_tx.send(endpoint.clone());
+                    Ok(tilo_relay_client::Approver::connect(
+                        &endpoint,
+                        host,
+                        cert,
+                        &key,
+                        &RevocationList::new(),
+                    )
+                    .await?)
+                }
+            };
+            approve_forever(connect, &root).await
+        });
+
+        let first = sessions.recv().await.unwrap();
+        assert!(matches!(
+            certify_a_browser(&relay, user).await,
+            CertificationOutcome::Issued { .. }
+        ));
+
+        first.close().await;
+
+        assert!(matches!(
+            certify_a_browser(&relay, user).await,
+            CertificationOutcome::Issued { .. }
+        ));
+        assert!(
+            sessions.try_recv().is_ok(),
+            "the second answer came from a reopened session"
+        );
+        assert!(!approving.is_finished(), "the approver gave up");
+        approving.abort();
+        relay.shutdown().await;
+    }
 }

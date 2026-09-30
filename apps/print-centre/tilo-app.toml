@@ -8,6 +8,9 @@ runtime = "tilo-runtime/2026.07"
 platforms = ["tilo-os"]
 platform-reason = "Administers CUPS printers and queues."
 
+[package.names]
+de = "Druckzentrale"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"

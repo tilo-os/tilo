@@ -2,7 +2,8 @@ name: CI / app SDK
 
 # One app source, three targets. These lanes prove that the SDK builds Tilo
 # apps for Linux, macOS and the web through `tilo-app`, that a generated app
-# builds outside this repository, and that web bundles only shrink.
+# builds outside this repository, that every web-capable app runs in headless
+# Chromium, and that web bundles only shrink.
 on:
   pull_request:
     branches: ["main"]
@@ -71,6 +72,8 @@ jobs:
         run: python3 tools/policy/check_app_portability.py
       - name: Apps declare the capabilities their code uses
         run: python3 tools/policy/check_app_capabilities.py
+      - name: Browser desktop registry matches app manifests
+        run: python3 tools/web/generate_web_desktop.py --check
       - name: Web size budgets only decrease
         shell: bash
         run: |
@@ -225,3 +228,75 @@ jobs:
   # Web: the desktop bundle built from the app manifests, every registered
   # app mounted in headless Chromium on WebGPU, and the release bundle held
   # to its size budget.
+  web:
+    needs: [builder]
+    runs-on: runner-quality
+    timeout-minutes: 150
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CDP_PORT: "9333"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Web toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
+            cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+          command -v node || dnf install -y nodejs
+      - name: Platform crates' browser modules (node --test)
+        run: node --test crates/platform/*/web/*.test.mjs
+      - name: Build tilo-app
+        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Desktop bundle (dev profile)
+        run: |
+          target/debug/tilo-app build --target web --bundle desktop apps/calculator
+      - name: Headless Chromium for Testing
+        run: |
+          # Chrome's shared-library dependencies; present on current builders.
+          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Mount every registered app
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=target/tilo-app/web/calculator/bundle
+          (cd "$bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
+          server=$!
+          "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
+            --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
+            --remote-debugging-port="$CDP_PORT" --user-data-dir="$RUNNER_TEMP/chrome-profile" \
+            about:blank &
+          chrome=$!
+          trap 'kill $server $chrome 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null && break
+            sleep 1
+          done
+          mapfile -t apps < <(python3 -c 'import json,sys; print("\n".join(a["id"] for a in json.load(open(sys.argv[1]))["applications"]))' "$bundle/apps.json")
+          mkdir -p "$RUNNER_TEMP/web-shots"
+          SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
+            http://127.0.0.1:7878 "${apps[@]}" desktop
+      - name: Release desktop bundle within its size budget
+        run: |
+          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: app-sdk-web-shots
+          path: ${{ runner.temp }}/web-shots
+          if-no-files-found: ignore
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true

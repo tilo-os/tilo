@@ -23,7 +23,7 @@ use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
     Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
-    validate_inbound_op,
+    validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -294,6 +294,49 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 /// Steps 1-4 each reject their input: an unknown attestation, an issuer no
 /// longer authorised, a corrupted attestation signature, a corrupted or
 /// tampered op signature, and an author who is not the attestation subject.
+#[test]
+fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
+    let mut f = fixture();
+    let old = build_op(&f, OpClass::Splice, t(10), 3);
+    let skew = Duration::from_secs(300);
+    let an_hour_later = t(10 + 3600);
+    assert_eq!(
+        validate_admitted_inbound_op(
+            &old,
+            Role::Editor,
+            &mut f.state.clone(),
+            an_hour_later,
+            skew
+        ),
+        Err(ValidationError::OutsideValidityWindow),
+        "a live op an hour old is stale",
+    );
+    let mut state = f.state.clone();
+    assert!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew).is_ok()
+    );
+    assert!(matches!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew),
+        Err(ValidationError::ReplaySeq { .. })
+    ));
+    assert_eq!(
+        validate_replayed_inbound_op(&old, Role::Editor, &mut f.state.clone(), t(0), skew),
+        Ok(()),
+        "within the skew ahead",
+    );
+    let future = build_op(&f, OpClass::Splice, t(10 + 3600), 4);
+    assert_eq!(
+        validate_replayed_inbound_op(&future, Role::Editor, &mut f.state.clone(), t(10), skew),
+        Err(ValidationError::OutsideValidityWindow),
+    );
+    let mut forged = old.clone();
+    forged.payload.push(0xff);
+    assert!(matches!(
+        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state, t(10), skew),
+        Err(ValidationError::BadOpSignature(_))
+    ));
+}
+
 #[test]
 fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     // Step 1: unknown attestation id.

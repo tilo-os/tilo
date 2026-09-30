@@ -73,7 +73,11 @@ impl AuthorDirectory {
     /// docs for the fallback ladder.
     pub fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
         let key = actor_hex.to_lowercase();
-        if let Some(a) = self.by_actor.get(&key) {
+        let registered = self
+            .by_actor
+            .get(&key)
+            .or_else(|| handle_actor_hex(&key).and_then(|handle| self.by_actor.get(&handle)));
+        if let Some(a) = registered {
             let mut presented = a.clone();
             presented.name = participant_display_label(&presented.name);
             return presented;
@@ -169,18 +173,39 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// public key almost never survives this filter.
 pub fn actor_handle(actor_hex: &str) -> Option<String> {
     let bytes = hex::decode(actor_hex).ok()?;
-    if bytes.is_empty() || bytes.len() > MAX_HANDLE_LEN {
-        return None;
-    }
     let s = String::from_utf8(bytes).ok()?;
-    if s.chars().any(char::is_control) {
+    let handle = s.split(DEVICE_SEPARATOR).next().unwrap_or_default();
+    if handle.is_empty() || handle.len() > MAX_HANDLE_LEN || handle.chars().any(char::is_control) {
         return None;
     }
-    let trimmed = s.trim();
+    let trimmed = handle.trim();
     if trimmed.is_empty() {
         return None;
     }
     Some(trimmed.to_string())
+}
+
+/// Separates the handle of a [`device_actor`] from its device part.
+const DEVICE_SEPARATOR: char = '\u{1f}';
+
+/// The actor `handle` writes a document as from the device whose record
+/// writer is `device`: the handle, which [`actor_handle`] reads back, and a
+/// part only that device has. Automerge numbers each actor's changes, so
+/// one person writing from two devices under the bare handle would make two
+/// different changes with the same number, which no replica can merge.
+pub fn device_actor(handle: &str, device: &automerge::ActorId) -> Vec<u8> {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(device.to_bytes());
+    let mut actor = format!("{handle}{DEVICE_SEPARATOR}").into_bytes();
+    actor.extend(hex::encode(digest.get(..4).unwrap_or_default()).into_bytes());
+    actor
+}
+
+/// The bare handle's actor of a [`device_actor`], hex-encoded.
+fn handle_actor_hex(actor_hex: &str) -> Option<String> {
+    let bytes = hex::decode(actor_hex).ok()?;
+    let at = bytes.iter().position(|&b| b == DEVICE_SEPARATOR as u8)?;
+    Some(hex::encode(bytes.get(..at)?))
 }
 
 /// First `SHORT_LEN` hex characters of an actor id, for the dim monospace

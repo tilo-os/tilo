@@ -184,6 +184,36 @@ fn v1_frame_charge(
 ) -> Result<u64, StoreError> {
     frame_charge(envelope, raw_len, frame_payload(framed), capacity)
 }
+/// Sort rank of a retained lineage (`<author>-<channel>`): a device's
+/// certificate channel replays first, because a shell drops what a device
+/// published until it holds that device's certificate, and channels are
+/// otherwise ordered by hash.
+fn lineage_rank(lineage: &str) -> &'static str {
+    let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
+        let Ok(author) = hex::decode(author) else {
+            return false;
+        };
+        let mut route = b"identity-hello\0".to_vec();
+        route.extend_from_slice(&author);
+        blake3::hash(&route).to_hex().as_str() == channel
+    });
+    if identity { "0" } else { "1" }
+}
+
+/// [`lineage_rank`] of the retained lineage a store-relative source path
+/// lies under; `"1"` for anything else.
+fn source_rank(source: &Path) -> &'static str {
+    let mut parts = source
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy());
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(root), Some(version), Some(lineage)) if root == "retained" && version == "v2" => {
+            lineage_rank(&lineage)
+        }
+        _ => "1",
+    }
+}
+
 fn digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
@@ -619,7 +649,11 @@ impl WorkspaceStore {
                         &mut sorter.stats,
                     )?;
                     sorter.push(Meta {
-                        key: vec!["1".into(), "0".into(), format!("{pin:016x}").into()],
+                        key: vec![
+                            source_rank(Path::new(&meta.source)).into(),
+                            "0".into(),
+                            format!("{pin:016x}").into(),
+                        ],
                         source: meta.source,
                         pin,
                         len: fs::metadata(target)?.len(),
@@ -656,9 +690,10 @@ impl WorkspaceStore {
                         && !name.to_string_lossy().starts_with('.');
                     if entry.file_type()?.is_file() && valid {
                         let order = if name == "checkpoint.delta" { "0" } else { "1" };
+                        let rank = lineage_rank(&channel.to_string_lossy());
                         Some((
                             entry.path(),
-                            vec!["1".into(), channel.clone(), order.into(), name],
+                            vec![rank.into(), channel.clone(), order.into(), name],
                         ))
                     } else {
                         None

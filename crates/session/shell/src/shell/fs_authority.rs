@@ -9,6 +9,9 @@ use std::time::Instant;
 const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+/// A publisher that is not installed will not appear within seconds; a host
+/// session without `quick-fs` would otherwise spawn and warn every five.
+const MAX_MISSING_PUBLISHER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(300);
 /// Recent publisher attempts kept so a stalled publication can say why.
 const MAX_RECORDED_FS_AUTHORITY_ATTEMPTS: usize = 16;
 /// Tail of the publisher's stderr kept per recorded attempt.
@@ -169,6 +172,8 @@ fn run_fs_authority_publication_queue() {
             return;
         };
         let mut retry_delay = std::time::Duration::from_millis(100);
+        // One warning per publication; the retries after it are the same story.
+        let mut failures = 0_u32;
         loop {
             // Capture stderr so a failing publisher explains itself in the
             // journal and in the attempt history, not only by exit status.
@@ -182,24 +187,43 @@ fn run_fs_authority_publication_queue() {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .output();
+            let mut publisher_missing = false;
             let (succeeded, outcome) = match result {
-                Ok(output) if output.status.success() => (true, "published".to_string()),
+                Ok(output) if output.status.success() => {
+                    if failures > 0 {
+                        tracing::info!(
+                            failures,
+                            acl = %publication.acl.display(),
+                            "filesystem authority published after retrying"
+                        );
+                    }
+                    (true, "published".to_string())
+                }
                 Ok(output) => {
                     let stderr = stderr_tail(&output.stderr);
-                    tracing::warn!(
-                        status = ?output.status,
-                        %stderr,
-                        acl = %publication.acl.display(),
-                        "filesystem authority publication failed; will retry"
-                    );
+                    if failures == 0 {
+                        tracing::warn!(
+                            status = ?output.status,
+                            %stderr,
+                            acl = %publication.acl.display(),
+                            "filesystem authority publication failed; retrying quietly"
+                        );
+                    } else {
+                        tracing::debug!(status = ?output.status, %stderr, "filesystem authority publication failed again");
+                    }
                     (false, format!("{}; stderr: {stderr:?}", output.status))
                 }
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        publisher = %publication.publisher.display(),
-                        "filesystem authority publisher could not start; will retry"
-                    );
+                    publisher_missing = error.kind() == std::io::ErrorKind::NotFound;
+                    if failures == 0 {
+                        tracing::warn!(
+                            %error,
+                            publisher = %publication.publisher.display(),
+                            "filesystem authority publisher could not start; retrying quietly"
+                        );
+                    } else {
+                        tracing::debug!(%error, "filesystem authority publisher could not start again");
+                    }
                     (
                         false,
                         format!(
@@ -219,18 +243,29 @@ fn run_fs_authority_publication_queue() {
             // otherwise retain this exact latest ACL until the daemon is
             // ready. The delay is bounded, while the background worker is
             // deliberately persistent rather than silently losing a grant.
+            failures = failures.saturating_add(1);
             std::thread::sleep(retry_delay);
-            retry_delay = retry_delay
-                .saturating_mul(2)
-                .min(MAX_FS_AUTHORITY_RETRY_DELAY);
+            retry_delay = next_retry_delay(retry_delay, publisher_missing);
             if let Ok(mut queue) = fs_authority_publication_queue().lock()
                 && let Some(newer) = queue.pending.take()
             {
                 publication = newer;
                 retry_delay = std::time::Duration::from_millis(100);
+                failures = 0;
             }
         }
     }
+}
+
+/// Doubling backoff, capped at five seconds for a publisher that ran and
+/// failed and at five minutes for one that is not installed.
+fn next_retry_delay(current: std::time::Duration, publisher_missing: bool) -> std::time::Duration {
+    let cap = if publisher_missing {
+        MAX_MISSING_PUBLISHER_RETRY_DELAY
+    } else {
+        MAX_FS_AUTHORITY_RETRY_DELAY
+    };
+    current.saturating_mul(2).min(cap)
 }
 
 /// Block until the publication worker has retired with nothing queued, or
@@ -259,4 +294,29 @@ pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> R
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_missing_publisher_backs_off_to_minutes_not_seconds() {
+        let settle = |missing| {
+            let mut delay = Duration::from_millis(100);
+            for _ in 0..32 {
+                delay = next_retry_delay(delay, missing);
+            }
+            delay
+        };
+        assert_eq!(settle(false), MAX_FS_AUTHORITY_RETRY_DELAY);
+        assert_eq!(settle(true), MAX_MISSING_PUBLISHER_RETRY_DELAY);
+        assert!(MAX_MISSING_PUBLISHER_RETRY_DELAY >= Duration::from_secs(60));
+        assert_eq!(
+            next_retry_delay(Duration::from_millis(100), true),
+            Duration::from_millis(200),
+            "the first retries stay quick in case the daemon is only starting",
+        );
+    }
 }
