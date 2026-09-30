@@ -917,14 +917,18 @@ impl QuickSettingsRoot {
     /// Tiles in the one card grid: the live controls, then Devices,
     /// Clipboard and the power profile.
     fn grid_len(&self, state: &QuickSettingsState) -> usize {
-        self.visible_controls(state).len() + Self::LINK_TILES
+        self.visible_controls(state)
+            .len()
+            .saturating_add(Self::LINK_TILES)
     }
     /// Devices, Clipboard and the power profile close the control grid as
     /// ordinary cards. `index` 0 is Devices, 1 Clipboard, 2 the power profile.
     fn link_rect(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
         self.control_card(
             panel,
-            self.visible_controls(state).len() + index.min(Self::LINK_TILES - 1),
+            self.visible_controls(state)
+                .len()
+                .saturating_add(index.min(Self::LINK_TILES.saturating_sub(1))),
             self.grid_len(state),
         )
     }
