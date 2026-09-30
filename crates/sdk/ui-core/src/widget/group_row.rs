@@ -284,6 +284,9 @@ pub struct GroupRow {
     /// Test-only clock override for [`Self::shift_anim_t`] (capture
     /// harness); always `None` in a running shell.
     shift_hold: Option<Duration>,
+    /// `theme.reduce_motion` as last laid out or drawn: the strip's snaps
+    /// and make-space slides jump to where they were going.
+    reduce_motion: bool,
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
@@ -631,8 +634,9 @@ impl Pan {
         best
     }
 
-    /// Advance the snap state to `now`. Returns whether `scroll_x` moved.
-    fn tick_snap_at(&mut self, now: Instant) -> bool {
+    /// Advance the snap state to `now`; under `reduce_motion` a snap lands
+    /// on the tick it starts. Returns whether `scroll_x` moved.
+    fn tick_snap_at(&mut self, now: Instant, reduce_motion: bool) -> bool {
         let before = self.scroll_x;
         // Kicking a fresh snap off here, before the curve-advance branch
         // below, lets this same call both start it and apply its first
@@ -673,7 +677,7 @@ impl Pan {
         if let Some(anim) = self.snap_anim {
             let elapsed = now.saturating_duration_since(anim.started);
             let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
-            if elapsed >= total {
+            if reduce_motion || elapsed >= total {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
@@ -820,6 +824,7 @@ impl GroupRow {
             shift_armed: false,
             shift_anim: None,
             shift_hold: None,
+            reduce_motion: false,
             culled_groups: Vec::new(),
         }
     }
@@ -1646,11 +1651,12 @@ impl GroupRow {
     /// tree. Advances every run's snap.
     pub fn tick_snap_at(&mut self, now: Instant) {
         let mut moved = false;
+        let reduce_motion = self.reduce_motion;
         if self.lanes.is_empty() {
-            moved = self.pan.tick_snap_at(now);
+            moved = self.pan.tick_snap_at(now, reduce_motion);
         }
         for lane in &mut self.lanes {
-            moved |= lane.pan.tick_snap_at(now);
+            moved |= lane.pan.tick_snap_at(now, reduce_motion);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
@@ -2571,6 +2577,7 @@ impl Widget for GroupRow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.reduce_motion = theme.reduce_motion;
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
             // Retained groups remain lifecycle owners, but none of their
@@ -2952,6 +2959,7 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         if self.external_navigation && self.hidden {
             return;
         }
@@ -3313,7 +3321,7 @@ impl GroupRow {
                     (from.abs() > 0.5).then_some((g.id, from))
                 })
                 .collect();
-            self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
+            self.shift_anim = (!offsets.is_empty() && !self.reduce_motion).then(|| ShiftAnim {
                 started: crate::time::now(),
                 offsets,
             });
@@ -4478,14 +4486,21 @@ mod tests {
         make_row_with_groups_on_display(tab_specs, FIXTURE_USABLE_PX, 2000.0)
     }
 
-    fn relayout_row_owned(mut row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+    fn relayout_row_owned(row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+        relayout_row_owned_with(row, viewport_w, &Theme::dark())
+    }
+
+    fn relayout_row_owned_with(
+        mut row: GroupRow,
+        viewport_w: f64,
+        theme: &Theme,
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize, TaffyTree};
 
-        let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = row.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
@@ -6258,9 +6273,41 @@ mod tests {
             );
         }
 
+        /// Reduced motion: the snap lands on the tick it starts, whether it
+        /// follows a wheel's idle or a released direct pan.
+        fn reduced_motion_snaps_land_on_their_first_tick() {
+            let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+            row.reduce_motion = true;
+            row.set_group_left_edges_for_test(vec![0.0, 608.0, 1216.0]);
+            row.set_content_w_for_test(1816.0);
+            row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+            row.set_scroll_x_for_test(400.0);
+            let base = crate::time::now();
+            row.set_last_wheel_at_for_test(earlier(base, 250));
+            row.tick_snap_at(base);
+            assert!(
+                (row.scroll_x() - 608.0).abs() < 0.01,
+                "the idle snap must land at once; got {}",
+                row.scroll_x()
+            );
+            assert!(!row.snap_in_flight(), "and nothing is left in flight");
+
+            row.begin_strip_pan();
+            assert!(row.update_strip_pan(-800.0));
+            assert!(row.scroll_x() < 0.0, "fixture: the pan overpulls");
+            assert!(row.end_strip_pan(base));
+            row.tick_snap_at(base);
+            assert!(
+                row.scroll_x().abs() < 0.01,
+                "a released overpull must settle at once; got {}",
+                row.scroll_x()
+            );
+        }
+
         scroll_snaps_to_nearest_group_after_wheel_idle();
         snap_does_not_fire_during_wheel_idle_window();
         wheel_mid_snap_leaves_the_snap_untouched();
+        reduced_motion_snaps_land_on_their_first_tick();
     }
 
     /// Rebuilds a full taffy tree and lays `row` out on it — mimics
@@ -7225,10 +7272,32 @@ mod tests {
             );
         }
 
+        /// Reduced motion: the pushed groups are drawn where they now
+        /// belong on the first frame, and nothing asks to be redrawn.
+        fn reduced_motion_makes_room_without_a_slide() {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let pushed: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
+            row.insert_group(make_group(999, &[9]), 0);
+            let theme = Theme::dark().with_reduce_motion(true);
+            let (row, _taffy, _root) = relayout_row_owned_with(row, 2000.0, &theme);
+            for id in pushed {
+                assert_eq!(
+                    row.shift_offset_for(id),
+                    0.0,
+                    "under reduced motion group {id} is drawn at its new home",
+                );
+            }
+            assert!(
+                !row.needs_animation_frame(),
+                "under reduced motion making room asks for no animation frames",
+            );
+        }
+
         making_room_translates_the_groups_it_pushes_and_never_narrows_them();
         the_groups_that_moved_start_from_where_they_were();
         appending_at_the_end_animates_nothing();
         a_slide_in_flight_asks_for_animation_frames();
+        reduced_motion_makes_room_without_a_slide();
     }
 
     /// A 1000-wide display with the wheel gutter beside an 800-wide one
