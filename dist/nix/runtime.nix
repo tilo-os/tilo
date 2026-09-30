@@ -28,7 +28,11 @@ rustPlatform.buildRustPackage rec {
       && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
   };
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # Git dependencies (accesskit, atspi, rustypipe) are pinned by rev in Cargo.lock.
+    allowBuiltinFetchGit = true;
+  };
   cargoBuildFlags = [
     "-p" "tilo-runtime"
     "-p" "launcher"
