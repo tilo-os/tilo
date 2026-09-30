@@ -2181,7 +2181,6 @@ jobs:
                 --label "org.opencontainers.image.version=$DEV_SERIES-$board" \
                 --output "type=image,name=$names,push=true,compression=zstd,compression-level=1" \
                 . > "$RUNNER_TEMP/tilo-board-$board.log" 2>&1 \
-              && { [[ $GITHUB_REF != refs/heads/main ]] || ./os/dev/move-tag-forward.sh "$names" "registry.tilo.so/tilo/tilo-vm:$board-ci"; } \
               && echo "::notice::$board dev image published in $(( $(date +%s) - started ))s: tilo-vm:$DEV_SERIES-$board" \
               || { tail -60 "$RUNNER_TEMP/tilo-board-$board.log"; echo "::error::the $board board layer failed to build"; exit 1; } ) &
             board_pids+=("$!")
@@ -3195,11 +3194,28 @@ jobs:
               | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           } >> "$GITHUB_ENV"
 
+      # A bootc that, on a composefs digest mismatch (bootc#2334), rewrites
+      # the UKI seal to the digest install computes instead of refusing. It
+      # is built once per patch and kept in the registry.
+      - name: Fetch the resealing bootc
+        run: |
+          set -euo pipefail
+          key="$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)"
+          ref="registry.tilo.so/tilo/bootc-install-helper:$key-aarch64"
+          if ! podman pull -q "$ref" >/dev/null 2>&1; then
+            podman build -f os/Containerfile.bootc-helper -t "$ref" .
+            podman push "$ref"
+          fi
+          helper="${RUNNER_TEMP:?}/bootc-install-helper"
+          container="$(podman create "$ref" /bootc)"
+          podman cp "$container:/bootc" "$helper"
+          podman rm "$container" >/dev/null
+          chmod 0755 "$helper"
+          echo "TILO_BOOTC_HELPER=$helper" >> "$GITHUB_ENV"
+
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
-      # does. The UKI already seals the digest install computes
-      # (os/Containerfile.board); should they ever differ, build-image.sh
-      # reseals the local image's UKI and installs again, and the resealed
-      # image replaces the lane's.
+      # does, resealing the UKI to the digest install computes. The resealed
+      # image replaces the lane's, and only it moves the board's -ci tag.
       - name: Install the flashable disk
         timeout-minutes: 30
         env:
@@ -3221,17 +3237,17 @@ jobs:
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
           ./os/dev/build-image.sh
           test -s "$TILO_OUTPUT/qcow2/disk.qcow2"
+          digest="$DEV_IMAGE_DIGEST"
           if [[ $(podman image inspect --format '{{.Id}}' "$BOARD_IMAGE") != "$BOARD_IMAGE_ID" ]]; then
-            echo "::warning::the install resealed the UKI; publishing the resealed image"
             image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
             digest_file="${RUNNER_TEMP:?}/tilo-board-digest"
             podman push --compression-format zstd --digestfile "$digest_file" "$BOARD_IMAGE" "docker://$image"
             digest="$(tr -d '[:space:]' < "$digest_file")"
-            if [[ $GITHUB_REF == refs/heads/main ]]; then
-              ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$digest" \
-                "registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
-            fi
             echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          fi
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$digest" \
+              "registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
           fi
 
       - name: Publish the flashable disk

@@ -738,6 +738,13 @@ if [ "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 ] || [ -n "${TILO_ROCKCHIP_LOAD
   disk_args+=(--boot-gap 16M --rockchip-loader "$loader")
 fi
 
+# A bootc built from os/Containerfile.bootc-helper closes the seal in this one
+# pass: install rewrites the UKI's stale composefs= digest to the one it computes
+# and prints it, and the same rewrite is then applied to the image.
+if [ -n "${TILO_BOOTC_HELPER:-}" ]; then
+  disk_args+=(--bootc-helper "$TILO_BOOTC_HELPER" --reseal-uki)
+fi
+
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
 # (bootc#2334), and install will not accept a UKI sealing anything but its own
@@ -774,6 +781,14 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
     die "the second install pass failed too; see above and $INSTALL_LOG"
   fi
   msg "seal closed in two passes (install's expected digest was stable)"
+fi
+resealed="$(sed -n 's/^bootc: resealed UKI composefs digest: \([0-9a-f]\{128\}\)$/\1/p' "$INSTALL_LOG" | tail -n1)"
+if [ -n "$resealed" ]; then
+  msg "bootc#2334: install resealed the UKI to sha512:${resealed:0:32}…; applying it to $TILO_IMAGE"
+  reseal_uki "$resealed" || die "could not rewrite the sealed composefs digest"
+  if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
+    printf '%s\n' "$resealed" > "$TILO_RESEALED_DIGEST_FILE"
+  fi
 fi
 
 # Publish the normal update image with the same authority sidecars as installer
