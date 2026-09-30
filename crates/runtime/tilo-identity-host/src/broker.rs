@@ -1080,14 +1080,25 @@ mod tests {
             Arc::new(()),
         )
         .expect("broker");
-        let listener = thread_ids()
-            .difference(&before)
-            .find(|tid| {
-                std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                    .is_ok_and(|comm| comm.trim() == "tilo-identity-b")
-            })
-            .cloned()
-            .expect("the broker's listener thread");
+        // A thread names itself once it runs, so it may not be named yet.
+        let waiting = std::time::Instant::now();
+        let listener = loop {
+            let named = thread_ids()
+                .difference(&before)
+                .find(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|comm| comm.trim() == "tilo-identity-b")
+                })
+                .cloned();
+            if let Some(tid) = named {
+                break tid;
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "the broker's listener thread"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
         thread::sleep(Duration::from_millis(50));
         let settled = context_switches(&listener);
         thread::sleep(Duration::from_millis(400));
