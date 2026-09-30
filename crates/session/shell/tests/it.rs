@@ -41,6 +41,8 @@ mod capture_protection;
 mod client_exit_closes_its_tabs;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
+#[path = "closing_window_frames.rs"]
+mod closing_window_frames;
 #[path = "collab_policy_state.rs"]
 mod collab_policy_state;
 #[path = "color_management_protocol.rs"]

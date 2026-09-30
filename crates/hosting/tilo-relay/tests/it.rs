@@ -23,6 +23,8 @@ mod browser_transport;
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
 mod coedit_through_host;
+#[path = "commit_dedup.rs"]
+mod commit_dedup;
 #[path = "compute_session.rs"]
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]

@@ -135,10 +135,11 @@ enum RootStop {
     Tile(RootTile),
 }
 
-/// A drill-in row's focus stop and the glyph, label and detail line it shows.
+/// A drill-in tile's focus stop and the glyph, label and detail line it shows.
 struct LinkRow {
     stop: RootStop,
     icon: ui::icons::Icon,
+    icon_color: vello::peniko::Color,
     label: String,
     detail: String,
 }
@@ -155,6 +156,13 @@ pub enum SliderCommit {
 
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
+/// One row of the edit page, named exactly as its tile is.
+struct EditRow {
+    rect: Rect,
+    control: QuickSettingsControl,
+    label: String,
+}
+
 pub struct QuickSettingsRoot {
     panel: Rect,
     // Text scale changes the amount of vertical room a two-line control
@@ -195,6 +203,8 @@ impl QuickSettingsRoot {
     // the same step, and every value is a token expression.
     /// The title band (HIG §9.6: the Bar height); the Edit button sits in it.
     const HEADER: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+    /// Devices, Clipboard and the power profile, after the live controls.
+    const LINK_TILES: usize = 3;
     /// The gap under a tile's glyph before its caption (`icon_label_gap`).
     const GLYPH_GAP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
     /// The edit-mode footer buttons: the shared `Button` height.
@@ -250,18 +260,6 @@ impl QuickSettingsRoot {
     }
     fn card_height(&self) -> f64 {
         self.card_height_at(self.layout_scale)
-    }
-    /// Power row: label and detail on the control padding, never under the
-    /// Control height.
-    fn power_height_at(&self, layout_scale: f64) -> f64 {
-        (ROW_HEIGHT * layout_scale).max(
-            2.0 * CONTROL_PAD * layout_scale
-                + self.label_line_height()
-                + self.caption_line_height(),
-        )
-    }
-    fn power_height(&self) -> f64 {
-        self.power_height_at(self.layout_scale)
     }
     /// Edit-mode row: its label on the control padding, never under the
     /// Control height.
@@ -690,18 +688,15 @@ impl QuickSettingsRoot {
                 + available
                 + scaled(Self::EDIT_FOOTER)
         } else {
-            let rows = n(self.visible_controls(state).len().div_ceil(2));
-            // Title band → tiles → sliders → cards → rows: one section gap
-            // before each section that exists on this machine. The Devices
-            // and Clipboard row and the power row sit one sibling gap apart.
-            let sections = if rows > 0.0 { 4.0 } else { 3.0 };
-            scaled(PANEL_PAD * 2.0 + SECTION_GAP * sections + SIBLING_GAP)
+            let rows = n(self.grid_len(state).div_ceil(2));
+            // Title band → tiles → sliders → cards: one section gap before
+            // each section.
+            scaled(PANEL_PAD * 2.0 + SECTION_GAP * 3.0)
                 + self.header_height_at(layout_scale)
                 + self.sliders_height_at(layout_scale)
                 + self.action_height_at(layout_scale)
                 + rows * self.card_height_at(layout_scale)
-                + (rows - 1.0).max(0.0) * scaled(SIBLING_GAP)
-                + 2.0 * self.power_height_at(layout_scale)
+                + (rows - 1.0) * scaled(SIBLING_GAP)
         }
     }
     fn save_config(&mut self) {
@@ -919,39 +914,26 @@ impl QuickSettingsRoot {
         let face = self.slider_face_rect(panel, i);
         (SliderFace::new(face, 0.0).track_rect(), face.y0)
     }
-    /// Bottom edge of the control cards — or of the sliders when this
-    /// machine has no controls to show.
-    fn cards_bottom(&self, panel: Rect, state: &QuickSettingsState) -> f64 {
-        let rows = self.visible_controls(state).len().div_ceil(2);
-        let grid_top = self.grid_top(panel);
-        if rows == 0 {
-            grid_top - self.scaled(SECTION_GAP)
-        } else {
-            grid_top
-                + n(rows) * self.card_height()
-                + n(rows.saturating_sub(1)) * self.scaled(SIBLING_GAP)
-        }
+    /// Tiles in the one card grid: the live controls, then Devices,
+    /// Clipboard and the power profile.
+    fn grid_len(&self, state: &QuickSettingsState) -> usize {
+        self.visible_controls(state)
+            .len()
+            .saturating_add(Self::LINK_TILES)
     }
-    /// Devices and Clipboard share one row, one section gap under the
-    /// cards. `index` 0 is Devices, 1 is Clipboard.
+    /// Devices, Clipboard and the power profile close the control grid as
+    /// ordinary cards. `index` 0 is Devices, 1 Clipboard, 2 the power profile.
     fn link_rect(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
-        let pad = self.scaled(PANEL_PAD);
-        let gap = self.scaled(SIBLING_GAP);
-        let y = self.cards_bottom(panel, state) + self.scaled(SECTION_GAP);
-        let w = (panel.width() - 2.0 * pad - gap) / 2.0;
-        let x = panel.x0 + pad + n(index.min(1)) * (w + gap);
-        Rect::new(x, y, x + w, y + self.power_height())
-    }
-    /// The power-profile row: one sibling gap under the Devices and
-    /// Clipboard row it shares its row style with.
-    pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
-        let y = self.link_rect(panel, state, 0).y1 + self.scaled(SIBLING_GAP);
-        Rect::new(
-            panel.x0 + self.scaled(PANEL_PAD),
-            y,
-            panel.x1 - self.scaled(PANEL_PAD),
-            y + self.power_height(),
+        self.control_card(
+            panel,
+            self.visible_controls(state)
+                .len()
+                .saturating_add(index.min(Self::LINK_TILES.saturating_sub(1))),
+            self.grid_len(state),
         )
+    }
+    pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
+        self.link_rect(panel, state, 2)
     }
     fn action(&self, i: usize) -> Rect {
         let pad = self.scaled(PANEL_PAD);
@@ -999,7 +981,7 @@ impl QuickSettingsRoot {
         match stop {
             RootStop::Slider(index) => self.slider_face_rect(self.panel, index),
             RootStop::Control(index, _) => {
-                self.control_card(self.panel, index, self.visible_controls(state).len())
+                self.control_card(self.panel, index, self.grid_len(state))
             }
             RootStop::Devices => self.link_rect(self.panel, state, 0),
             RootStop::Clipboard => self.link_rect(self.panel, state, 1),
@@ -1078,7 +1060,7 @@ impl QuickSettingsRoot {
     }
     fn label(c: QuickSettingsControl) -> String {
         t(match c {
-            QuickSettingsControl::Wifi => "qs-network",
+            QuickSettingsControl::Wifi => "qs-wifi",
             QuickSettingsControl::Bluetooth => "qs-bluetooth",
             QuickSettingsControl::Vpn => "qs-vpn",
             QuickSettingsControl::NightLight => "qs-night-light",
@@ -1100,8 +1082,8 @@ impl QuickSettingsRoot {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => ui::icons::Icon::EthernetPort,
             QuickSettingsControl::Wifi => ui::icons::Icon::Wifi,
             QuickSettingsControl::Bluetooth => ui::icons::Icon::Bluetooth,
-            QuickSettingsControl::Vpn => ui::icons::Icon::Shield,
-            QuickSettingsControl::NightLight => ui::icons::Icon::Sun,
+            QuickSettingsControl::Vpn => ui::icons::Icon::LockKeyhole,
+            QuickSettingsControl::NightLight => ui::icons::Icon::Moon,
             QuickSettingsControl::AirplaneMode => ui::icons::Icon::WifiOff,
             QuickSettingsControl::MobileData => ui::icons::Icon::Globe,
             QuickSettingsControl::DoNotDisturb => ui::icons::Icon::Bell,
@@ -1748,7 +1730,7 @@ impl QuickSettingsRoot {
                 cursor,
                 state,
                 i,
-                controls.len(),
+                self.grid_len(state),
                 c,
             );
         }
@@ -1756,14 +1738,23 @@ impl QuickSettingsRoot {
             LinkRow {
                 stop: RootStop::Devices,
                 icon: ui::icons::Icon::Monitor,
+                icon_color: colors.text_primary,
                 label: t("qs-devices"),
                 detail: Self::devices_subline(state),
             },
             LinkRow {
                 stop: RootStop::Clipboard,
                 icon: ui::icons::Icon::ClipboardPaste,
+                icon_color: colors.text_primary,
                 label: t("qs-clipboard"),
                 detail: Self::clipboard_subline(state),
+            },
+            LinkRow {
+                stop: RootStop::PowerProfile,
+                icon: ui::icons::Icon::Battery,
+                icon_color: colors.semantic.success,
+                label: state.power_profile.label(),
+                detail: power_detail(state),
             },
         ] {
             self.draw_link_row(
@@ -1773,81 +1764,10 @@ impl QuickSettingsRoot {
                 &row,
             );
         }
-        // The power row: battery glyph, profile and detail, chevron — all
-        // on the row's centre line.
-        let r = self.power_geometry(self.panel, state);
-        paint_control(
-            scene,
-            transform,
-            theme,
-            r,
-            cursor.is_some_and(|p| r.contains(p)),
-            self.is_focused(state, RootStop::PowerProfile),
-        );
-        let battery = leading_glyph(r, inset, glyph);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            battery,
-            ui::icons::Icon::Battery,
-            colors.semantic.success,
-            1.5,
-        );
-        let chevron = trailing_glyph(r, inset, glyph);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            chevron,
-            ui::icons::Icon::ChevronRight,
-            colors.text_dim,
-            1.5,
-        );
-        let text_x = battery.x1 + inset;
-        let text_width = (chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0);
-        let power_label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-        )]
-        let power_label = text.elide_to_width(
-            &state.power_profile.label(),
-            power_label_size,
-            text_width as f32,
-        );
-        let battery_detail = power_detail(state);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-        )]
-        let battery_detail = text.elide_to_width(&battery_detail, detail_size, text_width as f32);
-        let (_, power_label_h) =
-            text.measure_weighted(&power_label, power_label_size, None, TextWeight::Semibold);
-        let (_, detail_h) = text.measure(&battery_detail, detail_size, None);
-        // Label and detail are one measured block on the row's centre line
-        // (HIG §7a: measure and draw with one style; the detail follows the
-        // label line, never a fixed offset the label can outgrow).
-        let block_top = centred_text_top(r, f64::from(power_label_h) + f64::from(detail_h));
-        text.draw_text_weighted(
-            scene,
-            &power_label,
-            power_label_size,
-            colors.text_primary,
-            transform.pre_translate((text_x, block_top).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        text.draw_text(
-            scene,
-            &battery_detail,
-            detail_size,
-            colors.text_dim,
-            transform.pre_translate((text_x, block_top + f64::from(power_label_h)).into()),
-            None,
-        );
     }
-    /// A drill-in row (Devices, Clipboard): leading glyph, label over a
-    /// detail line, trailing chevron — the power row's anatomy at half width.
+    /// A drill-in tile (Devices, Clipboard, power profile): a control card's
+    /// anatomy — glyph and chevron on the icon row, label over detail below —
+    /// so every tile in the grid reads the same.
     fn draw_link_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1860,6 +1780,7 @@ impl QuickSettingsRoot {
         let LinkRow {
             stop,
             icon,
+            icon_color,
             ref label,
             ref detail,
         } = *row;
@@ -1875,41 +1796,61 @@ impl QuickSettingsRoot {
             cursor.is_some_and(|p| r.contains(p)),
             self.is_focused(state, stop),
         );
-        let leading = leading_glyph(r, inset, glyph);
-        ui::icons::draw_icon(scene, transform, leading, icon, colors.text_primary, 1.5);
-        let chevron = trailing_glyph(r, inset, glyph);
+        let icon_row = self.card_icon_row(r);
         ui::icons::draw_icon(
             scene,
             transform,
-            chevron,
+            leading_glyph(icon_row, inset, glyph),
+            icon,
+            icon_color,
+            1.5,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            trailing_glyph(icon_row, inset, glyph),
             ui::icons::Icon::ChevronRight,
             colors.text_dim,
             1.5,
         );
-        let text_x = leading.x1 + inset;
-        let text_width = f32v((chevron.x0 - self.scaled(RELATED_GAP) - text_x).max(1.0));
+        self.draw_card_text(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            r,
+            label,
+            detail,
+        );
+    }
+    /// A card's label over its sub-line, one related step under the icon
+    /// row, at the card's full inner width.
+    fn draw_card_text(&self, ctx: &mut PaintCtx<'_>, card: Rect, label: &str, sub: &str) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let colors = &theme.tokens.colors;
+        let inset = self.scaled(CONTROL_INSET);
         let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let sub_size = type_size(text, theme.tokens.typography.scale.xs);
+        let text_width = f32v((card.width() - 2.0 * inset).max(1.0));
         let label = text.elide_to_width(label, label_size, text_width);
-        let detail = text.elide_to_width(detail, detail_size, text_width);
+        let sub = text.elide_to_width(sub, sub_size, text_width);
+        let label_y = self.card_icon_row(card).y1 + self.scaled(RELATED_GAP);
         let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-        let (_, detail_h) = text.measure(&detail, detail_size, None);
-        let block_top = centred_text_top(r, f64::from(label_h) + f64::from(detail_h));
         text.draw_text_weighted(
             scene,
             &label,
             label_size,
             colors.text_primary,
-            transform.pre_translate((text_x, block_top).into()),
+            transform.pre_translate((card.x0 + inset, label_y).into()),
             None,
             TextWeight::Semibold,
         );
+        // The sub-line sits under the measured label rather than at a fixed
+        // offset the label outgrows at large text (HIG §7a).
         text.draw_text(
             scene,
-            &detail,
-            detail_size,
+            &sub,
+            sub_size,
             colors.text_dim,
-            transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
+            transform.pre_translate((card.x0 + inset, label_y + f64::from(label_h)).into()),
             None,
         );
     }
@@ -1952,39 +1893,11 @@ impl QuickSettingsRoot {
             },
             1.5,
         );
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let sub_size = type_size(text, theme.tokens.typography.scale.xs);
-        let text_width = (r.width() - 2.0 * inset).max(1.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-        )]
-        let label = text.elide_to_width(&Self::rendered_label(c, s), label_size, text_width as f32);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-        )]
-        let sub = text.elide_to_width(&Self::subline(c, s), sub_size, text_width as f32);
-        let label_y = icon_row.y1 + self.scaled(RELATED_GAP);
-        let (_, label_h) = text.measure_weighted(&label, label_size, None, TextWeight::Semibold);
-        text.draw_text_weighted(
-            scene,
-            &label,
-            label_size,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + inset, label_y).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        // The sub-line sits under the measured label rather than at a fixed
-        // offset the label outgrows at large text (HIG §7a).
-        text.draw_text(
-            scene,
-            &sub,
-            sub_size,
-            colors.text_dim,
-            transform.pre_translate((r.x0 + inset, label_y + f64::from(label_h)).into()),
-            None,
+        self.draw_card_text(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            r,
+            &Self::rendered_label(c, s),
+            &Self::subline(c, s),
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
             || matches!(
@@ -2079,7 +1992,12 @@ impl QuickSettingsRoot {
                 cursor.is_some_and(|p| r.contains(p)),
                 self.keyboard_focus == Some(i),
             );
-            self.draw_edit_row_content(scene, transform, text, theme, cursor, r, c);
+            let row = EditRow {
+                rect: r,
+                control: c,
+                label: Self::rendered_label(c, state),
+            };
+            self.draw_edit_row_content(scene, transform, text, theme, cursor, &row);
         }
         if let Some(ghost) =
             self.edit_drag
@@ -2146,7 +2064,12 @@ impl QuickSettingsRoot {
                 ),
             );
             if let Some(control) = self.edit_drag.dragged_id().copied() {
-                self.draw_edit_row_content(scene, transform, text, theme, cursor, ghost, control);
+                let row = EditRow {
+                    rect: ghost,
+                    control,
+                    label: Self::rendered_label(control, state),
+                };
+                self.draw_edit_row_content(scene, transform, text, theme, cursor, &row);
             }
             if let Some(insertion) = self.edit_drag.insertion().filter(|index| *index > 0) {
                 // A drop seam is a second, independent cue: the lifted
@@ -2188,7 +2111,7 @@ impl QuickSettingsRoot {
                 None,
             );
             for (i, (control, chip)) in chips.into_iter().enumerate() {
-                let label = Self::label(control);
+                let label = Self::rendered_label(control, state);
                 Button::paint(
                     scene,
                     transform,
@@ -2244,9 +2167,9 @@ impl QuickSettingsRoot {
         text: &mut TextRenderer,
         theme: &Theme,
         cursor: Option<Point>,
-        r: Rect,
-        c: QuickSettingsControl,
+        row: &EditRow,
     ) {
+        let (r, c) = (row.rect, row.control);
         let colors = &theme.tokens.colors;
         let inset = self.scaled(CONTROL_INSET);
         let glyph = Self::glyph_at(self.layout_scale);
@@ -2282,7 +2205,7 @@ impl QuickSettingsRoot {
             reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
         )]
         let label = text.elide_to_width(
-            &Self::label(c),
+            &row.label,
             label_size,
             (action.x0 - self.scaled(RELATED_GAP) - label_x).max(1.0) as f32,
         );
@@ -3327,8 +3250,8 @@ mod tests {
         /// One rhythm at 1× (HIG §7b, §9.6): every adjacent pair in the root
         /// keeps its token step — sections `s4`, grid siblings `s3`, the two
         /// slider bands and a card's icon row `s2` — nothing touches, glyphs and
-        /// switches share their row's centre line, and the power row rests at
-        /// the Control height because its two lines fit inside it.
+        /// switches share their row's centre line, and Devices, Clipboard and
+        /// the power profile are ordinary cards of the one grid.
         fn root_geometry_keeps_one_rhythm_at_one_x() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -3374,7 +3297,8 @@ mod tests {
                 close(sliders.x1 - b.x1, s3),
                 "a band ends on the block's s3 inset"
             );
-            let count = root.visible_controls(&state).len();
+            let count = root.grid_len(&state);
+            let controls = root.visible_controls(&state).len();
             let cards: Vec<Rect> = (0..count)
                 .map(|i| root.control_card(panel, i, count))
                 .collect();
@@ -3388,20 +3312,21 @@ mod tests {
                 root.link_rect(panel, &state, 0),
                 root.link_rect(panel, &state, 1),
             ];
-            assert!(close(links[0].y0 - cards[2].y1, s4), "cards → rows is s4");
-            assert!(close(links[1].x0 - links[0].x1, s3), "row ↔ row is s3");
             let power = root.power_geometry(panel, &state);
-            assert!(close(power.y0 - links[0].y1, s3), "rows → power is s3");
-            assert!(
-                close(panel.y1 - power.y1, s4),
-                "power → panel edge is the panel padding"
+            assert_eq!(
+                [links[0], links[1], power],
+                [cards[controls], cards[controls + 1], cards[controls + 2]],
+                "Devices, Clipboard and the power profile close the one card grid"
             );
             assert!(
-                close(
-                    power.height(),
-                    f64::from(ui::tokens::Metrics::BASE.panel_row_height)
-                ),
-                "the power row rests at the Control height at 1×"
+                cards
+                    .iter()
+                    .all(|card| close(card.height(), cards[0].height())),
+                "every tile in the grid is one card style: {cards:?}"
+            );
+            assert!(
+                close(panel.y1 - cards[count - 1].y1, s4),
+                "last card → panel edge is the panel padding"
             );
             // Inside a card: the icon row's glyph and switch share the row's
             // centre line, sit on the s3 inset and never meet.
@@ -3422,8 +3347,6 @@ mod tests {
             let mut all = tiles;
             all.push(sliders);
             all.extend(cards.iter().copied());
-            all.extend(links);
-            all.push(power);
             for (i, a) in all.iter().enumerate() {
                 for b in &all[..i] {
                     let o = a.intersect(*b);
@@ -3439,6 +3362,72 @@ mod tests {
         large_text_fits_every_root_control_on_a_960_by_540_desktop();
         large_text_rows_grow_to_hold_their_type_and_the_title_stays_clear_of_the_tiles();
         root_geometry_keeps_one_rhythm_at_one_x();
+    }
+
+    #[test]
+    fn every_control_glyph_names_one_thing_on_the_page() {
+        use ui::icons::Icon;
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        let controls = [
+            QuickSettingsControl::Wifi,
+            QuickSettingsControl::Bluetooth,
+            QuickSettingsControl::Vpn,
+            QuickSettingsControl::NightLight,
+            QuickSettingsControl::AirplaneMode,
+            QuickSettingsControl::MobileData,
+            QuickSettingsControl::DoNotDisturb,
+            QuickSettingsControl::RotationLock,
+        ];
+        // Brightness and volume label their sliders with these glyphs; the
+        // destination tiles and utility cards carry their own.
+        let mut seen: Vec<(Icon, String)> = vec![
+            (Icon::Sun, "brightness".into()),
+            (Icon::Volume2, "volume".into()),
+            (Icon::Monitor, "devices".into()),
+            (Icon::ClipboardPaste, "clipboard".into()),
+            (Icon::Battery, "power profile".into()),
+        ];
+        seen.extend(RootTile::ALL.map(|tile| (tile.icon(), format!("{tile:?}"))));
+        for control in controls {
+            let icon = QuickSettingsRoot::icon(control, &state);
+            if let Some((_, other)) = seen.iter().find(|(taken, _)| *taken == icon) {
+                panic!("{control:?} reuses the {other} glyph {icon:?}");
+            }
+            seen.push((icon, format!("{control:?}")));
+        }
+    }
+
+    #[test]
+    fn the_edit_page_names_a_control_as_its_tile_does() {
+        for wifi_available in [true, false] {
+            let mut state = QuickSettingsState::default();
+            state.radios.wifi_available = wifi_available;
+            state.wired = Some(os_actions::WiredInfo {
+                connected: true,
+                device: Some("eno1".into()),
+                ..Default::default()
+            });
+            let mut root = QuickSettingsRoot::default();
+            let tile = root.accessibility_snapshot(&state);
+            root.edit_mode = true;
+            let edit = root.accessibility_snapshot(&state);
+            let names = |node: &ui::a11y::AccessNode| -> Vec<String> {
+                node.children
+                    .iter()
+                    .filter_map(|n| n.name.clone())
+                    .collect()
+            };
+            let (tile, edit) = (names(&tile), names(&edit));
+            let wifi = QuickSettingsRoot::rendered_label(QuickSettingsControl::Wifi, &state);
+            assert!(tile.contains(&wifi), "{tile:?}");
+            assert!(edit.contains(&wifi), "{edit:?}");
+            assert_eq!(
+                QuickSettingsRoot::label(QuickSettingsControl::Wifi),
+                t("qs-wifi"),
+                "the machine-independent name is the Wi-Fi tile's own"
+            );
+        }
     }
 
     #[test]

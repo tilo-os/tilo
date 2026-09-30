@@ -712,6 +712,12 @@ fn an_invocation_answers_with_its_result_once_it_finishes() {
         let reply = tool(&mut server, "tilo_invoke", briefly).await;
         assert_eq!(reply["structuredContent"]["update"]["state"], "accepted");
         assert!(started.elapsed() >= std::time::Duration::from_millis(60));
+        assert!(
+            reply["structuredContent"]["pending"]
+                .as_str()
+                .is_some_and(|hint| hint.starts_with("not finished within 60 ms; tilo_status")),
+            "{reply}"
+        );
     });
     assert_eq!(invoked.lock().unwrap().len(), 3);
 }
