@@ -10,6 +10,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use automerge::{AutoCommit, PatchAction, Prop};
 
@@ -47,7 +48,7 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
     if touched.is_empty() {
         return "no change".to_owned();
     }
-    let changed: Vec<Segment> = qdoc::model::materialize(doc, &containers)
+    let blocks: Vec<Segment> = qdoc::model::materialize(doc, &containers)
         .blocks
         .into_iter()
         .filter(|block| touched.contains(&block.id))
@@ -59,21 +60,24 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
             complete: true,
         })
         .collect();
-    let removed = touched.len().saturating_sub(changed.len());
+    let removed = touched.len().saturating_sub(blocks.len());
     let mut out = String::new();
-    if !changed.is_empty() {
-        out.push_str(&format!("{} changed:\n", changed.len()));
-        let listed = changed.len().min(MAX_LISTED);
-        out.push_str(&super::markdown::render(&changed[..listed]));
-        if changed.len() > listed {
-            out.push_str(&format!(
-                "… {} more; read-text reads them\n",
-                changed.len() - listed
-            ));
+    if !blocks.is_empty() {
+        let listed = blocks.len().min(MAX_LISTED);
+        let _ = writeln!(out, "{} changed:", blocks.len());
+        out.push_str(&super::markdown::render(
+            blocks.get(..listed).unwrap_or_default(),
+        ));
+        if blocks.len() > listed {
+            let _ = writeln!(
+                out,
+                "… {} more; read-text reads them",
+                blocks.len() - listed
+            );
         }
     }
     if removed > 0 {
-        out.push_str(&format!("{removed} removed\n"));
+        let _ = writeln!(out, "{removed} removed");
     }
     out
 }
