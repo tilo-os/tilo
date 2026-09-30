@@ -712,6 +712,11 @@ impl TileHost {
         &self.opening_name
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_opening_shown_for_test(&mut self) {
+        self.opening_shown = true;
+    }
+
     fn handover_in_flight(&self) -> bool {
         self.handed_over_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(HANDOVER_MS))
@@ -2370,7 +2375,15 @@ impl Widget for TileHost {
         };
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
-        self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+        // The card is painted, then the app presents. If we sleep there the
+        // last compositor frame is still the empty card — A05's Store shot.
+        let pending_handover =
+            self.opening_shown && !Widget::opening(self) && self.handed_over_at.is_none();
+        self.spawn_in_flight()
+            || self.handover_in_flight()
+            || opening_indicator
+            || inner
+            || pending_handover
     }
 }
 
@@ -4732,6 +4745,17 @@ mod tests {
             &PresenceCtx::empty(),
         );
         scene
+    }
+
+    #[test]
+    fn an_arrived_app_after_a_visible_card_still_asks_for_a_frame() {
+        // Case `retiring_the_opening_card_keeps_one_paint_so_the_app_replaces_it`.
+        let (mut host, _) = starting_host(true, false);
+        host.mark_opening_shown_for_test();
+        assert!(
+            Widget::needs_animation_frame(&host),
+            "the person already saw the opening card; without one more frame              the compositor sleeps on that empty fill (A05 Store)"
+        );
     }
 
     #[test]
