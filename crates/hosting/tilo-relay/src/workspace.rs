@@ -60,6 +60,10 @@ pub struct Subscriber {
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
+    /// The in-process room authority governing this workspace, told of each
+    /// retained body a device's admitted delta carries. Bounded; a full queue
+    /// drops the notice.
+    pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -314,6 +318,7 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             sync_refresh: None,
+            governor_tap: None,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,

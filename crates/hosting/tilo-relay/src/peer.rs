@@ -4292,6 +4292,31 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+/// Admit `envelope`, authored by this host's own device, through the
+/// workspace's ordered persistence owner, as a device's commit is admitted.
+/// Resolves with its host order once it is durable and published.
+pub(crate) async fn admit_host_state(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    metrics: Arc<crate::metrics::Metrics>,
+) -> Result<u64, String> {
+    let admitted = Box::pin(enqueue_state_inner(
+        workspace,
+        envelope,
+        None,
+        crate::auth::PeerRole::Device,
+        metrics,
+        false,
+    ))
+    .await
+    .map_err(|error| error.to_string())?;
+    admitted
+        .completion
+        .await
+        .map_err(|_| "the workspace owner stopped before the commit was durable".to_owned())?
+        .map_err(|error| error.to_string())?;
+    Ok(admitted.sequence.load(std::sync::atomic::Ordering::SeqCst))
+}
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
     envelope: Envelope,
@@ -4972,7 +4997,19 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
+    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+        let Envelope::Delta { delta, .. } = &env else {
+            return None;
+        };
+        match crate::coedit::CoeditPayload::decode(delta)? {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. }
+            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
+        }
+    });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    if let Some((tap, body)) = governor {
+        let _ = tap.try_send((peer.device_public_key, body));
+    }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
     }
