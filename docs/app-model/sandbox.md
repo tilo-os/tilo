@@ -434,8 +434,9 @@ and a format, never a device handle. What the runtime allows:
    list`, then `actions invoke runtime revoke@device-grant:<device>:<room>:<app>`.
    Any process may also call `DeviceGrants::revoke`: the file is the truth.
 
-The runtime captures through the crate's GStreamer backend, so a macOS
-runtime build links GStreamer.
+The runtime captures through the crate's AVFoundation backend and links no
+GStreamer; `Runtime.entitlements` gives the signed `tilo-runtime` the camera
+and microphone, and `Info.plist` says why when macOS asks.
 
 The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
 It runs a preflight first, against a target that cannot exist. If the
