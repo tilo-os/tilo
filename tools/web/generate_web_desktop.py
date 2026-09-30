@@ -187,9 +187,10 @@ def outputs(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], list[str]]:
         )
     ]
     bundle = repo / "crates/browser/tilo-web-desktop"
+    agents = repo / "crates/agent/agent-participant"
     block = re.compile(re.escape(BEGIN) + r".*?" + re.escape(END), re.S)
     manifests = {}
-    for crate in (bundle,):
+    for crate in (bundle, agents):
         manifest = (crate / "Cargo.toml").read_text()
         if not block.search(manifest):
             problems.append(f"{crate / 'Cargo.toml'}: generated-apps markers missing")
@@ -200,6 +201,7 @@ def outputs(repo: pathlib.Path) -> tuple[dict[pathlib.Path, str], list[str]]:
             bundle / "src/apps.rs": apps_rs(apps),
             bundle / "apps.json": apps_json(everything),
             repo / "crates/session/desktop-search/src/catalog.rs": catalog_rs(everything),
+            agents / "src/web_apps.rs": web_apps_rs(apps),
         },
         problems,
     )

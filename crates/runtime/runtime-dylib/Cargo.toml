@@ -17,7 +17,7 @@ crate-type = ["dylib"]
 
 [dependencies]
 runtime = { path = "../runtime" }
-cli = { path = "../cli" }
+tilo-cli-kit = { path = "../cli" }
 # The UI toolkit and its rendering graph are included in the shared dylib.
 # `portal` covers apps that open host files through the XDG portal.
 # This must be the superset used by every thin app in the default collection.
@@ -53,7 +53,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { path = "../runtime-fs" }
 # The collaborative filesystem and content store linked by Files and
 # Scratchpad, stored once here rather than in both tapps.
-fs = { path = "../../system/fs" }
+tilo-fs = { path = "../../system/fs" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 runtime-portal-xdg = { path = "../runtime-portal-xdg" }
@@ -67,14 +67,14 @@ async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-model-gateway = { path = "../../agent/model-gateway" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
 chrono-tz = "0.10.4"
 vte = "0.15.0"
 tilo-pdf = { path = "../../platform/tilo-pdf" }
-thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
+tilo-thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"
 mime_guess.workspace = true

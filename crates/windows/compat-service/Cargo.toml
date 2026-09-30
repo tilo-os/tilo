@@ -11,7 +11,7 @@ name = "compat_service"
 path = "src/lib.rs"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 collab-types = { path = "../../collab/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }

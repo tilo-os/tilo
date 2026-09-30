@@ -271,18 +271,23 @@ fn bridge_browser_presence(
     })
 }
 
+/// Accepted connections belong to their listener's loop: aborting the loop
+/// (dropping the [`WebHandle`]) closes every open connection with it, so a
+/// browser sees its host go away instead of a kept-alive orphan serving it.
 async fn accept_loop(
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     web: Arc<Web>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
+        while connections.try_join_next().is_some() {}
         let acceptor = acceptor.clone();
         let web = web.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let Ok(Ok(tls)) =
                 tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
             else {
@@ -295,11 +300,13 @@ async fn accept_loop(
 
 /// The same routes as plain HTTP on a loopback listener.
 async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
-        tokio::spawn(serve_connection(stream, web.clone()));
+        while connections.try_join_next().is_some() {}
+        connections.spawn(serve_connection(stream, web.clone()));
     }
 }
 

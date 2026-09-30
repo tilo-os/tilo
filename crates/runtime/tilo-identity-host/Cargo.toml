@@ -18,8 +18,8 @@ path = "src/lib.rs"
 throwaway-test-identity = []
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true

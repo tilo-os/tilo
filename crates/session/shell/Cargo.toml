@@ -46,7 +46,7 @@ agent-control = []
 
 [dependencies]
 fnv.workspace = true
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
@@ -61,7 +61,7 @@ reqwest.workspace = true
 # Its sanctioned builder installs the crypto provider reqwest needs.
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
@@ -71,14 +71,14 @@ tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
-secret-vault = { path = "../../system/secret-vault" }
+tilo-secret-vault = { path = "../../system/secret-vault" }
 # The speech backend the toolkit screen reader uses, for narrating chrome.
-tts = { path = "../../system/tts" }
+tilo-tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
@@ -133,10 +133,10 @@ tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic
 # writes, single-writer lock, debounced writer) an app's own state uses.
-app-state = { path = "../../system/app-state" }
+tilo-app-state = { path = "../../system/app-state" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
-cli = { path = "../../runtime/cli" }
+tilo-cli-kit = { path = "../../runtime/cli" }
 terminal = { path = "../../../apps/terminal" }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser" }
@@ -195,7 +195,7 @@ zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The shared preview decoder behind drag previews.
-thumbnail = { path = "../../media/thumbnail" }
+tilo-thumbnail = { path = "../../media/thumbnail" }
 # Host applications ship SVG icons; rasterised at the size chrome paints them.
 resvg = { version = "0.47", default-features = false }
 # The broker validates inbound `SignedOp` envelopes against the
@@ -302,7 +302,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # that would silently fall back to English fails a test.
 fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }

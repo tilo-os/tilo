@@ -23,11 +23,11 @@ collab-types = { path = "../../collab/collab-types" }
 bounded-command = { path = "../../system/bounded-command" }
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
-sandbox-core = { path = "../../system/sandbox-core" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 
 anyhow.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 landlock.workspace = true
 libc.workspace = true
 seccompiler.workspace = true
