@@ -366,11 +366,18 @@ impl NativeWorkspaceOwner {
             return Err("native enrollment is missing real admitted governance".into());
         }
         let (role, _, _) = peer.permissions(enrollment.local_device().device_public_key, now)?;
-        let expected = match enrollment.verified_join().grant().role {
-            tilo_peer_state::join::MemberRole::Editor => collab_types::Role::Editor,
-            tilo_peer_state::join::MemberRole::Commenter => collab_types::Role::Commenter,
-            tilo_peer_state::join::MemberRole::Viewer => collab_types::Role::Viewer,
-        };
+        // A device of the governing person is the room's owner whatever its
+        // invitation granted: the owner holds its room like any member.
+        let expected =
+            if enrollment.local_device().user_public_key == bootstrap.authority.user_public_key {
+                collab_types::Role::Owner
+            } else {
+                match enrollment.verified_join().grant().role {
+                    tilo_peer_state::join::MemberRole::Editor => collab_types::Role::Editor,
+                    tilo_peer_state::join::MemberRole::Commenter => collab_types::Role::Commenter,
+                    tilo_peer_state::join::MemberRole::Viewer => collab_types::Role::Viewer,
+                }
+            };
         if role != expected {
             return Err("actual admitted role differs from signed enrollment role".into());
         }

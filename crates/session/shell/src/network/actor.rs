@@ -173,6 +173,15 @@ pub enum NetCmd {
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
+    /// Ask the room authority of the relay at `relay`, as `certificate`, from
+    /// this device's own endpoint: the relay accepts only the certificate of
+    /// the endpoint it authenticated.
+    RoomAdmin {
+        relay: EndpointAddr,
+        certificate: DeviceCert,
+        command: tilo_relay::rooms::RoomCommand,
+        reply: std::sync::mpsc::SyncSender<Result<tilo_relay::rooms::RoomReply, String>>,
+    },
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -944,6 +953,19 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
+            Some(NetCmd::RoomAdmin {
+                relay,
+                certificate,
+                command,
+                reply,
+            }) => {
+                let client =
+                    tilo_relay::rooms::RoomAdminClient::new(self.endpoint.clone(), certificate);
+                tokio::spawn(async move {
+                    let answer = client.send(relay, command).await;
+                    let _ = reply.send(answer.map_err(|error| error.to_string()));
+                });
+            }
             Some(NetCmd::AttachActionBroker { queue, host, rooms }) => {
                 let rooms: HashMap<_, _> = rooms
                     .into_iter()
