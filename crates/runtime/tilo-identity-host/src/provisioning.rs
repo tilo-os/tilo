@@ -345,6 +345,8 @@ pub struct JoinedDeviceLayout<'a> {
     pub local_system: &'a IdentityPaths,
     /// This machine's `home-peers.json`, copied when it is present.
     pub local_home_peers: &'a Path,
+    /// This machine's exported workspace room ids, copied when the file exists.
+    pub local_rooms: &'a Path,
 }
 
 /// Certify a new device onto `layout.target_root` and make both sides accept it.
@@ -452,6 +454,18 @@ pub fn install_joined_device(
         relay_service,
         cert.device_public_key,
     )?;
+    let rooms_dest = target_system
+        .user_pubkey
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "target identity root is missing",
+            )
+        })?
+        .join("personal-rooms.json");
+    copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
     Ok(cert)
 }
 
@@ -511,6 +525,57 @@ fn safe_account_name(name: &str) -> bool {
             .iter()
             .skip(1)
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+fn valid_room_id(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let expected = [8, 4, 4, 4, 12];
+    expected.into_iter().all(|len| {
+        parts.next().is_some_and(|part| {
+            part.len() == len && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    }) && parts.next().is_none()
+}
+
+fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
+    let bytes = match fs::read(source) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() > 64 * 1024 {
+        return Ok(());
+    }
+    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+        return Ok(());
+    };
+    if ids.len() > 256 || ids.iter().any(|id| !valid_room_id(id)) {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    atomic_file::write(
+        dest,
+        &serde_json::to_vec_pretty(&ids)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+    )?;
+    Ok(())
+}
+
+/// Where this session publishes the workspace rooms a newly enrolled device
+/// should join. Absent when the process has no home or state directory.
+#[must_use]
+pub fn personal_rooms_export_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(base.join("tilo").join("personal-rooms.json"))
 }
 
 fn relay_is_dialable(
@@ -1185,6 +1250,11 @@ mod tests {
             serde_json::to_vec_pretty(&vec![own, other]).unwrap(),
         )
         .unwrap();
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            br#"["11111111-1111-4111-8111-111111111111"]"#,
+        )
+        .unwrap();
 
         let cert = install_joined_device(
             &JoinedDeviceLayout {
@@ -1193,6 +1263,7 @@ mod tests {
                 local_identity_dir: &dir.path().join("local-identity"),
                 local_system: &local_system,
                 local_home_peers: &peers,
+                local_rooms: &dir.path().join("personal-rooms.json"),
             },
             user,
             "ada",
@@ -1271,6 +1342,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
+        let rooms: Vec<String> = serde_json::from_slice(
+            &std::fs::read(dir.path().join("var/lib/tilo/personal-rooms.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
         let peers_bytes = std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap();
         assert!(
             !peers_bytes
@@ -1336,6 +1412,7 @@ mod tests {
                 local_identity_dir: &local_identity,
                 local_system: &local_system,
                 local_home_peers: &peers,
+                local_rooms: &dir.path().join("missing-rooms.json"),
             },
             "ada",
             "orange-pi",
