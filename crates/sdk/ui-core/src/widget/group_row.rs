@@ -2592,6 +2592,10 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
+        for group in &mut self.groups {
+            group.set_reduce_motion(theme.reduce_motion);
+            group.step_width_spring();
+        }
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
             // Retained groups remain lifecycle owners, but none of their
@@ -6596,7 +6600,9 @@ mod tests {
             // `Normal`s the left neighbour couldn't reach the minimum at all,
             // since the right would have to grow past the display.
             row.groups[0].set_width(WindowWidth::Narrow);
+            row.groups[0].snap_width_spring();
             row.groups[1].set_width(WindowWidth::Narrow);
+            row.groups[1].snap_width_spring();
             drop((taffy, root));
             let (mut row, taffy, root) = relayout_row_owned(row, 2000.0);
 
