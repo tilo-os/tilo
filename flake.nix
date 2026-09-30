@@ -55,8 +55,10 @@
             environment.systemPackages = [ cfg.package ];
             services.displayManager.sessionPackages = [ cfg.package ];
             environment.etc."pam.d/tilo-unlock".source = "${cfg.package}/etc/pam.d/tilo-unlock";
-            environment.etc."systemd/user/tilo-graphical-session.target".source =
-              "${cfg.package}/share/systemd/user/tilo-graphical-session.target";
+            # NixOS owns /etc/systemd/user as one generated tree. Adding a
+            # nested environment.etc file under it fails while assembling /etc.
+            systemd.user.units."tilo-graphical-session.target".text =
+              builtins.readFile ./os/usr/lib/systemd/user/tilo-graphical-session.target;
             # NixOS's PipeWire reads /etc/pipewire, not the package's share
             # directory; Settings offers "Reduce echo in calls" only when
             # `pipewire -c tilo-echo-cancel.conf` can find the config.
