@@ -493,12 +493,13 @@ fn video_ingest_loop(
         .map_err(|error| format!("cannot bind compositor video socket: {error}"))?;
     fs::set_permissions(&paths.video_socket, fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("cannot secure compositor video socket: {error}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("cannot configure compositor video socket: {error}"))?;
     let mut pipeline = HlsPipeline::start(paths, audio)?;
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
+            Ok((stream, _)) if stop.load(Ordering::Acquire) => {
+                drop(stream);
+                break;
+            }
             Ok((mut stream, _)) => {
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                 while !stop.load(Ordering::Acquire) {
@@ -513,9 +514,7 @@ fn video_ingest_loop(
                     }
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(format!("cannot accept compositor video: {error}")),
         }
     }
@@ -658,14 +657,12 @@ fn start_http_server(
         .local_addr()
         .map_err(|error| format!("cannot read projection media address: {error}"))?
         .port();
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| format!("cannot configure projection media server: {error}"))?;
     let thread = std::thread::Builder::new()
-        .name("tilo-projection-http".to_owned())
+        .name("tilo-proj-http".to_owned())
         .spawn(move || {
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
+                    Ok(_) if stop.load(Ordering::Acquire) => break,
                     Ok((stream, peer)) if peer.ip() == receiver => {
                         serve_file(stream, &root, &token, &telemetry);
                     }
@@ -673,15 +670,22 @@ fn start_http_server(
                         let _ = stream
                             .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
         })
         .map_err(|error| format!("cannot start projection media server: {error}"))?;
     Ok((port, thread))
+}
+
+fn wake_http_listener(receiver: std::net::IpAddr, port: u16) {
+    let loopback = if receiver.is_ipv6() {
+        std::net::SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), port)
+    } else {
+        std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port)
+    };
+    let _ = TcpStream::connect_timeout(&loopback, Duration::from_millis(200));
 }
 
 fn random_media_token() -> String {
@@ -1321,7 +1325,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let video_paths = paths.clone();
     let video_stop = stop.clone();
     let video_thread = std::thread::Builder::new()
-        .name("tilo-projection-video".to_owned())
+        .name("tilo-proj-video".to_owned())
         .spawn(move || video_ingest_loop(&video_paths, &video_stop, audio))
         .map_err(|error| format!("cannot start projection video ingest: {error}"))?;
     let media_token = random_media_token();
@@ -1374,8 +1378,9 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let _ = device.stop_playback();
     let _ = device.disconnect();
     stop.store(true, Ordering::Release);
-    // Wake a video worker that is waiting in accept.
+    // Wake workers that are waiting in accept.
     let _ = std::os::unix::net::UnixStream::connect(&paths.video_socket);
+    wake_http_listener(address, http_port);
     let _ = video_thread.join();
     let _ = http_thread.join();
     paths.clear_markers();
@@ -1941,6 +1946,7 @@ mod tests {
             assert!(private.starts_with("HTTP/1.1 400 Bad Request"));
 
             stop.store(true, Ordering::Release);
+            wake_http_listener(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port);
             thread.join().expect("join HTTP server");
             fs::remove_dir_all(root).expect("remove fixture directory");
         }
@@ -2228,5 +2234,72 @@ mod tests {
         assert_eq!(receiver.id, "Miracast:02:00:00:00:00:09");
         assert_eq!(receiver.addresses, ["02:00:00:00:00:09"]);
         assert!(receiver.detail.contains("87%"));
+    }
+
+    fn thread_ids() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .expect("/proc/self/task")
+            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
+            .collect()
+    }
+
+    fn context_switches(tid: &str) -> u64 {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+            .expect("thread status")
+            .lines()
+            .filter(|line| line.contains("ctxt_switches"))
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum()
+    }
+
+    fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
+        let before = thread_ids();
+        let started = start();
+        let waiting = Instant::now();
+        loop {
+            let named = thread_ids()
+                .difference(&before)
+                .find(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|name| name.trim() == comm)
+                })
+                .cloned();
+            if let Some(tid) = named {
+                return (started, tid);
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "no new thread named {comm}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn assert_stays_asleep(tid: &str, what: &str) {
+        std::thread::sleep(Duration::from_millis(50));
+        let settled = context_switches(tid);
+        std::thread::sleep(Duration::from_millis(400));
+        let woke = context_switches(tid).saturating_sub(settled);
+        assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
+    }
+
+    #[test]
+    fn idle_http_accept_thread_sleeps_without_clients() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let receiver = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let ((port, thread), tid) = spawned_thread("tilo-proj-http", || {
+            start_http_server(
+                std::env::temp_dir(),
+                stop.clone(),
+                receiver,
+                "token".to_owned(),
+                Arc::new(MediaTelemetry::default()),
+            )
+            .expect("HTTP server")
+        });
+        assert_stays_asleep(&tid, "projection HTTP accept");
+        stop.store(true, Ordering::Release);
+        wake_http_listener(receiver, port);
+        thread.join().expect("join HTTP server");
     }
 }
