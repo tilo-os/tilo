@@ -746,7 +746,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             app.resource_result,
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -1619,7 +1619,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
-        assert!(app.take_committed_action().is_some());
+        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -1682,7 +1682,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         ));
         assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "the semantic route must create the normal undo boundary"
         );
 
@@ -1937,7 +1937,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             "unchanged sync rebuilt search"
         );
 
-        let providers = Widget::search_providers(&app);
+        let providers = ui::search::capability::search_providers(&app);
         assert_eq!(providers.len(), 1);
         let hit = providers[0].search("夏").pop().unwrap();
         let address = hit.action_address().unwrap();
@@ -2013,12 +2013,12 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         assert!(app.search_provider.resource(&first_id).is_some());
         assert!(app.search_provider.resource(&second_id).is_none());
         assert!(app.status.contains("kept its previous index"));
-        let diagnostic = Widget::resource(&app, &doc, "photos.search-status")
+        let diagnostic = ui::resources::resource(&app, &doc, "photos.search-status")
             .expect("rejected refresh is an exact addressable resource");
         assert_eq!(diagnostic.kind, "photos.diagnostic");
         assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
         assert!(
-            Widget::resources(&app, &doc)
+            ui::resources::resources(&app, &doc)
                 .iter()
                 .any(|resource| resource.id.0 == "photos.search-status")
         );
@@ -2418,7 +2418,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 },
             );
         }
-        let invocation = Widget::take_control_invocation(&mut app)
+        let invocation = ui::widget::controls::take_control_invocation(&mut app)
             .expect("pointer stop is exported through the host action door");
         assert_eq!(
             invocation.address.resource,

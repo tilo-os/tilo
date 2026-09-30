@@ -2,8 +2,11 @@
 name = "tilo-actions"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo action model: resources, the actions on them, and their registry."
 
 [lib]
 name = "tilo_actions"
@@ -15,10 +18,10 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [dependencies]
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
-web-time = { version = "1", features = ["serde"] }
 chrono = { workspace = true, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

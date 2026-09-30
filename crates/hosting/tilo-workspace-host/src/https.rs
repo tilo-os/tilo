@@ -65,6 +65,8 @@ pub enum Route {
     Media(MediaRoute),
     /// Proof-required LIVE_V1 grant issue/renewal.
     LiveGrant,
+    /// Proof-required input for a legacy window from a controlling viewer.
+    LegacyInput,
 }
 
 /// Closed inert media route registry; route selection alone grants no authority.
@@ -114,6 +116,9 @@ impl Route {
                 AUTH_BYTES
             }
             Self::LiveGrant => tilo_delivery_protocol::delivery_v3::live_wire::MAX_GRANT_BYTES,
+            Self::LegacyInput => {
+                tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::MAX_INPUT_BYTES
+            }
             _ => 0,
         }
     }
@@ -276,6 +281,23 @@ struct Parsed {
     proof: Option<Vec<u8>>,
 }
 
+/// A loopback TCP listener and UDP socket on one port, as HTTPS and HTTP/3
+/// share it. Holding the TCP port reserves nothing on UDP, where a parallel
+/// test may already hold that number, so a taken UDP port draws a new pair.
+#[cfg(all(test, feature = "media"))]
+pub(crate) async fn bind_https_pair() -> (tokio::net::TcpListener, std::net::UdpSocket) {
+    loop {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        match std::net::UdpSocket::bind(listener.local_addr().unwrap()) {
+            Ok(udp) => return (listener, udp),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("bind the HTTP/3 half: {error}"),
+        }
+    }
+}
+
 #[cfg(test)]
 fn check_origin(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     if parts.headers.contains_key("cookie") {
@@ -381,6 +403,11 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             if parts.uri.query().is_none() =>
         {
             Route::LiveGrant
+        }
+        ("POST", tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::INPUT_TARGET)
+            if parts.uri.query().is_none() =>
+        {
+            Route::LegacyInput
         }
         ("GET", path) if parts.uri.query().is_none() && snapshot_chunk_target(path).is_some() => {
             Route::SnapshotChunk
@@ -539,6 +566,96 @@ pub struct BufferedRequest {
     cancelled: watch::Receiver<bool>,
     response: oneshot::Sender<Reply>,
     lease: Arc<Lease>,
+    admission: Admission,
+}
+/// Whether a service has taken a request on. The request deadline bounds only
+/// how long it may wait for that: the front answers the retryable 503 for a
+/// request still queued at its deadline, which then must have no effect. A
+/// started request is answered by its service, however long that takes, as
+/// long as the service keeps making progress (the owner-turn stall budget).
+pub(crate) struct Admission {
+    phase: Arc<std::sync::Mutex<Phase>>,
+    started: std::sync::Mutex<Option<oneshot::Sender<tilo_action_broker::owner_turn::TurnWatch>>>,
+    progress: std::sync::Mutex<Option<tilo_action_broker::owner_turn::TurnProgress>>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Queued,
+    Started,
+    Abandoned,
+}
+/// The front's view of one request's [`Admission`].
+struct AdmissionFront {
+    phase: Arc<std::sync::Mutex<Phase>>,
+    started: oneshot::Receiver<tilo_action_broker::owner_turn::TurnWatch>,
+}
+impl Admission {
+    fn new() -> (Self, AdmissionFront) {
+        let phase = Arc::new(std::sync::Mutex::new(Phase::Queued));
+        let (started, started_rx) = oneshot::channel();
+        (
+            Self {
+                phase: Arc::clone(&phase),
+                started: std::sync::Mutex::new(Some(started)),
+                progress: std::sync::Mutex::new(None),
+            },
+            AdmissionFront {
+                phase,
+                started: started_rx,
+            },
+        )
+    }
+    /// An admission no front waits on (tests that build requests directly).
+    #[cfg(test)]
+    pub(crate) fn unwatched() -> Self {
+        Self::new().0
+    }
+    fn phase(&self) -> Phase {
+        *self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+impl AdmissionFront {
+    /// At the deadline: give up on a request no service has started.
+    fn abandon_if_queued(&self) -> bool {
+        let mut phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = *phase == Phase::Queued;
+        if queued {
+            *phase = Phase::Abandoned;
+        }
+        queued
+    }
+    /// Wait for the reply. Queued past `deadline`: the retryable 503. Started:
+    /// the service's own answer, unless it stops making progress.
+    async fn reply(
+        mut self,
+        deadline: Instant,
+        response: oneshot::Receiver<Reply>,
+    ) -> Option<Reply> {
+        use tilo_action_broker::owner_turn::TurnWait;
+        let mut response = response;
+        let turn = tokio::select! {
+            biased;
+            reply = &mut response => return reply.ok(),
+            turn = &mut self.started => turn.ok()?,
+            () = tokio::time::sleep_until(deadline) => {
+                if self.abandon_if_queued() {
+                    return None;
+                }
+                // Started under the lock, so its turn is already sent.
+                self.started.await.ok()?
+            }
+        };
+        match turn.wait(response).await {
+            TurnWait::Answered(reply) => Some(reply),
+            TurnWait::Lost | TurnWait::Stalled => None,
+        }
+    }
 }
 impl BufferedRequest {
     pub fn method(&self) -> &Method {
@@ -560,9 +677,63 @@ impl BufferedRequest {
         self.deadline
     }
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.borrow()
-            || self.cancelled.has_changed().is_err()
-            || Instant::now() >= self.deadline
+        match self.admission.phase() {
+            Phase::Abandoned => return true,
+            Phase::Started => {}
+            Phase::Queued if Instant::now() >= self.deadline => return true,
+            Phase::Queued => {}
+        }
+        *self.cancelled.borrow() || self.cancelled.has_changed().is_err()
+    }
+    /// Take the request on before its first effect. From here the front waits
+    /// for this answer while the service makes progress, instead of answering
+    /// 503 at the deadline. Returns false when the front already answered 503:
+    /// the request must then have no effect.
+    #[must_use]
+    pub fn start(&self) -> bool {
+        let mut phase = self
+            .admission
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *phase {
+            Phase::Abandoned => return false,
+            Phase::Started => return true,
+            Phase::Queued if Instant::now() >= self.deadline => {
+                *phase = Phase::Abandoned;
+                return false;
+            }
+            Phase::Queued => {}
+        }
+        *phase = Phase::Started;
+        let (progress, turn) =
+            tilo_action_broker::owner_turn::start(tilo_action_broker::owner_turn::STALL_BUDGET);
+        if let Some(started) = self
+            .admission
+            .started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = started.send(turn);
+        }
+        *self
+            .admission
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(progress);
+        true
+    }
+    /// A step of a started request completed: renew its stall budget.
+    pub fn advance(&self) {
+        if let Some(progress) = &*self
+            .admission
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            progress.advance();
+        }
     }
     pub fn cancellation(&self) -> watch::Receiver<bool> {
         self.cancelled.clone()
@@ -1173,6 +1344,7 @@ where
     let (cancel, cancelled) = watch::channel(false);
     let _cancel = CancelOnDrop(cancel);
     let (reply, response_rx) = oneshot::channel();
+    let (admission, front) = Admission::new();
     let request = BufferedRequest {
         method: parts.method,
         target: parsed.target,
@@ -1183,6 +1355,7 @@ where
         cancelled,
         response: reply,
         lease,
+        admission,
     };
     let queue = if matches!(parsed.route, Route::Media(_)) {
         &ingress.media
@@ -1194,10 +1367,10 @@ where
     queue
         .try_send(request)
         .map_err(|_| Rejection::unavailable())?;
-    let reply = timeout_at(deadline, response_rx)
+    let reply = front
+        .reply(deadline, response_rx)
         .await
-        .map_err(|_| Rejection::unavailable())?
-        .map_err(|_| Rejection::unavailable())?;
+        .ok_or_else(Rejection::unavailable)?;
     Ok(response(
         reply.status,
         ResponseBody::full(reply.body, Some(reply.lease)),

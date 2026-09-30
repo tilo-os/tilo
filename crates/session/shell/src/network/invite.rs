@@ -145,9 +145,7 @@ fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> 
 }
 
 fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    tilo_clock::unix_now()
 }
 
 /// Stable, non-secret identifier for one exact signed invite. Authorities use
@@ -250,11 +248,29 @@ pub fn make_invite_token_with_identity_and_role(
         host_addrs,
         &[],
         owner_device_cert,
-        role,
-        None,
-        None,
-        expiry_seconds_from_now,
+        InviteTerms {
+            role,
+            recipient: None,
+            expiry_seconds_from_now,
+        },
     )
+}
+
+/// What a signed invite grants: the role, the person it is bound to (if
+/// anyone), and how long it stays redeemable.
+#[derive(Debug, Clone, Copy)]
+pub struct InviteTerms<'a> {
+    pub role: InviteRole,
+    pub recipient: Option<InviteRecipient<'a>>,
+    pub expiry_seconds_from_now: u64,
+}
+
+/// The person identity an invite is bound to, and the display name the
+/// inviter signs for them.
+#[derive(Debug, Clone, Copy)]
+pub struct InviteRecipient<'a> {
+    pub user_public_key: [u8; 32],
+    pub name: Option<&'a str>,
 }
 
 /// Mint an invite bound to one recipient person identity. The optional name is
@@ -264,10 +280,6 @@ pub fn make_invite_token_with_identity_and_role(
 ///
 /// Returns an error if the workspace, endpoint, device certificate, or
 /// serialized signed token is invalid.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every field of the signed token is an independent input the caller already holds"
-)]
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -275,11 +287,15 @@ pub fn make_invite_token_with_recipient(
     host_addrs: &[iroh::EndpointAddr],
     home_host_pins: &[HomeHostPin],
     owner_device_cert: Option<DeviceCert>,
-    role: InviteRole,
-    recipient_user_public_key: Option<[u8; 32]>,
-    invitee_name: Option<&str>,
-    expiry_seconds_from_now: u64,
+    terms: InviteTerms<'_>,
 ) -> std::io::Result<String> {
+    let InviteTerms {
+        role,
+        recipient,
+        expiry_seconds_from_now,
+    } = terms;
+    let recipient_user_public_key = recipient.map(|recipient| recipient.user_public_key);
+    let invitee_name = recipient.and_then(|recipient| recipient.name);
     if workspace.room.is_nil() {
         return Err(std::io::Error::other(
             "workspace has no room identity to invite into",
@@ -303,12 +319,6 @@ pub fn make_invite_token_with_recipient(
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "invitee name is empty, over 128 bytes, or contains control characters",
-        ));
-    }
-    if recipient_user_public_key.is_none() && invitee_name.is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "a signed invitee name requires a bound recipient identity",
         ));
     }
     let mut token = PeerInviteToken {
@@ -602,10 +612,11 @@ mod tests {
                 std::slice::from_ref(&pin.addr),
                 std::slice::from_ref(&pin),
                 Some(owner_cert),
-                InviteRole::Editor,
-                None,
-                None,
-                3600,
+                InviteTerms {
+                    role: InviteRole::Editor,
+                    recipient: None,
+                    expiry_seconds_from_now: 3600,
+                },
             )
             .expect("pinned invite");
             let decoded = validate_invite_token(&encoded).expect("valid pinned invite");
@@ -661,10 +672,14 @@ mod tests {
                 &[],
                 &[],
                 None,
-                InviteRole::Commenter,
-                Some(recipient),
-                Some("Ada"),
-                3600,
+                InviteTerms {
+                    role: InviteRole::Commenter,
+                    recipient: Some(InviteRecipient {
+                        user_public_key: recipient,
+                        name: Some("Ada"),
+                    }),
+                    expiry_seconds_from_now: 3600,
+                },
             )
             .expect("bound invite");
             let decoded = validate_invite_token(&encoded).expect("valid bound invite");

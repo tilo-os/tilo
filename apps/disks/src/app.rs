@@ -27,6 +27,7 @@ use ui::winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::paint::with_alpha;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -374,6 +375,17 @@ struct ModalLayout {
     input: Rect,
     cancel: Rect,
     confirm: Rect,
+}
+
+/// One partition's slot in the partitions table: its position in the list,
+/// the row's text line, and its selection/hover state.
+#[derive(Clone, Copy)]
+struct PartitionRow<'a> {
+    index: usize,
+    partition: &'a Partition,
+    y: f64,
+    selected: bool,
+    hover: bool,
 }
 
 /// Column x-positions for the partitions tab's table, resolved once from
@@ -816,85 +828,49 @@ impl DisksApp {
     }
 
     // ---- drawing primitives -------------------------------------------
-    // This is the one leaf adapter around `TextRenderer::draw_text_weighted`.
-    // Its text, typography, origin and optional clipping width are independent
-    // at 57 call sites; a parameter object would add construction noise but
-    // express no invariant. Alignment-aware adapters below group their anchor
-    // into a `Point` and therefore remain lint-clean.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "leaf adapter mirrors independently variable renderer inputs at 57 call sites; no domain invariant exists to model"
-    )]
     fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
-        size: f32,
+        style: &TextStyle,
         color: Color,
-        x: f64,
-        top: f64,
+        origin: Point,
         max_w: Option<f32>,
-        weight: TextWeight,
     ) {
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             s,
-            size,
             color,
-            Affine::translate((x, top)),
+            Affine::translate(origin.to_vec2()),
             max_w,
-            weight,
+            style,
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_right(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
-        size: f32,
+        style: &TextStyle,
         color: Color,
-        right: f64,
-        top: f64,
-        weight: TextWeight,
+        top_right: Point,
     ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            right - f64::from(w),
-            top,
-            None,
-            weight,
-        );
+        let (w, _) = tr.measure_style(s, None, style);
+        let origin = Point::new(top_right.x - f64::from(w), top_right.y);
+        Self::txt(scene, tr, s, style, color, origin, None);
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_center(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
-        size: f32,
+        style: &TextStyle,
         color: Color,
-        cx: f64,
-        top: f64,
-        weight: TextWeight,
+        top_center: Point,
     ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            cx - f64::from(w) / 2.0,
-            top,
-            None,
-            weight,
-        );
+        let (w, _) = tr.measure_style(s, None, style);
+        let origin = Point::new(top_center.x - f64::from(w) / 2.0, top_center.y);
+        Self::txt(scene, tr, s, style, color, origin, None);
     }
 
     fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
@@ -989,12 +965,10 @@ impl DisksApp {
             scene,
             tr,
             &summary,
-            ty().base,
+            &TextStyle::new(ty().base).with_weight(TextWeight::Medium),
             c.text_primary,
-            title_x,
-            18.0,
+            Point::new(title_x, 18.0),
             Some((lay.refresh.x0 - title_x - 12.0).max(0.0) as f32),
-            TextWeight::Medium,
         );
 
         // Refresh button.
@@ -1040,7 +1014,14 @@ impl DisksApp {
             }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
-            Self::draw_drive_row(scene, tr, theme, t, r, drive, selected, hover, self.k);
+            Self::draw_drive_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                r,
+                drive,
+                selected,
+                hover,
+                self.k,
+            );
         }
         scene.pop_layer();
     }
@@ -1059,39 +1040,32 @@ impl DisksApp {
             scene,
             tr,
             "DRIVES",
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Bold),
             c.text_dim,
-            hr.x0 + 2.0,
-            hr.y0 + 8.0,
+            Point::new(hr.x0 + 2.0, hr.y0 + 8.0),
             None,
-            TextWeight::Bold,
         );
         Self::txt_right(
             scene,
             tr,
             &format!("{}", self.topo.drives.len()),
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
             c.text_dim,
-            hr.x1 - 2.0,
-            hr.y0 + 8.0,
-            TextWeight::Semibold,
+            Point::new(hr.x1 - 2.0, hr.y0 + 8.0),
         );
     }
 
     /// One drive card: kind badge, model/name/size, usage bar, and health
     /// dot (part of [`Self::draw_drive_list`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_drive_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         r: Rect,
         drive: &Drive,
         selected: bool,
         hover: bool,
         k: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let bg = if selected {
             with_alpha(theme.accent_primary, 46)
@@ -1101,15 +1075,22 @@ impl DisksApp {
             c.surfaces.raised
         };
         let card_radius = f64::from(theme.tokens.radii.lg);
-        ui::surface::card(scene, t, r, card_radius, bg);
+        ui::surface::card(ctx.scene, ctx.transform, r, card_radius, bg);
         if selected {
-            Self::stroke_rr(scene, t, r, card_radius, theme.accent_primary, 2.0);
+            Self::stroke_rr(
+                ctx.scene,
+                ctx.transform,
+                r,
+                card_radius,
+                theme.accent_primary,
+                2.0,
+            );
         }
         // Left accent bar — the unmistakable "this row is selected" cue.
         if selected {
             Self::fill_rr(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(r.x0, r.y0 + 10.0, r.x0 + 4.0, r.y1 - 10.0),
                 2.0,
                 theme.accent_primary,
@@ -1125,50 +1106,44 @@ impl DisksApp {
             r.y0 + (14.0 + 22.0) * k,
         );
         let badge_fill = kind_color(theme, drive.kind);
-        Self::fill_rr(scene, t, badge, 6.0, badge_fill);
+        Self::fill_rr(ctx.scene, ctx.transform, badge, 6.0, badge_fill);
         Self::txt_center(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             drive.kind.tag(),
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Bold),
             c.on_surface(badge_fill).ink,
-            f64::midpoint(badge.x0, badge.x1),
-            badge.y0 + 4.0 * k,
-            TextWeight::Bold,
+            Point::new(f64::midpoint(badge.x0, badge.x1), badge.y0 + 4.0 * k),
         );
 
         // Model + name + size.
         let tx = r.x0 + CARD_INSET + inset;
         // Elided to the card's width rather than wrapped, so a long model name
         // never drops onto the device line beneath it.
-        let model = tr.elide_to_width_weighted(
+        let model = ctx.text.elide_to_width_weighted(
             &drive.model,
             ty().base,
             (r.width() - 28.0 - inset) as f32,
             TextWeight::Semibold,
         );
         Self::txt(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             &model,
-            ty().base,
+            &TextStyle::new(ty().base).with_weight(TextWeight::Semibold),
             c.text_primary,
-            tx,
-            r.y0 + 42.0 * k,
+            Point::new(tx, r.y0 + 42.0 * k),
             None,
-            TextWeight::Semibold,
         );
         let sub = format!("/dev/{}  ·  {}", drive.name, bytes_si(drive.size));
         Self::txt(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             &sub,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            tx,
-            r.y0 + 63.0 * k,
+            Point::new(tx, r.y0 + 63.0 * k),
             None,
-            TextWeight::Regular,
         );
 
         // Mini usage bar across drive.
@@ -1179,8 +1154,8 @@ impl DisksApp {
         };
         let barr = Rect::new(tx, r.y1 - 16.0 * k, r.x1 - CARD_INSET, r.y1 - 10.0 * k);
         Self::bar(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             barr,
             used_frac,
             c.neutral[4],
@@ -1191,16 +1166,14 @@ impl DisksApp {
         let status = drive.smart_status();
         let dot_c = status_color(theme, status);
         let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0 * k, r.x1 - 16.0, r.y0 + 28.0 * k);
-        Self::fill_rr(scene, t, dot, 5.0, dot_c);
+        Self::fill_rr(ctx.scene, ctx.transform, dot, 5.0, dot_c);
         Self::txt_right(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             status.label(),
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             dot_c,
-            r.x1 - 32.0,
-            r.y0 + 17.0 * k,
-            TextWeight::Semibold,
+            Point::new(r.x1 - 32.0, r.y0 + 17.0 * k),
         );
     }
 
@@ -1226,12 +1199,10 @@ impl DisksApp {
             scene,
             tr,
             &drive.model,
-            ty().x2l,
+            &TextStyle::new(ty().x2l).with_weight(TextWeight::Bold),
             c.text_primary,
-            tx,
-            h.y0 + 16.0 * k,
+            Point::new(tx, h.y0 + 16.0 * k),
             None,
-            TextWeight::Bold,
         );
 
         // kind badge next to model is overkill; show meta line.
@@ -1256,12 +1227,10 @@ impl DisksApp {
             scene,
             tr,
             &meta,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            tx,
-            h.y0 + 46.0 * k,
+            Point::new(tx, h.y0 + 46.0 * k),
             None,
-            TextWeight::Regular,
         );
 
         // Health + connection chips.
@@ -1372,24 +1341,20 @@ impl DisksApp {
             scene,
             tr,
             scope,
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Bold),
             scope_c,
-            sx + 8.0,
-            tag.y0 + (tag_h - f64::from(th)) / 2.0,
+            Point::new(sx + 8.0, tag.y0 + (tag_h - f64::from(th)) / 2.0),
             None,
-            TextWeight::Bold,
         );
         let (_, dh) = tr.measure_weighted(&detail, ty().sm, None, TextWeight::Medium);
         Self::txt(
             scene,
             tr,
             &detail,
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
             c.text_primary,
-            tag.x1 + 10.0,
-            tag.center().y - f64::from(dh) / 2.0,
+            Point::new(tag.x1 + 10.0, tag.center().y - f64::from(dh) / 2.0),
             Some((bar.width() - (tag.x1 - bar.x0) - 24.0) as f32),
-            TextWeight::Medium,
         );
     }
 
@@ -1422,11 +1387,9 @@ impl DisksApp {
                     scene,
                     tr,
                     a.label(),
-                    ty().sm,
+                    &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
                     with_alpha(c.text_dim, 130),
-                    f64::midpoint(r.x0, r.x1),
-                    r.y0 + 9.0,
-                    TextWeight::Medium,
+                    Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
                 );
                 continue;
             }
@@ -1457,11 +1420,9 @@ impl DisksApp {
                 scene,
                 tr,
                 a.label(),
-                ty().sm,
+                &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
                 fg,
-                f64::midpoint(r.x0, r.x1),
-                r.y0 + 9.0,
-                TextWeight::Medium,
+                Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
             );
         }
     }
@@ -1493,12 +1454,10 @@ impl DisksApp {
             scene,
             tr,
             &caption,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            bar.x0 + CARD_INSET,
-            bar.y1 - 20.0,
+            Point::new(bar.x0 + CARD_INSET, bar.y1 - 20.0),
             Some((bar.width() - 28.0) as f32),
-            TextWeight::Regular,
         );
     }
 
@@ -1509,10 +1468,6 @@ impl DisksApp {
     /// Draw a capsule chip at `(x, y)` and return its rect so the caller can
     /// place the next chip after this one's measured width. The capsule wraps
     /// the label's measured line box (24 px at 1×) and centres the label on it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper threads scene, renderer, theme, transform, position and label"
-    )]
     fn draw_chip(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1532,12 +1487,10 @@ impl DisksApp {
             scene,
             tr,
             label,
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
             color,
-            x + 11.0,
-            y + (cap_h - f64::from(h)) / 2.0,
+            Point::new(x + 11.0, y + (cap_h - f64::from(h)) / 2.0),
             None,
-            TextWeight::Semibold,
         );
         r
     }
@@ -1592,23 +1545,19 @@ impl DisksApp {
             scene,
             tr,
             "PARTITION MAP",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            area.x0,
-            area.y0,
+            Point::new(area.x0, area.y0),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "— click a partition to select it",
-            ty().xs,
+            &TextStyle::new(ty().xs),
             with_alpha(c.text_dim, 170),
-            area.x0 + 110.0,
-            area.y0,
+            Point::new(area.x0 + 110.0, area.y0),
             None,
-            TextWeight::Regular,
         );
         let pill = lay.whole_disk_pill;
         let whole = self.part().is_none();
@@ -1643,11 +1592,9 @@ impl DisksApp {
             scene,
             tr,
             "◍ Whole disk",
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
             if whole { pill_c } else { c.text_dim },
-            f64::midpoint(pill.x0, pill.x1),
-            pill.y0 + 4.0,
-            TextWeight::Semibold,
+            Point::new(f64::midpoint(pill.x0, pill.x1), pill.y0 + 4.0),
         );
 
         let map = Rect::new(area.x0, area.y0 + 20.0, area.x1, area.y0 + 20.0 + 58.0);
@@ -1735,23 +1682,19 @@ impl DisksApp {
                         scene,
                         tr,
                         &p.display_label(),
-                        ty().xs,
+                        &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
                         seg_ink,
-                        seg.x0 + 8.0,
-                        seg.y0 + 8.0,
+                        Point::new(seg.x0 + 8.0, seg.y0 + 8.0),
                         Some((seg.width() - 12.0) as f32),
-                        TextWeight::Semibold,
                     );
                     Self::txt(
                         scene,
                         tr,
                         &bytes_si(p.size),
-                        ty().xs,
+                        &TextStyle::new(ty().xs),
                         with_alpha(seg_ink, 200),
-                        seg.x0 + 8.0,
-                        seg.y0 + 24.0,
+                        Point::new(seg.x0 + 8.0, seg.y0 + 24.0),
                         None,
-                        TextWeight::Regular,
                     );
                 }
             } else {
@@ -1762,23 +1705,19 @@ impl DisksApp {
                         scene,
                         tr,
                         "Free",
-                        ty().xs,
+                        &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
                         c.text_dim,
-                        seg.x0 + 8.0,
-                        seg.y0 + 8.0,
+                        Point::new(seg.x0 + 8.0, seg.y0 + 8.0),
                         None,
-                        TextWeight::Semibold,
                     );
                     Self::txt(
                         scene,
                         tr,
                         &bytes_si(drive.free_tail()),
-                        ty().xs,
+                        &TextStyle::new(ty().xs),
                         c.text_dim,
-                        seg.x0 + 8.0,
-                        seg.y0 + 24.0,
+                        Point::new(seg.x0 + 8.0, seg.y0 + 24.0),
                         None,
-                        TextWeight::Regular,
                     );
                 }
             }
@@ -1799,7 +1738,6 @@ impl DisksApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_legend(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1834,23 +1772,19 @@ impl DisksApp {
                     scene,
                     tr,
                     &label,
-                    ty().sm,
+                    &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
                     c.text_primary,
-                    x + 18.0,
-                    yy,
+                    Point::new(x + 18.0, yy),
                     None,
-                    TextWeight::Medium,
                 );
                 Self::txt(
                     scene,
                     tr,
                     &sub,
-                    ty().xs,
+                    &TextStyle::new(ty().xs),
                     c.text_dim,
-                    x + 18.0,
-                    yy + 14.0,
+                    Point::new(x + 18.0, yy + 14.0),
                     None,
-                    TextWeight::Regular,
                 );
                 x += advance;
             };
@@ -1888,12 +1822,10 @@ impl DisksApp {
             scene,
             tr,
             "FILESYSTEMS & USAGE",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            area.x0,
-            area.y0,
+            Point::new(area.x0, area.y0),
             None,
-            TextWeight::Semibold,
         );
         let mut y = area.y0 + 24.0;
         let mounted: Vec<&Partition> = drive
@@ -1906,12 +1838,10 @@ impl DisksApp {
                 scene,
                 tr,
                 "No mounted filesystems.",
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                area.x0,
-                y,
+                Point::new(area.x0, y),
                 None,
-                TextWeight::Regular,
             );
             return;
         }
@@ -1937,22 +1867,18 @@ impl DisksApp {
                 scene,
                 tr,
                 &p.display_label(),
-                ty().base,
+                &TextStyle::new(ty().base).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                area.x0,
-                y,
+                Point::new(area.x0, y),
                 None,
-                TextWeight::Semibold,
             );
             Self::txt_right(
                 scene,
                 tr,
                 &mp,
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                area.x1,
-                y + 1.0,
-                TextWeight::Regular,
+                Point::new(area.x1, y + 1.0),
             );
             let barr = Rect::new(area.x0, y + 22.0, area.x1, y + 32.0);
             let frac = p.used_frac().unwrap_or(0.0);
@@ -1975,12 +1901,10 @@ impl DisksApp {
                 scene,
                 tr,
                 &detail,
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                area.x0,
-                y + 36.0,
+                Point::new(area.x0, y + 36.0),
                 None,
-                TextWeight::Regular,
             );
             y += 62.0;
         }
@@ -2003,12 +1927,10 @@ impl DisksApp {
             scene,
             tr,
             "SMART HEALTH",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            x,
-            area.y0 + pad,
+            Point::new(x, area.y0 + pad),
             None,
-            TextWeight::Semibold,
         );
 
         let pill = Self::draw_smart_status_pill(scene, tr, theme, t, area, x, pad, status);
@@ -2018,12 +1940,10 @@ impl DisksApp {
                 scene,
                 tr,
                 "No SMART data available.",
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                x,
-                pill.y1 + 14.0,
+                Point::new(x, pill.y1 + 14.0),
                 None,
-                TextWeight::Regular,
             );
             return;
         };
@@ -2039,23 +1959,27 @@ impl DisksApp {
                 scene,
                 tr,
                 note,
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                x,
-                pill.y1 + 14.0,
+                Point::new(x, pill.y1 + 14.0),
                 Some((area.width() - 2.0 * pad) as f32),
-                TextWeight::Regular,
             );
             return;
         }
 
-        Self::draw_smart_card_body(scene, tr, theme, t, area, x, pad, pill, smart);
+        Self::draw_smart_card_body(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            area,
+            x,
+            pad,
+            pill,
+            smart,
+        );
     }
 
     /// The status pill under the "SMART HEALTH" label (part of
     /// [`Self::draw_smart_card`]). Returns the pill's rect so the caller can
     /// anchor the rest of the card beneath it.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_status_pill(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2079,12 +2003,10 @@ impl DisksApp {
             scene,
             tr,
             status.label(),
-            ty().base,
+            &TextStyle::new(ty().base).with_weight(TextWeight::Bold),
             sc,
-            x + 12.0,
-            pill.y0 + 7.0,
+            Point::new(x + 12.0, pill.y0 + 7.0),
             None,
-            TextWeight::Bold,
         );
         pill
     }
@@ -2092,46 +2014,46 @@ impl DisksApp {
     /// The temperature gauge + stat rows below the status pill, once SMART
     /// telemetry is known to have at least one usable value (part of
     /// [`Self::draw_smart_card`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_card_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         x: f64,
         pad: f64,
         pill: Rect,
         smart: &SmartInfo,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Temperature gauge.
         let mut yy = pill.y1 + 18.0;
         if let Some(temp) = smart.temp_c {
             Self::txt(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text,
                 "Temperature",
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                x,
-                yy,
+                Point::new(x, yy),
                 None,
-                TextWeight::Regular,
             );
             Self::txt_right(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text,
                 &format!("{temp} °C"),
-                ty().sm,
+                &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                area.x1 - pad,
-                yy,
-                TextWeight::Semibold,
+                Point::new(area.x1 - pad, yy),
             );
             let frac = ((temp as f64 - 20.0) / 50.0).clamp(0.0, 1.0);
             let barr = Rect::new(x, yy + 18.0, area.x1 - pad, yy + 26.0);
-            Self::bar(scene, t, barr, frac, c.neutral[3], temp_color(theme, temp));
+            Self::bar(
+                ctx.scene,
+                ctx.transform,
+                barr,
+                frac,
+                c.neutral[3],
+                temp_color(theme, temp),
+            );
             yy += 40.0;
         }
 
@@ -2145,22 +2067,18 @@ impl DisksApp {
                     scene,
                     tr,
                     label,
-                    ty().sm,
+                    &TextStyle::new(ty().sm),
                     c.text_dim,
-                    x,
-                    *yy,
+                    Point::new(x, *yy),
                     None,
-                    TextWeight::Regular,
                 );
                 Self::txt_right(
                     scene,
                     tr,
                     &val,
-                    ty().sm,
+                    &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
                     c.text_primary,
-                    area.x1 - pad,
-                    *yy,
-                    TextWeight::Semibold,
+                    Point::new(area.x1 - pad, *yy),
                 );
                 *yy += 22.0;
             };
@@ -2168,26 +2086,38 @@ impl DisksApp {
             stat(
                 "Power-on time",
                 format!("{} ({} h)", fmt_hours(h), h),
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text,
                 &mut yy,
             );
         }
         if let Some(pc) = smart.power_cycles {
-            stat("Power cycles", pc.to_string(), scene, tr, &mut yy);
+            stat("Power cycles", pc.to_string(), ctx.scene, ctx.text, &mut yy);
         }
         if let Some(re) = smart.reallocated {
-            stat("Reallocated sectors", re.to_string(), scene, tr, &mut yy);
+            stat(
+                "Reallocated sectors",
+                re.to_string(),
+                ctx.scene,
+                ctx.text,
+                &mut yy,
+            );
         }
         if let Some(pu) = smart.pct_used {
-            stat("Wear (NVMe used)", format!("{pu} %"), scene, tr, &mut yy);
+            stat(
+                "Wear (NVMe used)",
+                format!("{pu} %"),
+                ctx.scene,
+                ctx.text,
+                &mut yy,
+            );
         }
         if let Some(w) = smart.written_gb {
             stat(
                 "Host writes",
                 bytes_si((w as u64) * 1_000_000_000),
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text,
                 &mut yy,
             );
         }
@@ -2237,12 +2167,10 @@ impl DisksApp {
             scene,
             tr,
             &format!("● Overall self-assessment: {}", status.label()),
-            ty().lg,
+            &TextStyle::new(ty().lg).with_weight(TextWeight::Bold),
             sc,
-            banner.x0 + 18.0,
-            banner.y0 + 12.0,
+            Point::new(banner.x0 + 18.0, banner.y0 + 12.0),
             None,
-            TextWeight::Bold,
         );
         let generic = match status {
             SmartStatus::Passed => "All monitored attributes are within nominal thresholds.",
@@ -2269,19 +2197,16 @@ impl DisksApp {
             scene,
             tr,
             sub,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            banner.x0 + 18.0,
-            banner.y0 + 38.0,
+            Point::new(banner.x0 + 18.0, banner.y0 + 38.0),
             Some((banner.width() - 36.0) as f32),
-            TextWeight::Regular,
         );
         banner
     }
 
     /// The temperature / power-on / power-cycles / reallocated / wear stat
     /// tiles row (part of [`Self::draw_smart_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_tiles(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -2336,23 +2261,19 @@ impl DisksApp {
                 scene,
                 tr,
                 label,
-                ty().xs,
+                &TextStyle::new(ty().xs).with_weight(TextWeight::Medium),
                 c.text_dim,
-                r.x0 + 12.0,
-                r.y0 + 12.0,
+                Point::new(r.x0 + 12.0, r.y0 + 12.0),
                 None,
-                TextWeight::Medium,
             );
             Self::txt(
                 scene,
                 tr,
                 val,
-                ty().x2l,
+                &TextStyle::new(ty().x2l).with_weight(TextWeight::Bold),
                 c.text_primary,
-                r.x0 + 12.0,
-                r.y0 + 34.0,
+                Point::new(r.x0 + 12.0, r.y0 + 34.0),
                 None,
-                TextWeight::Bold,
             );
         }
     }
@@ -2373,12 +2294,10 @@ impl DisksApp {
             scene,
             tr,
             "SMART ATTRIBUTES",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            area.x0,
-            table_top,
+            Point::new(area.x0, table_top),
             None,
-            TextWeight::Semibold,
         );
         let header_y = table_top + 20.0;
         let id_x = area.x0 + 4.0;
@@ -2389,45 +2308,37 @@ impl DisksApp {
             scene,
             tr,
             "ID",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            id_x,
-            header_y,
+            Point::new(id_x, header_y),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "ATTRIBUTE",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            name_x,
-            header_y,
+            Point::new(name_x, header_y),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "VALUE",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            val_x,
-            header_y,
+            Point::new(val_x, header_y),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "STATUS",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            stat_x,
-            header_y,
+            Point::new(stat_x, header_y),
             None,
-            TextWeight::Semibold,
         );
         (header_y, id_x, name_x, val_x, stat_x)
     }
@@ -2435,22 +2346,15 @@ impl DisksApp {
     /// One row of the SMART attribute table (part of
     /// [`Self::draw_smart_attr_table`]). `xs` is `(id_x, name_x, val_x,
     /// stat_x)` from [`Self::draw_smart_attr_table_header`].
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "c/t/i/a/g follow the file's paint convention: colours, transform, row index, attribute, band gap"
-    )]
     fn draw_smart_attr_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         i: usize,
         a: &SmartAttr,
         xs: (f64, f64, f64, f64),
         ry: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let (id_x, name_x, val_x, stat_x) = xs;
         if i.is_multiple_of(2) {
@@ -2458,52 +2362,54 @@ impl DisksApp {
             // below so consecutive bands never touch (HIG §7).
             let g = f64::from(theme.tokens.spacing.s1) / 2.0;
             Self::fill_rr(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(area.x0, ry - 4.0 + g, area.x1, ry + 20.0 - g),
                 4.0,
                 c.lift(0.35),
             );
         }
         Self::txt(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             &a.id.to_string(),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            id_x,
-            ry,
+            Point::new(id_x, ry),
             None,
-            TextWeight::Regular,
         );
         Self::txt(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             &a.name,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_primary,
-            name_x,
-            ry,
+            Point::new(name_x, ry),
             Some((val_x - name_x - 12.0) as f32),
-            TextWeight::Regular,
         );
         Self::txt(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text,
             &a.value,
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
             c.text_primary,
-            val_x,
-            ry,
+            Point::new(val_x, ry),
             None,
-            TextWeight::Medium,
         );
         let (sl, scl) = match a.severity {
             AttrSeverity::Ok => ("OK", c.semantic.success),
             AttrSeverity::Warn => ("WARN", c.semantic.warning),
             AttrSeverity::Crit => ("CRIT", c.semantic.danger),
         };
-        Self::txt(scene, tr, sl, 11.5, scl, stat_x, ry, None, TextWeight::Bold);
+        Self::txt(
+            ctx.scene,
+            ctx.text,
+            sl,
+            &TextStyle::new(11.5).with_weight(TextWeight::Bold),
+            scl,
+            Point::new(stat_x, ry),
+            None,
+        );
     }
 
     fn draw_smart_attr_table(
@@ -2523,10 +2429,7 @@ impl DisksApp {
                 break;
             }
             Self::draw_smart_attr_row(
-                scene,
-                tr,
-                theme,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 area,
                 i,
                 a,
@@ -2553,7 +2456,14 @@ impl DisksApp {
         for (i, p) in drive.partitions.iter().enumerate() {
             let selected = self.selected_part == Some(i);
             let hover = self.hover_part == Some(i);
-            Self::draw_partitions_row(scene, tr, theme, t, area, &cols, ry, i, p, selected, hover);
+            let row = PartitionRow {
+                index: i,
+                partition: p,
+                y: ry,
+                selected,
+                hover,
+            };
+            Self::draw_partitions_row(&mut PaintCtx::new(scene, t, tr, theme), area, &cols, &row);
             ry += 38.0;
         }
     }
@@ -2580,84 +2490,69 @@ impl DisksApp {
             scene,
             tr,
             "DEVICE",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.name,
-            hy,
+            Point::new(cols.name, hy),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "LABEL",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.label,
-            hy,
+            Point::new(cols.label, hy),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "FS",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.fs,
-            hy,
+            Point::new(cols.fs, hy),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "SIZE",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.size,
-            hy,
+            Point::new(cols.size, hy),
             None,
-            TextWeight::Semibold,
         );
         Self::txt(
             scene,
             tr,
             "MOUNT",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.mount,
-            hy,
+            Point::new(cols.mount, hy),
             None,
-            TextWeight::Semibold,
         );
         Self::txt_right(
             scene,
             tr,
             "USED",
-            ty().xs,
+            &TextStyle::new(ty().xs).with_weight(TextWeight::Semibold),
             c.text_dim,
-            cols.used,
-            hy,
-            TextWeight::Semibold,
+            Point::new(cols.used, hy),
         );
         cols
     }
 
     /// The row's selection/hover/zebra background plus the role swatch (part
     /// of [`Self::draw_partitions_row`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_partitions_row_bg(
-        scene: &mut Scene,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
-    ) {
+    fn draw_partitions_row_bg(ctx: &mut PaintCtx<'_>, area: Rect, row: &PartitionRow<'_>) {
+        let (scene, t, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
+        let PartitionRow {
+            index: i,
+            partition: p,
+            y: ry,
+            selected,
+            hover,
+        } = *row;
         let c = &theme.tokens.colors;
         // Row pitch is 38 px (`ry += 38.0` in the caller); the painted band
         // leaves one `s1` of it as the gap to the next row (HIG §7).
@@ -2706,56 +2601,46 @@ impl DisksApp {
             scene,
             tr,
             &p.name,
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
             c.text_primary,
-            cols.name,
-            ry,
+            Point::new(cols.name, ry),
             None,
-            TextWeight::Medium,
         );
         Self::txt(
             scene,
             tr,
             &p.label.clone().unwrap_or_else(|| "—".into()),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            cols.label,
-            ry,
+            Point::new(cols.label, ry),
             Some((cols.fs - cols.label - 8.0) as f32),
-            TextWeight::Regular,
         );
         Self::txt(
             scene,
             tr,
             &p.fstype.clone().unwrap_or_else(|| "—".into()),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            cols.fs,
-            ry,
+            Point::new(cols.fs, ry),
             None,
-            TextWeight::Regular,
         );
         Self::txt(
             scene,
             tr,
             &bytes_si(p.size),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_primary,
-            cols.size,
-            ry,
+            Point::new(cols.size, ry),
             None,
-            TextWeight::Regular,
         );
         Self::txt(
             scene,
             tr,
             &p.mountpoint.clone().unwrap_or_else(|| "not mounted".into()),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            cols.mount,
-            ry,
+            Point::new(cols.mount, ry),
             Some((cols.used - cols.mount - 70.0) as f32),
-            TextWeight::Regular,
         );
     }
 
@@ -2778,22 +2663,18 @@ impl DisksApp {
                 scene,
                 tr,
                 &format!("{:.0}%", f * 100.0),
-                ty().xs,
+                &TextStyle::new(ty().xs),
                 c.text_dim,
-                cols.used,
-                ry - 8.0,
-                TextWeight::Regular,
+                Point::new(cols.used, ry - 8.0),
             );
         } else {
             Self::txt_right(
                 scene,
                 tr,
                 "—",
-                ty().sm,
+                &TextStyle::new(ty().sm),
                 c.text_dim,
-                cols.used,
-                ry,
-                TextWeight::Regular,
+                Point::new(cols.used, ry),
             );
         }
     }
@@ -2801,23 +2682,16 @@ impl DisksApp {
     /// One partition row: selection/hover/zebra background, role swatch,
     /// name/label/fs/size/mount, and the usage mini-bar (part of
     /// [`Self::draw_partitions_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_partitions_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         cols: &PartitionColumns,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
+        row: &PartitionRow<'_>,
     ) {
-        Self::draw_partitions_row_bg(scene, theme, t, area, ry, i, p, selected, hover);
-        Self::draw_partitions_row_fields(scene, tr, theme, cols, ry, p);
-        Self::draw_partitions_row_usage(scene, tr, theme, t, cols, ry, p);
+        let (ry, p) = (row.y, row.partition);
+        Self::draw_partitions_row_bg(ctx, area, row);
+        Self::draw_partitions_row_fields(ctx.scene, ctx.text, ctx.theme, cols, ry, p);
+        Self::draw_partitions_row_usage(ctx.scene, ctx.text, ctx.theme, ctx.transform, cols, ry, p);
     }
 
     // ---- modal ---------------------------------------------------------
@@ -2881,23 +2755,19 @@ impl DisksApp {
             scene,
             tr,
             &pending.action.confirm_title(&target),
-            ty().xl,
+            &TextStyle::new(ty().xl).with_weight(TextWeight::Bold),
             title_c,
-            card.x0 + 22.0,
-            card.y0 + 22.0,
+            Point::new(card.x0 + 22.0, card.y0 + 22.0),
             None,
-            TextWeight::Bold,
         );
         Self::txt(
             scene,
             tr,
             &pending.action.confirm_body(&target, self.live),
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            card.x0 + 22.0,
-            card.y0 + 54.0,
+            Point::new(card.x0 + 22.0, card.y0 + 54.0),
             Some((card.width() - 44.0) as f32),
-            TextWeight::Regular,
         );
     }
 
@@ -2922,12 +2792,10 @@ impl DisksApp {
             scene,
             tr,
             &format!("Type “{expected}” to confirm:"),
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
             c.text_dim,
-            card.x0 + 22.0,
-            inp.y0 - 20.0,
+            Point::new(card.x0 + 22.0, inp.y0 - 20.0),
             None,
-            TextWeight::Medium,
         );
         self.confirm_input.set_placeholder(&expected);
         self.confirm_input.apply_layout_external(inp);
@@ -2940,11 +2808,9 @@ impl DisksApp {
                 scene,
                 tr,
                 "✓ match",
-                ty().sm,
+                &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
                 c.semantic.success,
-                inp.x1 - 12.0,
-                inp.y0 + 10.0,
-                TextWeight::Semibold,
+                Point::new(inp.x1 - 12.0, inp.y0 + 10.0),
             );
         }
         ready
@@ -2952,7 +2818,6 @@ impl DisksApp {
 
     /// The Cancel + Confirm buttons — Confirm is locked (dimmed, inert)
     /// until the typed name matches (part of [`Self::draw_modal`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_modal_buttons(
         &self,
         scene: &mut Scene,
@@ -3029,11 +2894,9 @@ impl DisksApp {
             scene,
             tr,
             "No storage devices found",
-            ty().lg,
+            &TextStyle::new(ty().lg).with_weight(TextWeight::Bold),
             c.text_primary,
-            cx,
-            card.y0 + 96.0,
-            TextWeight::Bold,
+            Point::new(cx, card.y0 + 96.0),
         );
         let line = if std::env::var("DISKS_LIVE").is_ok() {
             "The system reported no block devices. Attach a drive, then Rescan."
@@ -3044,21 +2907,17 @@ impl DisksApp {
             scene,
             tr,
             line,
-            ty().sm,
+            &TextStyle::new(ty().sm),
             c.text_dim,
-            cx,
-            card.y0 + 124.0,
-            TextWeight::Regular,
+            Point::new(cx, card.y0 + 124.0),
         );
         Self::txt_center(
             scene,
             tr,
             "Reflecting the live system — nothing is invented here.",
-            ty().sm,
+            &TextStyle::new(ty().sm),
             with_alpha(c.text_dim, 180),
-            cx,
-            card.y0 + 144.0,
-            TextWeight::Regular,
+            Point::new(cx, card.y0 + 144.0),
         );
 
         // Rescan — re-runs the live probe (same path as the top-bar button).
@@ -3110,12 +2969,10 @@ impl DisksApp {
             scene,
             tr,
             &self.status,
-            ty().sm,
+            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
             tone,
-            r.x0 + 12.0,
-            r.y0 + 9.0,
+            Point::new(r.x0 + 12.0, r.y0 + 9.0),
             Some((r.width() - 24.0) as f32),
-            TextWeight::Medium,
         );
     }
 
@@ -3518,6 +3375,8 @@ fn status_color(theme: &Theme, status: SmartStatus) -> Color {
 }
 
 impl Widget for DisksApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn measure(
         &mut self,
         _known: ui::taffy::Size<Option<f32>>,
@@ -3532,58 +3391,6 @@ impl Widget for DisksApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["disks.operation"]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disks", "disks.system", "Storage devices");
-        for drive in &self.topo.drives {
-            let mut disk = Resource::new(
-                format!("disk:{}", drive.name),
-                "disks.drive",
-                drive.model.clone(),
-            );
-            // Whole-drive operations are meaningful independently of any
-            // partition selection. Publishing them here (rather than only in
-            // the custom action bar) lets search, history, collaboration and
-            // agents address the same operation contract.
-            for action in [ActionKind::Format, ActionKind::Benchmark] {
-                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
-                    disk.actions.push(spec);
-                }
-            }
-            if drive.removable
-                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
-            {
-                disk.actions.push(spec);
-            }
-            for part in &drive.partitions {
-                let mut partition = Resource::new(
-                    format!("partition:{}", part.name),
-                    "disks.partition",
-                    part.name.clone(),
-                );
-                let verb = if part.mountpoint.is_some() {
-                    "unmount"
-                } else {
-                    "mount"
-                };
-                let mount_action = if verb == "mount" {
-                    ActionKind::Mount
-                } else {
-                    ActionKind::Unmount
-                };
-                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
-                    if let Some(spec) =
-                        self.operation_spec(action, &part.name, part.fstype.as_deref())
-                    {
-                        partition.actions.push(spec);
-                    }
-                }
-                disk.children.push(partition);
-            }
-            root.children.push(disk);
-        }
-        vec![root]
     }
 
     fn start_operation(
@@ -4339,6 +4146,60 @@ impl Widget for DisksApp {
     }
 }
 
+impl ui::resources::PublishesResources for DisksApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("disks", "disks.system", "Storage devices");
+        for drive in &self.topo.drives {
+            let mut disk = Resource::new(
+                format!("disk:{}", drive.name),
+                "disks.drive",
+                drive.model.clone(),
+            );
+            // Whole-drive operations are meaningful independently of any
+            // partition selection. Publishing them here (rather than only in
+            // the custom action bar) lets search, history, collaboration and
+            // agents address the same operation contract.
+            for action in [ActionKind::Format, ActionKind::Benchmark] {
+                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
+                    disk.actions.push(spec);
+                }
+            }
+            if drive.removable
+                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
+            {
+                disk.actions.push(spec);
+            }
+            for part in &drive.partitions {
+                let mut partition = Resource::new(
+                    format!("partition:{}", part.name),
+                    "disks.partition",
+                    part.name.clone(),
+                );
+                let verb = if part.mountpoint.is_some() {
+                    "unmount"
+                } else {
+                    "mount"
+                };
+                let mount_action = if verb == "mount" {
+                    ActionKind::Mount
+                } else {
+                    ActionKind::Unmount
+                };
+                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
+                    if let Some(spec) =
+                        self.operation_spec(action, &part.name, part.fstype.as_deref())
+                    {
+                        partition.actions.push(spec);
+                    }
+                }
+                disk.children.push(partition);
+            }
+            root.children.push(disk);
+        }
+        vec![root]
+    }
+}
+
 impl DisksApp {
     fn admit_resource_operation(
         &mut self,
@@ -4856,7 +4717,7 @@ mod tests {
         // --- phase: exported_disk_actions_declare_background_jobs ---
         {
             let (app, doc) = seeded_app();
-            for action in Widget::resources(&app, &doc)
+            for action in ui::resources::resources(&app, &doc)
                 .iter()
                 .flat_map(|root| root.children.iter())
                 .flat_map(|drive| {
@@ -4877,7 +4738,7 @@ mod tests {
         // --- phase: disk_resources_publish_whole_drive_format_and_benchmark ---
         {
             let (app, doc) = seeded_app();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let disk = resources
                 .first()
                 .and_then(|root| root.children.first())

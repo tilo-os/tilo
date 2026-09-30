@@ -144,17 +144,6 @@ fn read_bounded_lines(
     Ok(())
 }
 
-fn kill_process_group(child: &mut std::process::Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: stream_command places the child in a fresh pid-named process
-        // group, so the negative pid cannot target the installer itself.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-}
-
 use crate::disks::PartitionExtent;
 
 /// Path to the privileged install backend installed on the live medium.
@@ -503,6 +492,32 @@ pub fn run_alongside_preflight<F: FnMut(String)>(
     stream_command(alongside_preflight_command(disk, opts), "", &[], on_line)
 }
 
+/// Block until child `pid` has exited, leaving it unreaped.
+fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
+    let pid = libc::id_t::from(pid);
+    loop {
+        // SAFETY: a zeroed siginfo_t is a valid out-buffer; `pid` is our
+        // own unreaped child.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: as above; WNOWAIT leaves the child waitable.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid,
+                &raw mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 /// Spawn `cmd`, write `password` (with a trailing newline) to its stdin —
 /// followed by `extra_stdin` lines, each newline-terminated, in order —
 /// then stream stdout line by line into `on_line`. On a non-zero exit any
@@ -552,7 +567,7 @@ pub fn stream_command<F: FnMut(String)>(
             if let Err(e) = feed()
                 && e.kind() != std::io::ErrorKind::BrokenPipe
             {
-                kill_process_group(&mut child);
+                bounded_command::kill_tree(&mut child);
                 let _ = child.wait();
                 return Err(e);
             }
@@ -565,30 +580,64 @@ pub fn stream_command<F: FnMut(String)>(
     // sequence would then deadlock the installer and hide the actionable
     // error from the UI. Preserve the existing contract by relaying captured
     // stderr only when the command ultimately fails.
-    let stderr_reader = child.stderr.take().map(|stderr| {
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    let pid = child.id();
+    // `reaped` records that the waiter collected the child: until then its
+    // pid, and so its process group, cannot be reused.
+    let tree = std::sync::Arc::new(std::sync::Mutex::new((child, false)));
+    let stderr_reader = stderr.map(|stderr| {
+        let tree = std::sync::Arc::clone(&tree);
         std::thread::spawn(move || {
             let mut lines = Vec::new();
-            read_bounded_lines(&mut BufReader::new(stderr), |line| {
+            let read = read_bounded_lines(&mut BufReader::new(stderr), |line| {
                 if !line.trim().is_empty() {
                     lines.push(line);
                 }
-            })?;
-            Ok::<_, std::io::Error>(lines)
+            });
+            if read.is_err() {
+                // The command may still hold stdout open: stop it so the
+                // stdout reader sees EOF.
+                let mut tree = tree
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (child, reaped) = &mut *tree;
+                if !*reaped {
+                    bounded_command::kill_tree(child);
+                }
+                drop(tree);
+            }
+            read.map(|()| lines)
         })
     });
 
-    let stdout_result = if let Some(stdout) = child.stdout.take() {
+    let stdout_result = if let Some(stdout) = stdout {
         read_bounded_lines(&mut BufReader::new(stdout), &mut on_line)
     } else {
         Ok(())
     };
     if stdout_result.is_err() {
-        kill_process_group(&mut child);
+        let mut tree = tree
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        bounded_command::kill_tree(&mut tree.0);
     }
-    let status = child.wait();
-    // A backend must not daemonize children which retain the install pipes.
-    // Close that escape before joining the concurrent stderr reader.
-    kill_process_group(&mut child);
+    // Wait for the exit without reaping, so the stderr reader can still stop
+    // the tree meanwhile; then reap under the lock.
+    let exited = wait_exited_unreaped(pid);
+    let status = {
+        let mut tree = tree
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (child, reaped) = &mut *tree;
+        let status = exited.and_then(|()| child.wait());
+        *reaped = true;
+        // A backend must not daemonize children which retain the install pipes.
+        // Close that escape before joining the concurrent stderr reader.
+        bounded_command::kill_tree(child);
+        drop(tree);
+        status
+    };
     let stderr_lines = stderr_reader
         .map(|reader| {
             reader
@@ -1281,14 +1330,27 @@ mod tests {
         }
         // Phase `stream_command_rejects_oversized_output_on_either_stream`.
         {
-            for redirect in ["", " >&2"] {
+            // The stdout producer then stays alive holding its pipe: the call
+            // returns only because the overflow kills the command's tree.
+            // Likewise the stderr producers, whether they keep stdout open or
+            // closed it first: the call returns only if the stderr overflow
+            // kills the tree too.
+            for script in [
+                "head -c 70000 /dev/zero; exec sleep 3600",
+                "head -c 70000 /dev/zero >&2; exec sleep 3600",
+                "exec >&-; head -c 70000 /dev/zero >&2; exec sleep 3600",
+            ] {
                 let mut cmd = Command::new("sh");
-                cmd.arg("-c")
-                    .arg(format!("head -c 70000 /dev/zero{redirect}"));
-                let started = std::time::Instant::now();
-                let error = stream_command(cmd, "x", &[], |_| {}).unwrap_err();
+                cmd.arg("-c").arg(script);
+                let (done, result) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = done.send(stream_command(cmd, "x", &[], |_| {}));
+                });
+                let error = result
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap_or_else(|_| panic!("an overflowing command was left running: {script}"))
+                    .unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-                assert!(started.elapsed() < std::time::Duration::from_secs(2));
             }
         }
     }

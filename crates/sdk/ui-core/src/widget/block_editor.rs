@@ -23,7 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -5230,10 +5230,6 @@ fn deterministic_block_uuid(seed: &str) -> Uuid {
 /// the only way `insert_object`/`put_object` can fail here — leaving the
 /// caller's local block unbound rather than panicking on a legitimate CRDT
 /// race.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the CRDT insertion boundary takes the complete serialized block schema explicitly"
-)]
 fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
@@ -5980,29 +5976,23 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                 let x = rect.x0 + layout.padding_x;
                 let width = Some((layout.column_width - 2.0 * layout.padding_x).max(1.0) as f32);
                 if let Some(label) = labels.get(column) {
-                    ctx.text_renderer.draw_text_styled(
+                    ctx.text_renderer.draw_style(
                         ctx.scene,
                         label,
-                        14.0,
                         ctx.theme.tokens.colors.text_primary,
                         translated(ctx.transform, x, y),
                         width,
-                        crate::text_render::TextWeight::Bold,
-                        false,
-                        false,
+                        &TextStyle::new(14.0).with_weight(crate::text_render::TextWeight::Bold),
                     );
                 }
                 let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
-                ctx.text_renderer.draw_text_styled(
+                ctx.text_renderer.draw_style(
                     ctx.scene,
                     value,
-                    14.0,
                     ctx.theme.tokens.colors.text_primary,
                     translated(ctx.transform, x, y + label_height + 4.0 * scale),
                     width,
-                    crate::text_render::TextWeight::Regular,
-                    false,
-                    false,
+                    &TextStyle::new(14.0),
                 );
                 y += layout
                     .cell_heights
@@ -6069,20 +6059,17 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         for (column_index, value) in row.iter().enumerate() {
             let x = table_rect.x0 + column_width * column_index as f64 + layout.padding_x;
             let y = row_y + 8.0 * scale;
-            ctx.text_renderer.draw_text_styled(
+            ctx.text_renderer.draw_style(
                 ctx.scene,
                 value,
-                14.0,
                 ctx.theme.tokens.colors.text_primary,
                 translated(ctx.transform, x, y),
                 Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
-                if row_index == 0 {
+                &TextStyle::new(14.0).with_weight(if row_index == 0 {
                     crate::text_render::TextWeight::Bold
                 } else {
                     crate::text_render::TextWeight::Regular
-                },
-                false,
-                false,
+                }),
             );
         }
         row_y += height;
@@ -6144,10 +6131,9 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         1.5 * scale,
     );
     let label = if alt.is_empty() { "Image" } else { alt };
-    ctx.text_renderer.draw_text_styled(
+    ctx.text_renderer.draw_style(
         ctx.scene,
         label,
-        16.0,
         ctx.theme.tokens.colors.text_primary,
         translated(
             ctx.transform,
@@ -6155,9 +6141,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.y0 + 18.0 * scale,
         ),
         Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
-        crate::text_render::TextWeight::Medium,
-        false,
-        false,
+        &TextStyle::new(16.0).with_weight(crate::text_render::TextWeight::Medium),
     );
     ctx.text_renderer.draw_text(
         ctx.scene,
@@ -6886,6 +6870,11 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
+    crate::provides!(
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document(state, path);
         self.refresh_image_attachments();
@@ -7920,57 +7909,6 @@ impl Widget for BlockEditor {
         Some("block_editor")
     }
 
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        use crate::collaboration::PresencePayload;
-        let idx = self.focused?;
-        let block = self.blocks.get(idx)?;
-        if !block.line.is_focused() {
-            return None;
-        }
-        if let Some(selection) = self.document_selection {
-            let (start, end) = selection.ordered();
-            if !self.presence_keyed_by_model() {
-                let start_id = self.blocks.get(start.block)?.id.as_str();
-                return Some((
-                    document_selection_presence_key(
-                        start_id,
-                        end.block.saturating_sub(start.block),
-                    ),
-                    PresencePayload::Selection {
-                        start: start.byte,
-                        end: end.byte,
-                    },
-                ));
-            }
-            // Keyed by the owning model's ids, a selection is reported as its
-            // part in the caret's block, which is where a peer's caret lands.
-            let from = if start.block == idx { start.byte } else { 0 };
-            let to = if end.block == idx {
-                end.byte
-            } else {
-                block.text().len()
-            };
-            return Some((
-                self.presence_key_for(&block.id),
-                PresencePayload::Selection {
-                    start: from.min(to),
-                    end: to.max(from),
-                },
-            ));
-        }
-        let key = self.presence_key_for(&block.id);
-        // A selection takes priority over the bare caret.
-        if let Some((start, end)) = block.line.selection_range() {
-            return Some((key, PresencePayload::Selection { start, end }));
-        }
-        Some((
-            key,
-            PresencePayload::Caret {
-                pos: block.line.cursor_pos(),
-            },
-        ))
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -8889,21 +8827,6 @@ impl Widget for BlockEditor {
                 .any(|block| block.line.layout_needs_measure())
     }
 
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-            || self
-                .blocks
-                .iter()
-                .any(|block| Widget::needs_commit(block.line.inner()))
-    }
-
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-        for block in &mut self.blocks {
-            Widget::on_commit(block.line.inner_mut());
-        }
-    }
-
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
@@ -8921,6 +8844,75 @@ impl Widget for BlockEditor {
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
         self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+}
+
+impl crate::undo::UndoPoints for BlockEditor {
+    fn needs_commit(&self) -> bool {
+        self.commit_pending
+            || self
+                .blocks
+                .iter()
+                .any(|block| crate::undo::needs_commit(block.line.inner()))
+    }
+    fn on_commit(&mut self) {
+        self.commit_pending = false;
+        for block in &mut self.blocks {
+            crate::undo::on_commit(block.line.inner_mut());
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for BlockEditor {
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        use crate::collaboration::PresencePayload;
+        let idx = self.focused?;
+        let block = self.blocks.get(idx)?;
+        if !block.line.is_focused() {
+            return None;
+        }
+        if let Some(selection) = self.document_selection {
+            let (start, end) = selection.ordered();
+            if !self.presence_keyed_by_model() {
+                let start_id = self.blocks.get(start.block)?.id.as_str();
+                return Some((
+                    document_selection_presence_key(
+                        start_id,
+                        end.block.saturating_sub(start.block),
+                    ),
+                    PresencePayload::Selection {
+                        start: start.byte,
+                        end: end.byte,
+                    },
+                ));
+            }
+            // Keyed by the owning model's ids, a selection is reported as its
+            // part in the caret's block, which is where a peer's caret lands.
+            let from = if start.block == idx { start.byte } else { 0 };
+            let to = if end.block == idx {
+                end.byte
+            } else {
+                block.text().len()
+            };
+            return Some((
+                self.presence_key_for(&block.id),
+                PresencePayload::Selection {
+                    start: from.min(to),
+                    end: to.max(from),
+                },
+            ));
+        }
+        let key = self.presence_key_for(&block.id);
+        // A selection takes priority over the bare caret.
+        if let Some((start, end)) = block.line.selection_range() {
+            return Some((key, PresencePayload::Selection { start, end }));
+        }
+        Some((
+            key,
+            PresencePayload::Caret {
+                pos: block.line.cursor_pos(),
+            },
+        ))
     }
 }
 

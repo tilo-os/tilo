@@ -135,12 +135,12 @@ class Fingerprint(unittest.TestCase):
     def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
         build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
         relay = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(encoding="utf-8")
-        snapshot = (ROOT / ".forgejo/workflows/snapshot-rpms.yml").read_text(encoding="utf-8")
+        snapshot = (ROOT / ".forgejo/workflows/build-rpms.yml").read_text(encoding="utf-8")
         for consumer in (build, relay):
             self.assertIn("Resolve the exact signed RPM snapshot fingerprint", consumer)
             self.assertIn("./os/dev/resolve-rpm-snapshot.sh", consumer)
             self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", consumer)
-            self.assertNotIn("uses: ./.forgejo/workflows/snapshot-rpms.yml", consumer)
+            self.assertNotIn("uses: ./.forgejo/workflows/build-rpms.yml", consumer)
             self.assertNotIn("os/rpms-snapshot.env", consumer)
         self.assertIn("needs.ensure-rpms.result == 'success'", build)
         self.assertIn("--tag \"$FINGERPRINT_TAG\"", snapshot)

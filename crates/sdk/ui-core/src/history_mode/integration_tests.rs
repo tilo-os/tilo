@@ -994,8 +994,10 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
 }
 
 pub(crate) struct TileEditor<T: Widget = crate::widget::TextInput>(pub(crate) T);
-crate::testing::test_app_widget!(impl [T: Widget] TileEditor<T>, "Tile editor");
-impl<T: Widget> Widget for TileEditor<T> {
+crate::testing::test_app_widget!(impl [T: Widget + 'static] TileEditor<T>, "Tile editor");
+impl<T: Widget + 'static> Widget for TileEditor<T> {
+    crate::provides!(dyn crate::record::capability::RecordScoped);
+
     crate::testing::delegate_widget_methods!(0: sync, draw, get_rect);
     fn name(&self) -> &str {
         "TileEditor"
@@ -1008,9 +1010,6 @@ impl<T: Widget> Widget for TileEditor<T> {
     }
     fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         self.0.update(doc, path)
-    }
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.0.record_intent()
     }
     fn has_separate_document_owner(&self) -> bool {
         false
@@ -1067,6 +1066,12 @@ impl<T: Widget> Widget for TileEditor<T> {
             event,
             &mut ctx.reborrow(ctx.path, ctx.taffy.children(ctx.node_id).unwrap()[0]),
         );
+    }
+}
+
+impl<T: Widget + 'static> crate::record::capability::RecordScoped for TileEditor<T> {
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        crate::record::capability::record_intent(&self.0)
     }
 }
 
@@ -2078,6 +2083,13 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for RetainedLifecycleProbe {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::undo::UndoPoints
+    );
+
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
         "RetainedLifecycleProbe"
@@ -2121,9 +2133,6 @@ impl Widget for RetainedLifecycleProbe {
         increment(&self.handles.updates);
         false
     }
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.handles.intent.borrow().clone()
-    }
     fn has_separate_document_owner(&self) -> bool {
         false
     }
@@ -2156,12 +2165,6 @@ impl Widget for RetainedLifecycleProbe {
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[RETAINED_LIFECYCLE_OPERATION]
-    }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![retained_lifecycle_resource(self.id)]
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.handles.emitter.borrow_mut().take()
     }
     fn start_operation(
         &mut self,
@@ -2218,11 +2221,32 @@ impl Widget for RetainedLifecycleProbe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::undo::UndoPoints for RetainedLifecycleProbe {
     fn needs_commit(&self) -> bool {
         self.dirty
     }
     fn on_commit(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl crate::record::capability::RecordScoped for RetainedLifecycleProbe {
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.handles.intent.borrow().clone()
+    }
+}
+
+impl crate::resources::PublishesResources for RetainedLifecycleProbe {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![retained_lifecycle_resource(self.id)]
+    }
+}
+
+impl crate::widget::controls::ActionControls for RetainedLifecycleProbe {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.handles.emitter.borrow_mut().take()
     }
 }
 
@@ -2283,6 +2307,11 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for ReleasableLifecycleProbe {
+    crate::provides!(
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::undo::UndoPoints
+    );
+
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
         "ReleasableLifecycleProbe"
@@ -2310,21 +2339,6 @@ impl Widget for ReleasableLifecycleProbe {
     }
     fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         false
-    }
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.handles.intent.borrow().clone()
-    }
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        if self.handles.refuse_release.get() {
-            return Err("draft release temporarily refused".into());
-        }
-        self.receiver = None;
-        self.handles.admitted.set(None);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        *self.handles.sender.borrow_mut() = sender;
-        self.receiver = Some(receiver);
-        increment(&self.handles.releases);
-        Ok(())
     }
     fn build_layout(
         &mut self,
@@ -2385,12 +2399,33 @@ impl Widget for ReleasableLifecycleProbe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::undo::UndoPoints for ReleasableLifecycleProbe {
     fn needs_commit(&self) -> bool {
         self.dirty
     }
     fn on_commit(&mut self) {
         self.dirty = false;
         increment(&self.handles.commits);
+    }
+}
+
+impl crate::record::capability::RecordScoped for ReleasableLifecycleProbe {
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.handles.intent.borrow().clone()
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.handles.refuse_release.get() {
+            return Err("draft release temporarily refused".into());
+        }
+        self.receiver = None;
+        self.handles.admitted.set(None);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.handles.sender.borrow_mut() = sender;
+        self.receiver = Some(receiver);
+        increment(&self.handles.releases);
+        Ok(())
     }
 }
 
@@ -2708,7 +2743,7 @@ fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
 
     // SAFETY: the driver exclusively owns this retained box and no node/widget
     // references are borrowed across the close or following lifecycle pass.
-    let _ = unsafe { (*tile_pointer).close_components() };
+    let _ = unsafe { crate::component_lifecycle::close_components(&mut (*tile_pointer)) };
     driver.relayout();
 
     assert_eq!(

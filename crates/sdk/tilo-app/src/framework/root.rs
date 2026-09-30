@@ -22,7 +22,7 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::stage::Stages;
-use super::view::Updaters;
+use super::view::{Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -47,35 +47,29 @@ pub(crate) struct ResourceRoot<R: Resource> {
 }
 
 impl<R: Resource> ResourceRoot<R> {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "assembled once by the framework from parts it already owns"
-    )]
+    /// A root over `content`, the view built in `cx`, whose handles the root
+    /// keeps; `alive` is the scope `cx`'s bindings are tied to.
     pub(crate) fn new(
         title: &'static str,
         icon: IconDescriptor,
         label: String,
-        live: Live<R>,
-        updaters: Updaters<R>,
+        cx: ViewCx<R>,
         alive: Rc<()>,
-        dispatch: Dispatcher<R>,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
         content: Element,
     ) -> Self {
         Self {
             title,
             icon,
             label,
-            live,
-            updaters,
+            live: cx.live,
+            updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
             _alive: alive,
-            dispatch,
-            saved,
+            dispatch: cx.dispatch,
+            saved: cx.saved,
             permissions: None,
             write: None,
-            stages,
+            stages: cx.stages,
             content,
             search: std::cell::RefCell::new(None),
         }
@@ -192,6 +186,8 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
+
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -253,63 +249,17 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         Some(self)
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::resources_for(self, None, doc)
-    }
-
     // The resource is the same for every participant (an agent task sees and
     // invokes the same actions); only the content's tree is per participant.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![tilo_resource::publish::<R>(
-            self.dispatch.resource_id(),
-            &self.label,
-            &self.live.get(),
-        )];
-        resources.extend(self.content.resources_for(participant, doc));
-        resources
-    }
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
-    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
-        self.dispatch.take_committed()
-    }
 
     // A surface's step stays open for the actions that continue it (the
     // letters of a word), which report no boundary of their own.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.dispatch.keeps_step_open()
-    }
+}
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.dispatch
-            .take()
-            .or_else(|| self.content.take_control_invocation())
-    }
-
-    /// An edit this resource's dispatcher submitted was refused, or is held
-    /// for the user's confirmation. Nothing changed in the document, so a
-    /// surface that previewed the edit is re-presented the stored state; a
-    /// confirmed edit then arrives as an ordinary document change.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if result.is_err() && address.resource == self.dispatch.resource_id() {
-            self.live.represent();
-        }
-        self.content.on_control_invocation_result(address, result);
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.dispatch.has_pending() || self.content.has_pending_control_invocation()
-    }
-
+impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         let revision = self.live.revision();
         let indexed = {
@@ -327,8 +277,72 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             name: R::LABEL,
             indexed,
         })];
-        providers.extend(self.content.search_providers());
+        providers.extend(ui_core::search::capability::search_providers(
+            self.content.as_ref(),
+        ));
         providers
+    }
+}
+
+impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resources_for(self, None, doc)
+    }
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let mut resources = vec![tilo_resource::publish::<R>(
+            self.dispatch.resource_id(),
+            &self.label,
+            &self.live.get(),
+        )];
+        resources.extend(ui_core::resources::resources_for(
+            self.content.as_ref(),
+            participant,
+            doc,
+        ));
+        resources
+    }
+}
+
+impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.dispatch
+            .take()
+            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
+    }
+    /// An edit this resource's dispatcher submitted was refused, or is held
+    /// for the user's confirmation. Nothing changed in the document, so a
+    /// surface that previewed the edit is re-presented the stored state; a
+    /// confirmed edit then arrives as an ordinary document change.
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if result.is_err() && address.resource == self.dispatch.resource_id() {
+            self.live.represent();
+        }
+        ui_core::widget::controls::on_control_invocation_result(
+            self.content.as_mut(),
+            address,
+            result,
+        );
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        self.dispatch.has_pending()
+            || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
+    }
+}
+
+impl<R: Resource> ui_core::undo::CommittedActions for ResourceRoot<R> {
+    fn take_committed_action(&mut self) -> Option<Vec<ui_core::automerge::ChangeHash>> {
+        self.dispatch.take_committed()
+    }
+    fn keeps_undo_step_open(&self) -> bool {
+        self.dispatch.keeps_step_open()
     }
 }
 

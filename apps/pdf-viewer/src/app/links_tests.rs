@@ -11,7 +11,7 @@ use crate::source::LinkTarget;
 
 fn links_fixture() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures/links.pdf")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures/links.pdf")
 }
 
 /// The reader on the four-page links fixture, sized like a desktop window,
@@ -24,7 +24,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
         return None;
     }
     let mut state = ui::State::new();
-    let checkout = app.record_intent().expect("a markup record");
+    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
     ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
     app.sync(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

@@ -167,10 +167,6 @@ fn capture(child: &mut Child) -> (Receiver<String>, Arc<Mutex<Vec<String>>>) {
 
 // Each path is a distinct externally observable daemon boundary in this
 // end-to-end fixture; bundling them would make call-site mixups less visible.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each path is a distinct daemon boundary; bundling them hides call-site mixups"
-)]
 fn spawn_fs(
     binary: &Path,
     identity: &Path,

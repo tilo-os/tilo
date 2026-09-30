@@ -511,6 +511,9 @@ impl SettingsApp {
             ),
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
+            Category::Notifications if self.deterministic_hardware_for_shot => {
+                Box::new(panes::notifications::NotificationsPane::for_shot())
+            }
             Category::Notifications => panes::notifications::build(),
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => Box::new(
@@ -1700,6 +1703,12 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 }
 
 impl Widget for SettingsApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn native_input_snapshot(
         &self,
         state: &AppModel,
@@ -2003,23 +2012,6 @@ impl Widget for SettingsApp {
             .is_some_and(ui::Widget::layout_needs_measure)
     }
 
-    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
-    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
-    /// shared document.
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Resolve canonical Settings resources at activation time as well as
-    /// publishing the eager palette snapshot above.  Search results retain
-    /// only stable action addresses, so this is the authoritative path that
-    /// re-checks an address against the current resource surface before the
-    /// action door opens it.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -2141,14 +2133,36 @@ impl Widget for SettingsApp {
             shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
     }
+}
 
+impl ui::search::capability::SearchSource for SettingsApp {
     /// Fold the settings panes into the unified Ctrl+K palette. Every result
     /// addresses the pane resource's exported `open` View operation, alongside
     /// the collaborative setting-change actions those resources own.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_provider.clone())]
     }
+}
 
+impl ui::resources::PublishesResources for SettingsApp {
+    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
+    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
+    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
+    /// shared document.
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    /// Resolve canonical Settings resources at activation time as well as
+    /// publishing the eager palette snapshot above.  Search results retain
+    /// only stable action addresses, so this is the authoritative path that
+    /// re-checks an address against the current resource surface before the
+    /// action door opens it.
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for SettingsApp {
     /// Bubble an on-screen control's dispatched-action undo bracket up from
     /// whichever pane produced it. A settings control lives deep under the shell
     /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
@@ -2157,7 +2171,7 @@ impl Widget for SettingsApp {
     /// undo boundary from it, so Ctrl+Z reverts the setting change.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
-            if let Some(heads) = w.take_committed_action() {
+            if let Some(heads) = ui::undo::take_committed_action(w) {
                 return Some(heads);
             }
             for child in w.children_mut() {

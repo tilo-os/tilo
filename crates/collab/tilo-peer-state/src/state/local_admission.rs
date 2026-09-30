@@ -1,6 +1,6 @@
 //! Local exact retries use the signed author, never an invented carrier origin.
 
-use super::{AdmissionError, DocumentAdmission, SignedOp, StatePeer, SystemTime};
+use super::{AdmissionError, DocumentAdmission, LocalWrite, SignedOp, StatePeer, SystemTime};
 
 impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
@@ -44,9 +44,44 @@ impl StatePeer {
         envelope: SignedOp,
         now: SystemTime,
     ) -> Result<(), String> {
+        self.admit_new_local(app, record, envelope, LocalWrite::Plain, now)
+    }
+
+    /// [`Self::admit_new_local_document`] for a sealed write, by the owner
+    /// that holds the channel's keys. The sealed envelope passes every
+    /// check first (certificate, role, route, the author's signature over
+    /// the ciphertext and its sequence); only then does `open` decrypt it,
+    /// and the plaintext it returns takes the normal admission path. `open`
+    /// must refuse anything it cannot open under the channel's current
+    /// epoch. The record stays encrypted: a plaintext write to it is later
+    /// refused as a downgrade.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit_new_local_document`], for a write that is not
+    /// sealed, and when `open` refuses it.
+    pub fn admit_new_opened_local_document(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: SignedOp,
+        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        self.admit_new_local(app, record, envelope, LocalWrite::Opened(open), now)
+    }
+
+    fn admit_new_local(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: SignedOp,
+        write: LocalWrite<'_>,
+        now: SystemTime,
+    ) -> Result<(), String> {
         let author = *envelope.author.as_bytes();
         let before = self.clone();
-        let outcome = self.admit_local_app_document(app, record, envelope, now)?;
+        let outcome = self.admit_local(app, record, envelope, write, now)?;
         if outcome.deferred
             || outcome.incomplete.is_some()
             || outcome.rejected != 0

@@ -617,7 +617,7 @@ mod tests {
             app.navigate(sub.clone());
             assert_eq!(app.current_path(), sub);
 
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             assert!(
                 !providers.is_empty(),
                 "the file explorer publishes a search provider"
@@ -630,7 +630,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let address = hit.action_address().expect("canonical action address");
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
                 .expect("search address is exported");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);

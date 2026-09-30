@@ -2,6 +2,7 @@ use crate::permissions::UserId;
 use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
 
+pub mod capability;
 mod geom;
 mod interaction;
 mod key;

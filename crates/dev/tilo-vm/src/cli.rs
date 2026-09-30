@@ -636,7 +636,7 @@ pub enum VmCommand {
     },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second"
+        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
@@ -664,7 +664,7 @@ pub enum VmCommand {
     },
     /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or on the rcargo builder\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
+        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or elsewhere\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks (TILO_LOCAL_TAG replaces latest in both image names), then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
     )]
     Upgrade(UpgradeArgs),
     /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
@@ -771,6 +771,10 @@ pub struct CreateArgs {
     /// libvirt only: virtio-gpu outputs, e.g. 2 for a two-monitor layout.
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub heads: Option<u8>,
+    /// libvirt only: virgl 3D acceleration on the host GPU, so the desktop
+    /// renders on a GPU instead of in software.
+    #[arg(long)]
+    pub gl: bool,
     /// libvirt only: the first output's preferred mode, `WIDTHxHEIGHT` (e.g. `5120x2880`).
     #[arg(long, value_parser = parse_resolution)]
     pub resolution: Option<String>,
@@ -792,7 +796,7 @@ pub struct CreateArgs {
 pub enum ImageCommand {
     /// Build the dev image with os/dev/build-dev-image.sh and write it as an OCI layout (and with --disk a dev disk).
     #[command(
-        after_help = "Examples:\n  tilo-vm image build                  # target/tilo-vm/image, the dev image as an OCI layout\n  tilo-vm image build --disk           # and target/tilo-vm/disk.qcow2\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nOn the rcargo builder instead of here, bringing back only what changed:\n  RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \\\n    rcargo --on-builder --fetch tilo-vm run -p tilo-vm -- image build\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm image disk                   # a disk from it, written here (the builder has no loop devices)\n\nThe build is the one vm upgrade --from local runs: the production base is\nrebuilt only when its inputs changed, podman's layer cache and the builder\nstage's cargo cache skip unchanged steps, and a failed step reruns on its own.\nScratch goes to <out>-build (next to the output). tilo-vm guide images."
+        after_help = "Examples:\n  tilo-vm image build                  # target/tilo-vm/image, the dev image as an OCI layout\n  tilo-vm image build --disk           # and target/tilo-vm/disk.qcow2\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nOn another machine instead of here: run image build there in a synced copy of\nthe worktree (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) when it has no git),\nbring target/tilo-vm back, then:\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm image disk                   # a disk from it, written here (where loop devices are)\n\nThe build is the one vm upgrade --from local runs: the production base is\nrebuilt only when its inputs changed, podman's layer cache and the builder\nstage's cargo cache skip unchanged steps, and a failed step reruns on its own.\nScratch goes to <out>-build (next to the output). tilo-vm guide images."
     )]
     Build {
         /// Also write the dev disk, <out>/disk.qcow2.
@@ -804,7 +808,7 @@ pub enum ImageCommand {
     },
     /// Write the dev disk from an image image build left, without building: <layout dir>/../disk.qcow2.
     #[command(
-        after_help = "Examples:\n  tilo-vm image disk                          # from target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nFor an image built elsewhere, such as on the rcargo builder (tilo-vm image\nbuild --help): the layout goes into this host's podman storage as\nlocalhost/tilo-vm:latest and os/dev/build-image.sh (TILO_SKIP_BUILD=1) installs\nit to a disk, the disk step of the build itself. It needs passwordless sudo\n(loop device and mounts)."
+        after_help = "Examples:\n  tilo-vm image disk                          # from target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nFor an image built elsewhere, such as on another machine (tilo-vm image\nbuild --help): the layout goes into this host's podman storage as\nlocalhost/tilo-vm:latest and os/dev/build-image.sh (TILO_SKIP_BUILD=1) installs\nit to a disk, the disk step of the build itself. It needs passwordless sudo\n(loop device and mounts)."
     )]
     Disk {
         /// The OCI layout image build wrote.
@@ -821,8 +825,9 @@ pub struct UpgradeArgs {
     /// or an OCI layout directory `tilo-vm image build` wrote (target/tilo-vm/image).
     #[arg(long, conflicts_with = "from")]
     pub image: Option<String>,
-    /// `local`: build this worktree's dev image (localhost/tilo-vm:latest) and
-    /// move onto it. `local:<image>`: an image already in podman's storage.
+    /// `local`: build this worktree's dev image (localhost/tilo-vm:latest, the
+    /// tag from `TILO_LOCAL_TAG` when set) and move onto it. `local:<image>`:
+    /// an image already in podman's storage.
     /// `ci:<tag>` or `sha:<commit>`: a CI build of main (tag `main-<sha7>`): its
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]

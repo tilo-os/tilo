@@ -219,7 +219,7 @@ pub struct NotificationsPane {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// Framework-owned action dispatch: brackets the undo boundary (bubbled up by
-    /// `SettingsApp` via [`Widget::take_committed_action`], so the host records
+    /// `SettingsApp` via [`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action), so the host records
     /// exactly one boundary per event), encodes and dispatches each settings
     /// action, and remembers the last one so a test can prove an on-screen toggle
     /// builds the same [`EncodedAction`] the palette does.
@@ -237,10 +237,32 @@ impl NotificationsPane {
         Self::with_prefs(SystemPrefs::load().notifications)
     }
 
-    /// Construct from explicit preferences — used by tests and the
-    /// deterministic `--shots` render.
+    /// Construct from explicit preferences over the machine's installed
+    /// apps.
     pub fn with_prefs(prefs: NotificationPrefs) -> Self {
         let apps = installed_notification_apps(&prefs.per_app);
+        Self::with_prefs_and_apps(prefs, apps)
+    }
+
+    /// The `--shots` pane: default policy over a fixed app list, so a capture
+    /// shows the same per-app cards on every machine rather than one per
+    /// desktop entry the host happens to have.
+    pub fn for_shot() -> Self {
+        let apps = [
+            ("so.tilo.calendar", "Calendar"),
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.mail", "Mail"),
+        ]
+        .into_iter()
+        .map(|(id, name)| InstalledNotificationApp {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+        .collect();
+        Self::with_prefs_and_apps(NotificationPrefs::default(), apps)
+    }
+
+    fn with_prefs_and_apps(prefs: NotificationPrefs, apps: Vec<InstalledNotificationApp>) -> Self {
         let now = unix_now_i64();
         let mute_labels = apps
             .iter()
@@ -855,6 +877,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for NotificationsPane {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
@@ -958,7 +982,9 @@ impl Widget for NotificationsPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
 
+impl ui::undo::CommittedActions for NotificationsPane {
     /// Hand the host the heads captured before an on-screen toggle dispatched its
     /// settings action, so it records one undo boundary for it (bubbled up to the
     /// root by `SettingsApp`). Rising-edge: cleared on read.
@@ -1148,7 +1174,7 @@ mod tests {
 
             // The palette's DND flip spec, read at the pre-flip state (DND off).
             let app = config.app();
-            let res = Widget::resources(&app, &doc);
+            let res = ui::resources::resources(&app, &doc);
             let notif = res[0]
                 .children
                 .iter()
@@ -1238,7 +1264,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                pane.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut pane).is_none(),
                 "the bracket is rising-edge"
             );
 
@@ -1261,7 +1287,7 @@ mod tests {
                 "the toggle's scratch mirrors the reverted value"
             );
             assert!(
-                pane.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut pane).is_none(),
                 "mirroring the revert dispatches nothing"
             );
         }

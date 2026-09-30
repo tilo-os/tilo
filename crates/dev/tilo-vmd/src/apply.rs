@@ -85,6 +85,11 @@ pub trait Apply {
     fn session_pid(&mut self, _slot: &str) -> Option<u32> {
         None
     }
+    /// The session variables ([`crate::exec::SESSION_ENV`]) of the slot's
+    /// running session, which a command run as the slot inherits.
+    fn session_environment(&mut self, _slot: &str) -> Vec<(String, String)> {
+        Vec::new()
+    }
     /// Wait until the slot's session unit is up and stays up.
     ///
     /// # Errors

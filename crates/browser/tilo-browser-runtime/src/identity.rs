@@ -110,12 +110,7 @@ pub fn bind(bytes: &[u8], response: &str, raw: &str) -> Result<Vec<u8>, String> 
     {
         return Err("Public enrollment bootstrap binding mismatch".into());
     }
-    let now = web_time::SystemTime::now()
-        .duration_since(web_time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX);
+    let now = tilo_clock::unix_now_ns();
     tilo_user_identity::verify_device_cert_at(&config.certificate, now)
         .map_err(|e| e.to_string())?;
     material.scope = Some(Scope {

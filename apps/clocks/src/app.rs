@@ -1,5 +1,5 @@
 //! Responsive Clocks UI. All controls mutate the durable engine state directly.
-use crate::native_timers::timer_id as native_timer_id;
+use crate::native_timers::{ALARMS_URI, TIMERS_URI, timer_id as native_timer_id};
 use crate::{Alarm, ClockState, DueEvent, ShellSnapshot, Timer, WeekdayKey, WorldClock};
 use automerge::{AutoCommit, ObjId};
 use chrono::{NaiveTime, Utc};
@@ -983,12 +983,18 @@ pub struct ClocksApp {
     last_notification: Option<(uuid::Uuid, String, String)>,
     notice: ui::LocalState<Option<(String, String)>>,
     persistent: bool,
-    next_clock_tick: std::time::Instant,
-    native_notifications: Option<ui::host_notifications::HostNotifications>,
-    pending_notifications: Vec<(String, String, String)>,
-    next_notification_attempt: std::time::Instant,
+    next_clock_tick: ui::time::Instant,
+    /// The open section: World, Alarms, Timers, Stopwatch.
+    mode: ui::LocalState<usize>,
+    /// The host's notifications, resolved on first use.
+    notifications: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
+    /// Due alerts not yet shown: tag, title, body, activation URI.
+    pending_notifications: Vec<(String, String, String, &'static str)>,
+    next_notification_attempt: ui::time::Instant,
     last_scheduled_timers: String,
-    next_schedule_attempt: std::time::Instant,
+    next_schedule_attempt: ui::time::Instant,
+    /// Activation URIs of clicked notifications, from any thread.
+    activations: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 impl ClocksApp {
     #[must_use]
@@ -1044,38 +1050,42 @@ impl ClocksApp {
     }
 
     fn with_state(value: ClockState, mode: usize, persistent: bool) -> Self {
-        // Register legacy timers before the first UI event can delete them.
-        let value = {
-            let mut value = value;
-            if ui::host_notifications::SUPPORTED {
-                value
-                    .native_timer_owners
-                    .extend(value.timers.iter().map(|timer| timer.id));
-            }
-            value
-        };
+        // Register earlier timers before the first UI event can delete them.
+        let mut value = value;
+        value
+            .native_timer_owners
+            .extend(value.timers.iter().map(|timer| timer.id));
         let state = ui::LocalState::new(value);
         let notice = ui::LocalState::new(None);
         let validation_error = ui::LocalState::new(None);
+        let mode = ui::LocalState::new(mode);
+        let activations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        if persistent {
+            let sink = activations.clone();
+            let wake = ui::wake::WakeHandle::new();
+            ui::notify::set_activation_handler(move |uri| {
+                if let Ok(mut pending) = sink.lock() {
+                    pending.push(uri.to_owned());
+                }
+                wake.wake();
+            });
+        }
         Self {
-            inner: surface(
-                &ui::LocalState::new(mode),
-                &state,
-                &notice,
-                &validation_error,
-            ),
+            inner: surface(&mode, &state, &notice, &validation_error),
             state,
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
             notice,
             persistent,
-            next_clock_tick: std::time::Instant::now(),
-            native_notifications: None,
+            next_clock_tick: ui::time::now(),
+            mode,
+            notifications: None,
             pending_notifications: Vec::new(),
-            next_notification_attempt: std::time::Instant::now(),
+            next_notification_attempt: ui::time::now(),
             last_scheduled_timers: String::new(),
-            next_schedule_attempt: std::time::Instant::now(),
+            next_schedule_attempt: ui::time::now(),
+            activations,
         }
     }
 
@@ -1096,12 +1106,12 @@ impl ClocksApp {
             }
             DueEvent::Timer { .. } | DueEvent::Alarm { .. } => None,
         };
-        let (title, body) = match event {
-            DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
-            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
+        let (title, body, activation) = match event {
+            DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label, ALARMS_URI),
+            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI),
         };
         let notice = (uuid::Uuid::new_v4(), title, body);
-        if ui::host_notifications::SUPPORTED && self.persistent {
+        if self.persistent {
             let (tag, scheduled) = native.unwrap_or_else(|| {
                 (
                     notice.0.simple().to_string().chars().take(16).collect(),
@@ -1109,8 +1119,12 @@ impl ClocksApp {
                 )
             });
             if !scheduled {
-                self.pending_notifications
-                    .push((tag, notice.1.clone(), notice.2.clone()));
+                self.pending_notifications.push((
+                    tag,
+                    notice.1.clone(),
+                    notice.2.clone(),
+                    activation,
+                ));
             }
         }
         self.last_notification = Some(notice);
@@ -1121,37 +1135,49 @@ impl ClocksApp {
         );
     }
 
+    /// The host's notifications, resolved once.
+    fn notifier(&mut self) -> std::sync::Arc<dyn ui::notify::Notifier> {
+        self.notifications
+            .get_or_insert_with(|| ui::host::current().notifications)
+            .clone()
+    }
+
+    /// Show due alerts the platform did not deliver itself. A host without
+    /// notifications drops them (the in-app notice and the shell still show
+    /// them); a service that failed is tried again shortly.
     fn deliver_native_notifications(&mut self) {
-        if self.pending_notifications.is_empty()
-            || std::time::Instant::now() < self.next_notification_attempt
+        if self.pending_notifications.is_empty() || ui::time::now() < self.next_notification_attempt
         {
             return;
         }
-        let now = std::time::Instant::now();
-        self.next_notification_attempt = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
-        if self.native_notifications.is_none() {
-            match ui::host_notifications::HostNotifications::new("so.tilo.clocks")
-                .and_then(|host| host.with_protocol_activation("tilo-clocks:"))
-            {
-                Ok(host) => self.native_notifications = Some(host),
-                Err(error) => eprintln!("Windows Clocks notifications: {error}"),
-            }
-        }
-        if let Some(host) = &self.native_notifications {
-            self.pending_notifications.retain(|(tag, title, body)| {
-                match host.show(tag, title, body) {
+        self.next_notification_attempt = retry_at();
+        let host = self.notifier();
+        self.pending_notifications
+            .retain(|(tag, title, body, activation)| {
+                let notification =
+                    ui::notify::Notification::new(tag.as_str(), title.as_str(), body.as_str())
+                        .with_activation(*activation);
+                match host.show(&notification) {
                     Ok(()) => false,
-                    Err(error) => {
-                        eprintln!("Windows Clocks notification delivery: {error}");
+                    Err(ui::notify::NotifyError::Failed(error)) => {
+                        tracing::warn!(%error, "Clocks notification delivery");
                         true
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "Clocks notifications unavailable");
+                        false
                     }
                 }
             });
-        }
     }
 
+    /// Hand running timers to the platform's scheduler, where it keeps
+    /// notifications for an app that is not running.
     fn schedule_native_timers(&mut self, now: chrono::DateTime<Utc>) {
-        if !self.persistent || std::time::Instant::now() < self.next_schedule_attempt {
+        if !self.persistent
+            || !schedules_notifications()
+            || ui::time::now() < self.next_schedule_attempt
+        {
             return;
         }
         let encoded = self
@@ -1160,42 +1186,60 @@ impl ClocksApp {
         if encoded == self.last_scheduled_timers {
             return;
         }
-        let result = self.reconcile_native_timers(now);
-        match result {
+        match self.reconcile_native_timers(now) {
             Ok(()) => {
                 self.last_scheduled_timers = self
                     .state
                     .with(|s| serde_json::to_string(&s.timers).unwrap_or_default());
             }
             Err(error) => {
-                eprintln!("Windows Clocks scheduling: {error}");
-                let retry_base = std::time::Instant::now();
-                self.next_schedule_attempt = retry_base
-                    .checked_add(Duration::from_secs(5))
-                    .unwrap_or(retry_base);
+                tracing::warn!(%error, "Clocks timer scheduling");
+                self.next_schedule_attempt = retry_at();
             }
         }
     }
 
     fn reconcile_native_timers(&mut self, now: chrono::DateTime<Utc>) -> Result<(), String> {
-        if self.native_notifications.is_none() {
-            self.native_notifications = Some(
-                ui::host_notifications::HostNotifications::new("so.tilo.clocks")
-                    .and_then(|host| host.with_protocol_activation("tilo-clocks:"))
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        let Some(host) = &self.native_notifications else {
-            return Err("notification host unavailable".into());
-        };
+        let host = self.notifier();
         let mut result = Ok(());
         self.state.update(|state| {
-            result = crate::native_timers::reconcile(state, host, now, |state| {
+            result = crate::native_timers::reconcile(state, &*host, now, |state| {
                 state.save().map_err(|error| error.to_string())
             });
         });
         result
     }
+
+    /// Open the section a clicked notification names.
+    fn apply_activations(&self) {
+        let uris = self
+            .activations
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        for uri in uris {
+            match uri.as_str() {
+                TIMERS_URI => self.mode.set(2),
+                ALARMS_URI => self.mode.set(1),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// When a notification service that failed is tried again.
+fn retry_at() -> ui::time::Instant {
+    let now = ui::time::now();
+    now.checked_add(Duration::from_secs(5)).unwrap_or(now)
+}
+
+/// Whether the platform keeps scheduled notifications for an app that is
+/// not running.
+fn schedules_notifications() -> bool {
+    !matches!(
+        ui::notify::availability(ui::notify::Feature::Schedule),
+        ui::notify::Availability::Unsupported(_)
+    )
 }
 
 impl Default for ClocksApp {
@@ -1335,6 +1379,8 @@ impl ClocksApp {
 }
 
 impl Widget for ClocksApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
@@ -1358,30 +1404,8 @@ impl Widget for ClocksApp {
                 )
             }))
     }
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let _ = doc;
-        self.state.with(crate::actions::provide_resources)
-    }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        fn find(
-            resources: Vec<tilo_actions::Resource>,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource);
-                }
-                if let Some(found) = find(resource.children.clone(), id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        self.state
-            .with(|state| find(crate::actions::provide_resources(state), id))
-    }
     fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
-        let tick_base = std::time::Instant::now();
+        let tick_base = ui::time::now();
         self.next_clock_tick = tick_base
             .checked_add(Duration::from_secs(1))
             .unwrap_or(tick_base);
@@ -1394,18 +1418,15 @@ impl Widget for ClocksApp {
             self.state
                 .update(|state| state.apply_shell_command(&cmd, activity_id, now));
         }
+        self.apply_activations();
         let mut due = Vec::new();
-        if ui::host_notifications::SUPPORTED {
-            self.schedule_native_timers(now);
-        }
+        self.schedule_native_timers(now);
         self.state
             .update(|s| due = s.tick(now, chrono::Local::now()));
         for event in due {
             self.remember_due(event);
         }
-        if ui::host_notifications::SUPPORTED {
-            self.deliver_native_notifications();
-        }
+        self.deliver_native_notifications();
         self.generation = self.generation.saturating_add(1);
         self.state.with(|s| {
             let activity = s.shell_activity(now);
@@ -1420,7 +1441,7 @@ impl Widget for ClocksApp {
                     paused: false,
                     overlay: false,
                     generation: self.generation,
-                    producer_pid: std::process::id(),
+                    producer_pid: tilo_process::id().unwrap_or(0),
                     notification_id: None,
                     notification_title: String::new(),
                     notification_body: String::new(),
@@ -1435,7 +1456,7 @@ impl Widget for ClocksApp {
                     paused: a.paused,
                     overlay: a.overlay,
                     generation: self.generation,
-                    producer_pid: std::process::id(),
+                    producer_pid: tilo_process::id().unwrap_or(0),
                     notification_id: None,
                     notification_title: String::new(),
                     notification_body: String::new(),
@@ -1502,7 +1523,7 @@ impl Widget for ClocksApp {
     fn get_rect(&self) -> Rect {
         self.inner.get_rect()
     }
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         Some(
             self.inner
                 .next_wake_deadline()
@@ -1516,6 +1537,31 @@ impl Widget for ClocksApp {
     }
     fn take_focus_reset(&mut self) -> bool {
         self.inner.take_focus_reset()
+    }
+}
+
+impl ui::resources::PublishesResources for ClocksApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let _ = doc;
+        self.state.with(crate::actions::provide_resources)
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(
+            resources: Vec<tilo_actions::Resource>,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children.clone(), id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        self.state
+            .with(|state| find(crate::actions::provide_resources(state), id))
     }
 }
 
@@ -1767,8 +1813,8 @@ mod tests {
         let deadline = app
             .next_wake_deadline()
             .expect("clock must wake with no peer or input");
-        assert!(deadline > std::time::Instant::now());
-        assert!(deadline <= std::time::Instant::now() + Duration::from_secs(1));
+        assert!(deadline > ui::time::now());
+        assert!(deadline <= ui::time::now() + Duration::from_secs(1));
     }
 
     #[test]

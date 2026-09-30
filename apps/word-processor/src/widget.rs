@@ -1283,6 +1283,9 @@ pub struct WordProcessorWidget {
     save_status: DocumentSaveStatus,
     // Full read-only content projection, including formatting/comments/media.
     // Host undo and remote document actions need not touch the UI status enum.
+    /// Mounted on a record another participant created: until its content
+    /// arrives the document is left untouched rather than seeded.
+    joined: bool,
     saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
@@ -1500,7 +1503,7 @@ pub struct WordProcessorWidget {
     file_choice_domain: Option<ui::ControlDomain>,
     pending_file_choice: Option<(tilo_actions::InvocationId, u64, bool)>,
     /// A resource-invoked revision to focus after the next mutable sync has
-    /// refreshed the history model. `invoke_resource_operation` only receives
+    /// refreshed the history model. `apply_operation` only receives
     /// an immutable document, so deferring avoids a second, stale timeline.
     pending_history_revision: Option<usize>,
     // ---- paragraph-style context menu -------------------------------------
@@ -1579,6 +1582,7 @@ impl WordProcessorWidget {
                 needs_commit: false,
             },
             save_status: DocumentSaveStatus::Clean,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
@@ -2504,7 +2508,7 @@ impl WordProcessorWidget {
         doc: &AutoCommit,
     ) {
         self.participants
-            .set(participant, view, doc, ui::clock::Instant::now());
+            .set(participant, view, doc, ui::time::now());
         self.lifecycle.dirty = true;
     }
 
@@ -3071,8 +3075,8 @@ impl WordProcessorWidget {
         self.format = Some(format);
     }
 
-    /// Fetch the bytes of every image the document references that is not fetched yet: from the
-    /// content store, or from the document itself if an older version carried them inline.
+    /// Fetch the bytes of every image the document references that is not fetched yet from the
+    /// content store.
     /// Content that is not here stays absent, which is what draws a placeholder.
     fn refresh_images(
         blobs: &mut std::collections::BTreeMap<String, Vec<u8>>,
@@ -3085,10 +3089,7 @@ impl WordProcessorWidget {
             if blobs.contains_key(&hash) {
                 continue;
             }
-            let bytes = content
-                .read(&hash)
-                .or_else(|| qdoc::model::inline_content(state, c, &hash));
-            if let Some(bytes) = bytes {
+            if let Some(bytes) = content.read(&hash) {
                 // A cached "not decodable yet" result must not outlive the bytes' arrival.
                 image_cache.remove(&hash);
                 blobs.insert(hash, bytes);
@@ -3101,7 +3102,12 @@ impl WordProcessorWidget {
     /// content store and the document references them; the renderer/exporter
     /// decode them on demand.
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
-        match std::fs::read(path) {
+        let file = tilo_files::file_at(path);
+        match file
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|(dir, name)| tilo_files::blocking::read(dir, name))
+        {
             Ok(bytes) => {
                 let hash = match self.inner.content_store().put(&bytes) {
                     Ok(hash) => hash,
@@ -3154,8 +3160,10 @@ impl WordProcessorWidget {
                 // A drop arrives as a file the toolkit spooled into our
                 // runtime dir; once the bytes live in the document the
                 // spool copy has no owner.
-                if is_dnd_spool_path(path) {
-                    let _ = std::fs::remove_file(path);
+                if is_dnd_spool_path(path)
+                    && let Ok((dir, name)) = &file
+                {
+                    let _ = tilo_files::blocking::remove(dir, name);
                 }
                 true
             }
@@ -3386,7 +3394,9 @@ impl WordProcessorWidget {
             return Err("Resolve the selected file choice before opening another file".into());
         }
         let history = self.read_existing_file(path)?;
-        let bytes = match std::fs::read(path) {
+        let bytes = match tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+        {
             Ok(b) => b,
             Err(e) => {
                 self.toast = Some((t("toast-open-failed"), ToastKind::Error));
@@ -4146,17 +4156,14 @@ impl WordProcessorWidget {
                 running_head_runs(b, page_no)
             };
             let align = block_align(b, TextAlign::Left);
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &runs,
-                false,
-                size,
-                wrap_w,
+                &RichTextLayout::block_style(false, size, FontFamily::Sans, 1.0),
+                Some(wrap_w),
                 align,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             total_h += f64::from(layout.height());
             shaped.push(layout);
@@ -5580,10 +5587,6 @@ impl WordProcessorWidget {
         self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "flip toggles combine the paint context with the inspector column geometry and button width"
-    )]
     fn draw_panel_image_flip(
         &mut self,
         scene: &mut Scene,
@@ -7168,17 +7171,14 @@ impl WordProcessorWidget {
                         }
                         _ => {
                             self.dbg_layout_misses += 1;
-                            RichTextLayout::shape(
+                            RichTextLayout::shape_styled(
                                 &mut layout.text_renderer.font_system,
                                 &runs,
-                                false,
-                                16.0,
-                                wrap_w,
+                                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                                Some(wrap_w),
                                 align,
-                                FontFamily::Sans,
                                 underlines,
                                 strikes,
-                                1.0,
                             )
                         }
                     };
@@ -7241,17 +7241,14 @@ impl WordProcessorWidget {
         // Image blocks carry a trivial empty layout (used only so pointer
         // hit-testing resolves to offset 0); it is cheap, so just re-shape
         // it every frame rather than caching it incrementally.
-        let empty = RichTextLayout::shape(
+        let empty = RichTextLayout::shape_styled(
             &mut text_renderer.font_system,
             &[RichSpan::new("")],
-            false,
-            16.0,
-            fg.content_w,
+            &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+            Some(fg.content_w),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         );
         new_cache.insert(b.id.clone(), (0, empty));
         ResolvedImage {
@@ -7498,17 +7495,14 @@ impl WordProcessorWidget {
                 // An edited block keeps the shaped lines it did not change
                 // (its other paragraphs, or the untouched chunks of a huge
                 // paragraph); any style or width change reshapes it all.
-                RichTextLayout::shape_reusing(
+                RichTextLayout::shape_styled_reusing(
                     &mut text_renderer.font_system,
                     &runs,
-                    base_bold,
-                    size,
-                    wrap_w,
+                    &RichTextLayout::block_style(base_bold, size, family, line_mult),
+                    Some(wrap_w),
                     align,
-                    family,
                     underlines,
                     strikes,
-                    line_mult,
                     previous.map(|(_, layout)| layout),
                 )
             }
@@ -8739,7 +8733,7 @@ impl WordProcessorWidget {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, ui::clock::Instant::now()) {
+        for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
         for sel in &remote_selections {
@@ -8751,7 +8745,7 @@ impl WordProcessorWidget {
         // not fake mouse coordinates. Resolve those anchors through the same
         // shaped layouts as a person's selection and decorate the resulting
         // geometry with the authenticated actor label.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
                 tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
@@ -8805,10 +8799,7 @@ impl WordProcessorWidget {
             {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
-                    scene,
-                    theme,
-                    text_renderer,
-                    ctf,
+                    &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
                     &user,
                     &label,
                     bounds,
@@ -10191,93 +10182,21 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // A file-choice-only surface has one immutable, privately retained offer.
-        // Ordinary Writer also offers place-image; its replaceable process blob
-        // resolver has no inert identity yet, so the whole domain stays unknown.
-        self.file_choice.as_ref().map_or(
-            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
-            |offer| offer.continuation_domain,
-        )
-    }
+    ui::provides!(
+        dyn ui::collaboration::participants::Participants,
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::component_lifecycle::ComponentLifecycle,
+        dyn ui::undo::UndoPoints
+    );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        self.file_choice_domain = Some(domain.clone());
-        if let Some(offer) = &mut self.file_choice {
-            offer.install_custody(domain, attachment);
-        }
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(offer) = &mut self.file_choice {
-            return offer.take();
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(offer) = &mut self.file_choice {
-            offer.refresh(allowed);
-        }
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if let Some(offer) = &self.file_choice {
-            return offer.bindings();
-        }
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
-        // A canonical or hosted document is saved as it is edited.
-        if self.canonical || self.hosted() {
-            return Vec::new();
-        }
-        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
-        if current
-            .as_ref()
-            .zip(self.saved_document.as_ref())
-            .is_some_and(|(current, saved)| current == saved)
-        {
-            return Vec::new();
-        }
-        if self.saved_document.is_none()
-            && self.inner.containers.is_none()
-            && doc.length(&automerge::ROOT) == 0
-        {
-            return Vec::new();
-        }
-        vec![ui::close_admission::UnsavedDocument {
-            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
-            // The host may discard only the exact document the user reviewed.
-            // Serializing a clone does not commit the live typing transaction.
-            revision: doc.clone().save(),
-            identity: self
-                .path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        }]
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -10429,46 +10348,19 @@ impl Widget for WordProcessorWidget {
         }
     }
 
-    /// The document being edited is a record; its identity is its path. Two
-    /// editors on two different files in one room announce two different
-    /// records, so they are never handed each other's text — "share this
-    /// document" means the record, not merely "share this app instance".
-    ///
-    /// An untitled document names no record until it is saved and has a path.
-    fn record_intent(&self) -> Option<ui::RecordCheckout> {
-        self.path.as_ref().map(|p| {
-            ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
-        })
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        if self.file_choice.is_some() {
-            return Err("Resolve the selected file choice before switching documents".into());
-        }
-        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
-            return Err(
-                "Finish or cancel the active document edit before switching documents".into(),
-            );
-        }
-        self.portal_rx = None;
-        self.portal_purpose = None;
-        self.pending_resource_open = None;
-        self.pending_replacement = None;
-        self.replace_after_save = false;
-        self.unsaved_changes.close();
-        self.resource_file_invocation = None;
-        self.resource_file_result = None;
-        for scope in self.file_job_scopes.values() {
-            scope.cancel();
-        }
-        self.file_job_scopes.clear();
-        self.scoped_file_results.clear();
-        Ok(())
-    }
-
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the editor binds, rebases and reconciles in one sync pass"
+    )]
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.expire_file_jobs();
+        if self.joined
+            && self.inner.containers.is_none()
+            && state.get(root, "schema").ok().flatten().is_none()
+        {
+            return;
+        }
         if self.canonical {
             self.inner.reconcile(state);
         } else {
@@ -10547,7 +10439,7 @@ impl Widget for WordProcessorWidget {
         self.refresh_blocks(state);
         // Other participants' views follow local and remote edits alike; a
         // participant's own applied edit hands over its next view.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
         self.participants.rebase(state);
         self.participants.expire(now);
@@ -10624,15 +10516,6 @@ impl Widget for WordProcessorWidget {
         // Status is persistent bottom chrome, so it has no independent fade
         // lifecycle to animate while the editor is otherwise idle.
         false
-    }
-
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        // The host resolves Undo before dispatching keyboard events to us.
-        // An open menu must capture that path as well as ordinary editing keys.
-        self.context_menu.is_open()
-            || self.style_menu.is_open()
-            || self.template_picker.is_open()
-            || self.pending_replacement.is_some()
     }
 
     fn wants_tab_input(&self) -> bool {
@@ -11158,56 +11041,8 @@ impl Widget for WordProcessorWidget {
         }
     }
 
-    /// Outbound collaboration presence: while focused, broadcast the local caret
-    /// (or selection range) keyed to its block. Polled by the App after each event
-    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
-    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
-    /// `selection_rects`.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        if !self.lifecycle.focused {
-            return None;
-        }
-        let caret_block = &self.inner.caret.block;
-        if caret_block.is_empty() {
-            return None;
-        }
-        let key = block_presence_key(self.hosted(), caret_block);
-        // A selection within the caret's block takes priority over the bare
-        // caret. (v1 collab presence reports the caret-block portion of a
-        // multi-block selection, mirroring how the caret block is what the
-        // peer's caret lands in.)
-        if self.inner.has_selection()
-            && let Some((_, s, e)) = self
-                .selection_blocks_cached()
-                .into_iter()
-                .find(|(b, _, _)| b == caret_block)
-            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
-            && s < e
-        {
-            let start = char_to_byte(&block.text, s);
-            let end = char_to_byte(&block.text, e);
-            return Some((key, ui::PresencePayload::Selection { start, end }));
-        }
-        // Bare caret: convert the char offset to a byte offset against the
-        // caret block's text so it maps directly through the layout geometry.
-        let pos = self
-            .blocks
-            .iter()
-            .find(|b| &b.id == caret_block)
-            .map_or(self.inner.caret.offset, |b| {
-                char_to_byte(&b.text, self.inner.caret.offset)
-            });
-        Some((key, ui::PresencePayload::Caret { pos }))
-    }
-
     fn name(&self) -> &'static str {
         "WordProcessor"
-    }
-
-    /// The version strip under the page is this document's History; the
-    /// shared standalone control would be a second, weaker copy of it.
-    fn provides_document_history(&self) -> bool {
-        true
     }
 
     /// The word processor's local accessibility semantics: the editable
@@ -11398,6 +11233,24 @@ impl Widget for WordProcessorWidget {
             Some(winit::window::ImePurpose::Normal)
         }
     }
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.action_palette_request.take()
+    }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::undo::UndoPoints for WordProcessorWidget {
     fn needs_commit(&self) -> bool {
         // Hosted, edits are actions the framework bounds into undo steps
         // itself (a commit request would close a word mid-typing); only a
@@ -11433,17 +11286,128 @@ impl Widget for WordProcessorWidget {
         self.lifecycle.needs_commit = false;
         self.save_status = DocumentSaveStatus::Modified;
     }
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// a [`RichTextAction`](crate::actions) through
-    /// `Self::perform_action`, so it records one undo boundary bracketing the
-    /// affordance's change (the button-driven twin of the Ctrl+K palette).
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for WordProcessorWidget {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        // A canonical or hosted document is saved as it is edited.
+        if self.canonical || self.hosted() {
+            return Vec::new();
+        }
+        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
+        if current
+            .as_ref()
+            .zip(self.saved_document.as_ref())
+            .is_some_and(|(current, saved)| current == saved)
+        {
+            return Vec::new();
+        }
+        if self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && doc.length(&automerge::ROOT) == 0
+        {
+            return Vec::new();
+        }
+        vec![ui::close_admission::UnsavedDocument {
+            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
+            // The host may discard only the exact document the user reviewed.
+            // Serializing a clone does not commit the live typing transaction.
+            revision: doc.clone().save(),
+            identity: self
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }]
     }
-    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
-        self.action_palette_request.take()
+}
+
+impl ui::record::capability::RecordScoped for WordProcessorWidget {
+    /// The document being edited is a record; its identity is its path. Two
+    /// editors on two different files in one room announce two different
+    /// records, so they are never handed each other's text — "share this
+    /// document" means the record, not merely "share this app instance".
+    ///
+    /// An untitled document names no record until it is saved and has a path.
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.path.as_ref().map(|p| {
+            ui::RecordCheckout::new(
+                ui::RecordId::for_file(p),
+                ui::RecordKind::new(crate::RECORD_KIND),
+            )
+        })
     }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.file_choice.is_some() {
+            return Err("Resolve the selected file choice before switching documents".into());
+        }
+        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
+            return Err(
+                "Finish or cancel the active document edit before switching documents".into(),
+            );
+        }
+        self.portal_rx = None;
+        self.portal_purpose = None;
+        self.pending_resource_open = None;
+        self.pending_replacement = None;
+        self.replace_after_save = false;
+        self.unsaved_changes.close();
+        self.resource_file_invocation = None;
+        self.resource_file_result = None;
+        for scope in self.file_job_scopes.values() {
+            scope.cancel();
+        }
+        self.file_job_scopes.clear();
+        self.scoped_file_results.clear();
+        Ok(())
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
+    /// Outbound collaboration presence: while focused, broadcast the local caret
+    /// (or selection range) keyed to its block. Polled by the App after each event
+    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
+    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
+    /// `selection_rects`.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        if !self.lifecycle.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        if caret_block.is_empty() {
+            return None;
+        }
+        let key = block_presence_key(self.hosted(), caret_block);
+        // A selection within the caret's block takes priority over the bare
+        // caret. (v1 collab presence reports the caret-block portion of a
+        // multi-block selection, mirroring how the caret block is what the
+        // peer's caret lands in.)
+        if self.inner.has_selection()
+            && let Some((_, s, e)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
+            && s < e
+        {
+            let start = char_to_byte(&block.text, s);
+            let end = char_to_byte(&block.text, e);
+            return Some((key, ui::PresencePayload::Selection { start, end }));
+        }
+        // Bare caret: convert the char offset to a byte offset against the
+        // caret block's text so it maps directly through the layout geometry.
+        let pos = self
+            .blocks
+            .iter()
+            .find(|b| &b.id == caret_block)
+            .map_or(self.inner.caret.offset, |b| {
+                char_to_byte(&b.text, self.inner.caret.offset)
+            });
+        Some((key, ui::PresencePayload::Caret { pos }))
+    }
+}
+
+impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
@@ -11471,6 +11435,18 @@ impl Widget for WordProcessorWidget {
         }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // A file-choice-only surface has one immutable, privately retained offer.
+        // Ordinary Writer also offers place-image; its replaceable process blob
+        // resolver has no inert identity yet, so the whole domain stays unknown.
+        self.file_choice.as_ref().map_or(
+            ui::widget::ActionDirectoryInvocationDomain::Unsupported,
+            |offer| offer.continuation_domain,
+        )
+    }
     /// A delivered invocation's tree, rebuilt for its invoker's own view.
     fn resources_for(
         &self,
@@ -11478,7 +11454,7 @@ impl Widget for WordProcessorWidget {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
         match participant {
-            None => Widget::resources(self, doc),
+            None => ui::resources::resources(self, doc),
             Some(participant) => self.participant_resources(Some(participant), doc),
         }
     }
@@ -11501,16 +11477,92 @@ impl Widget for WordProcessorWidget {
             })
         }
         let Some(participant) = participant else {
-            return Widget::resource(self, doc, id);
+            return ui::resources::resource(self, doc, id);
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
+}
+
+impl ui::widget::controls::ActionControls for WordProcessorWidget {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        self.file_choice_domain = Some(domain.clone());
+        if let Some(offer) = &mut self.file_choice {
+            offer.install_custody(domain, attachment);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(offer) = &mut self.file_choice {
+            return offer.take();
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if let Some(offer) = &self.file_choice {
+            return offer.bindings();
+        }
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        self.for_each_child(&mut |child| {
+            bindings.extend(ui::widget::controls::control_action_bindings(child));
+        });
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(offer) = &mut self.file_choice {
+            offer.refresh(allowed);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for WordProcessorWidget {
+    /// The version strip under the page is this document's History; the
+    /// shared standalone control would be a second, weaker copy of it.
+    fn provides_document_history(&self) -> bool {
+        true
+    }
+}
+
+impl ui::undo::LocalUndo for WordProcessorWidget {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        // The host resolves Undo before dispatching keyboard events to us.
+        // An open menu must capture that path as well as ordinary editing keys.
+        self.context_menu.is_open()
+            || self.style_menu.is_open()
+            || self.template_picker.is_open()
+            || self.pending_replacement.is_some()
+    }
+}
+
+impl ui::undo::CommittedActions for WordProcessorWidget {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// a [`RichTextAction`](crate::actions) through
+    /// `Self::perform_action`, so it records one undo boundary bracketing the
+    /// affordance's change (the button-driven twin of the Ctrl+K palette).
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ui::collaboration::participants::Participants for WordProcessorWidget {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let joined = self
-            .participants
-            .join(participant.clone(), ui::clock::Instant::now());
+        let joined = self.participants.join(participant.clone(), ui::time::now());
         self.lifecycle.dirty |= joined;
         joined
     }
@@ -11518,26 +11570,14 @@ impl Widget for WordProcessorWidget {
         self.participants.remove(participant);
         self.lifecycle.dirty = true;
     }
-    fn set_participant_host(&mut self, host: bool) {
-        self.participant_host = host;
-    }
     fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         WordProcessorWidget::set_participant_label(self, participant, label);
     }
     fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
         WordProcessorWidget::participant_presence(self, doc)
     }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
-    }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+    fn set_participant_host(&mut self, host: bool) {
+        self.participant_host = host;
     }
 }
 
@@ -11677,17 +11717,14 @@ impl WordProcessorWidget {
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let root_layout = RichTextLayout::shape(
+        let root_layout = RichTextLayout::shape_styled(
             &mut tr.font_system,
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
-            false,
-            THREAD_ROOT_FONT,
-            num::f32_of_f64(width - 2.0 * pad),
+            &RichTextLayout::block_style(false, THREAD_ROOT_FONT, FontFamily::Sans, 1.0),
+            Some(num::f32_of_f64(width - 2.0 * pad)),
             TextAlign::Left,
-            FontFamily::Sans,
             vec![],
             vec![],
-            1.0,
         );
         tr.draw_rich(
             scene,
@@ -14091,17 +14128,13 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         .filter_map(std::env::var_os)
         .filter(|v| !v.is_empty())
         .any(|dir| path.starts_with(dir))
-        || path.starts_with(std::env::temp_dir())
+        || tilo_paths::temp_dir().is_some_and(|dir| path.starts_with(dir))
 }
 
 #[cfg(test)]
 #[path = "widget/mark_boundary_tests.rs"]
 mod mark_boundary_tests;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "legacy buttons take the paint context, chrome colours, rect, label and two independent style flags"
-)]
 fn draw_legacy_btn(
     scene: &mut Scene,
     transform: Affine,

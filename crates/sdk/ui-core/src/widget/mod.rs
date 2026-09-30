@@ -165,16 +165,35 @@ pub(crate) fn collect_widget_resources(
         // declaration once, and release its document borrow before descending.
         if boundary.is_none() {
             if let Some(binding) = &binding {
-                if let Ok(found) = binding.read_document(doc, |doc, _| widget.resources(doc)) {
+                if let Ok(found) =
+                    binding.read_document(doc, |doc, _| crate::resources::resources(widget, doc))
+                {
                     resources.extend(found);
                 }
             } else {
-                resources.extend(widget.resources(doc));
+                resources.extend(crate::resources::resources(widget, doc));
             }
         }
         widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
     }
     visit(widget, doc, None, resources);
+}
+
+/// Every resource `widget`'s subtree publishes, as the host's action
+/// catalogue collects them. A host that embeds components under its own
+/// root (a desktop surface) reads what its search offers through this.
+pub fn published_resources(widget: &dyn Widget, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    let mut resources = Vec::new();
+    collect_widget_resources(widget, doc, &mut resources);
+    resources
+}
+
+/// Every search provider the components in `widget`'s subtree publish, each
+/// once, as weak proxies the components keep owning.
+pub fn published_search_providers(
+    widget: &dyn Widget,
+) -> Vec<Box<dyn crate::search::SearchProvider>> {
+    crate::bound_dispatch::search_providers(widget)
 }
 
 /// Test traversal probe; production callers retain bound provenance.
@@ -185,7 +204,7 @@ pub(crate) fn resolve_widget_resource(
     id: &str,
 ) -> Option<tilo_actions::Resource> {
     resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
-        widget.resource(doc, id)
+        crate::resources::resource(widget, doc, id)
     })
 }
 
@@ -278,12 +297,22 @@ pub(crate) fn action_directory_page_at(
                 (if let Some(binding) = &binding {
                     binding
                         .read_document(doc, |doc, _| {
-                            widget.action_directory_resource_page(doc, cursor, max_results)
+                            crate::resources::action_directory_resource_page(
+                                widget,
+                                doc,
+                                cursor,
+                                max_results,
+                            )
                         })
                         .ok()
                         .flatten()
                 } else {
-                    widget.action_directory_resource_page(doc, cursor, max_results)
+                    crate::resources::action_directory_resource_page(
+                        widget,
+                        doc,
+                        cursor,
+                        max_results,
+                    )
                 })
                 .map(|page| (page, binding)),
             );
@@ -722,76 +751,6 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// A successful, locally applied resource Document action on this exact owner.
-    /// Immutable document access permits cache reconciliation only. Not called for
-    /// submissions, failed execution, replay, remote merge, or History restore.
-    fn document_action_applied(
-        &mut self,
-        _action: &tilo_actions::EncodedAction,
-        _before: &[automerge::ChangeHash],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-    }
-
-    /// Explicit root-owned History custody, including selected external resources.
-    /// Runners consume this bundle; preview renderers never receive the root.
-    ///
-    /// # Errors
-    /// Returns a registration error when the root cannot provide valid History custody.
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        Ok(None)
-    }
-    /// Additional read-only veto for uncommitted app-local drafts in this scope.
-    /// This does not confer authority or recursively consult independent owners.
-    ///
-    /// # Errors
-    /// Returns a reason when this exact root is not ready to restore the scope.
-    fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
-        Ok(())
-    }
-    /// Presentation declaration for a legacy tile's eventual checked record.
-    /// The `TileHost` resolves custody after binding; this grants no authority.
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        None
-    }
-
-    /// Whether this widget presents its document's History itself, so the
-    /// host must not add the shared standalone History control beside it —
-    /// one document gets one History surface.
-    fn provides_document_history(&self) -> bool {
-        self.children()
-            .into_iter()
-            .any(|child| child.provides_document_history())
-    }
-
-    /// Framework lifecycle traversal, independent of visible presentation children.
-    /// Borrowed surfaces and retained children cannot escape this callback.
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        for child in self.children() {
-            child.visit_framework_history(visitor);
-        }
-    }
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        for child in self.children_mut() {
-            child.visit_framework_history_mut(visitor);
-        }
-    }
     /// Structural chrome can explicitly leave an inherited document callback.
     #[doc(hidden)]
     fn resets_callback_binding(&self) -> bool {
@@ -820,45 +779,6 @@ pub trait Widget {
         None
     }
 
-    /// Admit or defer the primary native window's ordinary close request.
-    /// Roots that defer must later produce a one-shot close intent.
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        WindowCloseAdmission::Allow
-    }
-
-    /// One-shot approval after an earlier deferred ordinary window close.
-    fn take_window_close_intent(&mut self) -> bool {
-        false
-    }
-
-    /// App-declared external document obligations. An in-memory `RecordSet` is
-    /// not evidence that an editable file has been saved.
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.children()
-            .into_iter()
-            .flat_map(|child| child.unsaved_documents(doc))
-            .collect()
-    }
-    /// Non-destructive persistence checkpoint. Never closes a wake scope or
-    /// removes a tree; a failed host close must leave every child usable.
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors = Vec::new();
-        errors.extend(
-            self.children_mut()
-                .into_iter()
-                .flat_map(Widget::checkpoint_components),
-        );
-        errors
-    }
-    /// Only the host may call this after every checkpoint succeeded, without
-    /// dispatching another document mutation in between.
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::finish_admitted_close)
-            .collect()
-    }
-
     /// Explicit app-owned region; never search secondary children implicitly.
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         None
@@ -868,37 +788,6 @@ pub trait Widget {
         _action: PrimaryScrollAction,
     ) -> PrimaryScrollResult {
         PrimaryScrollResult::Unsupported
-    }
-
-    /// Transitional durable writer owned by this root rather than the host.
-    /// `None` means no such writer exists. Implementations must wait for all
-    /// pending writes and report failure; a queued flush is not success.
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        None
-    }
-
-    /// Local control intent queued behind asynchronous startup preparation.
-    /// This is a scheduling hint only; the host still checks live authority.
-    fn has_pending_control_invocation(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|child| child.has_pending_control_invocation())
-    }
-    /// Owning lifecycle path: capture and close nested components before removing
-    /// their live trees, transferring all recovery reports to the caller.
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::close_components)
-            .collect()
-    }
-    /// Drain inert close-report ownership once; never invoke ordinary app callbacks
-    /// through a closed component. Bound owners override this to use cached metadata.
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::take_component_close_reports)
-            .collect()
     }
 
     /// Runtime binding inherited by descendants in a matching layout topology.
@@ -973,14 +862,6 @@ pub trait Widget {
 
     /// Exclusive counterpart to [`Widget::provide`].
     fn provide_mut<'a>(&'a mut self, _request: &mut capability::RequestMut<'a, '_>) {}
-
-    /// Retained session topology. Presentation children are the ordinary
-    /// default; owners with hidden or inactive live sessions override this
-    /// without exposing those descendants to drawing or input traversal.
-    #[doc(hidden)]
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.children_mut()
-    }
 
     /// Attach native child views through this owner's retained lifecycle topology.
     ///
@@ -1497,95 +1378,6 @@ pub trait Widget {
     fn opening(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        let mut needed = false;
-        self.for_each_child(&mut |child| {
-            if !needed {
-                needed = child.needs_commit();
-            }
-        });
-        needed
-    }
-    /// Drain semantic provenance for the native transaction currently asking
-    /// the host to commit. Use this for CRDT-native edits such as flowing text;
-    /// replayable discrete operations should continue through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_commit_context)
-    }
-    /// Bind retained producers before their first callback. Private holders must
-    /// override this hook; child traversal alone never certifies full coverage.
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            child.install_control_custody(domain, attachment);
-        }
-    }
-    /// Drain one queued action-bound control intent from this subtree.
-    /// Custom-painted widgets can own an [`ActionEmitter`] and override this
-    /// method; they do not need to use the toolkit's [`Button`].
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-    /// Report the admission result of one queued local control invocation.
-    /// `Accepted` means queued, not completed; confirmation remains an error
-    /// while the host offers its normal confirmation UI. This notification
-    /// grants no document authority and must not retry the invocation itself.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        for child in self.children_mut() {
-            if !child.has_separate_document_owner() {
-                child.on_control_invocation_result(address, result);
-            }
-        }
-    }
-    /// Recursively inventory action-native and explicitly legacy controls.
-    /// Custom widgets that own an [`ActionEmitter`] should prepend its
-    /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| bindings.extend(child.control_action_bindings()));
-        bindings
-    }
-    /// Whether this exposed subtree contains controls consuming action availability.
-    /// The inventory fallback preserves custom widgets that publish their own emitters.
-    /// Overrides must match whether `control_action_bindings` contains an `Action`,
-    /// including the same modal child exposure, regardless of current availability.
-    /// Transparent containers may query their children without building semantics.
-    fn has_action_control_bindings(&self) -> bool {
-        self.control_action_bindings()
-            .iter()
-            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
-    }
-    /// Push the fresh local permission-filtered action surface into every
-    /// retained control. Custom widgets should refresh their own emitter and
-    /// then recurse into children.
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for child in self.children_mut() {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-    fn get_state(&self) -> Option<String> {
-        None
-    }
-    fn set_state(&mut self, _state: &str) {}
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
     /// this before/after an event so caret-only moves (arrows, Home/End)
@@ -1618,6 +1410,16 @@ pub trait Widget {
         false
     }
 
+    /// Which directions [`Self::on_nav_gesture`] would consume now. A widget
+    /// that owns history overrides this beside `on_nav_gesture`.
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.children()
+            .into_iter()
+            .fold(crate::gesture::NavAvailability::default(), |seen, child| {
+                seen.or(child.nav_availability())
+            })
+    }
+
     /// One-shot (reading MUST clear it) signal to move focus to this
     /// subtree's first focusable widget after the next rebuild. Only
     /// consulted under [`crate::app::App::autofocus_on_structure_change`];
@@ -1625,26 +1427,6 @@ pub trait Widget {
     fn take_focus_reset(&mut self) -> bool {
         false
     }
-
-    /// Which **record** (see [`crate::record`]) this widget's document
-    /// should be, so opening a second file checks out a different document
-    /// instead of overwriting the first. Root widget only; `None` keeps the
-    /// default package-level document.
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        None
-    }
-
-    /// Presentation fields (scroll offset, view mode) contributed to the
-    /// App's [`View`](crate::view::View), restored via
-    /// [`restore_view_state`](Self::restore_view_state). Distinct from
-    /// [`get_state`](Self::get_state) (the *focused* widget's
-    /// caret/selection): this is root-owned, usually not the focused
-    /// widget's.
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        None
-    }
-
-    fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
     ///
@@ -1696,270 +1478,11 @@ pub trait Widget {
         }
     }
 
-    /// Inverse of [`Self::record_intent`]. A widget that publishes
-    /// presence **must** fold this into its presence key — two instances
-    /// of one app are two records, and a key that only names the field
-    /// collides between them, so a peer's caret lands in whichever
-    /// instance drew last.
-    fn set_record_scope(&mut self, _record: &crate::record::RecordId) {}
-
-    /// Detach every receiver, queued result and deferred document write owned by
-    /// the current record before a host can retain this root under another
-    /// record owner. This runs without a document loan. Returning `Ok(())`
-    /// certifies that no later lifecycle callback can apply old-owner work to a
-    /// replacement document. Opaque roots refuse by default.
-    ///
-    /// # Errors
-    /// Returns an explanatory refusal when the widget cannot yet detach every
-    /// continuation associated with its current record owner.
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        Err("This application cannot release retained work from its current document owner".into())
-    }
-
     // --- Collab / DnD contract extensions ---
-    /// Stable identity for presence/permission lookup. Default: opt-out.
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-    /// Outbound presence (typically caret/selection) broadcast while this
-    /// widget holds focus; the App polls the focused widget after each event
-    /// and diffs it out to peers.
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        None
-    }
     /// Whether `sync` still needs to run on idle frames without input or
     /// collab events — e.g. waiting out a document-adoption grace window.
     fn needs_idle_sync(&self) -> bool {
         false
-    }
-    /// Which permission scope, if any, gates this widget. Default: no gating.
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-
-    /// The tree of [`tilo_actions::Resource`]s this widget currently has
-    /// open, each with the actions it exports to Ctrl+K — e.g. a playing
-    /// video plus its comments. `doc` lets a provider enumerate resources
-    /// living in the CRDT.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-
-    /// Explicit host-local presentation/request controls for the portable caller
-    /// palette. Only View operations are accepted; shared effects remain broker-owned.
-    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-
-    /// One cursor-addressable page of resource roots safe to expose through
-    /// the broker pull directory. `max_results` is a hard ceiling; a live
-    /// provider must return a non-empty opaque cursor when it has a tail.
-    /// `None` is intentionally the default: a legacy
-    /// [`Self::resources`] implementation may build an unbounded contextual
-    /// snapshot, which must not be reached from a remote query or revision.
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        _cursor: &[u8],
-        _max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        None
-    }
-
-    /// Revision of non-CRDT bounded directory roots. Return `None` when this
-    /// widget has no independently mutable remote directory state; callers
-    /// combine provided values with document heads and search generations.
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        None
-    }
-
-    /// Continuity coverage for this owning subtree's effective invocation domain.
-    /// Independent component/provider owners are checked separately. Returning a
-    /// value is a semantic promise, not authority; unknown coverage stays closed.
-    fn action_directory_invocation_domain(
-        &self,
-        _doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        ActionDirectoryInvocationDomain::Unsupported
-    }
-
-    /// Resolve an addressable resource omitted from the contextual snapshot.
-    /// Large apps override this through their `ResourceProvider` index.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
-        None
-    }
-
-    /// The tree as one participant (an agent task) sees it, built from that
-    /// participant's own view state (caret, selection, Find). A delivered
-    /// invocation resolves against this, rebuilt at invoke time, for the
-    /// host-set invoker ([`crate::invocation_scope::current_participant`]).
-    ///
-    /// `None` is this widget's own view. Single-view widgets keep the
-    /// default, which is the same tree for everybody. Multi-participant
-    /// widgets (Writer) override this and [`Self::resource_for`], and must
-    /// never put one participant's selection or Find text into another's
-    /// tree.
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        let _ = participant;
-        self.resources(doc)
-    }
-
-    /// [`Self::resource`] in `participant`'s tree.
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        let _ = participant;
-        self.resource(doc, id)
-    }
-
-    /// A participant (an agent task) joined the record this tree serves. A
-    /// multi-participant widget creates that participant's own view here
-    /// (Writer: caret at the document end) and publishes it as presence.
-    /// Idempotent. The default reaches retained descendants; returns whether
-    /// a view was newly created (so the host drops resource caches only then).
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let mut joined = false;
-        for child in self.collaboration_children_mut() {
-            joined |= child.join_participant(participant);
-        }
-        joined
-    }
-
-    /// Drop a participant's view (its task ended). Idempotent.
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        for child in self.collaboration_children_mut() {
-            child.leave_participant(participant);
-        }
-    }
-
-    /// Name shown beside a participant's caret (the agent's display name).
-    /// The default reaches retained descendants.
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_label(participant, label);
-        }
-    }
-
-    /// Current presence of every remote participant this tree holds a view
-    /// for, derived from that participant's own view exactly as the local
-    /// window derives its own presence. The default collects descendants.
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        let mut out = Vec::new();
-        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
-        out
-    }
-
-    /// The host serves only remote participants and has no local person (a
-    /// headless host worker). A multi-participant widget then publishes its
-    /// participant-independent catalogue schema
-    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
-    /// view's tree instead of one caret's snapshot, so the publication and
-    /// its revision do not change when a caret moves.
-    fn set_participant_host(&mut self, host: bool) {
-        for child in self.collaboration_children_mut() {
-            child.set_participant_host(host);
-        }
-    }
-
-    /// Explicit disclosure authority for an actionless resource container in
-    /// the broker pull directory. Returning `None` means its label and
-    /// hierarchy are not remotely discoverable unless the resource itself has
-    /// a safe view action. This is intentionally separate from `resources`:
-    /// selecting an arbitrary mutating action as a visibility proxy could
-    /// leak a container name to someone who may only perform that action in a
-    /// different context.
-    fn action_directory_visibility(
-        &self,
-        _doc: &AutoCommit,
-        _resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        None
-    }
-
-    /// Folded into the unified Ctrl+K palette alongside
-    /// [`resources`](Self::resources) actions — one
-    /// [`SearchProvider`](crate::search::SearchProvider) per findable kind.
-    /// A hit activates via
-    /// [`activate_search_result`](Self::activate_search_result).
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        Vec::new()
-    }
-
-    /// Presentation (navigation), not a CRDT action — mutate the doc only
-    /// if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
-    }
-
-    /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
-    /// control dispatches the same [`tilo_actions`] action its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
-    /// document heads captured **just before** here, so the host can record
-    /// one undo boundary the same way a palette dispatch does. Rising-edge:
-    /// reading MUST clear it.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        None
-    }
-
-    /// Whether the undo step this widget's last reported boundary opened
-    /// stays open for the actions that continue it — the rest of a word
-    /// typed a keystroke at a time. A hosted component then closes the step
-    /// at the widget's next boundary, or before an undo, a save or a merge,
-    /// instead of after this event. Answered by the widget itself, never its
-    /// children.
-    fn keeps_undo_step_open(&self) -> bool {
-        false
-    }
-
-    /// Host → widget: the live state of the undo history, published once per
-    /// frame to every laid-out widget.
-    ///
-    /// A widget only ever receives `&mut AutoCommit`, which carries the
-    /// document but not its history — so without this a control could not tell
-    /// whether there was anything to undo, and every app was reduced to
-    /// printing the shortcut and hoping. Store the status (embed an
-    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
-    /// [`is_enabled`](Widget::is_enabled), and in
-    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
-    /// is exactly where the disabled state must be reflected.
-    ///
-    /// The host sweeps its `node_map`, so this reaches a widget at any depth
-    /// with no container forwarding. Call the provider only when the widget
-    /// consumes status; deriving historical summaries can require a document
-    /// diff. Default: ignore the provider without evaluating it.
-    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
-
-    /// Widget → host: an undo or redo the user asked for.
-    ///
-    /// The host drains this after each event and performs it through
-    /// `App::perform_undo` /
-    /// `App::perform_redo` — the same methods
-    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
-    /// implementation and cannot drift.
-    ///
-    /// Rising-edge: reading MUST clear it, so one activation is one undo.
-    /// Default: nothing requested.
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        None
-    }
-
-    /// Offer a host keyboard undo/redo shortcut to focused widget-local
-    /// history before the application document consumes it.
-    ///
-    /// The default recursively asks retained children. A component with its
-    /// own editing history should return `true` only while focus is inside
-    /// that component and it has consumed the request. Returning `false`
-    /// preserves the standard collaboration-safe document undo behavior.
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.children_mut()
-            .into_iter()
-            .any(|child| child.handle_local_undo_request(request))
     }
 
     /// Apply an action another app in this room published, if this app owns
@@ -2002,136 +1525,7 @@ pub trait Widget {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        // Widgets that still override the legacy hooks below are reached
-        // through their adapter chain; a required operation never is. The
-        // legacy chains disagreed: an override of the read-only start could
-        // decline a type its synchronous handler answers, so both are offered.
-        let Some(request) = op.unscoped() else {
-            return start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.start_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .invoke_resource_operation_v2(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .map(ResourceOperationStart::Completed))
-    }
-
-    /// Legacy adapter for [`Self::start_operation`]; the repository policy
-    /// ratchets its remaining overrides to zero. Returns `Ok(true)` when the
-    /// widget handled the payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first error reported while routing the operation through
-    /// the retained widget tree.
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        for child in self.children_mut() {
-            if child.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Legacy adapter for [`Self::start_operation`] with a typed result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the legacy operation handler rejects the payload
-    /// or fails while routing it through the retained widget tree.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    /// Legacy read-only adapter for [`Self::start_operation`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error reported
-    /// while routing the payload through the retained widget tree.
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        // Give descendants their lifecycle-aware route before falling back to
-        // the v2 synchronous adapter. Without this pass, an async leaf nested
-        // under an ordinary retained container would be downgraded to the
-        // legacy immediate route.
-        for child in self.children_mut() {
-            if let Some(started) =
-                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-            {
-                return Ok(Some(started));
-            }
-        }
-        self.invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-            .map(|result| result.map(ResourceOperationStart::Completed))
-    }
-
-    /// Legacy mutable adapter for [`Self::start_operation`].
-    ///
-    /// The default offers the operation to every retained child through
-    /// [`Self::start_operation`] first, then falls back to this widget's own
-    /// read-only adapter; a child that declined the first offer declines the
-    /// read-only one again.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same admission/operation failures as
-    /// [`Self::start_resource_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        let op = ResourceOperation::local(invocation, kind, type_id, payload);
-        for child in self.children_mut() {
-            if let Some(started) = child.start_operation(&op, doc, path)? {
-                return Ok(Some(started));
-            }
-        }
-        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+        start_in_children(self, op, doc, path)
     }
 
     /// Inert immutable-reader registrations owned by this actual widget.
@@ -2605,7 +1999,7 @@ pub(crate) fn take_collab_requests(
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -2623,7 +2017,7 @@ pub(crate) fn handle_collab_event(
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in widget.collaboration_children_mut() {
+    for child in crate::collaboration::participants::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }
@@ -2682,6 +2076,7 @@ pub type Element = Box<dyn Widget>;
 
 pub mod binding;
 pub mod capability;
+pub mod controls;
 pub mod decorator;
 pub use decorator::Decorator;
 
@@ -2828,7 +2223,7 @@ pub use app_widget::{
 pub mod command_palette;
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint};
+pub use input_hint::{InputDeviceGlyph, InputHint, LegendConventions};
 pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
@@ -2910,7 +2305,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::Avatar;
+pub use avatar::{Avatar, AvatarRing};
 pub mod badge;
 pub use badge::{Badge, BadgeTone};
 pub mod icon;
@@ -2967,7 +2362,7 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
@@ -3006,15 +2401,15 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::EmptyState;
+pub use empty_state::{EmptyState, EmptyStateContent};
 pub mod search_field;
 pub use search_field::SearchField;
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, Trend};
+pub use stat_tile::{StatTile, StatTileContent, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerKind};
+pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 mod card_composition;
@@ -3027,8 +2422,8 @@ pub use section::{DEFAULT_SECTION_GAP, Section};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
-    CapturePreview, CaptureStudio, CaptureTarget, PipLayout, RecordingCommand, ReplayCommand,
-    ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
+    CapturePreview, CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand,
+    ReplayCommand, ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
 pub use screenshot_markup::{
@@ -3154,10 +2549,12 @@ mod tests {
         fn ordinary_window_close_defaults_to_immediate_exit() {
             let mut spacer = Spacer::new();
             assert_eq!(
-                spacer.on_window_close_requested(),
+                crate::component_lifecycle::on_window_close_requested(&mut spacer),
                 WindowCloseAdmission::Allow
             );
-            assert!(!spacer.take_window_close_intent());
+            assert!(!crate::component_lifecycle::take_window_close_intent(
+                &mut spacer
+            ));
         }
 
         fn native_input_snapshot_defaults_to_none() {
@@ -3402,21 +2799,13 @@ pub(crate) mod control_result_probe {
         }
     }
     impl Widget for Probe {
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            self.observed
-                .flushes
-                .set(self.observed.flushes.get().saturating_add(1));
-            self.owned_flush.clone()
-        }
-        fn needs_commit(&self) -> bool {
-            self.dirty_typing
-        }
-        fn on_commit(&mut self) {
-            self.observed
-                .commits
-                .set(self.observed.commits.get().saturating_add(1));
-            self.dirty_typing = false;
-        }
+        crate::provides!(
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources,
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::undo::UndoPoints
+        );
+
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -3473,6 +2862,54 @@ pub(crate) mod control_result_probe {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["test.control-result.run"]
+        }
+        fn start_operation(
+            &mut self,
+            op: &ResourceOperation<'_>,
+            _: &mut AutoCommit,
+            _: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            let Some(request) = op.unscoped() else {
+                return Ok(None);
+            };
+            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
+                self.observed.payloads.borrow_mut().push(text);
+            }
+            self.observed
+                .calls
+                .set(self.observed.calls.get().saturating_add(1));
+            Ok(Some(if self.accepted {
+                ResourceOperationStart::Accepted
+            } else {
+                ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
+        }
+    }
+
+    impl crate::undo::UndoPoints for Probe {
+        fn needs_commit(&self) -> bool {
+            self.dirty_typing
+        }
+        fn on_commit(&mut self) {
+            self.observed
+                .commits
+                .set(self.observed.commits.get().saturating_add(1));
+            self.dirty_typing = false;
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for Probe {
+        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+            self.observed
+                .flushes
+                .set(self.observed.flushes.get().saturating_add(1));
+            self.owned_flush.clone()
+        }
+    }
+
+    impl crate::resources::PublishesResources for Probe {
         fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
             let mut contract = tilo_actions::ActionContract::default();
             if self.accepted {
@@ -3517,9 +2954,9 @@ pub(crate) mod control_result_probe {
                     .with_action(action.with_contract(contract)),
             ]
         }
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &["test.control-result.run"]
-        }
+    }
+
+    impl crate::widget::controls::ActionControls for Probe {
         fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
             self.observed.pending.borrow_mut().pop_front()
         }
@@ -3529,27 +2966,6 @@ pub(crate) mod control_result_probe {
             result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
         ) {
             self.observed.results.borrow_mut().push(result.clone());
-        }
-        fn start_operation(
-            &mut self,
-            op: &ResourceOperation<'_>,
-            _: &mut AutoCommit,
-            _: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            let Some(request) = op.unscoped() else {
-                return Ok(None);
-            };
-            if let Ok(text) = serde_json::from_slice::<String>(request.payload) {
-                self.observed.payloads.borrow_mut().push(text);
-            }
-            self.observed
-                .calls
-                .set(self.observed.calls.get().saturating_add(1));
-            Ok(Some(if self.accepted {
-                ResourceOperationStart::Accepted
-            } else {
-                ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
         }
     }
     thread_local! { static NEXT: RefCell<Option<Probe>> = const { RefCell::new(None) }; }

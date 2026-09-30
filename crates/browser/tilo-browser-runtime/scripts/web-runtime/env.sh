@@ -4,6 +4,10 @@
 
 web_scripts=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$web_scripts/../../../../.." && pwd)
+# An app outside the Tilo tree builds in a workspace that mirrors it
+# (external-workspace.mjs): the same workspace-relative paths, so every crate
+# the core shares keeps its Cargo metadata hash and symbol names.
+repo=${TILO_WEB_WORKSPACE:-$repo}
 web_crate="$repo/crates/browser/tilo-browser-runtime"
 web_target=wasm32-unknown-unknown
 # The release profile, in its own artifact directory, with what dynamic

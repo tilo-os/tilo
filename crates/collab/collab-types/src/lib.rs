@@ -99,8 +99,9 @@ pub use channel::{
     DocumentHandle, MemberRef,
 };
 pub use compaction::{
-    CompactionCheckpoint, CompactionError, encode_compaction_payload, hash_op_prefix,
-    parse_compaction_payload,
+    CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
+    encode_compaction_payload, hash_op_prefix, hash_sealed_prefix, parse_compaction_payload,
+    sealed_ciphertext,
 };
 pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,

@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -38,16 +38,17 @@ use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role
 use ui::animation::{Animated, Curve, Transition};
 use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
-    DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
-    ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind,
-    ToggleGroup, Widget,
+    DateIndexedScrollbar, EmptyState, EmptyStateContent, ImageViewer, ModalAction, ModalFrame,
+    ModalHit, ModalLayout, ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace,
+    TextInput, TextInputKind, ToggleGroup, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -516,32 +517,20 @@ impl PeopleScanProgress {
         self.last_error = Some(error);
     }
     fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        std::fs::read(path)
-            .ok()
+        Self::file()
+            .and_then(|file| file.read())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
     fn save(&self) {
-        let Some(path) = Self::path() else {
-            return;
-        };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if std::fs::create_dir_all(parent).is_ok()
-            && let Ok(bytes) = serde_json::to_vec(self)
-        {
-            let _ = atomic_file::write(&path, &bytes);
+        if let (Some(file), Ok(bytes)) = (Self::file(), serde_json::to_vec(self)) {
+            let _ = file.write(&bytes);
         }
     }
 
-    fn path() -> Option<std::path::PathBuf> {
-        let base = xdg_paths::xdg::state_home()?;
-        Some(base.join("tilo/photos/people-scan.json"))
+    fn file() -> Option<crate::files::StateFile> {
+        crate::files::StateFile::in_state("photos/people-scan.json")
     }
 }
 
@@ -1206,6 +1195,9 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
+    /// The chooser that delivers chosen files' contents, where files have no
+    /// path (a browser page).
+    contents_picker: Option<ui::portal::ContentsChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
     directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
@@ -2024,14 +2016,12 @@ impl PhotosApp {
         let (analysis_job_tx, analysis_job_rx) =
             std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        let analysis_tx = std::thread::Builder::new()
-            .name("photos-local-analysis".to_owned())
-            .spawn({
-                let content = content.clone();
-                move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
-            })
-            .ok()
-            .map(|_| analysis_job_tx);
+        let analysis_tx = ui::rt::spawn_thread("photos-local-analysis", {
+            let content = content.clone();
+            move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
+        })
+        .ok()
+        .map(|_| analysis_job_tx);
         // In memory until `new_persistent` swaps in the per-user preview cache:
         // tests and offscreen shots must not write the user's cache.
         let thumbnail_service = with_thumbnail_wake(thumbnail::ThumbnailService::ephemeral(1));
@@ -2081,6 +2071,7 @@ impl PhotosApp {
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
             picker: None,
+            contents_picker: None,
             directory_picker: None,
             directory_picker_retain_exif_location: true,
             directory_import: None,
@@ -2315,15 +2306,25 @@ impl PhotosApp {
     /// path remains only in this process; the action writes portable metadata
     /// and the staged content hash into the shared document.
     pub fn open_path(&mut self, doc: &mut AutoCommit, path: &str) {
-        let bytes = bounded_file_bytes(path);
-        match bytes.as_deref().and_then(pixels::decode) {
+        self.open_bytes(doc, path, bounded_file_bytes(path).as_deref());
+    }
+
+    /// Import a photograph chosen by its contents, where it has no path: its
+    /// name labels it and its bytes live in the content store.
+    pub fn open_contents(&mut self, doc: &mut AutoCommit, name: &str, bytes: &[u8]) {
+        let bytes = (bytes.len() <= pixels::MAX_ENCODED_BYTES).then_some(bytes);
+        self.open_bytes(doc, name, bytes);
+    }
+
+    fn open_bytes(&mut self, doc: &mut AutoCommit, path: &str, bytes: Option<&[u8]>) {
+        match bytes.and_then(pixels::decode) {
             Some(img) => {
                 // Put the bytes in the content store before naming them, so
                 // the hash this document is about to carry is one this machine
                 // can already answer for — and one the room can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
-                let content = match self.content.put(bytes.as_deref().unwrap_or_default()) {
+                let content = match self.content.put(bytes.unwrap_or_default()) {
                     Ok(content) => content,
                     Err(error) => {
                         tracing::warn!(%error, "photos: could not store an opened original");
@@ -3383,8 +3384,8 @@ impl PhotosApp {
         let Some(feedback) = self.places_camera_feedback else {
             return 0.0;
         };
-        let value = feedback.current(Instant::now());
-        if feedback.done(Instant::now()) {
+        let value = feedback.current(ui::time::now());
+        if feedback.done(ui::time::now()) {
             self.places_camera_feedback = None;
             0.0
         } else {
@@ -3637,7 +3638,9 @@ impl PhotosApp {
             self.notice = Some(tr("photos-save-failed"));
             return false;
         };
-        if let Ok(()) = atomic_file::write(std::path::Path::new(path), &bytes) {
+        let saved = tilo_files::file_at(std::path::Path::new(path))
+            .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes));
+        if saved.is_ok() {
             self.notice = Some(format!("{} {path}", tr("photos-saved")));
             true
         } else {
@@ -4726,18 +4729,28 @@ impl PhotosApp {
             crate::actions::PhotosOperation::Open { path: None } => {
                 self.import_content = Some(LiveContent::read(doc));
                 self.picker_stale = false;
-                self.picker = Some(
-                    ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
-                        .thread_name("photos-portal-open")
-                        .filter(
-                            ui::portal::FileFilter::new(&tr("photos-filter-images"))
-                                .mimetype("image/png")
-                                .mimetype("image/jpeg")
-                                .mimetype("image/webp"),
+                let filter = ui::portal::FileFilter::new(&tr("photos-filter-images"))
+                    .mimetype("image/png")
+                    .mimetype("image/jpeg")
+                    .mimetype("image/webp");
+                if crate::files::native_paths() {
+                    self.picker = Some(
+                        ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
+                            .thread_name("photos-portal-open")
+                            .filter(filter)
+                            .all_files()
+                            .send(),
+                    );
+                } else {
+                    self.contents_picker = Some(
+                        ui::portal::PickRequest::open_multiple(
+                            &tr("photos-open-title"),
+                            &tr("photos-open"),
                         )
-                        .all_files()
-                        .send(),
-                );
+                        .filter(filter)
+                        .send_contents(),
+                    );
+                }
             }
             crate::actions::PhotosOperation::ImportDirectory {
                 path: None,
@@ -6921,23 +6934,21 @@ impl PhotosApp {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let content = self.content.clone();
-        let spawn = std::thread::Builder::new()
-            .name("photos-directory-import".into())
-            .spawn(move || {
-                let result = crate::import::index_directory(
-                    &path,
-                    &content,
-                    crate::import::ImportOptions {
-                        retain_exif_location,
-                        ..crate::import::ImportOptions::default()
-                    },
-                    &worker_cancel,
-                    |progress| {
-                        let _ = sender.send(DirectoryImportEvent::Progress(progress));
-                    },
-                );
-                let _ = sender.send(DirectoryImportEvent::Finished(result));
-            });
+        let spawn = ui::rt::spawn_thread("photos-directory-import", move || {
+            let result = crate::import::index_directory(
+                &path,
+                &content,
+                crate::import::ImportOptions {
+                    retain_exif_location,
+                    ..crate::import::ImportOptions::default()
+                },
+                &worker_cancel,
+                |progress| {
+                    let _ = sender.send(DirectoryImportEvent::Progress(progress));
+                },
+            );
+            let _ = sender.send(DirectoryImportEvent::Finished(result));
+        });
         if spawn.is_err() {
             self.notice = Some("Photos could not start the folder indexing job".into());
             if let Some(invocation) = invocation {
@@ -7329,6 +7340,7 @@ impl PhotosApp {
         reason = "drains every portal picker channel with its outcome handling side by side"
     )]
     fn drain_picker(&mut self, doc: &mut AutoCommit) {
+        self.drain_contents_picker(doc);
         if let Some(rx) = self.directory_picker.as_ref() {
             match rx.try_recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
@@ -7780,15 +7792,14 @@ impl PhotosApp {
     ) {
         if theme.text_scale <= 1.25 || self.canvas_rect.width() >= 620.0 {
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.canvas_rect,
-                Some(Icon::Image),
-                title,
-                Some(body),
-                None,
+                &EmptyStateContent {
+                    icon: Some(Icon::Image),
+                    title,
+                    message: Some(body),
+                    action_label: None,
+                },
                 Point::ZERO,
             );
             return;
@@ -7838,32 +7849,24 @@ impl PhotosApp {
         let mut y = top + icon_r * 2.0 + 26.0;
         for line in title_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_primary,
-                bounds.center().x,
-                y,
-                content_w,
-                title_size,
-                TextWeight::Medium,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(title_size).with_weight(TextWeight::Medium),
+                theme.text_primary,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += title_step;
         }
         y += 12.0;
         for line in body_lines {
             draw_centered_text(
-                scene,
-                transform,
-                text_renderer,
-                theme.text_dim,
-                bounds.center().x,
-                y,
-                content_w,
-                body_size,
-                TextWeight::Regular,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 &line,
+                &TextStyle::new(body_size),
+                theme.text_dim,
+                Point::new(bounds.center().x, y),
+                content_w,
             );
             y += body_step;
         }
@@ -8358,22 +8361,16 @@ impl PhotosApp {
             .unwrap()
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the pager's own page state and hit routes"
-    )]
     fn draw_collection_pager(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         page: usize,
         total: usize,
         previous: CollectionPageHit,
         next: CollectionPageHit,
     ) {
+        let theme = ctx.theme;
         self.collection_page_hits.clear();
         let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
             && self.library_destination == LibraryDestination::Albums
@@ -8405,16 +8402,17 @@ impl PhotosApp {
             {
                 button.set_enabled(enabled);
                 button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, theme, &presence);
+                button.draw(ctx.scene, ctx.transform, ctx.text, theme, &presence);
             }
             self.collection_page_hits.push((hit, rect, enabled));
         }
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &format!("Page {} of {pages}", page + 1),
             12.0,
             theme.text_dim,
-            transform * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
+            ctx.transform
+                * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
             Some(label_w as f32),
             TextWeight::Regular,
         );
@@ -9172,10 +9170,7 @@ impl PhotosApp {
             self.album_cards.push((Some(id.clone()), card));
         }
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
             self.albums_page,
             self.library_albums.len(),
@@ -9272,16 +9267,9 @@ impl PhotosApp {
         scene.pop_layer();
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper takes the shared scene/text/theme context plus the card's own content and presentation flags"
-    )]
     fn draw_people_card(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         card: Rect,
         title: &str,
         subtitle: &str,
@@ -9290,11 +9278,12 @@ impl PhotosApp {
         compact: bool,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
 
         let hovered = card.contains(self.pointer);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             if hovered {
                 theme.bg_hover
             } else {
@@ -9303,9 +9292,9 @@ impl PhotosApp {
             None,
             &RoundedRect::from_rect(card, 12.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &RoundedRect::from_rect(card, 12.0),
@@ -9332,22 +9321,22 @@ impl PhotosApp {
                 card.width() - 28.0,
             )
         };
-        self.draw_people_mosaic(scene, transform, theme, mosaic, photo_ids);
-        text_renderer.draw_text_weighted(
-            scene,
+        self.draw_people_mosaic(ctx.scene, ctx.transform, theme, mosaic, photo_ids);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             title,
             if compact { 15.0 } else { 16.0 },
             theme.text_primary,
-            transform * Affine::translate((copy_x, title_y)),
+            ctx.transform * Affine::translate((copy_x, title_y)),
             Some(copy_w as f32),
             TextWeight::Semibold,
         );
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             subtitle,
             12.0,
             theme.text_dim,
-            transform * Affine::translate((copy_x, subtitle_y)),
+            ctx.transform * Affine::translate((copy_x, subtitle_y)),
             Some(copy_w as f32),
             TextWeight::Regular,
         );
@@ -9359,19 +9348,19 @@ impl PhotosApp {
                 card.y0 + 180.0
             };
             draw_icon(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
                 Icon::Shield,
                 theme.text_dim,
                 1.2,
             );
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 "Private on this device",
                 11.0,
                 theme.text_dim,
-                transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
+                ctx.transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
                 Some((card.x1 - private_x - 28.0) as f32),
                 TextWeight::Medium,
             );
@@ -9494,7 +9483,7 @@ impl PhotosApp {
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
-                self.people_detail_transition.value(Instant::now())
+                self.people_detail_transition.value(ui::time::now())
             };
             scene.push_layer(
                 Fill::NonZero,
@@ -9784,10 +9773,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 name,
                 &format!(
@@ -9859,10 +9845,7 @@ impl PhotosApp {
                 )
             };
             self.draw_people_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 card,
                 cluster
                     .display_name
@@ -10593,10 +10576,7 @@ impl PhotosApp {
                 x += width + LIB_CHIP_GAP;
             }
             self.draw_collection_pager(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 Rect::new(
                     bounds.x1 - f64::from(PAD) - 292.0,
                     y - 7.0,
@@ -10881,15 +10861,13 @@ impl PhotosApp {
             0.0
         };
         let selection_y = pager_y + pager_h;
+        let selection_band =
+            Rect::new(bounds.x0, selection_y, bounds.x1, selection_y + selection_h);
         self.draw_selection_controls(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             bounds,
             masthead,
-            selection_y,
-            selection_h,
+            selection_band,
             desktop_library,
             compact_header.controls,
             presence,
@@ -11985,10 +11963,7 @@ impl PhotosApp {
             .cloned()
             .collect();
         self.draw_collection_pager(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
             self.places_page,
             items.len(),
@@ -12051,31 +12026,26 @@ impl PhotosApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
-        reason = "the selection shelf keeps its responsive geometry and semantic hit boxes in one audited renderer"
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "the responsive selection task bar keeps its painted controls and exact pointer hit geometry in one audited component"
     )]
     fn draw_selection_controls(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         bounds: Rect,
         masthead: Rect,
-        selection_y: f64,
-        selection_h: f64,
+        selection_band: Rect,
         desktop_library: bool,
         compact_selection_rect: Rect,
         presence: &PresenceCtx,
     ) {
         use vello::peniko::Fill;
+        let theme = ctx.theme;
+        let (selection_y, selection_h) = (selection_band.y0, selection_band.height());
 
         self.selection_hits.clear();
         self.selection_destination_hits.clear();
+        let transform = ctx.transform;
         let draw_button = |scene: &mut Scene,
                            text_renderer: &mut TextRenderer,
                            hit: SelectionHit,
@@ -12136,7 +12106,7 @@ impl PhotosApp {
             };
             self.library_select_button.apply_layout_external(rect);
             self.library_select_button
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
             self.selection_hits.push((SelectionHit::Start, rect));
             return;
         }
@@ -12158,28 +12128,28 @@ impl PhotosApp {
         let wide = desktop_library && selection_h <= 52.0;
         let x = bounds.x0 + f64::from(PAD);
         let max_x = bounds.x1 - f64::from(PAD);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            transform,
+            ctx.transform,
             theme.tokens.colors.surfaces.raised,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
-        scene.stroke(
+        ctx.scene.stroke(
             &Stroke::new(1.0),
-            transform,
+            ctx.transform,
             theme.border_standard,
             None,
             &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
         );
         let label = format!("{selected} selected");
         if wide {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 12.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 12.0, selection_y + 15.0)),
                 Some(112.0),
                 TextWeight::Medium,
             );
@@ -12227,8 +12197,8 @@ impl PhotosApp {
                     selection_y + 44.0,
                 );
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -12238,12 +12208,12 @@ impl PhotosApp {
                 button_x += width + 6.0;
             }
         } else {
-            text_renderer.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 10.0, selection_y + 15.0)),
+                ctx.transform * Affine::translate((x + 10.0, selection_y + 15.0)),
                 Some(92.0),
                 TextWeight::Medium,
             );
@@ -12275,8 +12245,8 @@ impl PhotosApp {
                 ),
             ] {
                 draw_button(
-                    scene,
-                    text_renderer,
+                    ctx.scene,
+                    ctx.text,
                     hit,
                     rect,
                     label,
@@ -13538,33 +13508,18 @@ fn metadata_filter_id(folder: Option<&str>, person: Option<&str>, tag: Option<&s
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the helper keeps one centered text paint call explicit at each compact empty-state line"
-)]
 fn draw_centered_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    color: vello::peniko::Color,
-    center_x: f64,
-    y: f64,
-    max_width: f64,
-    size: f32,
-    weight: TextWeight,
+    ctx: &mut PaintCtx<'_>,
     text: &str,
+    style: &TextStyle,
+    color: vello::peniko::Color,
+    top_center: Point,
+    max_width: f64,
 ) {
-    let (measured, _) = text_renderer.measure_weighted(text, size, None, weight);
+    let (measured, _) = ctx.text.measure_style(text, None, style);
     let width = f64::from(measured).min(max_width);
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        size,
-        color,
-        transform * Affine::translate((center_x - width * 0.5, y)),
-        Some(max_width as f32),
-        weight,
-    );
+    let origin = Point::new(top_center.x - width * 0.5, top_center.y);
+    ctx.text(text, style, color, origin, Some(max_width as f32));
 }
 
 /// The region of a `w`×`h` image `viewer` currently frames, in normalized
@@ -14019,8 +13974,78 @@ fn capture_day(captured_at: &str) -> String {
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
+impl PhotosApp {
+    /// Import the photographs a contents chooser delivered.
+    fn drain_contents_picker(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.contents_picker.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::ContentsOutcome::Failed("the file chooser stopped responding".into())
+            }
+        };
+        self.contents_picker = None;
+        let stale = std::mem::take(&mut self.picker_stale);
+        self.import_content = None;
+        let invocation = self.resource_invocation.take();
+        let result = match outcome {
+            ui::portal::ContentsOutcome::Picked(files) if stale => {
+                let message = format!(
+                    "Selected {} photos; import was invalidated by changed document content",
+                    files.len()
+                );
+                self.notice = Some(message.clone());
+                Err(("photos.stale_selection", message))
+            }
+            ui::portal::ContentsOutcome::Picked(files) => {
+                for file in files {
+                    self.open_contents(doc, &file.name, &file.bytes);
+                }
+                if self.notice.is_none() {
+                    Ok(())
+                } else {
+                    Err(("photos.open_failed", tr("photos-open-failed")))
+                }
+            }
+            ui::portal::ContentsOutcome::Cancelled => {
+                if let Some(invocation) = invocation {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some("photo selection was cancelled".into()),
+                    });
+                }
+                return;
+            }
+            ui::portal::ContentsOutcome::Failed(message) => {
+                self.notice = Some(format!("{}: {message}", tr("photos-open-failed")));
+                Err(("photos.portal_failed", message))
+            }
+        };
+        if let Some(invocation) = invocation {
+            self.resource_result = Some(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err((code, message)) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: code.into(),
+                        message,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+        }
+    }
+}
+
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
-    pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
+    crate::files::read_native(std::path::Path::new(path), pixels::MAX_ENCODED_BYTES as u64)
 }
 
 impl PhotosApp {
@@ -14341,9 +14366,14 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
@@ -14357,8 +14387,8 @@ impl Widget for PhotosApp {
         !self.places_motion_reduced
             && (self
                 .places_camera_feedback
-                .is_some_and(|feedback| !feedback.done(Instant::now()))
-                || self.people_detail_transition.is_animating(Instant::now()))
+                .is_some_and(|feedback| !feedback.done(ui::time::now()))
+                || self.people_detail_transition.is_animating(ui::time::now()))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -14366,10 +14396,6 @@ impl Widget for PhotosApp {
             crate::actions::PHOTOS_OPERATION_TYPE,
             RETAINED_CONTROL_OPERATION_TYPE,
         ]
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -16080,6 +16106,21 @@ impl Widget for PhotosApp {
         }
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::search::capability::SearchSource for PhotosApp {
+    /// Keep the palette projection derived from the same fresh document
+    /// resource tree as agents and assistive technology. The provider's
+    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for PhotosApp {
     /// The open photograph and the edits it supports, published to whatever is
     /// hosting this widget.
     ///
@@ -16101,7 +16142,6 @@ impl Widget for PhotosApp {
         }
         resources
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         use tilo_actions::ResourceProvider;
         if id == "photos.search-status" {
@@ -16120,13 +16160,14 @@ impl Widget for PhotosApp {
             })
             .or_else(|| crate::actions::PhotosResources.resource(doc, id))
     }
+}
 
+impl ui::widget::controls::ActionControls for PhotosApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.retained_buttons_mut()
             .into_iter()
-            .find_map(Widget::take_control_invocation)
+            .find_map(|button| ui::widget::controls::take_control_invocation(button))
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         // Photos projects its custom media surfaces and retained buttons into
         // one complete semantic tree above. Inventory that visible tree once:
@@ -16137,7 +16178,6 @@ impl Widget for PhotosApp {
         // and are dispatched through the same retained widgets.
         ui::widget::semantic_action_bindings(self.accessibility())
     }
-
     fn refresh_control_action_availability(
         &mut self,
         allowed: &HashSet<tilo_actions::ActionAddress>,
@@ -16146,16 +16186,17 @@ impl Widget for PhotosApp {
             button.refresh_control_action_availability(allowed);
         }
     }
+}
 
-    /// Keep the palette projection derived from the same fresh document
-    /// resource tree as agents and assistive technology. The provider's
-    /// catalog gives Ctrl+K Unicode-safe, cursor-paged bounded queries.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+impl ui::history_mode::capability::DocumentHistory for PhotosApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+impl ui::undo::CommittedActions for PhotosApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

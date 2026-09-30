@@ -383,8 +383,8 @@ fn handle(
             reason,
         } => {
             let result = moderation_registry(&registry_name).and_then(|registry| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let now = ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
                 let mut nonce = [0_u8; 16];
@@ -508,10 +508,6 @@ fn send(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "snapshot emission keeps the complete worker state transition explicit at each call site"
-)]
 fn send_tracked(
     snapshots: &mpsc::Sender<Snapshot>,
     state: &State,
@@ -541,8 +537,8 @@ fn submit_report(
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
     let registry = moderation_registry(registry_name)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let envelope_bytes = serde_json::to_vec(envelope)
@@ -800,10 +796,10 @@ mod tests {
         // Case `request_and_drain_are_non_blocking`.
         {
             let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             let _ = worker.try_snapshot();
             assert!(started.elapsed() < Duration::from_millis(20));
         }

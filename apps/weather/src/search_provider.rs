@@ -214,7 +214,7 @@ mod tests {
 
             // Find Tokyo (not the default index-0 selection) through the real hook.
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(!providers.is_empty(), "weather publishes a search provider");
                 let hit = providers[0]
                     .search("tokyo")
@@ -231,7 +231,7 @@ mod tests {
             };
             assert_ne!(app.selected_city(), Some(id), "not already selected");
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = tilo_actions::door::resolve(&resources, &address)
                 .expect("search address resolves against the live resource tree");
             let encoded = match &spec.input {
@@ -291,7 +291,7 @@ mod tests {
             .unwrap();
             doc.commit();
             app.sync(&mut doc, &ROOT);
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert!(tilo_actions::door::resolve(&resources, &address).is_none());
             let payload = serde_json::to_vec(&city.id.to_string()).unwrap();
             assert!(

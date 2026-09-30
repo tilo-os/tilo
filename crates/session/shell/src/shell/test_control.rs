@@ -68,7 +68,7 @@ pub enum Command {
     },
     /// Re-paint the current scene into a fresh `OffscreenRenderer` and write the PNG to `path`. Only an empty `path` is pre-validated (`invalid_path`); other I/O errors are logged, not surfaced.
     Snapshot { path: String },
-    /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport.
+    /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame, and shared legacy windows are encoded only while watched. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport; the agent-control socket accepts it, so a partner's `POST /watch` lease reaches it.
     Watch { watching: bool },
     /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
@@ -126,6 +126,35 @@ pub enum Command {
         x: f64,
         y: f64,
     },
+    /// A touchpad swipe of `fingers` fingers travelling `(dx, dy)` logical
+    /// pixels over `steps` updates (default 10), fed to the gesture tracker
+    /// the DRM runtime feeds from libinput, under the default direction
+    /// preference. Fewer than three fingers are the focused client's and
+    /// are refused. `release: false` keeps the fingers down, to inspect a
+    /// gesture in flight; [`Self::SwipeEnd`] lifts them.
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+        #[serde(default)]
+        steps: Option<u32>,
+        #[serde(default = "default_release")]
+        release: bool,
+    },
+    /// Lift the fingers of a swipe left in flight; `cancelled` as libinput
+    /// reports a cancelled gesture.
+    SwipeEnd {
+        #[serde(default)]
+        cancelled: bool,
+    },
+    /// A touchpad pinch of `fingers` fingers to absolute `scale` over `steps`
+    /// updates (default 10), through the same tracker as [`Self::Swipe`].
+    Pinch {
+        fingers: u32,
+        scale: f64,
+        #[serde(default)]
+        steps: Option<u32>,
+    },
     /// Copy `text` from in-process chrome, through `ui::text_selection::clipboard_copy` — lands on the real clipboard backend and is published as a Wayland selection on the next tick.
     ClipboardCopy {
         text: String,
@@ -160,6 +189,36 @@ pub enum Command {
     ActionsStatus { invocation_id: u64 },
     /// Request cooperative cancellation for an invocation receipt id.
     ActionsCancel { invocation_id: u64 },
+    /// Seat the request's [`Agent`] without injecting input: its strip takes
+    /// focus, so a window launched next lands there. Answers the strip and its
+    /// viewport `[x, y, w, h]` in screen pixels.
+    AgentSeat,
+    /// End the request's [`Agent`]: release every key and button it holds and
+    /// drop its seat. Its strip stays while it holds windows.
+    AgentLeave,
+}
+
+/// Longest agent id a request may name.
+pub const MAX_AGENT_ID_CHARS: usize = 128;
+/// Longest agent label; longer labels are cut, not refused.
+pub const MAX_AGENT_LABEL_CHARS: usize = 80;
+
+/// The participant a request acts for. Every agent has its own seat and strip:
+/// input it sends is attributed to it, its held keys never reach another
+/// agent's window, and its coordinates and screenshots are its strip's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agent {
+    pub id: String,
+    /// Human name for the agent's strip; the id when absent.
+    pub label: Option<String>,
+}
+
+/// One parsed request line: a [`Command`], optionally on behalf of an agent
+/// named by the line's `agent` (and `agent_label`) fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Request {
+    pub command: Command,
+    pub agent: Option<Agent>,
 }
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
@@ -338,9 +397,26 @@ impl ActionRefusal {
     }
 }
 
+fn default_release() -> bool {
+    true
+}
+
+/// One edge of a synthetic touchpad gesture, as libinput reports it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchpadEdge {
+    SwipeBegin { fingers: u32 },
+    SwipeUpdate { dx: f64, dy: f64 },
+    SwipeEnd { cancelled: bool },
+    PinchBegin { fingers: u32 },
+    PinchUpdate { scale: f64 },
+    PinchEnd,
+}
+
 /// Side-effect actions the transport must execute after a `dispatch_command` call. Pure values, no I/O — the transport synthesises `winit::WindowEvent`s from these through `host_and_taffy_mut`, the same wire as `WinitBackend`/`ShellDriver`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedAction {
+    /// One touchpad gesture edge for the shell's gesture tracker.
+    Touchpad(TouchpadEdge),
     /// Move the cursor to `(x, y)` in compositor coordinates.
     CursorMoved { x: f64, y: f64 },
     /// Inject a left mouse button event: `pressed=true` is down, `false` is up.
@@ -599,6 +675,24 @@ pub fn dispatch_command<S: ControlState>(
                 y: *y,
             }],
         ),
+        Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+            release,
+        } => swipe(*fingers, (*dx, *dy), *steps, *release),
+        Command::SwipeEnd { cancelled } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+                cancelled: *cancelled,
+            })],
+        ),
+        Command::Pinch {
+            fingers,
+            scale,
+            steps,
+        } => pinch(*fingers, *scale, *steps),
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
@@ -613,8 +707,18 @@ pub fn dispatch_command<S: ControlState>(
         Command::ActionsCancel { invocation_id } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_cancel_id(*invocation_id),
         ),
+        Command::AgentSeat | Command::AgentLeave => (
+            Response::Err {
+                code: AGENT_REQUIRED.to_string(),
+                message: "agent_seat and agent_leave name an agent".to_string(),
+            },
+            Vec::new(),
+        ),
     }
 }
+
+/// Error code for an agent-only command sent without an `agent`.
+pub const AGENT_REQUIRED: &str = "agent_required";
 
 fn invocation_control(id: String) -> (Response, Vec<PlannedAction>) {
     (
@@ -699,6 +803,73 @@ fn drag(
     (Response::Ok { frame: 0 }, actions)
 }
 
+/// Most updates a synthetic gesture is split into: a 144 Hz touchpad
+/// reports about this many over a two-second swipe.
+const MAX_GESTURE_STEPS: u32 = 288;
+
+fn client_gesture(fingers: u32) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::Err {
+            code: "client_gesture".into(),
+            message: format!(
+                "a {fingers}-finger gesture belongs to the focused client; the shell takes {} or more",
+                crate::compositor::backend::drm::gestures::SHELL_FINGER_THRESHOLD
+            ),
+        },
+        Vec::new(),
+    )
+}
+
+/// [`Command::Swipe`]: begin, `steps` equal updates, and an end unless the
+/// fingers stay down.
+fn swipe(
+    fingers: u32,
+    (dx, dy): (f64, f64),
+    steps: Option<u32>,
+    release: bool,
+) -> (Response, Vec<PlannedAction>) {
+    if !crate::compositor::backend::drm::gestures::claims(fingers) {
+        return client_gesture(fingers);
+    }
+    let steps = steps.unwrap_or(10).clamp(1, MAX_GESTURE_STEPS);
+    let n = f64::from(steps);
+    let mut actions = vec![PlannedAction::Touchpad(TouchpadEdge::SwipeBegin {
+        fingers,
+    })];
+    actions.extend((0..steps).map(|_| {
+        PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+            dx: dx / n,
+            dy: dy / n,
+        })
+    }));
+    if release {
+        actions.push(PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+            cancelled: false,
+        }));
+    }
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// [`Command::Pinch`]: begin, `steps` updates easing the absolute scale
+/// from 1 to `scale`, end.
+fn pinch(fingers: u32, scale: f64, steps: Option<u32>) -> (Response, Vec<PlannedAction>) {
+    if !crate::compositor::backend::drm::gestures::claims(fingers) {
+        return client_gesture(fingers);
+    }
+    let steps = steps.unwrap_or(10).clamp(1, MAX_GESTURE_STEPS);
+    let n = f64::from(steps);
+    let mut actions = vec![PlannedAction::Touchpad(TouchpadEdge::PinchBegin {
+        fingers,
+    })];
+    actions.extend((1..=steps).map(|s| {
+        PlannedAction::Touchpad(TouchpadEdge::PinchUpdate {
+            scale: 1.0 + (scale - 1.0) * f64::from(s) / n,
+        })
+    }));
+    actions.push(PlannedAction::Touchpad(TouchpadEdge::PinchEnd));
+    (Response::Ok { frame: 0 }, actions)
+}
+
 /// [`Command::Key`]: a press+release pair for one key.
 fn key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
     match parse_key_tag(key) {
@@ -746,7 +917,25 @@ fn key_down_or_up(key: &str, pressed: bool) -> (Response, Vec<PlannedAction>) {
 fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
     // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
     let mut actions = Vec::with_capacity(text.chars().count().saturating_mul(2));
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        // A line break or tab in typed text is the key that makes one, as a
+        // person typing it would press; `\r\n` is one line break.
+        let control = match c {
+            '\r' if chars.peek() == Some(&'\n') => continue,
+            '\n' | '\r' => Some(NamedKeyTag::Enter),
+            '\t' => Some(NamedKeyTag::Tab),
+            _ => None,
+        };
+        if let Some(named) = control {
+            for pressed in [true, false] {
+                actions.push(PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(named),
+                    pressed,
+                });
+            }
+            continue;
+        }
         let tag = KeyTag::Char(c);
         let shift = KeyTag::Named(NamedKeyTag::Shift);
         // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
@@ -1036,15 +1225,75 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
     })
 }
 
+/// Parse a request line: the [`Command`] plus the optional `agent` (id) and
+/// `agent_label` fields that name who it acts for.
+///
+/// # Errors
+///
+/// [`Response::Err`] `parse_error` for a line that is no command, and
+/// `invalid_agent` for an empty, overlong or control-character agent id.
+#[allow(
+    clippy::result_large_err,
+    reason = "same wire Response error as parse_command, whose rationale applies unchanged"
+)]
+pub fn parse_request(line: &str) -> Result<Request, Response> {
+    let parse_error = |message: String| Response::Err {
+        code: "parse_error".to_string(),
+        message,
+    };
+    let mut value = serde_json::from_str::<serde_json::Value>(line.trim())
+        .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
+    let (agent, label) = match value.as_object_mut() {
+        Some(fields) => (fields.remove("agent"), fields.remove("agent_label")),
+        None => (None, None),
+    };
+    let command = serde_json::from_value::<Command>(value)
+        .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
+    let invalid = |message: &str| Response::Err {
+        code: "invalid_agent".to_string(),
+        message: message.to_string(),
+    };
+    let agent = match agent {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(id)) => {
+            if id.is_empty()
+                || id.chars().count() > MAX_AGENT_ID_CHARS
+                || id.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    "agent must be 1 to 128 characters without control characters",
+                ));
+            }
+            let label = match label {
+                Some(serde_json::Value::String(label)) => Some(label),
+                None | Some(serde_json::Value::Null) => None,
+                Some(_) => return Err(invalid("agent_label must be a string")),
+            }
+            .map(|label| {
+                label
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(MAX_AGENT_LABEL_CHARS)
+                    .collect::<String>()
+            })
+            .filter(|label| !label.trim().is_empty());
+            Some(Agent { id, label })
+        }
+        Some(_) => return Err(invalid("agent must be a string")),
+    };
+    Ok(Request { command, agent })
+}
+
 /// Protocol error for a command an agent-control connection may not send.
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
-    "the agent-control socket serves input and screenshots only";
+    "the agent-control socket serves input, screenshots and the watch signal only";
 
 impl Command {
     /// Whether an agent-control connection may send this command: pointer,
-    /// keyboard and clipboard input, screenshots and read-only frame and
-    /// target inventories. Everything that grants, invokes, seeds fixtures
-    /// or reaches around the input path stays test-only.
+    /// keyboard and clipboard input, screenshots, read-only frame and target
+    /// inventories, and the partner watch signal, which only decides whether
+    /// frames are painted. Everything that grants, invokes, seeds fixtures or
+    /// reaches around the input path stays test-only.
     #[must_use]
     pub const fn agent_permitted(&self) -> bool {
         matches!(
@@ -1064,6 +1313,9 @@ impl Command {
                 | Self::PointerButton { .. }
                 | Self::ClipboardCopy { .. }
                 | Self::ClipboardPaste { .. }
+                | Self::Watch { .. }
+                | Self::AgentSeat
+                | Self::AgentLeave
         )
     }
 }
@@ -1547,6 +1799,93 @@ mod tests {
     }
 
     #[test]
+    fn touchpad_gestures_plan_tracker_edges_and_leave_few_fingers_to_the_client() {
+        let state = StaticState::new(&[]);
+        let wire: Command = serde_json::from_value(serde_json::json!({
+            "op": "swipe", "fingers": 3, "dx": -300.0, "dy": 0.0, "steps": 3
+        }))
+        .expect("swipe parses with release defaulted");
+        let (resp, actions) = dispatch_command(&wire, &state);
+        assert_eq!(resp, Response::Ok { frame: 0 });
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::Touchpad(TouchpadEdge::SwipeBegin { fingers: 3 }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeEnd { cancelled: false }),
+            ]
+        );
+
+        let (_, held) = dispatch_command(
+            &Command::Swipe {
+                fingers: 4,
+                dx: 0.0,
+                dy: 50.0,
+                steps: Some(2),
+                release: false,
+            },
+            &state,
+        );
+        assert!(
+            !held.contains(&PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+                cancelled: false
+            })),
+            "a held swipe keeps its fingers down"
+        );
+
+        let (_, pinch) = dispatch_command(
+            &Command::Pinch {
+                fingers: 3,
+                scale: 0.5,
+                steps: Some(2),
+            },
+            &state,
+        );
+        assert_eq!(
+            pinch,
+            vec![
+                PlannedAction::Touchpad(TouchpadEdge::PinchBegin { fingers: 3 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchUpdate { scale: 0.75 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchUpdate { scale: 0.5 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchEnd),
+            ]
+        );
+
+        for two in [
+            Command::Swipe {
+                fingers: 2,
+                dx: 10.0,
+                dy: 0.0,
+                steps: None,
+                release: true,
+            },
+            Command::Pinch {
+                fingers: 2,
+                scale: 2.0,
+                steps: None,
+            },
+        ] {
+            let (resp, actions) = dispatch_command(&two, &state);
+            assert!(
+                matches!(&resp, Response::Err { code, .. } if code == "client_gesture"),
+                "{two:?} answered {resp:?}"
+            );
+            assert!(actions.is_empty());
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1731,6 +2070,39 @@ mod tests {
                         },
                     ]
                 );
+            }
+
+            // Phase `line_breaks_and_tabs_in_typed_text_press_enter_and_tab`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Type {
+                        text: "a\nb\r\nc\td\r".to_string(),
+                    },
+                    &state,
+                );
+                let pressed: Vec<KeyTag> = actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        PlannedAction::KeyboardKey { key, pressed: true } => Some(*key),
+                        _ => None,
+                    })
+                    .collect();
+                let enter = KeyTag::Named(NamedKeyTag::Enter);
+                assert_eq!(
+                    pressed,
+                    vec![
+                        KeyTag::Char('a'),
+                        enter,
+                        KeyTag::Char('b'),
+                        enter,
+                        KeyTag::Char('c'),
+                        KeyTag::Named(NamedKeyTag::Tab),
+                        KeyTag::Char('d'),
+                        enter,
+                    ]
+                );
+                assert_eq!(actions.len(), pressed.len() * 2, "every press is released");
             }
 
             // Phase `typing_a_capital_holds_shift_around_it`.
@@ -2337,6 +2709,79 @@ mod framing_tests {
                 "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
                 opt.is_some()
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_request_tests {
+    use super::*;
+
+    fn code(response: Response) -> String {
+        match response {
+            Response::Err { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_request_names_the_agent_it_acts_for() {
+        let request = parse_request(
+            r#"{"op":"key_down","key":"Shift","agent":"mcp:1","agent_label":"Claude\u0007 Code"}"#,
+        )
+        .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(
+            request,
+            Request {
+                command: Command::KeyDown {
+                    key: "Shift".into()
+                },
+                agent: Some(Agent {
+                    id: "mcp:1".into(),
+                    label: Some("Claude Code".into()),
+                }),
+            }
+        );
+        let plain =
+            parse_request(r#"{"op":"list_targets"}"#).unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(plain.agent, None, "a line naming nobody acts for nobody");
+        let blank_label = parse_request(r#"{"op":"agent_seat","agent":"a","agent_label":"  "}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(blank_label.agent.and_then(|agent| agent.label), None);
+    }
+
+    #[test]
+    fn a_malformed_agent_is_refused_not_ignored() {
+        let long = "x".repeat(MAX_AGENT_ID_CHARS + 1);
+        for line in [
+            r#"{"op":"key","key":"a","agent":""}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":"a\nb"}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":7}"#.to_string(),
+            r#"{"op":"key","key":"a","agent":"a","agent_label":3}"#.to_string(),
+            format!(r#"{{"op":"key","key":"a","agent":"{long}"}}"#),
+        ] {
+            let error = parse_request(&line)
+                .err()
+                .unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(code(error), "invalid_agent", "{line}");
+        }
+        let error = parse_request(r#"{"op":"go_fishing","agent":"a"}"#).err();
+        assert_eq!(error.map(code).as_deref(), Some("parse_error"));
+    }
+
+    #[test]
+    fn seat_and_leave_need_an_agent_and_pass_the_agent_socket() {
+        struct NoState;
+        impl ControlState for NoState {
+            fn widget_registry(&self) -> HashMap<String, Rect> {
+                HashMap::new()
+            }
+        }
+        for command in [Command::AgentSeat, Command::AgentLeave] {
+            assert!(command.agent_permitted());
+            let (response, actions) = dispatch_command(&command, &NoState);
+            assert_eq!(code(response), AGENT_REQUIRED);
+            assert!(actions.is_empty());
         }
     }
 }

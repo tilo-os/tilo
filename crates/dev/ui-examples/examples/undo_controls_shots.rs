@@ -4,7 +4,7 @@
 //! Drives the real pipeline (`sync` → `build_layout` → `compute_layout` →
 //! `apply_layout` → `draw`) over a real [`State`] whose history was built by real
 //! committed actions, and publishes the status through the same
-//! `State::undo_status` → `Widget::set_undo_status` route the host uses — so
+//! `State::undo_status` → `UndoControl::set_undo_status` route the host uses — so
 //! what is painted here is what a user sees.
 //!
 //! Run: `cargo run -p ui-examples --example ui-shots -- undo_controls_shots`
@@ -119,7 +119,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     // to every laid-out widget by sweeping `node_map`.
     let status = state.undo_status(Some(&author()));
     for &w_ptr in node_map.values() {
-        unsafe { (*w_ptr).set_undo_status(&mut || status.clone()) };
+        unsafe { tilo_ui::undo::set_undo_status(&mut (*w_ptr), &mut || status.clone()) };
     }
     println!(
         "  {:>8}  can_undo={} can_redo={} undo={:?}",

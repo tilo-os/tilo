@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -31,6 +31,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::chrome::{HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, chrome_hairline, panel_border, panel_ground};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -285,6 +286,14 @@ impl Default for BackupsApp {
     }
 }
 
+/// One recent-activity feed row: the snapshot and the "when" and "what"
+/// lines it is listed with.
+struct ActivityEntry<'a> {
+    event: &'a Snapshot,
+    when: String,
+    action: String,
+}
+
 impl BackupsApp {
     pub(crate) fn resource_catalog(&self) -> &Catalog {
         &self.catalog
@@ -419,17 +428,17 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Success, Instant::now()));
+        self.toast = Some((msg.into(), ToastKind::Success, ui::time::now()));
     }
 
     /// Errors must read as errors — a green success toast after a rejected
     /// restore is actively misleading and can make recovery unsafe.
     fn toast_error(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Error, Instant::now()));
+        self.toast = Some((msg.into(), ToastKind::Error, ui::time::now()));
     }
 
     fn config_path() -> Option<PathBuf> {
-        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
+        Some(tilo_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -451,7 +460,7 @@ impl BackupsApp {
         };
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let _ = atomic_file::write_creating_parent(&path, &bytes);
+            let _ = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
         }
     }
 
@@ -1005,10 +1014,6 @@ impl BackupsApp {
     /// the x just past the label, so the tab strip can centre in the
     /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
     /// the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the top-bar cluster uses paint context, bar bounds, center line and narrow mode to place the drawer toggle and source tally"
-    )]
     fn draw_top_bar_left_cluster(
         &mut self,
         scene: &mut Scene,
@@ -1054,10 +1059,6 @@ impl BackupsApp {
     /// The view segmented-tab control, centred between the left cluster and
     /// the backup button, with per-tab width clamped so all tabs always fit.
     /// Split out of [`Self::draw_top_bar`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "tab placement uses paint context and the center line plus the available gap between the left cluster and backup button"
-    )]
     fn draw_top_bar_tabs(
         &mut self,
         scene: &mut Scene,
@@ -1171,7 +1172,7 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
         // unconditional poke would pin the bubble open forever.
@@ -1212,7 +1213,7 @@ impl BackupsApp {
     /// frame captures the floating pill.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Stage deterministic non-destructive states for screenshot coverage.
@@ -1294,40 +1295,34 @@ impl BackupsApp {
             "Backup location needs attention"
         };
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             title,
             17.0,
             c.semantic.danger,
-            card.x0 + 24.0 * scale,
-            card.x1 - 24.0 * scale,
-            card.y0 + 22.0 * scale,
+            Point::new(card.center().x, card.y0 + 22.0 * scale),
         );
         for (index, line) in detail_lines.iter().enumerate() {
             paint::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 line,
                 12.5,
                 c.text_dim,
-                card.x0 + 24.0 * scale,
-                card.x1 - 24.0 * scale,
-                card.y0 + detail_y + index as f64 * detail_line_h,
+                Point::new(
+                    card.center().x,
+                    card.y0 + detail_y + index as f64 * detail_line_h,
+                ),
             );
         }
         for (index, line) in safety_lines.iter().enumerate() {
             paint::text_center(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 line,
                 11.5,
                 c.text_dim,
-                card.x0 + 24.0 * scale,
-                card.x1 - 24.0 * scale,
-                card.y0 + safety_y + index as f64 * safety_line_h,
+                Point::new(
+                    card.center().x,
+                    card.y0 + safety_y + index as f64 * safety_line_h,
+                ),
             );
         }
         let button_w = (252.0 * scale).min(card.width() - 40.0 * scale);
@@ -1375,15 +1370,11 @@ impl BackupsApp {
             "Protect your important files"
         };
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             title,
             19.0,
             c.text_primary,
-            content.x0,
-            content.x1,
-            cy,
+            Point::new(content.center().x, cy),
         );
         let detail = self.job_status.as_deref().unwrap_or_else(|| {
             if self.source_path.is_some() {
@@ -1393,15 +1384,11 @@ impl BackupsApp {
             }
         });
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             detail,
             13.0,
             c.text_dim,
-            content.x0,
-            content.x1,
-            cy + 30.0,
+            Point::new(content.center().x, cy + 30.0),
         );
         if self.job.is_none() && self.picker.is_none() {
             let label = if self.source_path.is_some() {
@@ -1497,15 +1484,16 @@ impl BackupsApp {
             tr.measure_weighted("Snapshot timeline", 15.0, None, TextWeight::Bold);
         let title_height = f64::from(title_height);
         paint::text_vc(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &scope,
             12.5,
             theme.accent_primary,
-            main.x0 + f64::from(title_width) + 14.0,
-            hy,
-            title_height,
+            Rect::new(
+                main.x0 + f64::from(title_width) + 14.0,
+                hy,
+                main.x1,
+                hy + title_height,
+            ),
         );
         let (sort_w, sort_h) = tr.measure("newest first", 11.5, None);
         paint::text(
@@ -1788,14 +1776,25 @@ impl BackupsApp {
 
         // "All sources" pseudo-row + each source.
         let all_sel = self.ui.sel_source.is_none();
-        self.draw_source_row(scene, t, tr, theme, rail, &mut y, None, all_sel);
+        self.draw_source_row(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            rail,
+            &mut y,
+            all_sel,
+        );
         for i in 0..self.catalog.sources.len() {
             let Some(src) = self.catalog.sources.get(i) else {
                 continue;
             };
             let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
             let src = src.clone();
-            self.draw_source_row_real(scene, t, tr, theme, rail, &mut y, &src, sel);
+            self.draw_source_row_real(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                rail,
+                &mut y,
+                &src,
+                sel,
+            );
         }
 
         // Next group: a derived separator inset `S3` (HIG §9.5) against the
@@ -1972,27 +1971,14 @@ impl BackupsApp {
     }
 
     /// The "All sources" aggregate row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the aggregate source row uses paint context, rail bounds, a running vertical cursor and selection state"
-    )]
-    fn draw_source_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rail: Rect,
-        y: &mut f64,
-        _src: Option<&Source>,
-        sel: bool,
-    ) {
+    fn draw_source_row(&mut self, ctx: &mut PaintCtx<'_>, rail: Rect, y: &mut f64, sel: bool) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let h = 38.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
         Self::row_bg(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             row,
             sel,
             self.hover == Some(Hit::Source(None)),
@@ -2000,9 +1986,9 @@ impl BackupsApp {
         );
         let cy = row.y0 + h / 2.0;
         paint::text_bold(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             "All sources",
             13.5,
             c.text_primary,
@@ -2011,9 +1997,9 @@ impl BackupsApp {
         );
         let count: usize = self.catalog.total_snapshots();
         paint::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &format!("{count}"),
             12.0,
             c.text_dim,
@@ -2024,27 +2010,21 @@ impl BackupsApp {
         *y += h + S2;
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
-    )]
     fn draw_source_row_real(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rail: Rect,
         y: &mut f64,
         src: &Source,
         sel: bool,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let h = 50.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
         Self::row_bg(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             row,
             sel,
             self.hover == Some(Hit::Source(Some(src.id.clone()))),
@@ -2053,17 +2033,17 @@ impl BackupsApp {
         let ix = row.x0 + 22.0;
         let cy = row.y0 + h / 2.0;
         Self::draw_source_icon(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             src.kind,
             Point::new(ix, cy),
             10.0,
             theme.accent_primary,
         );
         paint::text(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &src.path,
             13.5,
             c.text_primary,
@@ -2073,9 +2053,9 @@ impl BackupsApp {
         let count = self.catalog.count_for(&src.id);
         let sub = format!("{} · {} snapshots", src.cadence.label(), count);
         paint::text(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &sub,
             11.0,
             c.text_dim,
@@ -2084,9 +2064,9 @@ impl BackupsApp {
         );
         // Right column: protected size + health dot.
         paint::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &ui::format::bytes(self.catalog.protected_bytes(&src.id)),
             11.5,
             c.text_dim,
@@ -2094,8 +2074,8 @@ impl BackupsApp {
             row.y0 + 9.0,
         );
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(row.x1 - 18.0, row.y0 + 33.0),
             3.5,
             Self::health_color(theme, src.health),
@@ -2104,10 +2084,6 @@ impl BackupsApp {
         *y += h + S2;
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
-    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
@@ -2376,7 +2352,8 @@ impl BackupsApp {
             let row = Rect::new(list.x0, y, list.x1, y + row_h);
             let visible = row.y1 > list.y0 && row.y0 < list.y1;
             if visible {
-                self.draw_snapshot_row(scene, t, tr, theme, row, s, selected, show_source);
+                let ctx = &mut PaintCtx::new(scene, t, tr, theme);
+                self.draw_snapshot_row(ctx, row, s, selected, show_source);
                 self.hits.push((row, Hit::Snap(s.id.clone())));
             }
             y += row_h + S2;
@@ -2417,44 +2394,30 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let title_y = list.y0 + list.height().min(220.0) * 0.38;
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "No snapshots yet",
             16.0,
             c.text_primary,
-            list.x0,
-            list.x1,
-            title_y,
+            Point::new(list.center().x, title_y),
         );
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Run a backup to create the first verified recovery point.",
             12.5,
             c.text_dim,
-            list.x0,
-            list.x1,
-            title_y + 26.0,
+            Point::new(list.center().x, title_y + 26.0),
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "paint helper threads the shared scene, transform, renderer, theme and row geometry"
-    )]
     fn draw_snapshot_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         row: Rect,
         s: &Snapshot,
         selected: bool,
         show_source: bool,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let hovered = self.hover == Some(Hit::Snap(s.id.clone()));
         // Every row is an edged card on the window tier; hover and selection
@@ -2462,28 +2425,30 @@ impl BackupsApp {
         // half lift at rest, the raised tier on hover, and the raised tier
         // with the stronger panel-strength edge when selected.
         if selected {
-            paint::card(scene, t, row, 10.0, c.surfaces.raised);
-            Self::selected_ring(scene, t, theme, row, 10.0);
+            paint::card(ctx.scene, ctx.transform, row, 10.0, c.surfaces.raised);
+            Self::selected_ring(ctx.scene, ctx.transform, theme, row, 10.0);
         } else if hovered {
-            paint::card(scene, t, row, 10.0, c.surfaces.raised);
+            paint::card(ctx.scene, ctx.transform, row, 10.0, c.surfaces.raised);
         } else {
-            paint::card(scene, t, row, 10.0, c.lift(0.5));
+            paint::card(ctx.scene, ctx.transform, row, 10.0, c.lift(0.5));
         }
         let cy = f64::midpoint(row.y0, row.y1);
         // Status dot.
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(row.x0 + 16.0, cy),
             4.0,
             Self::status_color(theme, s.status),
         );
         // Time (bold), centred on the row from its measured bold line.
-        let (time_w, time_h) = tr.measure_weighted(&s.time, 14.0, None, TextWeight::Bold);
+        let (time_w, time_h) = ctx
+            .text
+            .measure_weighted(&s.time, 14.0, None, TextWeight::Bold);
         paint::text_bold(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &s.time,
             14.0,
             c.text_primary,
@@ -2502,9 +2467,9 @@ impl BackupsApp {
             ),
             SnapType::Auto => (c.text_dim, c.text_dim.with_alpha_factor(0.18)),
         };
-        px += paint::pill(scene, tr, t, px, cy, s.kind.label(), 11.0, tfg, tbg) + 6.0;
+        px += paint::pill(ctx, Point::new(px, cy), s.kind.label(), 11.0, tfg, tbg) + 6.0;
         let rc = Self::retention_color(theme, s.retention);
-        px += paint::tag_pill(scene, tr, t, px, cy, s.retention.label(), 11.0, rc) + 8.0;
+        px += paint::tag_pill(ctx, Point::new(px, cy), s.retention.label(), 11.0, rc) + 8.0;
         // Right side: total over "+delta · files", the two-line stack centred
         // on the row (its line boxes overlap by 1px, as at 1×) instead of the
         // meta line crowding the row's bottom edge. Measured first so the
@@ -2516,31 +2481,21 @@ impl BackupsApp {
             ui::format::bytes(s.delta_bytes),
             s.files_changed
         );
-        let (size_w, size_h) = tr.measure(&total, 13.0, None);
-        let (meta_w, meta_h) = tr.measure(&meta, 10.5, None);
+        let (size_w, size_h) = ctx.text.measure(&total, 13.0, None);
+        let (meta_w, meta_h) = ctx.text.measure(&meta, 10.5, None);
         let stack_x0 = total_x - f64::from(size_w.max(meta_w));
         // Source path (only in "all" mode), elided against the right stack.
         if show_source && let Some(src) = self.catalog.source(&s.source_id) {
             let path_max_w = (stack_x0 - 12.0 - px).max(24.0) as f32;
-            let shown = tr.elide_to_width(&src.path, 12.0, path_max_w);
-            paint::text_vc(
-                scene,
-                tr,
-                t,
-                &shown,
-                12.0,
-                c.text_dim,
-                px,
-                row.y0,
-                row.height(),
-            );
+            let shown = ctx.text.elide_to_width(&src.path, 12.0, path_max_w);
+            paint::text_vc(ctx, &shown, 12.0, c.text_dim, Rect { x0: px, ..row });
         }
         let stack_h = f64::from(size_h) + f64::from(meta_h) - 1.0;
         let size_top = cy - stack_h / 2.0;
         paint::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &total,
             13.0,
             c.text_primary,
@@ -2548,9 +2503,9 @@ impl BackupsApp {
             size_top,
         );
         paint::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &meta,
             10.5,
             c.text_dim,
@@ -2691,7 +2646,12 @@ impl BackupsApp {
             let Some(src) = self.catalog.sources.get(i).cloned() else {
                 continue;
             };
-            self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
+            self.draw_source_card(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                Rect::new(content.x0, y, content.x1, y + card_h),
+                narrow,
+                &src,
+            );
             y += card_h + S3;
         }
 
@@ -2750,42 +2710,27 @@ impl BackupsApp {
     /// One source card: icon + path + kind, the cadence/snapshots/protected
     /// stats, health + next-run, and the enable toggle. Split out of
     /// [`Self::draw_sources_view`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "source cards combine paint context, responsive card geometry and source data for their header, stats and footer"
-    )]
-    fn draw_source_card(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        y: f64,
-        card_h: f64,
-        narrow: bool,
-        src: &Source,
-    ) {
+    fn draw_source_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect, narrow: bool, src: &Source) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let card = Rect::new(content.x0, y, content.x1, y + card_h);
         let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
-        paint::card(scene, t, card, 14.0, c.surfaces.raised);
+        paint::card(ctx.scene, ctx.transform, card, 14.0, c.surfaces.raised);
         if sel {
-            Self::selected_ring(scene, t, theme, card, 14.0);
+            Self::selected_ring(ctx.scene, ctx.transform, theme, card, 14.0);
         }
         let ix = card.x0 + 34.0;
         Self::draw_source_icon(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             src.kind,
             Point::new(ix, card.y0 + 30.0),
             13.0,
             theme.accent_primary,
         );
         paint::text_bold(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &src.path,
             17.0,
             c.text_primary,
@@ -2799,9 +2744,9 @@ impl BackupsApp {
             SourceKind::Custom => "Custom path",
         };
         paint::text(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             kind,
             12.0,
             c.text_dim,
@@ -2810,21 +2755,34 @@ impl BackupsApp {
         );
 
         if narrow {
-            Self::draw_source_card_stats_narrow(scene, t, tr, theme, &self.catalog, card, ix, src);
+            Self::draw_source_card_stats_narrow(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &self.catalog,
+                card,
+                ix,
+                src,
+            );
         } else {
-            Self::draw_source_card_stats_wide(scene, t, tr, theme, &self.catalog, card, src);
+            Self::draw_source_card_stats_wide(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &self.catalog,
+                card,
+                src,
+            );
         }
 
-        self.draw_source_card_footer(scene, t, tr, theme, card, card_h, src);
+        self.draw_source_card_footer(ctx.scene, ctx.transform, ctx.text, theme, card, src);
     }
 
     /// The health dot, next-run label, and enable toggle at the bottom of a
     /// source card. Split out of [`Self::draw_source_card`] to keep it under
     /// the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the source footer combines paint context, card geometry and source health, next-run and enabled state"
-    )]
     fn draw_source_card_footer(
         &mut self,
         scene: &mut Scene,
@@ -2832,14 +2790,13 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         card: Rect,
-        card_h: f64,
         src: &Source,
     ) {
         let c = &theme.tokens.colors;
         paint::dot(
             scene,
             t,
-            Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0),
+            Point::new(card.x0 + 16.0, card.y1 - 18.0),
             3.5,
             Self::health_color(theme, src.health),
         );
@@ -2851,16 +2808,16 @@ impl BackupsApp {
             11.5,
             c.text_dim,
             card.x0 + 28.0,
-            card.y0 + card_h - 24.0,
+            card.y1 - 24.0,
         );
 
         // Enable switch (shared Toggle look).
         let tw = 52.0;
         let tog = Rect::new(
             card.x1 - 22.0 - tw,
-            card.y0 + card_h - 30.0,
+            card.y1 - 30.0,
             card.x1 - 22.0,
-            card.y0 + card_h - 30.0 + 22.0,
+            card.y1 - 30.0 + 22.0,
         );
         let on = src.enabled;
         Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
@@ -2881,10 +2838,6 @@ impl BackupsApp {
     /// The single compact stats line shown for a source card at narrow
     /// widths. Split out of [`Self::draw_source_card`] to keep it under the
     /// line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "compact source stats need paint context, card alignment, source details and catalog snapshot totals"
-    )]
     fn draw_source_card_stats_narrow(
         scene: &mut Scene,
         t: Affine,
@@ -3020,16 +2973,17 @@ impl BackupsApp {
                 .source(&event.source_id)
                 .map(|found| found.path.clone())
                 .unwrap_or_default();
-            let action = format!("{} snapshot of {}", event.kind.label(), path);
-            let when = format!("{} {}", Catalog::day_label(event.day), event.time);
+            let entry = ActivityEntry {
+                event,
+                when: format!("{} {}", Catalog::day_label(event.day), event.time),
+                action: format!("{} snapshot of {}", event.kind.label(), path),
+            };
+            let row = Rect::new(region.x0, ry, region.x1, ry + row_h);
+            let ctx = &mut PaintCtx::new(scene, t, tr, theme);
             if narrow {
-                Self::draw_recent_activity_row_narrow(
-                    scene, t, tr, theme, region, ry, event, &when, &action,
-                );
+                Self::draw_recent_activity_row_narrow(ctx, row, &entry);
             } else {
-                self.draw_recent_activity_row_wide(
-                    scene, t, tr, theme, region, ry, row_h, event, &when, &action,
-                );
+                self.draw_recent_activity_row_wide(ctx, row, &entry);
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
                 paint::separator(
@@ -3048,148 +3002,129 @@ impl BackupsApp {
     /// One narrow-layout recent-activity row: status dot, when + size on top,
     /// the action beneath. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "compact activity rows combine paint context and row position with snapshot status, time and action labels"
-    )]
     fn draw_recent_activity_row_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        region: Rect,
-        ry: f64,
-        event: &Snapshot,
-        when: &str,
-        action: &str,
+        ctx: &mut PaintCtx<'_>,
+        row: Rect,
+        entry: &ActivityEntry<'_>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         paint::dot(
-            scene,
-            t,
-            Point::new(region.x0 + 22.0, ry + 12.0),
+            ctx.scene,
+            ctx.transform,
+            Point::new(row.x0 + 22.0, row.y0 + 12.0),
             4.0,
-            Self::status_color(theme, event.status),
+            Self::status_color(theme, entry.event.status),
         );
         paint::text(
-            scene,
-            tr,
-            t,
-            when,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &entry.when,
             12.5,
             c.text_primary,
-            region.x0 + 36.0,
-            ry + 4.0,
+            row.x0 + 36.0,
+            row.y0 + 4.0,
         );
         paint::text_right(
-            scene,
-            tr,
-            t,
-            &ui::format::bytes(event.delta_bytes),
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &ui::format::bytes(entry.event.delta_bytes),
             12.0,
             c.text_dim,
-            region.x1 - 18.0,
-            ry + 4.0,
+            row.x1 - 18.0,
+            row.y0 + 4.0,
         );
         paint::text(
-            scene,
-            tr,
-            t,
-            action,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &entry.action,
             11.5,
             c.text_dim,
-            region.x0 + 36.0,
-            ry + 24.0,
+            row.x0 + 36.0,
+            row.y0 + 24.0,
         );
     }
 
     /// One wide-layout recent-activity row: status dot, when, action, dest,
     /// status label, size. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "wide activity rows combine paint context and row geometry with snapshot data, time and action labels"
-    )]
     fn draw_recent_activity_row_wide(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        region: Rect,
-        ry: f64,
-        row_h: f64,
-        event: &Snapshot,
-        when: &str,
-        action: &str,
+        ctx: &mut PaintCtx<'_>,
+        row: Rect,
+        entry: &ActivityEntry<'_>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let cy = ry + row_h / 2.0;
+        let cy = row.center().y;
         paint::dot(
-            scene,
-            t,
-            Point::new(region.x0 + 22.0, cy),
+            ctx.scene,
+            ctx.transform,
+            Point::new(row.x0 + 22.0, cy),
             4.0,
-            Self::status_color(theme, event.status),
+            Self::status_color(theme, entry.event.status),
         );
         paint::text(
-            scene,
-            tr,
-            t,
-            when,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &entry.when,
             12.5,
             c.text_primary,
-            region.x0 + 36.0,
+            row.x0 + 36.0,
             cy - 7.0,
         );
         paint::text(
-            scene,
-            tr,
-            t,
-            action,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &entry.action,
             12.0,
             c.text_dim,
-            region.x0 + 168.0,
+            row.x0 + 168.0,
             cy - 7.0,
         );
         let dest = self
             .catalog
-            .destination(&event.dest_id)
+            .destination(&entry.event.dest_id)
             .map(|found| found.name.clone())
             .unwrap_or_default();
         paint::text(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &format!("→ {dest}"),
             11.5,
-            Self::dest_color(theme, &event.dest_id),
-            region.x0 + 440.0,
+            Self::dest_color(theme, &entry.event.dest_id),
+            row.x0 + 440.0,
             cy - 6.0,
         );
-        let status = match event.status {
+        let status = match entry.event.status {
             SnapStatus::Complete => "completed",
             SnapStatus::Verifying => "verifying",
             SnapStatus::Failed => "failed",
         };
         paint::text_right(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             status,
             11.5,
-            Self::status_color(theme, event.status),
-            region.x1 - 110.0,
+            Self::status_color(theme, entry.event.status),
+            row.x1 - 110.0,
             cy - 6.0,
         );
         paint::text_right(
-            scene,
-            tr,
-            t,
-            &ui::format::bytes(event.delta_bytes),
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
+            &ui::format::bytes(entry.event.delta_bytes),
             12.0,
             c.text_dim,
-            region.x1 - 18.0,
+            row.x1 - 18.0,
             cy - 7.0,
         );
     }
@@ -3307,10 +3242,6 @@ impl BackupsApp {
     }
 
     /// The full repository card: a big capacity ring plus used/free figures.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the repository card combines paint context and bounds with destination capacity data and selection state"
-    )]
     fn draw_dest_card_tall(
         scene: &mut Scene,
         t: Affine,
@@ -3394,26 +3325,18 @@ impl BackupsApp {
         };
         paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.surfaces.base);
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &format!("{:.0}%", frac * 100.0),
             20.0,
             c.text_primary,
-            center.x - 40.0,
-            center.x + 40.0,
-            center.y - 16.0,
+            Point::new(center.x, center.y - 16.0),
         );
         paint::text_center(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "used",
             10.5,
             c.text_dim,
-            center.x - 40.0,
-            center.x + 40.0,
-            center.y + 8.0,
+            Point::new(center.x, center.y + 8.0),
         );
     }
 
@@ -3478,22 +3401,16 @@ impl BackupsApp {
         let mut chx = card.x0 + 24.0;
         if d.encrypted {
             chx += paint::tag_pill(
-                scene,
-                tr,
-                t,
-                chx,
-                card.y1 - 20.0,
+                &mut PaintCtx::new(scene, t, tr, theme),
+                Point::new(chx, card.y1 - 20.0),
                 "encrypted",
                 10.0,
                 c.semantic.success,
             ) + 6.0;
         }
         paint::tag_pill(
-            scene,
-            tr,
-            t,
-            chx,
-            card.y1 - 20.0,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(chx, card.y1 - 20.0),
             &format!("sync {}", d.last_sync),
             10.0,
             c.semantic.info,
@@ -3624,11 +3541,8 @@ impl BackupsApp {
         let (sw, _) = tr.measure(&sync, 10.0, None);
         chx -= f64::from(sw) + 20.0;
         paint::tag_pill(
-            scene,
-            tr,
-            t,
-            chx,
-            card.y0 + 86.0,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(chx, card.y0 + 86.0),
             &sync,
             10.0,
             c.semantic.info,
@@ -3637,11 +3551,8 @@ impl BackupsApp {
             let (ew, _) = tr.measure("encrypted", 10.0, None);
             chx -= f64::from(ew) + 26.0;
             paint::tag_pill(
-                scene,
-                tr,
-                t,
-                chx,
-                card.y0 + 86.0,
+                &mut PaintCtx::new(scene, t, tr, theme),
+                Point::new(chx, card.y0 + 86.0),
                 "encrypted",
                 10.0,
                 c.semantic.success,
@@ -3823,30 +3734,30 @@ impl BackupsApp {
         for (i, field) in PolicyField::ALL.iter().enumerate() {
             // `vals` and `PolicyField::ALL` both have exactly 4 entries.
             let value = vals.get(i).copied().unwrap_or(0);
-            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
+            self.draw_schedules_editor_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                panel,
+                i,
+                *field,
+                value,
+            );
         }
     }
 
     /// One retention-class row: focus highlight, dot + label + unit, and the
     /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
     /// to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "retention rows combine paint context and panel position with the policy field and its current value"
-    )]
     fn draw_schedules_editor_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         panel: Rect,
         i: usize,
         field: PolicyField,
         value: u32,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let scale = Self::text_scale(tr);
+        let scale = Self::text_scale(ctx.text);
         // Rows are `S2` apart inside the panel's `PAD`; keyboard focus is the
         // focus ring token, like every other focused control.
         let row_h = 56.0 + (scale - 1.0) * 44.0;
@@ -3855,8 +3766,8 @@ impl BackupsApp {
         let row = Rect::new(panel.x0 + S3, ry, panel.x1 - S3, ry + row_h);
         let focused = self.policy_focus == i;
         if focused {
-            paint::fill_round(scene, t, row, 10.0, c.lift(0.5));
-            paint::stroke_round(scene, t, row, 10.0, c.border_focus, 2.0);
+            paint::fill_round(ctx.scene, ctx.transform, row, 10.0, c.lift(0.5));
+            paint::stroke_round(ctx.scene, ctx.transform, row, 10.0, c.border_focus, 2.0);
         }
         let rc = Self::retention_color(
             theme,
@@ -3868,16 +3779,16 @@ impl BackupsApp {
             },
         );
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(row.x0 + 18.0 * scale, row.center().y),
             5.0,
             rc,
         );
         paint::text_bold(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             field.label(),
             14.5,
             c.text_primary,
@@ -3885,9 +3796,9 @@ impl BackupsApp {
             row.y0 + 12.0 * scale,
         );
         paint::text(
-            scene,
-            tr,
-            t,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             &format!("keep over the {}", field.unit()),
             11.0,
             c.text_dim,
@@ -3910,18 +3821,33 @@ impl BackupsApp {
             valx0 - 8.0 * scale,
             cy + 18.0 * scale,
         );
-        self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
-        self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
+        self.draw_stepper(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            minus,
+            "–",
+            Hit::Policy(field, -1),
+        );
+        self.draw_stepper(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            plus,
+            "+",
+            Hit::Policy(field, 1),
+        );
         paint::text_center(
-            scene,
-            tr,
-            t,
+            ctx,
             &format!("{value}"),
             20.0,
             c.text_primary,
-            valx0 - 8.0 * scale,
-            plus.x0,
-            cy - 12.0 * scale,
+            Point::new(
+                f64::midpoint(valx0 - 8.0 * scale, plus.x0),
+                cy - 12.0 * scale,
+            ),
         );
     }
 
@@ -4100,10 +4026,7 @@ impl BackupsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "stepper painting takes paint context, button bounds, glyph and hit action so hover and hit registration agree"
-    )] // see `draw_source_row` above.
+    // see `draw_source_row` above.
     fn draw_stepper(
         &mut self,
         scene: &mut Scene,
@@ -4267,10 +4190,6 @@ impl BackupsApp {
     /// A non-interactive contents preview. The restore engine currently
     /// restores whole snapshots, so these rows intentionally are not selectable
     /// and never imply a per-file restore capability.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the snapshot preview keeps paint context, tree bounds and snapshot contents explicit"
-    )]
     fn draw_restore_contents(
         scene: &mut Scene,
         t: Affine,
@@ -4304,15 +4223,11 @@ impl BackupsApp {
         // listing shows an honest empty state rather than fabricated files.
         if files.is_empty() {
             paint::text_vc(
-                scene,
-                tr,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "File index not available for this snapshot yet.",
                 12.5,
                 c.text_dim,
-                tree.x0 + 14.0,
-                ty0,
-                row_h,
+                Rect::new(tree.x0 + 14.0, ty0, tree.x1, ty0 + row_h),
             );
         }
         for (i, f) in files.iter().enumerate() {
@@ -4328,10 +4243,6 @@ impl BackupsApp {
     /// One informational row in the snapshot preview. It deliberately has no
     /// hover, selection, hit target, or checkbox because recovery is all-or-
     /// nothing at this engine boundary.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "preview rows combine paint context and row geometry with file metadata for depth, icon and label"
-    )]
     fn draw_restore_content_row(
         scene: &mut Scene,
         t: Affine,
@@ -4364,15 +4275,11 @@ impl BackupsApp {
             paint::stroke_round(scene, t, fr, 2.0, icol, 1.3);
         }
         paint::text_vc(
-            scene,
-            tr,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &f.name,
             12.5,
             c.text_primary,
-            ix + 20.0,
-            row.y0,
-            row_h - 2.0,
+            Rect::new(ix + 20.0, row.y0, row.x1, row.y0 + row_h - 2.0),
         );
         if !f.size.is_empty() {
             paint::text_right(
@@ -4864,6 +4771,12 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
     }
@@ -5036,27 +4949,6 @@ impl Widget for BackupsApp {
 
     fn test_id(&self) -> Option<&str> {
         Some("backups_app")
-    }
-
-    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
-    /// (see [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing it — the
-    /// same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -5235,7 +5127,33 @@ impl Widget for BackupsApp {
             || self.picker.is_some()
             || self.job.is_some()
             || self.drawer.is_animating()
-            || self.status_bubble.needs_frame(Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
+    }
+}
+
+impl ui::search::capability::SearchSource for BackupsApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for BackupsApp {
+    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
+    /// (see [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for BackupsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -6183,7 +6101,7 @@ mod tests {
             !names.iter().any(|name| name.contains("Choose files")),
             "screen readers receive the same whole-snapshot contract as sighted users"
         );
-        let resources = Widget::resources(&f.app, &f.state.doc);
+        let resources = ui::resources::resources(&f.app, &f.state.doc);
         assert_eq!(resources.len(), 2, "policy and catalog are driveable");
         assert!(
             resources

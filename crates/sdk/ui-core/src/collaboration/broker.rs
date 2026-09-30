@@ -403,6 +403,12 @@ impl CollabTransport for BrokerTransport {
         channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
+    fn take_action_surface_failed(&mut self) -> bool {
+        self.state
+            .action_surface_failed
+            .swap(false, Ordering::AcqRel)
+    }
+
     fn send_native_media(
         &mut self,
         channel: String,
@@ -1241,6 +1247,9 @@ struct BridgeState {
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
+    /// The broker refused or failed an action-surface publication; the owner
+    /// takes this and republishes.
+    action_surface_failed: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1267,7 +1276,16 @@ enum ConnectPhase {
 /// A reservation moves with its queued value and releases automatically when
 /// the receiver consumes or drops that value, waking anyone waiting for room.
 #[derive(Clone)]
-struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>);
+struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>, Option<RoomWake>);
+
+/// Wakes the owner once outbound room frees after one of its sends was
+/// refused as busy. The owner has no timer of its own for that retry, so
+/// without this a refused edit would wait for unrelated input.
+#[derive(Clone)]
+struct RoomWake {
+    wanted: Arc<AtomicBool>,
+    owner: crate::wake::WakeHandle,
+}
 
 struct ByteReservation {
     budget: ByteBudget,
@@ -1279,7 +1297,25 @@ impl ByteBudget {
         Self(
             Arc::new(AtomicUsize::new(0)),
             Arc::new(tokio::sync::Notify::new()),
+            None,
         )
+    }
+
+    fn with_room_wake(room: RoomWake) -> Self {
+        Self(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(tokio::sync::Notify::new()),
+            Some(room),
+        )
+    }
+
+    /// Ask for an owner wake at the next release of any reservation sharing
+    /// this budget's latch. Arm before re-checking for room, so a release
+    /// racing the refusal is never missed.
+    fn arm_room_wake(&self) {
+        if let Some(room) = &self.2 {
+            room.wanted.store(true, Ordering::Release);
+        }
     }
 
     fn reserve(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
@@ -1321,6 +1357,11 @@ impl Drop for ByteReservation {
     fn drop(&mut self) {
         self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
         self.budget.1.notify_waiters();
+        if let Some(room) = &self.budget.2
+            && room.wanted.swap(false, Ordering::AcqRel)
+        {
+            room.owner.notify_events();
+        }
     }
 }
 
@@ -1339,15 +1380,23 @@ struct QueuedCollabEvent {
 
 impl BridgeState {
     fn new() -> Self {
+        let owner_wake = crate::wake::WakeHandle::new();
+        // Both outbound budgets share one latch: a refused document send is
+        // queued behind commands of either kind.
+        let outbound_room = RoomWake {
+            wanted: Arc::new(AtomicBool::new(false)),
+            owner: owner_wake.clone(),
+        };
         Self {
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
-            command_bytes: ByteBudget::new(),
+            action_surface_failed: Arc::new(AtomicBool::new(false)),
+            command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
-            document_command_bytes: ByteBudget::new(),
+            document_command_bytes: ByteBudget::with_room_wake(outbound_room),
             document_event_bytes: ByteBudget::new(),
-            owner_wake: crate::wake::WakeHandle::new(),
+            owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
         }
@@ -1423,6 +1472,7 @@ impl BridgeState {
                 direction,
                 "collab: bounded bridge overloaded or disconnected; disabling collaboration"
             );
+            self.notify_events();
         }
     }
 }
@@ -1462,10 +1512,15 @@ fn try_enqueue_sdk_command(
             return Err(TransportError::TooLarge { actual, max });
         }
         command.shrink_document();
-        let Some(reservation) = state.document_command_bytes.reserve_sole(
-            command_bytes(&command).unwrap_or(usize::MAX),
-            SDK_DOCUMENT_COMMAND_BYTES,
-        ) else {
+        let bytes = command_bytes(&command).unwrap_or(usize::MAX);
+        let budget = &state.document_command_bytes;
+        let Some(reservation) = budget
+            .reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
+            .or_else(|| {
+                budget.arm_room_wake();
+                budget.reserve_sole(bytes, SDK_DOCUMENT_COMMAND_BYTES)
+            })
+        else {
             tracing::debug!(
                 bytes = len,
                 "collab: document budget full; change will be retried"
@@ -1477,7 +1532,17 @@ fn try_enqueue_sdk_command(
             _reservation: reservation,
         }) {
             Ok(()) => Ok(()),
-            Err(tokio_mpsc::error::TrySendError::Full(_)) => Err(TransportError::Busy),
+            Err(tokio_mpsc::error::TrySendError::Full(refused)) => {
+                // Release the refused reservation before arming, or its own
+                // drop would spend the wake on a retry that finds the queue
+                // still full.
+                drop(refused);
+                budget.arm_room_wake();
+                if tx.capacity() > 0 {
+                    state.owner_wake.notify_events();
+                }
+                Err(TransportError::Busy)
+            }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 state.fail_closed("outbound command queue");
                 Err(TransportError::Closed)
@@ -3052,16 +3117,18 @@ async fn drive_shovel(
                 primary_result = match tokio::time::timeout_at(
                     tokio::time::Instant::from_std(deadline.start()),
                     ensure_sdk_route(
-                        &client,
-                        &presentation,
-                        participant_handle.as_deref(),
-                        participant_kind,
-                        &inbound_tx,
+                        &SdkJoinContext {
+                            asks_channel_keys,
+                            client: &client,
+                            presentation: &presentation,
+                            participant_handle: participant_handle.as_deref(),
+                            participant_kind,
+                            inbound_tx: &inbound_tx,
+                            media_routes: &media_routes,
+                        },
                         &mut routes,
-                        &media_routes,
                         &spec,
                         record_kind.as_deref().unwrap_or(""),
-                        asks_channel_keys,
                     ),
                 )
                 .await
@@ -3094,32 +3161,36 @@ async fn drive_shovel(
             }
             SdkCommand::Join(spec, record_kind) => {
                 let _ = ensure_sdk_route(
-                    &client,
-                    &presentation,
-                    participant_handle.as_deref(),
-                    participant_kind,
-                    &inbound_tx,
+                    &SdkJoinContext {
+                        asks_channel_keys,
+                        client: &client,
+                        presentation: &presentation,
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                        media_routes: &media_routes,
+                    },
                     &mut routes,
-                    &media_routes,
                     &spec,
                     record_kind.as_deref().unwrap_or(""),
-                    asks_channel_keys,
                 )
                 .await;
             }
             SdkCommand::ToRoute(spec, request) => {
                 let key = spec.channel_id();
                 let joined = ensure_sdk_route(
-                    &client,
-                    &presentation,
-                    participant_handle.as_deref(),
-                    participant_kind,
-                    &inbound_tx,
+                    &SdkJoinContext {
+                        asks_channel_keys,
+                        client: &client,
+                        presentation: &presentation,
+                        participant_handle: participant_handle.as_deref(),
+                        participant_kind,
+                        inbound_tx: &inbound_tx,
+                        media_routes: &media_routes,
+                    },
                     &mut routes,
-                    &media_routes,
                     &spec,
                     "",
-                    asks_channel_keys,
                 )
                 .await;
                 if joined.is_ok()
@@ -3180,7 +3251,10 @@ async fn drive_shovel(
                     );
                     continue;
                 };
-                let directory = capnp_rpc::new_client(ActionDirectoryServer { requests });
+                let directory = capnp_rpc::new_client(ActionDirectoryServer {
+                    requests,
+                    owner: inbound_tx.state.owner_wake.clone(),
+                });
                 if let Err(error) = route
                     .channel
                     .publish_action_directory(&app_id, directory)
@@ -3254,19 +3328,7 @@ async fn install_sdk_encryption(
     group: channel_crypto::ChannelGroup,
 ) -> Result<(), String> {
     let key = spec.channel_id();
-    ensure_sdk_route(
-        context.client,
-        context.presentation,
-        context.participant_handle,
-        context.participant_kind,
-        context.inbound_tx,
-        routes,
-        context.media_routes,
-        &spec,
-        "",
-        context.asks_channel_keys,
-    )
-    .await?;
+    ensure_sdk_route(&context, routes, &spec, "").await?;
     let route = routes
         .get_mut(&key)
         .ok_or_else(|| "joined MLS route disappeared".to_string())?;
@@ -3278,6 +3340,7 @@ async fn install_sdk_encryption(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct SdkJoinContext<'a> {
     asks_channel_keys: bool,
     client: &'a runtime_collab::CollabClient,
@@ -3306,17 +3369,20 @@ struct SdkRoute {
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
 async fn ensure_sdk_route(
-    client: &runtime_collab::CollabClient,
-    identity_bytes: &[u8],
-    participant_handle: Option<&str>,
-    participant_kind: &str,
-    inbound_tx: &InboundBridge,
+    context: &SdkJoinContext<'_>,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
-    media_routes: &native_media::Routes,
     spec: &RouteSpec,
     record_kind: &str,
-    asks_channel_keys: bool,
 ) -> Result<(), String> {
+    let SdkJoinContext {
+        asks_channel_keys,
+        client,
+        presentation: identity_bytes,
+        participant_handle,
+        participant_kind,
+        inbound_tx,
+        media_routes,
+    } = *context;
     let channel_id = spec.channel_id();
     if routes.contains_key(&channel_id) {
         return Ok(());
@@ -4436,6 +4502,19 @@ async fn deliver_waiting(
 /// pump below.
 struct ActionDirectoryServer {
     requests: mpsc::SyncSender<ActionDirectoryRequest>,
+    owner: crate::wake::WakeHandle,
+}
+
+/// Queue one request for the App's pump and wake it: an idle owner sleeps
+/// until an event arrives, and nothing else announces this one.
+fn submit_directory_request(
+    requests: &mpsc::SyncSender<ActionDirectoryRequest>,
+    owner: &crate::wake::WakeHandle,
+    request: ActionDirectoryRequest,
+) -> Result<(), mpsc::TrySendError<ActionDirectoryRequest>> {
+    requests.try_send(request)?;
+    owner.notify_events();
+    Ok(())
 }
 
 fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
@@ -4544,15 +4623,17 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             Err(error) => return capnp::capability::Promise::err(error),
         };
         let requests = self.requests.clone();
+        let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
             let (reply, response) = tokio::sync::oneshot::channel();
-            requests
-                .try_send(ActionDirectoryRequest::Query { query, reply })
-                .map_err(|_| {
-                    capnp::Error::failed(
-                        "application action directory is busy or unavailable".into(),
-                    )
-                })?;
+            submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Query { query, reply },
+            )
+            .map_err(|_| {
+                capnp::Error::failed("application action directory is busy or unavailable".into())
+            })?;
             let page = tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
                 .await
                 .map_err(|_| capnp::Error::failed("application action directory timed out".into()))?
@@ -4605,16 +4686,20 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             Err(error) => return capnp::capability::Promise::err(error),
         };
         let requests = self.requests.clone();
+        let owner = self.owner.clone();
         capnp::capability::Promise::from_future(async move {
             let (reply, response) = tokio::sync::oneshot::channel();
-            let reply_value = if requests
-                .try_send(ActionDirectoryRequest::Resolve {
+            let reply_value = if submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Resolve {
                     revision,
                     resource,
                     action,
                     reply,
-                })
-                .is_err()
+                },
+            )
+            .is_err()
             {
                 directory_unavailable()
             } else {
@@ -4872,7 +4957,12 @@ async fn dispatch_sdk_request(
                 })
                 .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
-                tracing::warn!(%error, "collab: publishing resource/action surface failed");
+                tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
+                inbound_tx
+                    .state
+                    .action_surface_failed
+                    .store(true, Ordering::Release);
+                inbound_tx.state.notify_events();
             }
         }
         CollabRequest::ReportContinuation {
@@ -5300,35 +5390,24 @@ async fn dispatch_sdk_request(
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments)
             );
+            let target = runtime_collab::TaskAction {
+                peer_id,
+                resource: &resource,
+                action: &action,
+                argument: Some(&argument),
+            };
             let (result, continuation, retry_step) = match step {
                 Some(step) => task_step_event(
                     route
                         .channel
-                        .invoke_task_step(
-                            run_id,
-                            &lease,
-                            step,
-                            peer_id,
-                            &resource,
-                            &action,
-                            Some(&argument),
-                        )
+                        .invoke_task_step(run_id, &lease, step, target)
                         .await
                         .map_err(|error| error.to_string()),
                 ),
                 None => (
                     route
                         .channel
-                        .invoke_task_action(
-                            run_id,
-                            &lease,
-                            peer_id,
-                            &resource,
-                            &action,
-                            Some(&argument),
-                            "",
-                            &invocation.0.to_string(),
-                        )
+                        .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
                         .await
                         .map_err(|error| error.to_string())
                         .and_then(|(id, update)| parse_task_update(id, &update)),
@@ -5562,7 +5641,10 @@ mod tests {
     // Future<Output = ...>` spelling wouldn't change any behaviour, only
     // make capnp-generated-shaped code look less like the rest of the
     // capnp-rpc code it's mocking.
-    #![allow(refining_impl_trait)]
+    #![allow(
+        refining_impl_trait,
+        reason = "mock capnp servers return the concrete Promise capnp-rpc expects"
+    )]
 
     use super::*;
 
@@ -5715,6 +5797,10 @@ mod tests {
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
         action_publications: Vec<(String, Vec<(String, String)>)>,
+        /// Refuse this many action-surface publications, as a broker whose
+        /// admission is momentarily unavailable does.
+        refuse_action_publications: usize,
+        refused_action_publications: usize,
         action_directories: Vec<String>,
     }
 
@@ -6074,11 +6160,15 @@ mod tests {
                     )
                 })
                 .collect();
-            self.captures
-                .lock()
-                .unwrap()
-                .action_publications
-                .push((app_id, actions));
+            let mut captures = self.captures.lock().unwrap();
+            if captures.refuse_action_publications > 0 {
+                captures.refuse_action_publications -= 1;
+                captures.refused_action_publications += 1;
+                return Promise::err(capnp::Error::failed(
+                    "current host worker authority unavailable".into(),
+                ));
+            }
+            captures.action_publications.push((app_id, actions));
             Promise::ok(())
         }
 
@@ -8634,6 +8724,71 @@ mod tests {
             );
         }
 
+        // Case `a_busy_document_send_wakes_the_owner_once_room_frees`.
+        {
+            let mut scope = crate::wake::WakeScope::new();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let count = wakes.clone();
+            scope
+                .bind(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+            let _entry = scope.enter();
+            let (tx, mut rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
+            let state = BridgeState::new();
+            let change =
+                || SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1024 * 1024]));
+            while try_enqueue_sdk_command(&tx, change(), &state).is_ok() {}
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                0,
+                "a refusal on its own does not wake the owner"
+            );
+            drop(rx.try_recv().expect("admitted changes are queued"));
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "the shovel taking a change frees room, and the idle owner must hear of it \
+                 to retry the refused one"
+            );
+            assert_eq!(try_enqueue_sdk_command(&tx, change(), &state), Ok(()));
+            while rx.try_recv().is_ok() {}
+            assert_eq!(
+                wakes.load(Ordering::SeqCst),
+                1,
+                "an admitted send leaves nothing armed"
+            );
+        }
+
+        // Case `a_directory_request_wakes_the_idle_owner`.
+        {
+            let mut scope = crate::wake::WakeScope::new();
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let count = wakes.clone();
+            scope
+                .bind(move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+            let owner = scope.handle();
+            let (requests, pending) = mpsc::sync_channel(1);
+            let (reply, _response) = tokio::sync::oneshot::channel();
+            submit_directory_request(
+                &requests,
+                &owner,
+                ActionDirectoryRequest::Resolve {
+                    revision: String::new(),
+                    resource: String::new(),
+                    action: String::new(),
+                    reply,
+                },
+            )
+            .unwrap();
+            assert_eq!(wakes.load(Ordering::SeqCst), 1);
+            assert!(pending.try_recv().is_ok());
+        }
+
         // Case `a_lone_document_larger_than_the_budget_still_makes_progress`.
         {
             let budget = ByteBudget::new();
@@ -8851,6 +9006,49 @@ mod tests {
                                     label == "Complete" && action == "activate"
                                 })
                         })
+                },
+            );
+        }
+
+        // Case `a_refused_action_publication_is_republished`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            captures.lock().unwrap().refuse_action_publications = 1;
+            let app_id = crate::collaboration::local_app_id();
+            let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
+            let mut app = crate::App::with_collaboration_manager(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "complete",
+                    "Complete",
+                    Some("completed"),
+                )),
+                manager,
+            );
+            crate::app::draw_prepared_component_test_frame(&mut app);
+            tilo_test_env::wait_until("the broker must see the first surface", || {
+                captures.lock().unwrap().refused_action_publications == 1
+            });
+            // Nothing about the surface changes: only the refusal can make the
+            // app publish it again.
+            tilo_test_env::wait_until(
+                "a surface the broker refused must be republished, not counted as published",
+                || {
+                    app.pump_collab_presence();
+                    let seen = captures.lock().unwrap();
+                    seen.action_publications.iter().any(|(id, actions)| {
+                        id == &app_id
+                            && actions
+                                .iter()
+                                .any(|(label, action)| label == "Complete" && action == "activate")
+                    })
                 },
             );
         }
@@ -9919,7 +10117,7 @@ mod tests {
         let cluster = Uuid::new_v4();
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("document"),
+            crate::record::RecordKind::new("report"),
         );
         let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut original = crate::state::State::new();
@@ -9971,7 +10169,7 @@ mod tests {
         );
         assert_eq!(
             captures.lock().unwrap().joined_record_kinds,
-            ["", "document"],
+            ["", "report"],
             "the record route names its resource kind for the owner; the launch route none"
         );
         assert!(

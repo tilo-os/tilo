@@ -14,20 +14,21 @@ use collab_types::caps::Actor;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending,
-    ReceiptStatus, Reservation, RowVisibility, pending, workspace_provider,
-    workspace_provider_room,
+    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
+    ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility, pending,
+    workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner, LaunchScope,
-    PublishedAction, PublishedInput, PublishedSurface, ResourceRef, Verb, confirmation_satisfied,
-    permission_verb, published_directory_action, validate_directory_target_input,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationInputs,
+    InvocationOwner, LaunchScope, PublishedAction, PublishedInput, PublishedSurface, ResourceRef,
+    Verb, confirmation_satisfied, permission_verb, published_directory_action,
+    validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
@@ -162,21 +163,63 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     }
 }
 
-fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
+    let display_name = &app.display_name;
+    let (resource_kind, description) = if app.unconfined {
+        (
+            "applications.host-app",
+            "Launch this unconfined host application into the current workspace. It runs \
+             outside every Tilo sandbox with the user's own files and publishes no typed \
+             actions: drive its window with the computer tool",
+        )
+    } else {
+        (
+            "applications.app",
+            "Launch this application into the current workspace",
+        )
+    };
     ActionDescriptor {
         address: ActionAddress::new(
-            format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
+            format!("{APPLICATION_RESOURCE_PREFIX}{}", app.package_id),
             APPLICATION_OPEN_ACTION,
         ),
-        resource_kind: "applications.app".into(),
-        resource_label: display_name.to_string(),
+        resource_kind: resource_kind.into(),
+        resource_label: display_name.clone(),
         action_label: format!("Open {display_name}"),
-        description: Some("Launch this application into the current workspace".into()),
+        description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
         contract: tilo_actions::ActionContract::default(),
         // An invocation may carry the content hash of bytes to open
         // read-only as its text argument; without one the app opens empty.
+        input: InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
+fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+    ActionDescriptor {
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
+            APPLICATION_CLOSE_ACTION,
+        ),
+        resource_kind: "applications.app".into(),
+        resource_label: display_name.to_string(),
+        action_label: format!("Close {display_name}"),
+        description: Some(
+            "Close this application's windows in the current workspace; opening it again \
+             starts it with the permissions it holds now"
+                .into(),
+        ),
+        locus: ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Write,
+            risk: tilo_actions::RiskLevel::Low,
+            retry: tilo_actions::RetryPolicy::Idempotent,
+            ..tilo_actions::ActionContract::default()
+        },
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
@@ -597,7 +640,32 @@ impl CapnpBrokerState {
                             action_row(
                                 workspace_provider(&room),
                                 &app.package_id,
-                                app_open_descriptor(&app.package_id, &app.display_name),
+                                app_open_descriptor(&app),
+                            )
+                        }),
+                );
+                rows.extend(
+                    self.services
+                        .launcher
+                        .as_ref()
+                        .filter(|launcher| launcher.closes_applications())
+                        .map(|launcher| launcher.applications())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|app| live_apps.contains(&app.package_id))
+                        .filter(|app| {
+                            workspace.decide_at(
+                                &policy,
+                                &ResourceRef::App(app.package_id.clone()),
+                                Verb::Write,
+                                now,
+                            ) == CapDecision::Allow
+                        })
+                        .map(|app| {
+                            action_row(
+                                workspace_provider(&room),
+                                &app.package_id,
+                                app_close_descriptor(&app.package_id, &app.display_name),
                             )
                         }),
                 );
@@ -1229,10 +1297,12 @@ impl CapnpBrokerState {
         self.start_invocation_from_offered(
             root.peer_id,
             (surface, offered),
-            argument,
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument,
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             request.revision.as_deref(),
         )
         .map(|job| job.id)
@@ -1308,10 +1378,12 @@ impl CapnpBrokerState {
             peer_id,
             &address.resource,
             &address.action,
-            argument.as_deref(),
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument: argument.as_deref(),
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             None,
             origin.cloned(),
         )
@@ -1364,6 +1436,16 @@ impl CapnpBrokerState {
                         author,
                     },
                 )
+                .map_err(refusal);
+        }
+        if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            && address.action == APPLICATION_CLOSE_ACTION
+        {
+            if caller.room().is_none() {
+                return Err(ActionHostError::UnknownAction);
+            }
+            return self
+                .close_application(&workspace, &policy, now, actor, app_id)
                 .map_err(refusal);
         }
         if address.resource == automation::LIBRARY_RESOURCE
@@ -1928,6 +2010,65 @@ impl CapnpBrokerState {
         Ok(id)
     }
 
+    /// Close `app_id`'s windows in `workspace` and record the terminal
+    /// outcome as an invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller may not change the application or
+    /// the host cannot close applications.
+    pub fn close_application(
+        &self,
+        workspace: &Workspace,
+        policy: &Actor,
+        now: u64,
+        actor: &BrokerActor,
+        app_id: &str,
+    ) -> Result<u64, String> {
+        if workspace.decide_at(
+            policy,
+            &ResourceRef::App(app_id.to_string()),
+            Verb::Write,
+            now,
+        ) != CapDecision::Allow
+        {
+            return Err("the caller is not allowed to close that application".into());
+        }
+        let launcher = self
+            .services
+            .launcher
+            .as_ref()
+            .filter(|launcher| launcher.closes_applications())
+            .ok_or_else(|| "closing applications is unsupported on this host".to_string())?;
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = match launcher.close(app_id, workspace) {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "close_failed".into(),
+                    message: error,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+            update,
+        );
+        Ok(id)
+    }
+
     #[must_use]
     pub fn remote_job(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<u64> {
         self.remote_invocations
@@ -2146,5 +2287,154 @@ mod foreign_caller_tests {
         assert!(may_administer(&caller(governor, true)));
         assert!(!may_administer(&caller([8; 32], true)));
         assert!(may_administer(&caller([8; 32], false)));
+    }
+}
+
+#[cfg(test)]
+mod app_close_tests {
+    use super::super::{
+        BrokerActor, BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher, PublishedSurface,
+    };
+    use crate::route::CrdtRoute;
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+    use tilo_actions::remote::Caller;
+
+    #[derive(Default)]
+    struct Launcher {
+        closes: bool,
+        closed: Mutex<Vec<(String, String)>>,
+    }
+
+    impl crate::services::LauncherServices for Launcher {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            vec![crate::services::LaunchableApplication {
+                package_id: "so.tilo.word-processor".into(),
+                display_name: "Writer".into(),
+                unconfined: false,
+            }]
+        }
+        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            Ok(())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+        fn closes_applications(&self) -> bool {
+            self.closes
+        }
+        fn close(
+            &self,
+            app: &str,
+            workspace: &tilo_desktop_model::Workspace,
+        ) -> Result<(), String> {
+            self.closed
+                .lock()
+                .unwrap()
+                .push((app.to_string(), workspace.room.to_string()));
+            Ok(())
+        }
+    }
+
+    fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<CapnpBrokerState>, Caller, String) {
+        let user = [31; 32];
+        let mut workspace = Workspace::new(WorkspaceId(8), "Close");
+        workspace.owner = Some(hex::encode(user));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(launcher),
+                ..Default::default()
+            },
+        );
+        if live {
+            state.replace_published_surfaces_for_test(vec![PublishedSurface {
+                peer_id: 4,
+                app_id: "so.tilo.word-processor".into(),
+                route: CrdtRoute::record("so.tilo.word-processor", &room, "doc"),
+                actions: Vec::new(),
+                live: true,
+            }]);
+        }
+        let caller = Caller::authenticated(user, [32; 32]).in_room(room.clone());
+        (state, caller, room)
+    }
+
+    fn app_actions(state: &CapnpBrokerState, caller: &Caller) -> Vec<String> {
+        state
+            .eager_catalogue(caller, true)
+            .0
+            .into_iter()
+            .filter_map(|row| row.action)
+            .filter(|action| action.address.resource == "app.so.tilo.word-processor")
+            .map(|action| action.address.action)
+            .collect()
+    }
+
+    #[test]
+    fn a_running_app_offers_close_where_the_host_can_close_it() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, _) = broker(Arc::clone(&launcher), false);
+        assert_eq!(app_actions(&state, &caller), ["open"]);
+        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        assert_eq!(app_actions(&state, &caller), ["close"]);
+
+        let (workspace, policy, now) = state.workspaces_for(&caller).pop().unwrap();
+        let job = state
+            .close_application(
+                &workspace,
+                &policy,
+                now,
+                &BrokerActor::person(hex::encode([31; 32])),
+                "so.tilo.word-processor",
+            )
+            .unwrap();
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert_eq!(
+            *launcher.closed.lock().unwrap(),
+            [("so.tilo.word-processor".to_string(), room)]
+        );
+
+        let unsupported = Arc::new(Launcher::default());
+        let (state, caller, _) = broker(unsupported, true);
+        assert!(app_actions(&state, &caller).is_empty());
+        let (workspace, policy, now) = state.workspaces_for(&caller).pop().unwrap();
+        assert!(
+            state
+                .close_application(
+                    &workspace,
+                    &policy,
+                    now,
+                    &BrokerActor::person("someone"),
+                    "so.tilo.word-processor",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_caller_who_may_not_change_the_app_cannot_close_it() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, _, room) = broker(Arc::clone(&launcher), true);
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
+        assert!(app_actions(&state, &stranger).is_empty());
+        assert!(launcher.closed.lock().unwrap().is_empty());
     }
 }

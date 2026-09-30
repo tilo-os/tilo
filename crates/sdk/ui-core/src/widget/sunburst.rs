@@ -8,6 +8,7 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::ops::Range;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -118,6 +119,16 @@ struct Segment {
     end: f64,
     color: Option<Color>,
     family: usize,
+}
+
+/// Where a node sits in the hierarchy being flattened: its ring, the
+/// top-level family it descends from, its ancestors' label path and the
+/// colour it inherits when it names none.
+struct Lineage<'a> {
+    depth: usize,
+    family: usize,
+    path: &'a str,
+    color: Option<Color>,
 }
 
 pub struct SunburstChart {
@@ -246,12 +257,13 @@ impl SunburstChart {
             let sweep = child.effective_value() / total * TAU;
             self.flatten(
                 child,
-                1,
-                angle,
-                angle + sweep,
-                family,
-                &self.root.label,
-                None,
+                angle..angle + sweep,
+                Lineage {
+                    depth: 1,
+                    family,
+                    path: &self.root.label,
+                    color: None,
+                },
                 &mut output,
             );
             angle += sweep;
@@ -259,21 +271,21 @@ impl SunburstChart {
         output
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "recursive hierarchy flattening carries angular and inherited presentation context"
-    )]
+    /// Push `node`'s segment over the angular `span`, then its children's
+    /// across the same span in proportion to their values.
     fn flatten(
         &self,
         node: &SunburstNode,
-        depth: usize,
-        start: f64,
-        end: f64,
-        family: usize,
-        parent_path: &str,
-        inherited_color: Option<Color>,
+        span: Range<f64>,
+        lineage: Lineage<'_>,
         output: &mut Vec<Segment>,
     ) {
+        let Lineage {
+            depth,
+            family,
+            path: parent_path,
+            color: inherited_color,
+        } = lineage;
         if depth > self.depth() || node.effective_value() <= f64::EPSILON {
             return;
         }
@@ -283,6 +295,7 @@ impl SunburstChart {
             format!("{parent_path} › {}", node.label)
         };
         let color = node.color.or(inherited_color);
+        let Range { start, end } = span;
         output.push(Segment {
             id: node.id.clone(),
             detail: node.detail.clone(),
@@ -308,12 +321,13 @@ impl SunburstChart {
             let sweep = child.effective_value() * scale;
             self.flatten(
                 child,
-                depth.saturating_add(1),
-                angle,
-                angle + sweep,
-                family,
-                &path,
-                color,
+                angle..angle + sweep,
+                Lineage {
+                    depth: depth.saturating_add(1),
+                    family,
+                    path: &path,
+                    color,
+                },
                 output,
             );
             angle += sweep;

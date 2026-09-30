@@ -6,8 +6,9 @@ pub struct Project {
     pub name: String,
 }
 
-/// The app's state: the name being drafted and the projects created. Stored,
-/// synced and undoable. The serialized screens around it are presentation.
+/// The app's state: the name being drafted and the projects created. The
+/// serialized screens above it are presentation; this is what is stored,
+/// synced and undone.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Projects {
     pub draft: String,
@@ -35,7 +36,9 @@ impl Projects {
     }
 }
 
-/// The serialized screens, validated before any widget reaches the app tree.
+/// The serialized screens under `ui/`, validated before any widget reaches
+/// the app. `tilo-app ui edit ui/main.json` edits them while the app runs;
+/// `tilo-app add screen` and `tilo-app add component --mount` extend them.
 fn screens() -> Element {
     match crate::screens::router_with(
         "main",
@@ -43,14 +46,13 @@ fn screens() -> Element {
         crate::components::ui_graph_context(),
     ) {
         Ok(router) => Box::new(router),
-        Err(error) => Box::new(Text::new(&format!(
-            "Unable to load the generated UI: {error}"
+        Err(error) => Box::new(Banner::error(ui::i18n::I18nManager::format(
+            "graph-load-error",
+            &[("error", error.to_string().as_str().into())],
         ))),
     }
 }
 
-/// A serialized, live-editable UI graph above native controls bound to the
-/// resource.
 pub struct App;
 
 impl ResourceApp for App {

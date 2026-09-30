@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -21,14 +21,15 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{ButtonFace, FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
 use crate::changes::{ChangesColumn, ChangesHit};
-use crate::diffview::{self, DiffView};
+use crate::diffview::{self, DiffView, HunkInteraction};
 use crate::draw;
 use crate::graph::{self, GraphLayout};
 use crate::history::{self, HistoryView};
@@ -159,6 +160,49 @@ impl Default for BarMetrics {
             control_pad: 7.0,
             row_pad: 6.0,
         }
+    }
+}
+
+/// What the diff-pane header shows about the selected file, copied out of the
+/// diff so the header can paint while `self` is mutated.
+struct DiffHeaderInfo {
+    old_path: Option<String>,
+    path: String,
+    additions: u32,
+    deletions: u32,
+}
+
+/// Measured widths of the app-bar tabs: each tab's cell, and the whole run
+/// including the 6px gaps between cells.
+struct TabWidths {
+    cells: Vec<f64>,
+    total: f64,
+}
+
+/// Measured widths of the two app-bar settings controls: the Unified/Split
+/// segmented control (both halves as wide as the wider label) and the
+/// Syntax toggle, each with symmetric label padding.
+#[derive(Clone, Copy, Debug)]
+struct SettingsWidths {
+    segmented: f64,
+    syntax: f64,
+}
+
+impl SettingsWidths {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let label_w = |tr: &mut TextRenderer, label: &str| {
+            f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0)
+        };
+        let half = label_w(tr, "Unified").max(label_w(tr, "Split")) + 24.0;
+        Self {
+            segmented: half * 2.0 + 6.0,
+            syntax: label_w(tr, "Syntax") + 24.0,
+        }
+    }
+
+    /// Width of the whole cluster, the gap between the two controls included.
+    fn total(self) -> f64 {
+        self.segmented + APPBAR_CLUSTER_GAP + self.syntax
     }
 }
 
@@ -458,7 +502,7 @@ impl GitClientApp {
         Self {
             actions: ui::ActionHost::new(),
             flap,
-            last_flap_tick: Instant::now(),
+            last_flap_tick: ui::time::now(),
             hamburger_rect: Rect::ZERO,
             model,
             diffs,
@@ -751,7 +795,7 @@ impl GitClientApp {
     /// Called once per drawn frame so the slide + scrim fade are smooth and
     /// frame-rate independent.
     fn tick_flap(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64();
         self.last_flap_tick = now;
         self.flap.tick(self.layout_mode(), dt.min(0.1));
@@ -1087,30 +1131,30 @@ impl GitClientApp {
     // --- Drawing -------------------------------------------------------
 
     /// The app bar's raised surface and its bottom edge.
-    fn paint_appbar_surface(scene: &mut Scene, t: Affine, theme: &Theme, bar: Rect) {
-        let raised = theme.tokens.colors.surfaces.raised;
-        draw::fill_rect(scene, t, bar, raised);
-        draw::hline(scene, t, bar.y1, bar.x0, bar.x1, draw::edge(raised));
+    fn paint_appbar_surface(ctx: &mut PaintCtx<'_>, bar: Rect) {
+        let raised = ctx.theme.tokens.colors.surfaces.raised;
+        ctx.fill_rect(bar, raised);
+        draw::hline(ctx, bar.y1, bar.x0, bar.x1, draw::edge(raised));
     }
 
-    fn draw_appbar(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
+    fn draw_appbar(&mut self, ctx: &mut PaintCtx<'_>) {
         let overlay = self.layout_mode() == SplitLayout::Overlay;
         // Measure every cluster before placing anything: the title is clamped
         // against measured neighbours, never against a guessed width.
-        let (widths, tabs_total) = Self::measure_appbar_tabs(tr, self.rect.width() < 420.0);
-        let (seg_w, syn_w) = Self::measure_settings_cluster(tr);
-        let cluster_w = seg_w + APPBAR_CLUSTER_GAP + syn_w;
+        let tabs = Self::measure_appbar_tabs(ctx.text, self.rect.width() < 420.0);
+        let settings = SettingsWidths::measure(ctx.text);
+        let cluster_w = settings.total();
         let left_pad = if overlay { HAMBURGER_SLOT } else { 0.0 };
         let title_x = self.rect.x0 + APPBAR_GUTTER + left_pad;
         // Tab group background carries a 6px inset on either side.
-        let tab_group_w = tabs_total + 12.0;
+        let tab_group_w = tabs.total + 12.0;
         let one_row_right = self.rect.x1 - APPBAR_GUTTER;
         let cluster_x = one_row_right - cluster_w;
         let one_row_tabs_left = cluster_x - APPBAR_CLUSTER_GAP - tab_group_w;
         // Wrap the tabs under the title when a readable title cannot sit
         // beside the tab group and the settings on one row.
         let wrap = one_row_tabs_left - 8.0 - title_x < TITLE_MIN_W;
-        let m = BarMetrics::measure(tr);
+        let m = BarMetrics::measure(ctx.text);
         // On the narrowest windows even the title and measured settings cannot
         // share a row. Keep upstream's separate settings row at that limit.
         let separate_settings_row = cluster_x - APPBAR_CLUSTER_GAP - title_x < 40.0;
@@ -1127,15 +1171,17 @@ impl GitClientApp {
             self.rect.x1,
             self.rect.y0 + self.appbar_h,
         );
-        Self::paint_appbar_surface(scene, t, theme, bar);
+        Self::paint_appbar_surface(ctx, bar);
         let row1 = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + m.row_h);
+        // The span of `row` from `x0` to `x1`.
+        let span = |row: Rect, x0: f64, x1: f64| Rect::new(x0, row.y0, x1, row.y1);
 
         // Hamburger toggle: shown only when the primary list column has
         // collapsed into an overlay flap (narrow window, master-detail
         // screen). It summons/dismisses the flap. The title block shifts
         // right to make room. Outside overlay mode there's no flap to toggle.
         if overlay {
-            self.draw_hamburger(scene, t, theme, row1, m.control_h);
+            self.draw_hamburger(ctx, row1, m.control_h);
         } else {
             self.hamburger_rect = Rect::ZERO;
         }
@@ -1149,84 +1195,35 @@ impl GitClientApp {
             } else {
                 cluster_x - APPBAR_CLUSTER_GAP
             };
-            self.draw_appbar_title(scene, tr, t, theme, row1, title_x, title_limit, &m);
+            self.draw_appbar_title(ctx, span(row1, title_x, title_limit), &m);
             let settings_row = if separate_settings_row {
                 Rect::new(bar.x0, row1.y1 + m.tab_row_h, bar.x1, bar.y1)
             } else {
                 row1
             };
             self.draw_settings_cluster(
-                scene,
-                tr,
-                t,
-                theme,
-                settings_row,
-                cluster_x,
-                seg_w,
-                syn_w,
+                ctx,
+                span(settings_row, cluster_x, settings_row.x1),
+                settings,
                 m.control_h,
             );
             let row2 = Rect::new(bar.x0, row1.y1, bar.x1, row1.y1 + m.tab_row_h);
             let tx_start = bar.x0 + APPBAR_GUTTER + 6.0;
-            let (wrapped_widths, wrapped_total) =
-                Self::fit_wrapped_appbar_tabs(&widths, bar.x1, tx_start, theme);
-            self.draw_appbar_tab_group(
-                scene,
-                tr,
-                t,
-                theme,
-                row2,
-                &wrapped_widths,
-                wrapped_total,
-                tx_start,
-                m.control_h,
-            );
+            let wrapped = Self::fit_wrapped_appbar_tabs(&tabs.cells, bar.x1, tx_start, ctx.theme);
+            self.draw_appbar_tab_group(ctx, span(row2, tx_start, row2.x1), &wrapped, m.control_h);
         } else {
             let tx_start = one_row_tabs_left + 6.0;
             let title_limit = one_row_tabs_left - 8.0;
-            self.draw_appbar_title(scene, tr, t, theme, row1, title_x, title_limit, &m);
-            self.draw_appbar_tab_group(
-                scene,
-                tr,
-                t,
-                theme,
-                row1,
-                &widths,
-                tabs_total,
-                tx_start,
-                m.control_h,
-            );
-            self.draw_settings_cluster(
-                scene,
-                tr,
-                t,
-                theme,
-                row1,
-                cluster_x,
-                seg_w,
-                syn_w,
-                m.control_h,
-            );
+            self.draw_appbar_title(ctx, span(row1, title_x, title_limit), &m);
+            self.draw_appbar_tab_group(ctx, span(row1, tx_start, row1.x1), &tabs, m.control_h);
+            self.draw_settings_cluster(ctx, span(row1, cluster_x, row1.x1), settings, m.control_h);
         }
-    }
-
-    /// Measured widths of the two settings controls: the Unified/Split
-    /// segmented control (both halves as wide as the wider label) and the
-    /// Syntax toggle, each with symmetric label padding.
-    fn measure_settings_cluster(tr: &mut TextRenderer) -> (f64, f64) {
-        let label_w = |tr: &mut TextRenderer, label: &str| {
-            f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0)
-        };
-        let half = label_w(tr, "Unified").max(label_w(tr, "Split")) + 24.0;
-        let seg_w = half * 2.0 + 6.0;
-        let syn_w = label_w(tr, "Syntax") + 24.0;
-        (seg_w, syn_w)
     }
 
     /// Each tab's pixel width and their combined width (including the 6px
     /// gaps between them) — needed both to clamp the title and to lay out
     /// the tab group's pill background.
-    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> (Vec<f64>, f64) {
+    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> TabWidths {
         let widths: Vec<f64> = TABS
             .iter()
             .map(|(_, label)| {
@@ -1235,7 +1232,10 @@ impl GitClientApp {
             })
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
-        (widths, total)
+        TabWidths {
+            cells: widths,
+            total,
+        }
     }
 
     /// Fit the wrapped (second-row) tab group between `tx_start` and the
@@ -1245,7 +1245,7 @@ impl GitClientApp {
         bar_x1: f64,
         tx_start: f64,
         theme: &Theme,
-    ) -> (Vec<f64>, f64) {
+    ) -> TabWidths {
         let available = (bar_x1 - APPBAR_GUTTER - 6.0 - tx_start).max(0.0);
         Self::fit_appbar_tabs(
             widths,
@@ -1257,12 +1257,15 @@ impl GitClientApp {
     /// Compress only the padding/slack of a wrapped tab row. Every semantic
     /// target keeps the theme's minimum pointer width; labels are elided at
     /// paint time while accessibility and keyboard routing retain full names.
-    fn fit_appbar_tabs(widths: &[f64], available: f64, minimum: f64) -> (Vec<f64>, f64) {
+    fn fit_appbar_tabs(widths: &[f64], available: f64, minimum: f64) -> TabWidths {
         let gaps = TABS.len().saturating_sub(1) as f64 * 6.0;
         let natural_cells = widths.iter().sum::<f64>();
         let allowed_cells = (available - gaps).max(minimum * widths.len() as f64);
         if natural_cells <= allowed_cells {
-            return (widths.to_vec(), natural_cells + gaps);
+            return TabWidths {
+                cells: widths.to_vec(),
+                total: natural_cells + gaps,
+            };
         }
         let slack = widths
             .iter()
@@ -1275,68 +1278,59 @@ impl GitClientApp {
             .map(|width| minimum + (width - minimum).max(0.0) * factor)
             .collect();
         let total = fitted.iter().sum::<f64>() + gaps;
-        (fitted, total)
+        TabWidths {
+            cells: fitted,
+            total,
+        }
     }
 
-    /// Draw the repo name, branch pill and pending-changes/error subtitle,
-    /// clamped so a long name ellipsises before the tab group.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_appbar_title(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        bar: Rect,
-        title_x: f64,
-        right_limit: f64,
-        m: &BarMetrics,
-    ) {
+    /// Draw the repo name, branch pill and pending-changes/error subtitle into
+    /// `slot` (the title's span of its bar row), clamped so a long name
+    /// ellipsises before the tab group.
+    fn draw_appbar_title(&mut self, ctx: &mut PaintCtx<'_>, slot: Rect, m: &BarMetrics) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
+        let title_x = slot.x0;
+        let right_limit = slot.x1;
         let title_max = (right_limit - title_x).max(40.0) as f32;
         // Elide rather than wrap: a wrapped repository name or subtitle used
         // to spill out of the bar on a narrow window.
-        let name = tr.elide_to_width_weighted(&self.model.name, 15.0, title_max, TextWeight::Bold);
-        let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Bold);
+        let name =
+            ctx.text
+                .elide_to_width_weighted(&self.model.name, 15.0, title_max, TextWeight::Bold);
+        let (nw, _) = ctx
+            .text
+            .measure_weighted(&name, 15.0, None, TextWeight::Bold);
         let nh = m.title_h;
         // The title + subtitle stack centres in the row: at 1× that is the
         // historical `y0 + 9`, at 2× the row has grown to hold both lines.
         let stack_h = nh + m.title_gap + m.subtitle_h;
-        let title_y = bar.y0 + (bar.height() - stack_h) / 2.0;
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        let title_y = slot.y0 + (slot.height() - stack_h) / 2.0;
+        ctx.text(
             &name,
-            15.0,
+            &TextStyle::new(15.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            title_x,
-            title_y,
+            Point::new(title_x, title_y),
             None,
-            TextWeight::Bold,
         );
         let mut right = title_x + f64::from(nw);
         let pill_x = right + 8.0;
         // Paint the branch pill only when its *measured* width fits left of
         // the next control (the pill measures `head` at 14px Medium with 6px
         // padding either side); centre it on the title's measured line.
-        let pill_h = draw::pill_height(tr, 14.0);
-        let pill_w = draw::pill_width(tr, &self.model.head, 14.0);
+        let pill_h = draw::pill_height(ctx.text, 14.0);
+        let pill_w = draw::pill_width(ctx.text, &self.model.head, 14.0);
         if pill_x + pill_w <= right_limit {
             draw::pill(
-                scene,
-                tr,
-                t,
-                pill_x,
-                title_y + (nh - pill_h) / 2.0,
-                14.0,
+                ctx,
+                Point::new(pill_x, title_y + (nh - pill_h) / 2.0),
                 &self.model.head,
-                Color::WHITE,
-                theme.accent_primary,
-                draw::PillEdge::Bare,
+                &draw::PillStyle {
+                    size: 14.0,
+                    fg: Color::WHITE,
+                    bg: theme.accent_primary,
+                    edge: draw::PillEdge::Bare,
+                },
             );
             right = pill_x + pill_w;
         }
@@ -1361,137 +1355,125 @@ impl GitClientApp {
             }
         };
         self.status_text.clone_from(&sub);
-        let sub = tr.elide_to_width(&sub, SUBTITLE_FONT, title_max);
-        let (sw, _) = tr.measure(&sub, SUBTITLE_FONT, None);
+        let sub = ctx.text.elide_to_width(&sub, SUBTITLE_FONT, title_max);
+        let (sw, _) = ctx.text.measure(&sub, SUBTITLE_FONT, None);
+        let sub_y = title_y + nh + m.title_gap;
         self.status_rect = Rect::new(
             title_x,
-            title_y + nh + m.title_gap,
+            sub_y,
             title_x + f64::from(title_max),
-            title_y + nh + m.title_gap + m.subtitle_h,
+            sub_y + m.subtitle_h,
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &sub,
-            SUBTITLE_FONT,
+            &TextStyle::new(SUBTITLE_FONT),
             sub_color,
-            title_x,
-            title_y + nh + m.title_gap,
+            Point::new(title_x, sub_y),
             None,
         );
-        self.title_rect = Rect::new(title_x, bar.y0, right.max(title_x + f64::from(sw)), bar.y1);
+        self.title_rect = Rect::new(
+            title_x,
+            slot.y0,
+            right.max(title_x + f64::from(sw)),
+            slot.y1,
+        );
     }
 
-    /// Draw the tab-group pill background and each tab, recording its hit
-    /// rect in `self.tab_rects`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
+    /// Draw the tab-group pill background and each tab of `tabs`, starting at
+    /// `row.x0` and centred in `row` at `tab_h` tall, recording each hit rect
+    /// in `self.tab_rects`.
     fn draw_appbar_tab_group(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        bar: Rect,
-        widths: &[f64],
-        total: f64,
-        tx_start: f64,
+        ctx: &mut PaintCtx<'_>,
+        row: Rect,
+        tabs: &TabWidths,
         tab_h: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let tab_y = bar.y0 + (bar.height() - tab_h) / 2.0;
-        let group_bg = Rect::new(tx_start - 6.0, tab_y, tx_start + total + 6.0, tab_y + tab_h);
+        let tx_start = row.x0;
+        let tab_y = row.y0 + (row.height() - tab_h) / 2.0;
+        let group_bg = Rect::new(
+            tx_start - 6.0,
+            tab_y,
+            tx_start + tabs.total + 6.0,
+            tab_y + tab_h,
+        );
         // The tab group is a base-toned track on the raised bar; its derived
         // edge is what separates the two surfaces on the dark preset.
-        draw::card(scene, t, group_bg, 9.0, c.surfaces.base);
+        draw::card(ctx, group_bg, 9.0, c.surfaces.base);
+        let label_style = TextStyle::new(13.0).with_weight(TextWeight::Medium);
         let mut tx = tx_start;
         for (i, (screen, label)) in TABS.iter().enumerate() {
-            let Some(&w) = widths.get(i) else {
+            let Some(&w) = tabs.cells.get(i) else {
                 continue;
             };
             let trect = Rect::new(tx, tab_y, tx + w, tab_y + tab_h);
             let active = *screen == self.screen;
             if active {
-                draw::fill_round(scene, t, trect, 7.0, theme.accent_primary);
+                ctx.fill_round(trect, 7.0, theme.accent_primary);
             }
             let fg = if active { Color::WHITE } else { c.text_dim };
-            let shown = tr.elide_to_width_weighted(
+            let shown = ctx.text.elide_to_width_weighted(
                 label,
                 13.0,
                 (w - 12.0).max(0.0) as f32,
                 TextWeight::Medium,
             );
-            let lw = f64::from(
-                tr.measure_weighted(&shown, 13.0, None, TextWeight::Medium)
-                    .0,
-            );
-            let ty_1 = draw::centered_top(tr, &shown, 13.0, TextWeight::Medium, tab_y, tab_h);
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+            let lw = f64::from(ctx.text.measure_style(&shown, None, &label_style).0);
+            let label_y =
+                draw::centered_top(ctx.text, &shown, 13.0, TextWeight::Medium, tab_y, tab_h);
+            ctx.text(
                 &shown,
-                13.0,
+                &label_style,
                 fg,
-                tx + (w - lw) / 2.0,
-                ty_1,
+                Point::new(tx + (w - lw) / 2.0, label_y),
                 None,
-                TextWeight::Medium,
             );
             self.tab_rects.push((*screen, trect));
             tx += w + 6.0;
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
+    /// Draw the diff-layout segmented control and the syntax toggle from
+    /// `row.x0`, each `control_h` tall and centred in `row`, and record their
+    /// hit rects.
     fn draw_settings_cluster(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        bar: Rect,
-        x: f64,
-        seg_w: f64,
-        syn_w: f64,
+        ctx: &mut PaintCtx<'_>,
+        row: Rect,
+        widths: SettingsWidths,
         control_h: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let y = bar.y0 + (bar.height() - control_h) / 2.0;
+        let x = row.x0;
+        let y = row.y0 + (row.height() - control_h) / 2.0;
+        let label_style = TextStyle::new(12.0).with_weight(TextWeight::Medium);
         // Diff-layout segmented control.
-        let seg = Rect::new(x, y, x + seg_w, y + control_h);
-        draw::card(scene, t, seg, 9.0, c.surfaces.base);
-        let half = seg_w / 2.0;
+        let seg = Rect::new(x, y, x + widths.segmented, y + control_h);
+        draw::card(ctx, seg, 9.0, c.surfaces.base);
+        let half = widths.segmented / 2.0;
         let unified_active = self.settings.diff_layout == DiffLayout::Unified;
         let active_rect = if unified_active {
             Rect::new(seg.x0 + 3.0, seg.y0 + 3.0, seg.x0 + half, seg.y1 - 3.0)
         } else {
             Rect::new(seg.x0 + half, seg.y0 + 3.0, seg.x1 - 3.0, seg.y1 - 3.0)
         };
-        draw::fill_round(scene, t, active_rect, 7.0, theme.accent_primary);
+        ctx.fill_round(active_rect, 7.0, theme.accent_primary);
         for (i, label) in ["Unified", "Split"].iter().enumerate() {
             let active = (i == 0) == unified_active;
             let fg = if active { Color::WHITE } else { c.text_dim };
             let cx = seg.x0 + half * i as f64;
-            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
-            let ty_2 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, y, control_h);
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
+            let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
+            let label_y =
+                draw::centered_top(ctx.text, label, 12.0, TextWeight::Medium, y, control_h);
+            ctx.text(
                 label,
-                12.0,
+                &label_style,
                 fg,
-                cx + (half - lw) / 2.0,
-                ty_2,
+                Point::new(cx + (half - lw) / 2.0, label_y),
                 None,
-                TextWeight::Medium,
             );
         }
         // Note: the segmented control's click rect is stored as the whole
@@ -1502,28 +1484,23 @@ impl GitClientApp {
         // preference, not a repository status, and "Syn" is ambiguous when a
         // control is viewed without its tooltip or action palette.
         let hx = seg.x1 + APPBAR_CLUSTER_GAP;
-        let hl = Rect::new(hx, y, hx + syn_w, y + control_h);
+        let hl = Rect::new(hx, y, hx + widths.syntax, y + control_h);
         let on = self.settings.syntax_highlight;
         if on {
-            draw::fill_round(scene, t, hl, 9.0, theme.accent_primary);
+            ctx.fill_round(hl, 9.0, theme.accent_primary);
         } else {
-            draw::card(scene, t, hl, 9.0, c.surfaces.base);
+            draw::card(ctx, hl, 9.0, c.surfaces.base);
         }
         let hlfg = if on { Color::WHITE } else { c.text_dim };
         let label = "Syntax";
-        let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
-        let ty_3 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, y, control_h);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
+        let label_y = draw::centered_top(ctx.text, label, 12.0, TextWeight::Medium, y, control_h);
+        ctx.text(
             label,
-            12.0,
+            &label_style,
             hlfg,
-            hl.x0 + (hl.width() - lw) / 2.0,
-            ty_3,
+            Point::new(hl.x0 + (hl.width() - lw) / 2.0, label_y),
             None,
-            TextWeight::Medium,
         );
         self.settings_syn = hl;
     }
@@ -1531,31 +1508,25 @@ impl GitClientApp {
     /// Draw the hamburger toggle at the left of the app bar and record its hit
     /// rect. Highlighted while the flap is open so it reads as an active
     /// toggle. Three stacked bars — the universal "open the menu" affordance.
-    fn draw_hamburger(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        bar: Rect,
-        size: f64,
-    ) {
+    fn draw_hamburger(&mut self, ctx: &mut PaintCtx<'_>, bar: Rect, size: f64) {
         let bx = bar.x0 + 12.0;
         let by = bar.y0 + (bar.height() - size) / 2.0;
         let btn = Rect::new(bx, by, bx + size, by + size);
         self.hamburger_rect = btn;
-        self.paint_hamburger(scene, t, theme, btn);
+        self.paint_hamburger(ctx, btn);
     }
 
     /// Paint the hamburger glyph into `btn` (its placed rect) — also used to
     /// repaint it above an open flap so the toggle stays reachable.
-    fn paint_hamburger(&self, scene: &mut Scene, t: Affine, theme: &Theme, btn: Rect) {
+    fn paint_hamburger(&self, ctx: &mut PaintCtx<'_>, btn: Rect) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let size = btn.height();
         let open = self.flap_open();
         if open {
-            draw::fill_round(scene, t, btn, 8.0, theme.accent_primary);
+            ctx.fill_round(btn, 8.0, theme.accent_primary);
         } else {
-            draw::card(scene, t, btn, 8.0, c.surfaces.base);
+            draw::card(ctx, btn, 8.0, c.surfaces.base);
         }
         let fg = if open { Color::WHITE } else { c.text_dim };
         // Three 2px bars at a 6px pitch, centred as a block in the button.
@@ -1569,7 +1540,7 @@ impl GitClientApp {
         for i in 0..3 {
             let ly = block_top + f64::from(i) * pitch;
             let line = Rect::new(x0, ly, x1, ly + bar_h);
-            draw::fill_round(scene, t, line, 1.0, fg);
+            ctx.fill_round(line, 1.0, fg);
         }
     }
 
@@ -1602,7 +1573,7 @@ impl GitClientApp {
     /// Paint the dimming scrim over `body` in overlay mode, sized to the flap
     /// reveal. A no-op when docked or fully closed. Drawn after the detail and
     /// before the list column so the column floats above the dimmed content.
-    fn draw_overlay_scrim(&self, scene: &mut Scene, t: Affine, body: Rect) {
+    fn draw_overlay_scrim(&self, ctx: &mut PaintCtx<'_>, body: Rect) {
         if self.layout_mode() != SplitLayout::Overlay {
             return;
         }
@@ -1611,36 +1582,25 @@ impl GitClientApp {
             return;
         }
         let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.86) as f32);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            t,
+            ctx.transform,
             scrim,
             None,
             &Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, body.y1),
         );
     }
 
-    fn draw_changes(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        body: Rect,
-    ) {
+    fn draw_changes(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
         let (col, pane, list_visible) = self.master_detail_rects(body, CHANGES_COL_W);
         // Detail (diff) first — it sits behind the overlay flap.
-        self.draw_diff_pane(scene, tr, t, theme, pane);
+        self.draw_diff_pane(ctx, pane);
         // Scrim between detail and list (overlay mode only).
-        self.draw_overlay_scrim(scene, t, body);
+        self.draw_overlay_scrim(ctx, body);
         if list_visible {
             let msg = self.commit_input.value().to_string();
             let out = ChangesColumn::draw(
-                scene,
-                tr,
-                t,
-                theme,
+                ctx,
                 col,
                 &self.model,
                 self.selected_change,
@@ -1653,7 +1613,8 @@ impl GitClientApp {
             // rect — the toolkit input owns its frame, text, caret and
             // selection so editing is a first-class ui component.
             self.commit_input.apply_layout_external(out.commit_input);
-            self.commit_input.draw(scene, t, tr, theme, presence);
+            self.commit_input
+                .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
         } else {
             self.change_hits.clear();
             self.change_semantic_hits.clear();
@@ -1662,25 +1623,19 @@ impl GitClientApp {
     }
 
     /// Paint the diff detail pane (header + diff body) into `pane`.
-    fn draw_diff_pane(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        pane: Rect,
-    ) {
+    fn draw_diff_pane(&mut self, ctx: &mut PaintCtx<'_>, pane: Rect) {
         // The header is 36 px at 1× and grows to hold its 13 px title line
         // plus padding at larger text scales; the body and scroll clamp read
         // the same measured height.
-        let (_, title_h) = tr.measure_weighted("Ag", 13.0, None, TextWeight::Medium);
+        let (_, title_h) = ctx
+            .text
+            .measure_weighted("Ag", 13.0, None, TextWeight::Medium);
         self.diff_header_h = (f64::from(title_h) + 2.0 * 9.0).max(36.0);
         let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + self.diff_header_h);
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, header, c.surfaces.raised);
+        let c = &ctx.theme.tokens.colors;
+        ctx.fill_rect(header, c.surfaces.raised);
         draw::hline(
-            scene,
-            t,
+            ctx,
             header.y1,
             header.x0,
             header.x1,
@@ -1690,93 +1645,67 @@ impl GitClientApp {
         let key = self.current_diff_key();
         // Pull the header facts out as owned values so the `self.diffs` borrow
         // ends before we mutate `self` (discard rect) or re-borrow for the body.
-        let info = key.as_ref().and_then(|k| self.diffs.get(k)).map(|d| {
-            (
-                d.old_path.clone(),
-                d.path.clone(),
-                d.additions(),
-                d.deletions(),
-            )
-        });
+        let info = key
+            .as_ref()
+            .and_then(|k| self.diffs.get(k))
+            .map(|d| DiffHeaderInfo {
+                old_path: d.old_path.clone(),
+                path: d.path.clone(),
+                additions: d.additions(),
+                deletions: d.deletions(),
+            });
         self.discard_file_rect = Rect::ZERO;
         let staged = self.selected_is_staged();
 
-        if let Some((old_path, path, adds, dels)) = info {
-            self.draw_diff_header_file(
-                scene,
-                tr,
-                t,
-                theme,
-                header,
-                old_path.as_deref(),
-                path,
-                adds,
-                dels,
-                staged,
-            );
+        if let Some(info) = info {
+            self.draw_diff_header_file(ctx, header, info, staged);
         } else {
             let hint = "Select a file to view its diff";
             let hy = draw::centered_top(
-                tr,
+                ctx.text,
                 hint,
                 13.0,
                 TextWeight::Regular,
                 header.y0,
                 header.height(),
             );
-            draw::text(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 hint,
-                13.0,
+                &TextStyle::new(13.0),
                 c.text_dim,
-                header.x0 + 16.0,
-                hy,
+                Point::new(header.x0 + 16.0, hy),
                 None,
             );
         }
 
-        self.draw_diff_body(scene, tr, t, theme, pane, header, key.as_ref(), staged);
+        let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
+        self.draw_diff_body(ctx, viewport, key.as_ref(), staged);
     }
 
     /// Draw the diff-pane header for the selected file: title, +/− summary,
     /// and (on the worktree side of a real repo) the two-click "Discard
     /// file" affordance.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_diff_header_file(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         header: Rect,
-        old_path: Option<&str>,
-        path: String,
-        adds: u32,
-        dels: u32,
+        info: DiffHeaderInfo,
         staged: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let title = match old_path {
-            Some(old) => format!("{old}  →  {path}"),
-            None => path,
+        let c = &ctx.theme.tokens.colors;
+        let title = match info.old_path {
+            Some(old) => format!("{old}  →  {}", info.path),
+            None => info.path,
         };
-        let summary = format!("+{adds}  −{dels}");
-        let aw = f64::from(draw::mono_width(tr, &summary, 12.0));
-        let sy = draw::mono_centered_top(tr, &summary, 12.0, header.y0, header.height());
+        let summary = format!("+{}  −{}", info.additions, info.deletions);
+        let aw = f64::from(draw::mono_width(ctx.text, &summary, 12.0));
+        let sy = draw::mono_centered_top(ctx.text, &summary, 12.0, header.y0, header.height());
         draw::mono(
-            scene,
-            tr,
-            t,
+            ctx,
             &summary,
             12.0,
             c.text_dim,
-            header.x1 - aw - 16.0,
-            sy,
+            Point::new(header.x1 - aw - 16.0, sy),
         );
 
         // Discard-file affordance on the worktree (unstaged / untracked)
@@ -1785,30 +1714,27 @@ impl GitClientApp {
         let mut title_max = (header.width() - aw - 16.0 - 16.0 - 12.0).max(40.0) as f32;
         let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
         if can_discard {
-            title_max = self.draw_discard_file_button(scene, tr, t, theme, header, aw);
+            title_max = self.draw_discard_file_button(ctx, header, aw);
         }
         // Elide rather than wrap: a second title line has no room in the
         // header band and used to paint over the diff's first row.
-        let title = tr.elide_to_width_weighted(&title, 13.0, title_max, TextWeight::Medium);
+        let title = ctx
+            .text
+            .elide_to_width_weighted(&title, 13.0, title_max, TextWeight::Medium);
         let ty = draw::centered_top(
-            tr,
+            ctx.text,
             &title,
             13.0,
             TextWeight::Medium,
             header.y0,
             header.height(),
         );
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        ctx.text(
             &title,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             c.text_primary,
-            header.x0 + 16.0,
-            ty,
+            Point::new(header.x0 + 16.0, ty),
             None,
-            TextWeight::Medium,
         );
     }
 
@@ -1816,10 +1742,7 @@ impl GitClientApp {
     /// the title's clamped max width now that the button occupies space.
     fn draw_discard_file_button(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         header: Rect,
         summary_w: f64,
     ) -> f32 {
@@ -1830,7 +1753,8 @@ impl GitClientApp {
             "Discard file"
         };
         let lw = f64::from(
-            tr.measure_weighted(label, DIFF_DISCARD_FONT, None, TextWeight::Medium)
+            ctx.text
+                .measure_weighted(label, DIFF_DISCARD_FONT, None, TextWeight::Medium)
                 .0,
         );
         let bw = lw + 20.0;
@@ -1846,52 +1770,43 @@ impl GitClientApp {
         } else {
             face.danger_outline()
         };
-        draw::button(scene, tr, t, theme, &face);
+        draw::button(ctx, &face);
         self.discard_file_rect = brect;
         (bx - header.x0 - 24.0).max(40.0) as f32
     }
 
-    /// Draw the diff body below the header: the hunk view for the selected
-    /// file, or an empty pane when nothing is selected.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
+    /// Draw the diff body into `viewport` (the pane below its header): the
+    /// hunk view for the selected file, or an empty pane when nothing is
+    /// selected.
     fn draw_diff_body(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        pane: Rect,
-        header: Rect,
+        ctx: &mut PaintCtx<'_>,
+        viewport: Rect,
         key: Option<&DiffKey>,
         staged: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
-        let armed_hunk = match self.armed_discard {
+        let armed_discard = match self.armed_discard {
             Some(DiscardTarget::Hunk(h)) => Some(h),
             _ => None,
         };
         if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
+            let interaction = HunkInteraction {
+                hovered: self.hover_hunk,
+                staged_side: staged,
+                armed_discard,
+            };
             let out = DiffView::draw_with_metrics(
-                scene,
-                tr,
-                t,
-                theme,
+                ctx,
                 viewport,
                 diff,
                 self.diff_scroll,
                 &self.settings,
-                self.hover_hunk,
-                staged,
-                armed_hunk,
+                interaction,
             );
             self.diff_hunk_buttons = out.buttons;
             self.diff_metrics = out.metrics;
         } else {
-            draw::fill_rect(scene, t, viewport, c.surfaces.base);
+            ctx.fill_rect(viewport, ctx.theme.tokens.colors.surfaces.base);
             self.diff_hunk_buttons.clear();
         }
     }
@@ -1906,14 +1821,7 @@ impl GitClientApp {
         list.get(idx).map(|f| f.path.clone())
     }
 
-    fn draw_history(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        body: Rect,
-    ) {
+    fn draw_history(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
         match self.layout_mode() {
             SplitLayout::Docked => {
                 // Wide: the commit list keeps its generous ~56% split, eased
@@ -1922,23 +1830,12 @@ impl GitClientApp {
                 let split = body.x0 + full_split * self.flap.reveal();
                 let detail = Rect::new(split, body.y0, body.x1, body.y1);
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
-                        theme,
-                        detail,
-                        commit,
-                        self.detail_scroll,
-                    );
+                    HistoryView::draw_detail(ctx, detail, commit, self.detail_scroll);
                 }
                 if self.flap.reveal() > 0.001 {
                     let list = Rect::new(body.x0, body.y0, split, body.y1);
                     let out = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
-                        theme,
+                        ctx,
                         list,
                         &self.model,
                         &self.graph_layout,
@@ -1956,26 +1853,15 @@ impl GitClientApp {
                 // as a fixed-width flap behind a scrim.
                 let detail = body;
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
-                        theme,
-                        detail,
-                        commit,
-                        self.detail_scroll,
-                    );
+                    HistoryView::draw_detail(ctx, detail, commit, self.detail_scroll);
                 }
-                self.draw_overlay_scrim(scene, t, body);
+                self.draw_overlay_scrim(ctx, body);
                 if self.flap.reveal() > 0.001 {
                     let slide = self.flap.slide();
                     let x0 = body.x0 - FLAP_W * (1.0 - slide);
                     let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
                     let out = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
-                        theme,
+                        ctx,
                         list,
                         &self.model,
                         &self.graph_layout,
@@ -1991,23 +1877,15 @@ impl GitClientApp {
         }
     }
 
-    fn draw_panels(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        body: Rect,
-    ) {
-        let panels = PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
+    fn draw_panels(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
+        let panels = PanelsView::draw(ctx, body, &self.model, self.hover_action);
         self.panel_hits = panels.hits;
         self.panel_semantic_hits = panels.semantic_hits;
         // New-branch creator: a compact labelled input + button drawn in the
         // toolbar's centre band, between the branch status (left) and the
         // fetch/pull/push cluster (right). Only meaningful for a real repo.
         if self.repo_path.is_some() {
-            self.draw_new_branch(scene, tr, t, theme, presence, body);
+            self.draw_new_branch(ctx, presence, body);
         } else {
             self.new_branch_input = Rect::ZERO;
             self.new_branch_button = Rect::ZERO;
@@ -2017,15 +1895,7 @@ impl GitClientApp {
 
     /// Draw the new-branch input + "Create" button in the panels toolbar and
     /// record their hit rects. The toolbar is the top 56px band of `body`.
-    fn draw_new_branch(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        body: Rect,
-    ) {
+    fn draw_new_branch(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
         let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
         // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
         let actions_w = 300.0;
@@ -2050,16 +1920,14 @@ impl GitClientApp {
         }
         // Input field — the toolkit TextInput draws its own frame + caret.
         self.branch_input.apply_layout_external(input);
-        self.branch_input.draw(scene, t, tr, theme, presence);
+        self.branch_input
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
         self.new_branch_input = input;
         // Create button.
         let brect = Rect::new(bx, y, bx + btn_w, y + h);
         let enabled = !self.branch_input.value().trim().is_empty();
         draw::button(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             &ButtonFace::new(brect, "Branch")
                 .primary()
                 .radius(6.0)
@@ -2091,119 +1959,86 @@ impl GitClientApp {
     /// Draw the empty "open a repository" state: a centered card with a path
     /// field (toolkit `TextInput`) and an Open button. This is the honest
     /// default when no repository is reachable — no placeholder repo data.
-    fn draw_open(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.rect, c.surfaces.base);
+    fn draw_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        ctx.fill_rect(self.rect, ctx.theme.tokens.colors.surfaces.base);
 
         let cw = 520.0_f64.min(self.rect.width() - 48.0);
         let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
         let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
 
-        let y = Self::draw_open_intro(scene, tr, t, theme, cx, cw, cy);
-        self.draw_open_path_field(scene, tr, t, theme, presence, cx, cw, y);
+        let y = Self::draw_open_intro(ctx, Point::new(cx, cy), cw);
+        self.draw_open_path_field(ctx, presence, Point::new(cx, y), cw);
     }
 
-    /// Draw the branch-glyph mark, title and subtitle above the path field.
-    /// Returns the y position the path field should start at.
-    fn draw_open_intro(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        cx: f64,
-        cw: f64,
-        cy: f64,
-    ) -> f64 {
+    /// Draw the branch-glyph mark, title and subtitle of the `width`-wide
+    /// column whose top-left is `origin`, above the path field. Returns the y
+    /// position the path field should start at.
+    fn draw_open_intro(ctx: &mut PaintCtx<'_>, origin: Point, width: f64) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
+        let (cx, cw, cy) = (origin.x, width, origin.y);
         // Branch glyph mark.
         let mark = Rect::new(cx + cw / 2.0 - 22.0, cy, cx + cw / 2.0 + 22.0, cy + 44.0);
-        draw::fill_round(scene, t, mark, 12.0, c.accent[2]);
-        let gw = f64::from(tr.measure_weighted("⑂", 24.0, None, TextWeight::Bold).0);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        ctx.fill_round(mark, 12.0, c.accent[2]);
+        let glyph_style = TextStyle::new(24.0).with_weight(TextWeight::Bold);
+        let gw = f64::from(ctx.text.measure_style("⑂", None, &glyph_style).0);
+        ctx.text(
             "⑂",
-            24.0,
+            &glyph_style,
             theme.accent_primary,
-            mark.x0 + (mark.width() - gw) / 2.0,
-            mark.y0 + 8.0,
+            Point::new(mark.x0 + (mark.width() - gw) / 2.0, mark.y0 + 8.0),
             None,
-            TextWeight::Bold,
         );
 
         let mut y = cy + 64.0;
         let title = "No repository open";
-        let tw = f64::from(tr.measure_weighted(title, 20.0, None, TextWeight::Bold).0);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
+        let title_style = TextStyle::new(20.0).with_weight(TextWeight::Bold);
+        let tw = f64::from(ctx.text.measure_style(title, None, &title_style).0);
+        ctx.text(
             title,
-            20.0,
+            &title_style,
             c.text_primary,
-            cx + (cw - tw) / 2.0,
-            y,
+            Point::new(cx + (cw - tw) / 2.0, y),
             None,
-            TextWeight::Bold,
         );
         y += 30.0;
         let sub = "Open a git repository to view its changes, history and branches.";
-        let sw = f64::from(tr.measure(sub, 13.0, None).0);
-        draw::text(
-            scene,
-            tr,
-            t,
+        let sw = f64::from(ctx.text.measure(sub, 13.0, None).0);
+        ctx.text(
             sub,
-            13.0,
+            &TextStyle::new(13.0),
             c.text_dim,
-            cx + (cw - sw).max(0.0) / 2.0,
-            y,
+            Point::new(cx + (cw - sw).max(0.0) / 2.0, y),
             Some(cw as f32),
         );
         y + 40.0
     }
 
-    /// Draw the repository path field, Open button, and any open error
-    /// below the intro block drawn by [`Self::draw_open_intro`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
+    /// Draw the repository path field, Open button, and any open error of the
+    /// `width`-wide column from `origin`, below the intro block drawn by
+    /// [`Self::draw_open_intro`].
     fn draw_open_path_field(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
-        cx: f64,
-        cw: f64,
-        mut y: f64,
+        origin: Point,
+        width: f64,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &ctx.theme.tokens.colors;
+        let (cx, cw, mut y) = (origin.x, width, origin.y);
         // Path field + Open button.
         let btn_w = 92.0;
         let gap = 10.0;
         let field_h = 40.0;
         let field = Rect::new(cx, y, cx + cw - btn_w - gap, y + field_h);
         self.open_input.apply_layout_external(field);
-        self.open_input.draw(scene, t, tr, theme, presence);
+        self.open_input
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
         self.open_input_rect = field;
         let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
         let enabled = !self.open_input.value().trim().is_empty();
         draw::button(
-            scene,
-            tr,
-            t,
-            theme,
+            ctx,
             &ButtonFace::new(brect, "Open")
                 .primary()
                 .radius(8.0)
@@ -2216,16 +2051,12 @@ impl GitClientApp {
         // Any open error (e.g. "No git repository at …").
         if let Some(err) = &self.last_error {
             y += field_h + 16.0;
-            let ew = f64::from(tr.measure(err, 12.5, None).0);
-            draw::text(
-                scene,
-                tr,
-                t,
+            let ew = f64::from(ctx.text.measure(err, 12.5, None).0);
+            ctx.text(
                 err,
-                12.5,
+                &TextStyle::new(12.5),
                 c.semantic.danger,
-                cx + (cw - ew).max(0.0) / 2.0,
-                y,
+                Point::new(cx + (cw - ew).max(0.0) / 2.0, y),
                 Some(cw as f32),
             );
         }
@@ -2811,6 +2642,11 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
     }
@@ -2890,12 +2726,12 @@ impl Widget for GitClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
 
         // Honest empty state: no repository bound. Show the open-a-repository
         // screen instead of the workspace chrome.
         if self.awaiting_repo {
-            self.draw_open(scene, tr, transform, theme, presence);
+            self.draw_open(&mut ctx, presence);
             return;
         }
 
@@ -2905,9 +2741,9 @@ impl Widget for GitClientApp {
         self.flap.reconcile(self.layout_mode());
         self.tick_flap();
 
-        draw::fill_rect(scene, transform, self.rect, c.surfaces.base);
+        ctx.fill_rect(self.rect, theme.tokens.colors.surfaces.base);
 
-        self.draw_appbar(scene, tr, transform, theme);
+        self.draw_appbar(&mut ctx);
 
         let body = Rect::new(
             self.rect.x0,
@@ -2916,15 +2752,15 @@ impl Widget for GitClientApp {
             self.rect.y1,
         );
         match self.screen {
-            Screen::Changes => self.draw_changes(scene, tr, transform, theme, presence, body),
-            Screen::History => self.draw_history(scene, tr, transform, theme, body),
-            Screen::Panels => self.draw_panels(scene, tr, transform, theme, presence, body),
+            Screen::Changes => self.draw_changes(&mut ctx, presence, body),
+            Screen::History => self.draw_history(&mut ctx, body),
+            Screen::Panels => self.draw_panels(&mut ctx, presence, body),
         }
         if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
             // Repaint the toggle above the open flap at the rect the app bar
             // placed it — the same measured row, not a fixed 1× bar height.
             let btn = self.hamburger_rect;
-            self.paint_hamburger(scene, transform, theme, btn);
+            self.paint_hamburger(&mut ctx, btn);
         }
     }
 
@@ -3093,20 +2929,6 @@ impl Widget for GitClientApp {
         true
     }
 
-    /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
-    /// [`crate::actions`]). Empty when no repository is open.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the document heads captured before an on-screen preference
-    /// control dispatched, so it records exactly one undo boundary bracketing
-    /// it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3207,6 +3029,24 @@ impl Widget for GitClientApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for GitClientApp {
+    /// Publish the open repository and its view-preference actions to the
+    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
+    /// [`crate::actions`]). Empty when no repository is open.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::undo::CommittedActions for GitClientApp {
+    /// Hand the host the document heads captured before an on-screen preference
+    /// control dispatched, so it records exactly one undo boundary bracketing
+    /// it — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -3588,7 +3428,6 @@ impl GitClientApp {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the widget event contract and modal/global/list keyboard layers are kept together"
     )]
@@ -3919,7 +3758,7 @@ mod tests {
         assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
 
         // The action Ctrl+K would dispatch right now: flip unified → split.
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let spec = resources[0]
             .actions
             .iter()
@@ -3944,7 +3783,7 @@ mod tests {
         );
         // ...recorded exactly one undo boundary bracketing the toggle...
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "one undo boundary recorded for the control's action"
         );
         // ...and dispatched the byte-identical action Ctrl+K would.
@@ -3976,7 +3815,12 @@ mod tests {
             for screen in [Screen::Changes, Screen::History, Screen::Panels] {
                 let mut app = app_at(width, screen);
                 let mut scene = Scene::new();
-                app.draw_appbar(&mut scene, &mut text, Affine::IDENTITY, &theme);
+                app.draw_appbar(&mut PaintCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ));
                 for (_, rect) in &app.tab_rects {
                     assert!(
                         rect.width() + 0.5 >= f64::from(theme.tokens.metrics.min_pointer_target),

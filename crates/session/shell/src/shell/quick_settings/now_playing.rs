@@ -110,10 +110,6 @@ pub fn transport_rects(row: Rect, scale: f64) -> [(Transport, Rect); 3] {
 /// the primary action, previous and next are ghost buttons, and a control the
 /// player does not offer is disabled rather than hidden so the row keeps its
 /// shape.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "an immediate-mode painter needs the frame context plus the row's live interaction state"
-)]
 pub fn paint_transport(
     scene: &mut Scene,
     transform: Affine,
@@ -766,10 +762,6 @@ impl NowPlayingCard {
     }
 
     /// Paint the whole card, its Panel surface included, into `rect`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the retained-rendering entry point receives the frame context and the live model together"
-    )]
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered paint of artwork, text, seek bar, transport and picker keeps each region beside the geometry it reads"
@@ -1002,10 +994,6 @@ impl NowPlayingCard {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one list row's paint needs the frame context, its content and its interaction state"
-    )]
     fn draw_picker_row(
         scene: &mut Scene,
         transform: Affine,

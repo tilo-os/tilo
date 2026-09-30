@@ -7,12 +7,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/install-cosign"
 CONSUMERS = {
-    "build-builder-image.yml": 2,
+    "build-ci-builder.yml": 2,
     "build-image.yml": 2,
     "build-kernel.yml": 3,
-    "snapshot-kernel-buildroot.yml": 3,
-    "snapshot-rpms.yml": 1,
-    "snapshot-wpe-buildroot.yml": 3,
+    "build-buildroots.yml": 3,
+    "build-rpms.yml": 1,
     "release-relay.yml": 2,
 }
 
@@ -43,11 +42,10 @@ class CosignInstallActionTests(unittest.TestCase):
         with self.subTest(phase='path filtered consumers track the shared action'):
             workflows = ROOT / ".forgejo" / "workflows"
             for name in (
-                "build-builder-image.yml",
+                "build-ci-builder.yml",
                 "build-kernel.yml",
-                "snapshot-kernel-buildroot.yml",
-                "snapshot-rpms.yml",
-                "snapshot-wpe-buildroot.yml",
+                "build-buildroots.yml",
+                "build-rpms.yml",
                 "release-relay.yml",
             ):
                 with self.subTest(workflow=name):

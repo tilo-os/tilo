@@ -665,6 +665,18 @@ impl SessionOwner {
             .map_err(anyhow::Error::msg)?;
         Ok(candidate)
     }
+    pub(crate) fn prepare_member_administrator(
+        &self,
+        user_public_key: [u8; 32],
+        now: SystemTime,
+    ) -> Result<StatePeer> {
+        self.require_owner_resource_scope()?;
+        let mut candidate = self.peer.clone();
+        candidate
+            .set_member_administrator(user_public_key, &self.identity.native, now)
+            .map_err(anyhow::Error::msg)?;
+        Ok(candidate)
+    }
     pub(crate) fn prepare_member_removal(
         &self,
         user_public_key: [u8; 32],
@@ -696,21 +708,18 @@ impl SessionOwner {
         }
         result
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub(crate) fn commit_join_redemption(
         &mut self,
         mut candidate: StatePeer,
-        mut state: crate::collaboration::CollaborationState,
+        redemption: &tilo_peer_state::join::VerifiedRedemption,
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
-        invite_id: [u8; 32],
-        device_cert: DeviceCert,
-        role: tilo_peer_state::join::MemberRole,
     ) -> Result<tilo_peer_state::join::JoinBootstrap> {
+        let mut state = self.aggregate.collaboration.clone();
+        let invite_id = redemption.join().invite_id();
+        let device_cert = redemption.certificate().clone();
+        let role = redemption.join().grant().role;
         self.require_owner_resource_scope()?;
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             bail!("collaboration cannot replace native namespace");
@@ -1269,6 +1278,35 @@ impl SessionOwner {
         let mut next = self.aggregate.clone();
         self.replace_publication(&mut next, &messages)?;
         self.commit(next, candidate)
+    }
+    /// Compact `app`/`record`'s sealed history as its channel's key holder,
+    /// through `open` and `seal` (see `StatePeer::compact_sealed_history`),
+    /// and publish the compaction with the record's receipt.
+    pub(crate) fn commit_sealed_compaction(
+        &mut self,
+        app: &str,
+        record: &str,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut tilo_peer_state::SealCheckpoint<'_>,
+    ) -> Result<CommitReceipt> {
+        self.require_owner_resource_scope()?;
+        self.aggregate.require_writable()?;
+        let mut candidate = self.peer.clone();
+        candidate
+            .compact_sealed_history(
+                app,
+                record,
+                open,
+                seal,
+                &self.identity.native,
+                publication_time(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        let mut next = self.aggregate.clone();
+        let transition = self.append_mutation_publication(&mut next, &mut candidate)?;
+        let receipt = self.commit(next, candidate)?;
+        self.install_live_publication_transition(transition);
+        Ok(receipt)
     }
     pub fn receive(
         &mut self,

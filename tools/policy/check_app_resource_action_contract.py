@@ -31,12 +31,7 @@ BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueR
 BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
 BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
-LEGACY_OPERATION_HANDLER = re.compile(
-    r"\bfn\s+(?:invoke_resource_operation(?:_v2)?|start_resource_operation(?:_with_document)?)\s*\("
-)
-OPERATION_HANDLER = re.compile(
-    r"\bfn\s+start_operation\s*\(|" + LEGACY_OPERATION_HANDLER.pattern
-)
+OPERATION_HANDLER = re.compile(r"\bfn\s+start_operation\s*\(")
 OPERATION_HANDLER_REGISTRY = re.compile(
     r"\bfn\s+local_resource_operation_handlers\s*\("
 )
@@ -321,13 +316,7 @@ def function_bodies(text: str) -> dict[str, list[str]]:
 def reachable_handler_code(text: str) -> str:
     """The canonical handler plus local helper functions it directly reaches."""
     bodies = function_bodies(text)
-    pending = [
-        "start_operation",
-        "invoke_resource_operation",
-        "invoke_resource_operation_v2",
-        "start_resource_operation",
-        "start_resource_operation_with_document",
-    ]
+    pending = ["start_operation"]
     seen: set[str] = set()
     reached: list[str] = []
     while pending:

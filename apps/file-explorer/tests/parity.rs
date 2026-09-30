@@ -310,7 +310,7 @@ fn footer_shows_item_count_and_formatted_path() {
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), xdg_paths::home().as_deref())
+        file_explorer::model::format_path(&w.current_path(), tilo_paths::home().as_deref())
     );
 }
 
@@ -453,6 +453,7 @@ fn list_mode_has_name_size_modified_columns() {
 fn list_build_yields_a_file_view() {
     use file_explorer::command::new_sink;
     use file_explorer::model::{Entry, SortBy, SortOrder};
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::list_view::build_list;
     use ui::SelectionModel;
     let entries = vec![Entry {
@@ -472,20 +473,12 @@ fn list_build_yields_a_file_view() {
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_list(
-        &entries,
-        &SelectionModel::new(),
-        &new_sink(),
-        1.0,
-        1.0,
-        SortBy::Name,
-        SortOrder::Ascending,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &SelectionModel::new(), &new_sink())
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_list(view, SortBy::Name, SortOrder::Ascending);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
@@ -494,6 +487,7 @@ fn grid_mode_uses_responsive_file_view() {
     // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
     use std::path::PathBuf;
     use ui::SelectionModel;
@@ -523,18 +517,12 @@ fn grid_mode_uses_responsive_file_view() {
     let sink = new_sink();
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_grid(
-        &entries,
-        &sel,
-        &sink,
-        1.0,
-        1.0,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &sel, &sink)
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_grid(view);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 

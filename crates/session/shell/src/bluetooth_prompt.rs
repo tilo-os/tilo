@@ -34,7 +34,7 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 pub const KEY_ACCEPT: &str = "bluetooth.pair.accept";
@@ -694,48 +694,30 @@ impl PairingOverlay {
     /// event, except the unmodified Tab and the Enter/Space activation the
     /// frame performs on the focused control when the dialog did not use
     /// them. Returns whether the dialog is open.
-    #[allow(clippy::too_many_arguments, reason = "mirrors the Widget event inputs")]
+    /// `ctx.node_id` is the node the event arrived at; the dialog is
+    /// dispatched at its own.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         // Not laid out yet means not on screen: nothing to route to.
         let (Some(view), Some(node)) = (self.view.as_mut(), self.node) else {
             return false;
         };
-        view.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id: node,
-                taffy,
-            },
-        );
+        view.handle_event(event, &mut ctx.reborrow(ctx.path, node));
         // A button writes its key into `state`; read it now so the answer
         // is the one given in this event, whatever document the next frame
         // pumps.
-        view.sync(state, path);
-        let unmodified = !modifiers.state().control_key()
-            && !modifiers.state().alt_key()
-            && !modifiers.state().super_key();
+        view.sync(ctx.state, ctx.path);
+        let modifiers = ctx.modifiers.state();
+        let unmodified = !modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
         let frame_owned = unmodified
             && (pressed(event, NamedKey::Tab)
                 || pressed(event, NamedKey::Enter)
                 || pressed(event, NamedKey::Space));
         if !frame_owned {
-            *handled = true;
+            *ctx.handled = true;
         }
         true
     }

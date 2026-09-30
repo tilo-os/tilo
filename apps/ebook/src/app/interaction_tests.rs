@@ -24,7 +24,7 @@ fn app_with_sample() -> BooksApp {
 
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         app.sync(doc, &automerge::ROOT);
         if app.import_loading.is_none() {
             return;
@@ -105,8 +105,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let actions = app
-            .search_providers()
+        let actions = ui::search::capability::search_providers(&app)
             .pop()
             .expect("the action-label provider is published");
 
@@ -2245,7 +2244,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
             "a page change surfaces the bubble's next chevron"
         );
         assert!(
-            app.reader_bubble.needs_frame(Instant::now()),
+            app.reader_bubble.needs_frame(ui::time::now()),
             "the visible bubble schedules its own fade-out frames"
         );
     }
@@ -2416,7 +2415,7 @@ fn page_modes_and_turn_animation() {
             "the turn schedules animation frames"
         );
         let pt = app.page_turn.expect("a page-turn slide is in flight");
-        let (dx, alpha) = pt.visual(std::time::Instant::now(), 500.0);
+        let (dx, alpha) = pt.visual(ui::time::now(), 500.0);
         assert!(
             dx > 0.0,
             "a forward turn slides the incoming page in from the right: {dx}"
@@ -4891,18 +4890,19 @@ fn reader_controls_fit_their_labels() {
 fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
     let theme = ui::Theme::dark();
     let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme);
     for (y0, y1) in [(0.0, 1.0), (10.0, 30.0), (0.0, 400.0)] {
         BooksApp::draw_rail_scrollbar(
-            &mut scene,
-            Affine::IDENTITY,
-            &theme.tokens.colors,
-            0.0,
-            y0,
+            &mut ctx,
+            Point::new(0.0, y0),
             y1,
-            40.0,
-            200.0,
-            100.0,
-            300.0,
+            RailScroll {
+                offset: 40.0,
+                max: 200.0,
+                visible_h: 100.0,
+                content_h: 300.0,
+            },
         );
     }
 }

@@ -1,0 +1,396 @@
+//! Browser sessions: each one is an ordinary relay peer.
+//!
+//! After the same [`auth`](crate::auth) handshake an iroh peer runs, the
+//! host starts [`run_peer_until`](crate::peer::run_peer_until) over an in-process duplex
+//! stream, exactly as for a `tilo-relay/1` stream. `/send` writes the
+//! browser's envelopes into that stream; a pump reads the host's envelopes
+//! out into an event log that `/events` serves from a host-MAC'd cursor and
+//! trims on acknowledgement. Subscribe, commit ordering, store-and-forward,
+//! the live plane and the revocation audit are therefore the relay's own
+//! code paths, and browser and iroh peers share one host order.
+//!
+//! Nothing here blocks a runtime thread: handlers await the log's `Notify`,
+//! and the only periodic work is the idle janitor.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+use tilo_clock::unix_now_ns;
+use tokio::io::AsyncWriteExt as _;
+use tokio::sync::{Notify, watch};
+
+use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck2};
+use crate::daemon::WebContext;
+use crate::transport::Envelope;
+use crate::web::protocol::{
+    Cursor, EventsPage, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
+};
+
+/// A handshake must be finished within this.
+const HANDSHAKE_TTL: Duration = Duration::from_secs(30);
+/// Sessions end after this, even when active; the device reauthenticates.
+const SESSION_TTL: Duration = Duration::from_secs(15 * 60);
+/// A session nobody polled for this long ends; its peer unsubscribes and the
+/// host queues for the device instead.
+const IDLE_TTL: Duration = Duration::from_secs(45);
+/// Envelopes the host may hold for a session before it is closed (the
+/// device then resubscribes and the host replays durable state).
+const MAX_LOG_ENVELOPES: usize = 8192;
+/// Concurrent sessions and handshakes.
+const MAX_SESSIONS: usize = 256;
+const MAX_HANDSHAKES: usize = 64;
+/// Duplex buffer between the HTTPS side and the peer loop.
+const DUPLEX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Why a session route refused.
+#[derive(Debug)]
+pub(crate) enum SessionError {
+    /// Unknown, expired or ended session (401).
+    Gone,
+    /// Malformed or failed handshake, or an invalid cursor (400/403).
+    Refused(String),
+    /// Capacity (503).
+    Busy,
+}
+
+struct Handshake {
+    peer: AuthenticatedPeer,
+    server_nonce: [u8; 32],
+    started: Instant,
+}
+
+struct Log {
+    /// Sequence of `items[0]`.
+    first_seq: u64,
+    items: VecDeque<Envelope>,
+    closed: bool,
+}
+
+pub(crate) struct Session {
+    pub(crate) peer: AuthenticatedPeer,
+    token: [u8; 32],
+    expires: Instant,
+    last_poll: Mutex<Instant>,
+    to_host: tokio::sync::Mutex<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    log: Mutex<Log>,
+    changed: Notify,
+    end: watch::Sender<bool>,
+}
+
+impl Session {
+    fn log(&self) -> MutexGuard<'_, Log> {
+        self.log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn close(&self) {
+        self.end.send_replace(true);
+        self.log().closed = true;
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn token(&self) -> [u8; 32] {
+        self.token
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        !*self.end.borrow() && Instant::now() < self.expires
+    }
+}
+
+/// Every browser session of one host.
+pub(crate) struct Sessions {
+    web: WebContext,
+    mac_key: [u8; 32],
+    handshakes: Mutex<HashMap<[u8; 16], Handshake>>,
+    live: Mutex<HashMap<[u8; 32], Arc<Session>>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Sessions {
+    pub(crate) fn new(web: WebContext) -> Arc<Self> {
+        Arc::new(Self {
+            web,
+            mac_key: rand::random(),
+            handshakes: Mutex::default(),
+            live: Mutex::default(),
+        })
+    }
+
+    fn mac(&self, token: &[u8; 32], seq: u64) -> [u8; 32] {
+        let mut input = [0u8; 40];
+        input[..32].copy_from_slice(token);
+        input[32..].copy_from_slice(&seq.to_le_bytes());
+        *blake3::keyed_hash(&self.mac_key, &input).as_bytes()
+    }
+
+    fn cursor(&self, token: &[u8; 32], seq: u64) -> Cursor {
+        Cursor {
+            seq,
+            mac: self.mac(token, seq),
+        }
+    }
+
+    /// First handshake step: the relay's `accept_hello` and `HelloAck`.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard only lives for the lookup; the value kept is a clone"
+    )]
+    pub(crate) fn hello(&self, hello: &Hello) -> Result<SessionChallenge, SessionError> {
+        let relay = &self.web.relay;
+        let revocations = relay
+            .revocations
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let peer = {
+            let policy = relay
+                .trust_policy
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            auth::accept_hello(
+                hello,
+                &relay.own_user_pk,
+                &policy,
+                &revocations,
+                unix_now_ns(),
+            )
+        }
+        .map_err(|error| {
+            relay.metrics.inc_auth_rejected();
+            SessionError::Refused(error.to_string())
+        })?;
+        let server_nonce: [u8; 32] = rand::random();
+        let handshake: [u8; 16] = rand::random();
+        let ack = auth::build_hello_ack(
+            relay.own_cert.clone(),
+            &relay.own_sk,
+            server_nonce,
+            &hello.client_nonce,
+        );
+        let mut handshakes = lock(&self.handshakes);
+        handshakes.retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
+        if handshakes.len() >= MAX_HANDSHAKES {
+            return Err(SessionError::Busy);
+        }
+        handshakes.insert(
+            handshake,
+            Handshake {
+                peer,
+                server_nonce,
+                started: Instant::now(),
+            },
+        );
+        drop(handshakes);
+        Ok(SessionChallenge { ack, handshake })
+    }
+
+    /// Second handshake step: verify the device's signature and start its
+    /// peer session.
+    pub(crate) fn finish(
+        self: &Arc<Self>,
+        handshake: &[u8; 16],
+        ack2: &HelloAck2,
+    ) -> Result<SessionGrant, SessionError> {
+        let pending = lock(&self.handshakes)
+            .remove(handshake)
+            .filter(|pending| pending.started.elapsed() < HANDSHAKE_TTL)
+            .ok_or_else(|| SessionError::Refused("unknown handshake".into()))?;
+        auth::verify_hello_ack2(ack2, &pending.peer.device_public_key, &pending.server_nonce)
+            .map_err(|error| {
+                self.web.relay.metrics.inc_auth_rejected();
+                SessionError::Refused(error.to_string())
+            })?;
+        self.web.relay.metrics.inc_conns_authed();
+        if lock(&self.live).len() >= MAX_SESSIONS {
+            return Err(SessionError::Busy);
+        }
+        let token: [u8; 32] = rand::random();
+        let (host_side, browser_side) = tokio::io::duplex(DUPLEX_BYTES);
+        let (host_read, host_write) = tokio::io::split(host_side);
+        let (browser_read, browser_write) = tokio::io::split(browser_side);
+        let (end, mut ended) = watch::channel(false);
+        let session = Arc::new(Session {
+            peer: pending.peer.clone(),
+            token,
+            expires: Instant::now()
+                .checked_add(SESSION_TTL)
+                .unwrap_or_else(Instant::now),
+            last_poll: Mutex::new(Instant::now()),
+            to_host: tokio::sync::Mutex::new(browser_write),
+            log: Mutex::new(Log {
+                first_seq: 1,
+                items: VecDeque::new(),
+                closed: false,
+            }),
+            changed: Notify::new(),
+            end,
+        });
+        let context = self.web.relay.peer_context();
+        let peer = pending.peer;
+        let pumped = session.clone();
+        tokio::spawn(async move {
+            let closed = async move {
+                let _ = ended.wait_for(|ended| *ended).await;
+            };
+            if let Err(error) = Box::pin(crate::peer::run_peer_until(
+                peer, closed, host_read, host_write, context,
+            ))
+            .await
+            {
+                tracing::debug!("browser session ended: {error}");
+            }
+        });
+        tokio::spawn(async move {
+            let mut reader = crate::frame::FrameReader::new(browser_read);
+            while let Ok(Some(envelope)) = reader.read_next().await {
+                let mut log = pumped.log();
+                if log.items.len() >= MAX_LOG_ENVELOPES {
+                    drop(log);
+                    pumped.close();
+                    return;
+                }
+                log.items.push_back(envelope);
+                drop(log);
+                pumped.changed.notify_waiters();
+            }
+            pumped.close();
+        });
+        let expires_at_ns =
+            unix_now_ns().saturating_add(u64::try_from(SESSION_TTL.as_nanos()).unwrap_or(u64::MAX));
+        lock(&self.live).insert(token, session);
+        Ok(SessionGrant {
+            token,
+            expires_at_ns,
+        })
+    }
+
+    /// The open session for `token`.
+    pub(crate) fn get(&self, token: &[u8; 32]) -> Result<Arc<Session>, SessionError> {
+        lock(&self.live)
+            .get(token)
+            .filter(|session| session.is_open())
+            .cloned()
+            .ok_or(SessionError::Gone)
+    }
+
+    /// Hand the browser's envelopes to its peer session, in order.
+    pub(crate) async fn send(
+        &self,
+        session: &Session,
+        envelopes: Vec<Envelope>,
+    ) -> Result<(), SessionError> {
+        let mut bytes = Vec::new();
+        for envelope in &envelopes {
+            bytes.extend(
+                crate::frame::encode(envelope)
+                    .map_err(|error| SessionError::Refused(error.to_string()))?,
+            );
+        }
+        let mut to_host = session.to_host.lock().await;
+        to_host
+            .write_all(&bytes)
+            .await
+            .map_err(|_| SessionError::Gone)
+    }
+
+    /// Acknowledge up to `ack`, then wait up to `wait` for events after it.
+    pub(crate) async fn events(
+        &self,
+        session: &Session,
+        ack: Option<Cursor>,
+        wait: Duration,
+    ) -> Result<EventsPage, SessionError> {
+        *lock(&session.last_poll) = Instant::now();
+        let after = match ack {
+            Some(cursor) if cursor.mac == self.mac(&session.token, cursor.seq) => cursor.seq,
+            Some(_) => return Err(SessionError::Refused("invalid cursor".into())),
+            None => 0,
+        };
+        {
+            let mut log = session.log();
+            while log.first_seq <= after && !log.items.is_empty() {
+                log.items.pop_front();
+                log.first_seq = log.first_seq.saturating_add(1);
+            }
+            drop(log);
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(wait)
+            .unwrap_or_else(tokio::time::Instant::now);
+        loop {
+            let notified = session.changed.notified();
+            {
+                let log = session.log();
+                let start = after.saturating_add(1).max(log.first_seq);
+                let skip =
+                    usize::try_from(start.saturating_sub(log.first_seq)).unwrap_or(usize::MAX);
+                let available: Vec<Envelope> = log
+                    .items
+                    .iter()
+                    .skip(skip)
+                    .take(MAX_PAGE_ENVELOPES)
+                    .cloned()
+                    .collect();
+                if !available.is_empty() {
+                    let last = start
+                        .saturating_add(available.len() as u64)
+                        .saturating_sub(1);
+                    return Ok(EventsPage {
+                        cursor: Some(self.cursor(&session.token, last)),
+                        envelopes: available,
+                    });
+                }
+                if log.closed {
+                    return Err(SessionError::Gone);
+                }
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Ok(EventsPage {
+                    cursor: ack,
+                    envelopes: Vec::new(),
+                });
+            }
+        }
+    }
+
+    /// End idle and expired sessions and forget stale handshakes.
+    pub(crate) fn sweep(&self) {
+        let ended: Vec<Arc<Session>> = {
+            let mut live = lock(&self.live);
+            let ended = live
+                .values()
+                .filter(|session| {
+                    !session.is_open() || lock(&session.last_poll).elapsed() > IDLE_TTL
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            live.retain(|_, session| !ended.iter().any(|gone| Arc::ptr_eq(gone, session)));
+            ended
+        };
+        for session in ended {
+            session.close();
+        }
+        lock(&self.handshakes).retain(|_, pending| pending.started.elapsed() < HANDSHAKE_TTL);
+    }
+
+    /// Device and user of every open session, for the live authority.
+    pub(crate) fn open_devices(&self) -> Vec<([u8; 32], AuthenticatedPeer)> {
+        lock(&self.live)
+            .iter()
+            .filter(|(_, session)| session.is_open())
+            .map(|(token, session)| (*token, session.peer.clone()))
+            .collect()
+    }
+
+    pub(crate) fn context(&self) -> &WebContext {
+        &self.web
+    }
+}

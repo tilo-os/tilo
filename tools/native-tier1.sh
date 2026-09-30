@@ -9,8 +9,8 @@
 # TEST_ARGS go to every test binary (a name filter, `--exact`,
 # `--nocapture`). The suites run one test at a time, as root: the script
 # uses `sudo -n` when it is not root already. Builds use `$TILO_CARGO`
-# (default `cargo`; `rcargo` builds remotely and fetches the binaries), so
-# only the tests run on this machine. TILO_REQUIRE_FANOTIFY=1 is set: a
+# (default `cargo`; a drop-in that builds remotely and fetches the binaries
+# works too), so only the tests have to run on this machine. TILO_REQUIRE_FANOTIFY=1 is set: a
 # machine that cannot run a test fails it instead of skipping it.
 #
 # Needs: Linux with pre-content fanotify events (6.14 or later, with
@@ -18,7 +18,7 @@
 # `sqlite3` and `git` on PATH.
 #
 # Environment:
-#   TILO_CARGO          cargo or rcargo (default cargo)
+#   TILO_CARGO          cargo or a drop-in for it (default cargo)
 #   TILO_NATIVE_TIER1_DIR  where the store images and mounts live (default
 #                       ~/.cache/tilo/native-tier1; removed afterwards). The
 #                       tests' own directories go to a short-lived directory

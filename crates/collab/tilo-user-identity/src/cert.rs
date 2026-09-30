@@ -454,7 +454,8 @@ pub fn verify_device_cert(cert: &DeviceCert) -> Result<(), DeviceCertError> {
 
 const VERIFIED_SIGNATURE_LIMIT: usize = 4096;
 
-fn verified_signatures() -> &'static std::sync::Mutex<std::collections::HashSet<[u8; 128]>> {
+pub(crate) fn verified_signatures()
+-> &'static std::sync::Mutex<std::collections::HashSet<[u8; 128]>> {
     static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 128]>>> =
         std::sync::OnceLock::new();
     SEEN.get_or_init(Default::default)

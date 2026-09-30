@@ -250,7 +250,7 @@ mod owner_commit_tests {
 
     #[test]
     fn session_owner_commit_checked_writer_publishes_before_terminal() {
-        use ui::application::{HostContext, LaunchTarget, RestoreInput};
+        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
         let room = uuid::Uuid::new_v4();
         let cache = ui::portable_storage::PortableStorage::new("worker-test", "device").unwrap();
@@ -262,15 +262,17 @@ mod owner_commit_tests {
         );
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views,
-            "device".into(),
-            1,
-            Rc::new(RefCell::new(
-                ui::permissions::PermissionContext::permissive(),
-            )),
-            ui::permissions::UserId("worker".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "device".into(),
+                instance_id: 1,
+                permissions: Rc::new(RefCell::new(
+                    ui::permissions::PermissionContext::permissive(),
+                )),
+                author: ui::permissions::UserId("worker".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -848,7 +850,7 @@ mod owner_commit_tests {
      {
         use std::os::fd::IntoRawFd;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use ui::application::{HostContext, LaunchTarget, RestoreInput};
+        use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use ui::portable_storage::{PortableStorage, StorageKey};
         use ui::record::{RecordCheckout, RecordId, RecordOwners};
@@ -1028,15 +1030,17 @@ mod owner_commit_tests {
         let principal = principal_id_for_root(cert.user_public_key);
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views,
-            "device".into(),
-            1,
-            Rc::new(RefCell::new(
-                ui::permissions::PermissionContext::permissive(),
-            )),
-            ui::permissions::UserId(principal.clone()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "device".into(),
+                instance_id: 1,
+                permissions: Rc::new(RefCell::new(
+                    ui::permissions::PermissionContext::permissive(),
+                )),
+                author: ui::permissions::UserId(principal.clone()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();

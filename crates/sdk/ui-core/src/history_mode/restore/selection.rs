@@ -298,12 +298,8 @@ pub(super) fn protected(
             let node = protected_map(
                 &mut builder,
                 doc,
-                Some(&ROOT),
-                &key,
-                selector.node,
+                ProtectedEval::at_root(&key, selector.node, values),
                 target,
-                values,
-                vec![key.clone()],
                 &mut identities,
             )?;
             result.insert(key, vec![node]);
@@ -332,6 +328,20 @@ struct ProtectedEval {
     output: usize,
 }
 
+impl ProtectedEval {
+    /// The first task of a walk: a root key, written to output slot 0.
+    fn at_root(key: &str, selector: HistoryRestoreNode, target: &[NodeId]) -> Self {
+        Self {
+            parent: Some(ROOT),
+            key: key.into(),
+            selector,
+            target: target.to_vec(),
+            path: vec![key.into()],
+            output: 0,
+        }
+    }
+}
+
 enum ProtectedTask {
     Eval(ProtectedEval),
     Finish {
@@ -343,30 +353,15 @@ enum ProtectedTask {
     },
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Projection validates document, parent, key and protected selection context in one recursive operation."
-)]
 fn protected_map(
     builder: &mut ProjectionBuilder,
     doc: &AutoCommit,
-    parent: Option<&ObjId>,
-    key: &str,
-    selector: HistoryRestoreNode,
+    root: ProtectedEval,
     target_projection: &ContentProjection,
-    target: &[NodeId],
-    path: Vec<String>,
     identities: &mut ProtectedIdentities<'_>,
 ) -> Result<NodeId, RestoreError> {
     let mut outputs = vec![None];
-    let mut tasks = vec![ProtectedTask::Eval(ProtectedEval {
-        parent: parent.cloned(),
-        key: key.into(),
-        selector,
-        target: target.to_vec(),
-        path,
-        output: 0,
-    })];
+    let mut tasks = vec![ProtectedTask::Eval(root)];
     while let Some(task) = tasks.pop() {
         match task {
             ProtectedTask::Eval(eval) => {

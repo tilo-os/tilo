@@ -128,12 +128,12 @@ impl NoteEditor {
 
     /// The undo boundary the note's last edit opened, for the host.
     pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.host.widget_mut().take_committed_action()
+        ui::undo::take_committed_action(self.host.widget_mut())
     }
 
     /// Whether a typed word keeps its undo step open.
     pub(crate) fn keeps_step_open(&self) -> bool {
-        self.host.widget().keeps_undo_step_open()
+        ui::undo::keeps_undo_step_open(self.host.widget())
     }
 
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -302,10 +302,6 @@ impl NumberControls {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The numeric-control painter takes field identity, current value, bounds, and the scene, transform, text renderer, and theme."
-    )]
     pub(crate) fn draw(
         &mut self,
         field: &NumberField,
@@ -695,10 +691,6 @@ impl NoteComposer {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The note editor combines render context with viewport bounds, optional anchor position, and the annotation being edited."
-    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,

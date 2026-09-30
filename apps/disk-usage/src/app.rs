@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -80,10 +80,11 @@ pub struct DiskUsageApp {
 
 impl DiskUsageApp {
     pub fn new() -> Self {
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/"));
         let workspace = std::env::var_os("TILO_WORKSPACE_ROOTS")
             .and_then(|s| s.to_string_lossy().split(':').next().map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("/var/workspace"));
+            .or_else(tilo_paths::workspace_root)
+            .unwrap_or_else(|| PathBuf::from(tilo_paths::WORKSPACE_MOUNT));
         let places = vec![
             Place {
                 label: "Home".into(),
@@ -164,7 +165,7 @@ impl DiskUsageApp {
         app.shot_mode = true;
         app.recent = vec![
             PathBuf::from("/home/you/Projects/tilo"),
-            PathBuf::from("/var/workspace/design-system"),
+            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
         ];
         app
     }
@@ -356,6 +357,8 @@ impl DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         if !self.shot_mode {
@@ -835,6 +838,53 @@ impl Widget for DiskUsageApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[OPERATION_TYPE]
     }
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .map(ui::widget::ResourceOperationStart::Completed))
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        if matches!(self.view, View::Analysis(_)) {
+            vec![&self.chart]
+        } else {
+            vec![]
+        }
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if matches!(self.view, View::Analysis(_)) {
+            vec![&mut self.chart]
+        } else {
+            vec![]
+        }
+    }
+    fn name(&self) -> &'static str {
+        "DiskUsageApp"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        (self.scan_rx.is_some() || self.picker_rx.is_some())
+            .then_some(())
+            .map(|()| ui::time::now() + Duration::from_millis(80))
+    }
+}
+
+impl ui::resources::PublishesResources for DiskUsageApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
         for place in &self.places {
@@ -881,50 +931,6 @@ impl Widget for DiskUsageApp {
         }
         vec![root]
     }
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .map(ui::widget::ResourceOperationStart::Completed))
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        if matches!(self.view, View::Analysis(_)) {
-            vec![&self.chart]
-        } else {
-            vec![]
-        }
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if matches!(self.view, View::Analysis(_)) {
-            vec![&mut self.chart]
-        } else {
-            vec![]
-        }
-    }
-    fn name(&self) -> &'static str {
-        "DiskUsageApp"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        (self.scan_rx.is_some() || self.picker_rx.is_some())
-            .then_some(())
-            .map(|()| Instant::now() + Duration::from_millis(80))
-    }
 }
 
 #[cfg(test)]
@@ -936,7 +942,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| DiskUsageApp::sample().resources(doc),
+        resources: |doc| ui::resources::resources(&DiskUsageApp::sample(), doc),
         palette: ["Analyze Projects", "Choose folder", "Go back"],
     }
 
@@ -946,7 +952,7 @@ mod tests {
         // --- phase: resource_surface_exposes_common_locations ---
         {
             let app = DiskUsageApp::new();
-            let resources = app.resources(&AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             assert_eq!(resources.len(), 1);
             assert!(resources[0].actions.len() >= 3);
             assert_eq!(app.local_resource_operation_handlers(), &[OPERATION_TYPE]);

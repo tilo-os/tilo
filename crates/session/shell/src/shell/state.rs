@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
@@ -11,12 +11,7 @@ use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
 
 fn now_unix_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
+    tilo_clock::unix_now_ns()
 }
 
 pub use collab_types::caps::{
@@ -784,6 +779,43 @@ impl WorkspaceTree {
             ws.effect_receipts = receipts;
         }
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+    }
+
+    /// In a room another device governs, a window its owner placed for an
+    /// in-process app kind is opened here as that app's own instance (see
+    /// `peer_windows`), on the records the owner created for it.
+    fn open_governed_placeholders_here(&mut self, room: RoomId) -> bool {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for tab in ws
+            .strips
+            .iter_mut()
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+        {
+            if let TileContent::AppPlaceholder { kind, label } = &tab.tile {
+                tracing::debug!(%room, tab = ?tab.id, app = %kind.app_id(), "opening a governed room's window as its app");
+                tab.tile = TileContent::PeerWindow {
+                    app_id: kind.app_id(),
+                    label: label.clone(),
+                    note: String::new(),
+                };
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The record the room document names for `tab` of `room`, if any.
+    pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
+        tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
     }
 
     /// Set the process-wide peer salt `next_id` stamps into the high
@@ -1716,12 +1748,29 @@ impl WorkspaceTree {
             return false;
         };
         let replicated = projection::contents_of(doc);
-        projection::merge_room_contents(
+        let changed = projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
-        )
+        );
+        if self.requires_native_owner(room) {
+            let profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(doc);
+            let mut reprofiled = false;
+            if let Some(ws) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.room == room)
+                && ws.permission_profiles != profiles
+            {
+                ws.permission_profiles = profiles;
+                reprofiled = true;
+            }
+            self.open_governed_placeholders_here(room) || reprofiled || changed
+        } else {
+            changed
+        }
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
@@ -2453,33 +2502,62 @@ impl WorkspaceTree {
         adopted.into_iter().map(|(id, _)| id).collect()
     }
 
-    /// Mint a durable [`RoomId`] for every workspace that has none, and
-    /// write it down — minting without persisting would be worse than
-    /// leaving it nil, since the next boot would mint a different one.
-    /// The caller must have set [`Self::persist_path`] first. Returns
-    /// the ids minted for.
-    pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
-        let mut adopted = Vec::new();
+    /// Hand every locally-governed workspace still owned by the OS account
+    /// name `account` to the key identity selected for its room.
+    ///
+    /// Before a device has an identity, [`local_user_id`] falls back to the
+    /// account name, so a workspace created then is owned by `"ada"`.
+    /// Once the identity exists the same person acts as its key-derived
+    /// principal, is no member of that workspace, and every app they open
+    /// there is refused its collaboration route and exits before drawing.
+    /// Rooms governed elsewhere keep whatever they say: there `account` may
+    /// name somebody else entirely.
+    pub fn rebind_account_owned_workspaces(
+        &mut self,
+        account: &str,
+        identity_for_room: impl Fn(&RoomId) -> UserId,
+    ) -> Vec<WorkspaceId> {
+        let governed_elsewhere: Vec<RoomId> = self
+            .room_authority
+            .iter()
+            .filter(|(_, a)| **a != RoomAuthority::Local)
+            .map(|(room, _)| *room)
+            .collect();
+        let mut rebound = Vec::new();
         for ws in &mut self.desktop.workspaces {
-            if ws.room.is_nil() {
-                ws.room = RoomId::new();
-                adopted.push(ws.id);
+            if ws.owner.as_deref() != Some(account) || governed_elsewhere.contains(&ws.room) {
+                continue;
             }
+            let user = identity_for_room(&ws.room);
+            if user == account {
+                continue;
+            }
+            for cap in &mut ws.capabilities {
+                if matches!(&cap.subject, Subject::Principal(Principal::Person(p)) if p == account)
+                {
+                    cap.subject = Subject::Principal(Principal::Person(user.clone()));
+                }
+            }
+            ws.set_owner(user.clone());
+            rebound.push((ws.id, user));
         }
-        for id in &adopted {
-            let room = self
+        for (id, user) in &rebound {
+            self.doc_set_owner(*id, user);
+            let caps: Vec<CapOverride> = self
                 .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == *id)
-                .map(|w| w.room)
+                .map(|w| w.capabilities.clone())
                 .unwrap_or_default();
-            self.doc_set_room(*id, room);
+            for cap in caps {
+                self.doc_insert_capability(*id, &cap);
+            }
         }
-        if !adopted.is_empty() {
+        if !rebound.is_empty() {
             self.flush_to_disk();
         }
-        adopted
+        rebound.into_iter().map(|(id, _)| id).collect()
     }
 
     /// The durable room identity of `workspace_id`. What the launch path
@@ -2914,11 +2992,7 @@ impl WorkspaceTree {
             return None;
         }
         let actor = actor.into();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let id = format!("task:{}", uuid::Uuid::new_v4());
         let task = WorkspaceTask {
             id: id.clone(),
@@ -2954,11 +3028,7 @@ impl WorkspaceTree {
         status: WorkspaceTaskStatus,
         actor: &str,
     ) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
             .workspaces
@@ -2984,11 +3054,7 @@ impl WorkspaceTree {
         actor: &str,
         summary: impl Into<String>,
     ) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-            .unwrap_or_default();
+        let now = tilo_clock::unix_now_i64();
         let Some(task) = self
             .desktop
             .workspaces
@@ -3977,104 +4043,18 @@ impl WorkspaceTree {
         strip_id: StripId,
         topology: &[ui::widget::GroupTopology],
     ) -> bool {
-        let Some((ws_idx, strip_idx)) = self.desktop.strip_position(strip_id) else {
+        let shape: Vec<tilo_desktop_model::GroupShape> = topology
+            .iter()
+            .map(|group| tilo_desktop_model::GroupShape {
+                id: group.id,
+                tab_ids: group.tab_ids.clone(),
+                active_tab: group.active_tab,
+                width: group.width,
+            })
+            .collect();
+        let Some(persisted) = self.desktop.reconcile_strip_topology(strip_id, &shape) else {
             return false;
         };
-        let Some(strip) = self
-            .desktop
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.strips.get(strip_idx))
-        else {
-            return false;
-        };
-
-        let old_tab_ids: HashSet<u64> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-            .collect();
-        let new_tab_ids: Vec<u64> = topology
-            .iter()
-            .flat_map(|group| group.tab_ids.iter().copied())
-            .collect();
-        let new_tab_set: HashSet<u64> = new_tab_ids.iter().copied().collect();
-        let group_ids: HashSet<u64> = topology.iter().map(|group| group.id).collect();
-        if topology
-            .iter()
-            .any(|group| group.tab_ids.is_empty() || !group.tab_ids.contains(&group.active_tab))
-            || new_tab_ids.len() != new_tab_set.len()
-            || topology.len() != group_ids.len()
-            || old_tab_ids != new_tab_set
-        {
-            return false;
-        }
-
-        let mut tabs: HashMap<u64, Tab> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().cloned())
-            .map(|tab| (tab.id, tab))
-            .collect();
-        let old_groups: HashMap<u64, &WindowGroup> = strip
-            .window_groups
-            .iter()
-            .map(|group| (group.id, group))
-            .collect();
-        let mut rebuilt = Vec::with_capacity(topology.len());
-        for live in topology {
-            let group_tabs: Vec<Tab> = live
-                .tab_ids
-                .iter()
-                .filter_map(|tab_id| tabs.remove(tab_id))
-                .collect();
-            if group_tabs.len() != live.tab_ids.len() {
-                return false;
-            }
-            rebuilt.push(WindowGroup {
-                id: live.id,
-                tabs: group_tabs,
-                active_tab: live.active_tab,
-                width: live.width,
-                maximized: old_groups
-                    .get(&live.id)
-                    .is_some_and(|group| group.maximized),
-            });
-        }
-        let unchanged = rebuilt.len() == strip.window_groups.len()
-            && rebuilt.iter().zip(&strip.window_groups).all(|(new, old)| {
-                new.id == old.id
-                    && new.active_tab == old.active_tab
-                    && new.width == old.width
-                    && new.maximized == old.maximized
-                    && new
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.id)
-                        .eq(old.tabs.iter().map(|tab| tab.id))
-            });
-        if unchanged {
-            return false;
-        }
-        let Some(target) = self
-            .desktop
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.strips.get_mut(strip_idx))
-        else {
-            return false;
-        };
-        target.window_groups = rebuilt;
-        let persisted = target.window_groups.clone();
-        if self
-            .desktop
-            .active_group
-            .get(&strip_id)
-            .is_none_or(|active| !group_ids.contains(active))
-            && let Some(first) = persisted.first()
-        {
-            self.desktop.active_group.insert(strip_id, first.id);
-        }
         self.doc_rewrite_strip_groups(strip_id, &persisted);
         // Same-strip drag/split changes are user-visible layout state. Keep
         // the local restart snapshot in step with the cache and room doc;
@@ -4163,7 +4143,10 @@ impl WorkspaceTree {
         let strip_id = match command {
             DesktopCommand::ReorderTab { location, .. } => location.strip,
             DesktopCommand::ReorderGroup { strip, .. } => *strip,
-            _ => return Err("this desktop commits only reorders as commands".into()),
+            DesktopCommand::MoveGroup { group, strip, .. } => {
+                return self.commit_group_move(command, *group, StripId(*strip));
+            }
+            _ => return Err("this desktop commits only reorders and moves as commands".into()),
         };
         let strip_id = StripId(strip_id);
         let (ws_idx, strip_idx) = self
@@ -4230,6 +4213,68 @@ impl WorkspaceTree {
         Ok(true)
     }
 
+    /// [`Self::commit_command`] for a [`DesktopCommand::MoveGroup`]: the
+    /// group leaves its strip for `strip_id`, in the cache and the room
+    /// document together, or in neither.
+    ///
+    /// [`DesktopCommand::MoveGroup`]: tilo_desktop_model::commands::DesktopCommand::MoveGroup
+    fn commit_group_move(
+        &mut self,
+        command: &tilo_desktop_model::commands::DesktopCommand,
+        group_id: GroupId,
+        strip_id: StripId,
+    ) -> Result<bool, String> {
+        let (ws_idx, strip_idx) = self
+            .desktop
+            .strip_position(strip_id)
+            .ok_or("strip was removed")?;
+        let workspace = self
+            .desktop
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or("workspace was removed")?;
+        let before = workspace.strips.clone();
+        tilo_desktop_model::commands::apply_command(
+            workspace,
+            command,
+            &mut || Err("a move mints no identity".into()),
+            &mut |_, _| Err("a move creates no record".into()),
+        )?;
+        let landed = workspace.strips.get(strip_idx).and_then(|strip| {
+            let index = strip
+                .window_groups
+                .iter()
+                .position(|group| group.id == group_id)?;
+            Some((index, strip.window_groups.get(index)?.clone()))
+        });
+        let order = |strips: &[Strip]| {
+            strips
+                .iter()
+                .map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .map(|group| group.id)
+                        .collect::<Vec<GroupId>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        if order(&before) == order(&workspace.strips) {
+            return Ok(false);
+        }
+        let mirrored = landed.is_some_and(|(index, group)| {
+            tilo_desktop_model::desktop_doc::move_group(&mut self.doc, strip_id, &group, index)
+        });
+        if !mirrored {
+            if let Some(workspace) = self.desktop.workspaces.get_mut(ws_idx) {
+                workspace.strips = before;
+            }
+            return Err("the room document refused the group move".into());
+        }
+        self.flush_to_disk();
+        Ok(true)
+    }
+
     /// Bind a group reorder the way the desktop surface reports it (the
     /// post-removal slot) and commit it.
     #[cfg(test)]
@@ -4261,7 +4306,8 @@ impl WorkspaceTree {
     fn commit_intent_for_tests(&mut self, intent: tilo_desktop::intents::SessionIntent) -> bool {
         let group = match &intent {
             tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. }
-            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. } => *group,
+            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. }
+            | tilo_desktop::intents::SessionIntent::MoveGroup { group, .. } => *group,
             _ => return false,
         };
         let Some(room) = self
@@ -4988,6 +5034,78 @@ mod automerge_foundation_tests {
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"bob".to_string());
         (host, guest, room)
+    }
+
+    #[test]
+    fn workspaces_owned_by_the_account_name_pass_to_the_device_identity() {
+        let key = "61".repeat(32);
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.adopt_ownerless_workspaces(&"ada".to_string());
+        let home = tree.desktop.workspaces[0].id;
+        let joined = tree.append_empty_workspace("Joined");
+        let joined_room = tree.room_of(joined).expect("a room");
+        {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == joined)
+                .unwrap();
+            ws.set_owner("ada".to_string());
+        }
+        tree.room_authority
+            .insert(joined_room, RoomAuthority::Unpinned);
+
+        let rebound = tree.rebind_account_owned_workspaces("ada", |_| key.clone());
+
+        assert_eq!(
+            rebound,
+            vec![home],
+            "only the locally governed workspace moves"
+        );
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == home)
+            .unwrap();
+        assert_eq!(ws.owner.as_deref(), Some(key.as_str()));
+        assert_eq!(ws.role_of_at(&key, 0), Some(CapRole::Owner));
+        assert_eq!(ws.role_of_at(&"ada".to_string(), 0), None);
+        let other = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == joined)
+            .unwrap();
+        assert_eq!(
+            other.owner.as_deref(),
+            Some("ada"),
+            "a foreign room keeps its owner"
+        );
+
+        let mut replica = WorkspaceTree::default();
+        replica
+            .apply_changes(&tree.export_changes_since(&[]))
+            .expect("apply");
+        let mirrored = replica
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == home)
+            .unwrap();
+        assert_eq!(
+            mirrored.owner.as_deref(),
+            Some(key.as_str()),
+            "the room doc agrees"
+        );
+        assert_eq!(mirrored.role_of_at(&key, 0), Some(CapRole::Owner));
+
+        assert!(
+            tree.rebind_account_owned_workspaces("ada", |_| "ada".to_string())
+                .is_empty(),
+            "without an identity the account name is still who sits here"
+        );
     }
 
     #[test]
@@ -7140,6 +7258,73 @@ mod active_group_tests {
                 vec![2, 3, 1],
                 "a normal restart must retain the reordered group list"
             );
+        }
+
+        // Phase `move_group_carries_a_group_across_strips_in_cache_and_doc`.
+        {
+            use tilo_desktop::intents::SessionIntent;
+
+            let (mut tree, upper, _ids) = tree_with_n_groups(3);
+            for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+                let tab_id = 10_000 + group.id;
+                group.tabs.push(Tab {
+                    id: tab_id,
+                    title: format!("Group {}", group.id),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Terminal,
+                        label: format!("Group {}", group.id),
+                    },
+                });
+                group.active_tab = tab_id;
+            }
+            let lower = StripId::new();
+            tree.desktop.workspaces[0].strips.push(Strip {
+                id: lower,
+                name: "Below".into(),
+                window_groups: Vec::new(),
+            });
+            tree.seed_doc_from_cache();
+            let state_dir = tempfile::tempdir().expect("state dir");
+            tree.persist_path = Some(state_dir.path().join("state.json"));
+
+            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                group: 2,
+                to: lower,
+                before: None,
+            }));
+            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                group: 3,
+                to: lower,
+                before: Some(2),
+            }));
+            assert_eq!(group_order(&tree, upper), vec![1]);
+            assert_eq!(group_order(&tree, lower), vec![3, 2]);
+            assert!(
+                !tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                    group: 1,
+                    to: lower,
+                    before: Some(404),
+                }),
+                "a stale anchor moves nothing"
+            );
+            assert_eq!(group_order(&tree, upper), vec![1]);
+
+            let reloaded = crate::shell::persist::load_tree_from(
+                tree.persist_path.as_ref().expect("persistence configured"),
+            )
+            .expect("moved tree reloads");
+            assert_eq!(group_order(&reloaded, upper), vec![1]);
+            assert_eq!(
+                group_order(&reloaded, lower),
+                vec![3, 2],
+                "a restart must find the groups in the strip they were carried to"
+            );
+            let carried = reloaded.desktop.workspaces[0].strips[1]
+                .window_groups
+                .iter()
+                .find(|group| group.id == 2)
+                .expect("group 2 reloads");
+            assert_eq!(carried.active_tab, 10_002, "the group keeps its tabs");
         }
     }
 

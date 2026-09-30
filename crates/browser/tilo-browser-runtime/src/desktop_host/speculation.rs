@@ -926,6 +926,7 @@ mod tests {
                 rect: vello::kurbo::Rect::new(x, 0.0, x + 400.0, 300.0),
                 tab: id + 1,
                 scroll: None,
+                legacy: None,
             });
         }
         let right = preview(

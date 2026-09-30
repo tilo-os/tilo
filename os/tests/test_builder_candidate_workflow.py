@@ -13,7 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD = (ROOT / '.forgejo/workflows/build-builder-image.yml').read_text()
+BUILD = (ROOT / '.forgejo/workflows/build-ci-builder.yml').read_text()
 CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
@@ -119,7 +119,7 @@ class BuilderCandidates(unittest.TestCase):
             for subject in subjects[1:]:
                 self.assertNotIn(subject, recipe)
             self.assertIn("gnome-text-editor", recipe)
-            legacy = (ROOT / '.forgejo/workflows/legacy-app-e2e.yml').read_text()
+            legacy = (ROOT / '.forgejo/workflows/ci-legacy-apps.yml').read_text()
             script = step_script(legacy, 'Install and verify real app subjects')
             # Execute the workflow script with package installation and subject
             # discovery intercepted. Missing subjects must still fail after dnf.
@@ -162,7 +162,7 @@ class BuilderCandidates(unittest.TestCase):
             for ref in ['refs/heads/codex/arm64-tilo-integration', 'refs/tags/test-builder', 'refs/pull/1/head']:
                 with self.subTest(ref=ref):
                     self.assertEqual(self.publication_tags(ref), ['candidate-' + 'b' * 40 + '-42-2'])
-            self.assertIn("github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}'", BUILD)
+            self.assertIn("github.ref == 'refs/heads/main' && format('tilo-builder-{0}', matrix.arch) || format('tilo-builder-candidate-{0}-{1}'", BUILD)
         with self.subTest(phase="main_keeps_existing_promotion_policy"):
             self.assertEqual(self.publication_tags('refs/heads/main'), ['b' * 40, '1.97.1', 'latest'])
         with self.subTest(phase="both_architectures_and_builder_consumers_keep_acceptance_gates"):

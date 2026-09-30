@@ -7,7 +7,8 @@
 
 use ui::ColorCompat;
 use ui::charts::ChartPalette;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -525,15 +526,16 @@ impl Graph3dScreen {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let panel_bg = if self.overlay {
             c.surfaces.raised
         } else {
             c.surfaces.base
         };
-        draw::fill_rect(scene, t, self.panel, panel_bg);
+        ctx.fill_rect(self.panel, panel_bg);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
@@ -542,7 +544,7 @@ impl Graph3dScreen {
         );
         // Title and subtitle stack on their measured line boxes (24 + 20 px at
         // 1×); `layout` starts the first card below the same band.
-        let (head_h, sub_h, _) = Self::header_band(tr);
+        let (head_h, sub_h, _) = Self::header_band(ctx.text);
         let head = Rect::new(
             self.panel.x0 + 16.0,
             self.panel.y0 + 12.0,
@@ -550,15 +552,12 @@ impl Graph3dScreen {
             self.panel.y0 + 12.0 + head_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             head,
             "Surfaces",
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
             Align::Left,
-            TextWeight::Semibold,
         );
         let sub = Rect::new(
             self.panel.x0 + 16.0,
@@ -567,15 +566,12 @@ impl Graph3dScreen {
             head.y1 + sub_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             sub,
             "z = f(x, y)  ·  click to edit",
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
     }
 
@@ -599,6 +595,7 @@ impl Graph3dScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let palette = ChartPalette::from_theme(theme);
         for i in 0..model.surfaces.len() {
@@ -613,16 +610,10 @@ impl Graph3dScreen {
             };
             let active = i == model.active_surface;
             if active {
-                draw::fill_round(
-                    scene,
-                    t,
-                    r,
-                    8.0,
-                    draw::mix(c.surfaces.raised, c.accent[5], 0.18),
-                );
-                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+                ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
+                ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(ctx.scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch (this surface's series colour)
             let sw = Rect::new(
@@ -632,9 +623,7 @@ impl Graph3dScreen {
                 r.center().y + 7.0,
             );
             let col = palette.categorical(i);
-            draw::fill_round(
-                scene,
-                t,
+            ctx.fill_round(
                 sw,
                 3.0,
                 if f.visible {
@@ -651,15 +640,12 @@ impl Graph3dScreen {
             };
             let prefix = Rect::new(r.x0 + PREFIX_X, r.y0, r.x0 + PREFIX_X + self.prefix_w, r.y1);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 prefix,
                 "z =",
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 txt_col,
                 Align::Left,
-                TextWeight::Medium,
             );
             let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
                 continue;
@@ -667,57 +653,49 @@ impl Graph3dScreen {
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
                 draw::text_in(
-                    scene,
-                    tr,
-                    t,
+                    &mut ctx,
                     pr,
                     "f(x, y)",
-                    14.0,
+                    &TextStyle::new(14.0),
                     c.text_dim,
                     Align::Left,
-                    TextWeight::Regular,
                 );
             } else if let Some(field) = self.fields.get_mut(i) {
-                field.set_rect(edit, tr);
+                field.set_rect(edit, ctx.text);
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
-                field.draw(scene, t, tr, theme, fld_col, active);
+                field.draw(ctx.scene, t, ctx.text, theme, fld_col, active);
             }
-            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 dr,
                 "×",
-                16.0,
+                &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            ctx.stroke_round(vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
+                ctx.fill_round(inner, inner.height() / 2.0, vis_col);
             }
         }
     }
 
     /// The "+ Add surface" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
+        ui::surface::card(ctx.scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.add_rect,
             "+ Add surface",
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             c.accent[6],
             Align::Center,
-            TextWeight::Medium,
         );
     }
 
@@ -730,11 +708,12 @@ impl Graph3dScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let v = &model.view3d;
         // Three 12 px lines stacked on their measured line boxes (20 px each
         // at 1×, an 80 px card), so the read-out never overprints itself.
-        let line_h = draw::line_box(tr, 12.0) + 5.0;
+        let line_h = draw::line_box(ctx.text, 12.0) + 5.0;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
             self.panel.x0 + 16.0,
@@ -742,7 +721,7 @@ impl Graph3dScreen {
             self.panel.x1 - 16.0,
             info_y + 3.0 * line_h + 20.0,
         );
-        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(ctx.scene, t, info, 8.0, c.neutral[1]);
         let l1 = Rect::new(
             info.x0 + 12.0,
             info.y0 + 6.0,
@@ -750,19 +729,16 @@ impl Graph3dScreen {
             info.y0 + 6.0 + line_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l1,
             &format!(
                 "yaw  {:.0}°   pitch  {:.0}°",
                 v.yaw.to_degrees(),
                 v.pitch.to_degrees()
             ),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l2 = Rect::new(
             info.x0 + 12.0,
@@ -771,70 +747,53 @@ impl Graph3dScreen {
             l1.y1 + 2.0 + line_h,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l2,
             &format!("zoom  {:.2}×   domain ±{:.0}", v.zoom, DOM),
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Left,
-            TextWeight::Regular,
         );
         let l3 = Rect::new(info.x0 + 12.0, l2.y1 + 2.0, info.x1 - 12.0, info.y1 - 6.0);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             l3,
             "drag to rotate · scroll to zoom",
-            12.0,
+            &TextStyle::new(12.0),
             c.accent[6],
             Align::Left,
-            TextWeight::Regular,
         );
     }
 
     /// Draw the panel toggle: a "Surfaces" pill over the canvas when the drawer
     /// is closed, or a "Hide" chip in the drawer header when it's open.
     fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if self.toggle_rect == Rect::ZERO {
             return;
         }
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(ctx.scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "Hide",
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Semibold,
             );
         } else {
-            draw::fill_round(
-                scene,
-                t,
-                r,
-                8.0,
-                draw::mix(c.surfaces.raised, c.accent[5], 0.20),
-            );
-            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
+            ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
+            ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 "Surfaces",
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 c.accent[6],
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
     }

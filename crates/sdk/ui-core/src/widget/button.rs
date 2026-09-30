@@ -1,4 +1,5 @@
 use crate::i18n;
+use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
@@ -903,71 +904,66 @@ fn label_width(rect: Rect, icon: Option<crate::icons::Icon>, padding: f32) -> f3
     (rect.width() as f32 - padding * 2.0 - icon_width as f32).max(0.0)
 }
 
-/// Paints the icon and/or label centred in `rect`: icon-only centres the
-/// glyph, otherwise the icon (if any) sits left of the label with a fixed
-/// gap, the cluster as a whole centred. Shared by the immediate-mode
-/// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
-/// the two stay pixel-identical.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a painting primitive shared by two call sites; splitting further would only re-bundle these into a throwaway struct"
-)]
-fn paint_icon_and_label(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    rect: Rect,
+/// What sits inside a button's face: an optional icon, the label, the style
+/// it is set in, and the width it wraps to (if any).
+struct ButtonLabel<'a> {
     icon: Option<crate::icons::Icon>,
-    label: &str,
-    text_size: f32,
-    max_label_width: Option<f32>,
-    weight: crate::text_render::TextWeight,
-    fg: vello::peniko::Color,
-) {
-    let icon_px = icon_edge(rect.height());
-    match (icon, label.is_empty()) {
-        (Some(icon), true) => {
-            // Icon-only — centre the glyph.
-            let ix = rect.center().x - icon_px / 2.0;
-            let iy = rect.center().y - icon_px / 2.0;
-            crate::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                icon,
-                fg,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-        (icon, _) => {
-            let (text_width, text_height) =
-                text_renderer.measure_weighted(label, text_size, max_label_width, weight);
-            let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
-            let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-            let cluster_w = icon_w + gap + f64::from(text_width);
-            let start_x = rect.center().x - cluster_w / 2.0;
-            if let Some(icon) = icon {
+    text: &'a str,
+    style: TextStyle,
+    wrap_width: Option<f32>,
+}
+
+impl ButtonLabel<'_> {
+    /// Paints the icon and/or label centred in `rect`: icon-only centres the
+    /// glyph, otherwise the icon (if any) sits left of the label with a fixed
+    /// gap, the cluster as a whole centred. Shared by the immediate-mode
+    /// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
+    /// the two stay pixel-identical.
+    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, fg: vello::peniko::Color) {
+        let icon_px = icon_edge(rect.height());
+        match (self.icon, self.text.is_empty()) {
+            (Some(icon), true) => {
+                // Icon-only — centre the glyph.
+                let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
                 crate::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                    ctx.scene,
+                    ctx.transform,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
                     icon,
                     fg,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            let text_x = start_x + icon_w + gap;
-            let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                text_size,
-                fg,
-                transform.pre_translate(Vec2::new(text_x, text_y)),
-                max_label_width,
-                weight,
-            );
+            (icon, _) => {
+                let (text_width, text_height) =
+                    ctx.text
+                        .measure_style(self.text, self.wrap_width, &self.style);
+                let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
+                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                let cluster_w = icon_w + gap + f64::from(text_width);
+                let start_x = rect.center().x - cluster_w / 2.0;
+                if let Some(icon) = icon {
+                    let iy = rect.center().y - icon_px / 2.0;
+                    crate::icons::draw_icon(
+                        ctx.scene,
+                        ctx.transform,
+                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                        icon,
+                        fg,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                let text_x = start_x + icon_w + gap;
+                let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
+                ctx.text(
+                    self.text,
+                    &self.style,
+                    fg,
+                    Point::new(text_x, text_y),
+                    self.wrap_width,
+                );
+            }
         }
     }
 }
@@ -1025,17 +1021,17 @@ impl Button {
         }
 
         let label = localized_label(face.label);
-        paint_icon_and_label(
-            scene,
-            transform,
-            text_renderer,
-            face.rect,
-            face.icon,
-            &label,
-            face.text_size,
-            face.wrap_label
+        ButtonLabel {
+            icon: face.icon,
+            text: &label,
+            style: TextStyle::new(face.text_size).with_weight(face.weight),
+            wrap_width: face
+                .wrap_label
                 .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
-            face.weight,
+        }
+        .paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            face.rect,
             fg,
         );
         if face.interact.disabled {
@@ -1118,6 +1114,13 @@ impl Button {
 }
 
 impl Widget for Button {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1442,17 +1445,20 @@ impl Widget for Button {
         // the `_weighted` entry points shared with `ButtonFace`'s
         // (independently weighted/sized) immediate-mode path.
         let label = localized_label(&self.label);
-        paint_icon_and_label(
-            scene,
-            transform,
-            text_renderer,
-            self.rect,
-            self.icon,
-            &label,
-            renderer_label_size(theme.tokens.typography.scale.base, text_renderer),
-            self.content_sized
+        ButtonLabel {
+            icon: self.icon,
+            text: &label,
+            style: TextStyle::new(renderer_label_size(
+                theme.tokens.typography.scale.base,
+                text_renderer,
+            )),
+            wrap_width: self
+                .content_sized
                 .then(|| label_width(self.rect, self.icon, self.content_padding)),
-            crate::text_render::TextWeight::Regular,
+        }
+        .paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
             fg_color,
         );
         if !enabled {
@@ -1578,30 +1584,6 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let Some(mut resource) = self.native_resource.clone() else {
-            return Vec::new();
-        };
-        // The action directory refuses unnamed resources and actions, and
-        // an icon-only button learns its accessible name or tooltip after
-        // `on_effect` built the resource; publish the name it is announced by.
-        if resource.label.trim().is_empty()
-            && let Some(name) = self
-                .accessible_name
-                .as_ref()
-                .or(self.tooltip.as_ref())
-                .filter(|name| !name.trim().is_empty())
-        {
-            resource.label.clone_from(name);
-            for action in &mut resource.actions {
-                if action.label.trim().is_empty() {
-                    action.label.clone_from(name);
-                }
-            }
-        }
-        vec![resource]
-    }
-
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
@@ -1623,72 +1605,6 @@ impl Widget for Button {
             .then(|| {
                 super::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
-    }
-
-    /// Legacy adapter: apps not yet on [`Widget::start_operation`] still reach
-    /// a shared button through their read-only routing.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Ok(self
-            .invoke_native_control(kind, type_id, payload)?
-            .then(tilo_actions::ActionOutput::default))
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            let before = action.is_available();
-            action.refresh_availability(allowed);
-            if before != action.is_available() {
-                self.dirty = true;
-            }
-        }
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.action.is_some()
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
-        if let Some(action) = &self.action {
-            return vec![action.metadata(self.id.clone())];
-        }
-        let mut bindings = Vec::new();
-        if let Some(path) = &self.on_click_path {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
-            });
-        }
-        if self.on_click.is_some() {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::LegacyCallback,
-            });
-        }
-        bindings
     }
 
     /// Enter, Space, or an AccessKit `Activate` performs the same CRDT
@@ -1743,20 +1659,6 @@ impl Widget for Button {
         Some(node)
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -1771,7 +1673,7 @@ impl Widget for Button {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -1784,11 +1686,105 @@ impl Widget for Button {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Button {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Button {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
+    }
+}
+
+impl crate::resources::PublishesResources for Button {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let Some(mut resource) = self.native_resource.clone() else {
+            return Vec::new();
+        };
+        // The action directory refuses unnamed resources and actions, and
+        // an icon-only button learns its accessible name or tooltip after
+        // `on_effect` built the resource; publish the name it is announced by.
+        if resource.label.trim().is_empty()
+            && let Some(name) = self
+                .accessible_name
+                .as_ref()
+                .or(self.tooltip.as_ref())
+                .filter(|name| !name.trim().is_empty())
+        {
+            resource.label.clone_from(name);
+            for action in &mut resource.actions {
+                if action.label.trim().is_empty() {
+                    action.label.clone_from(name);
+                }
+            }
+        }
+        vec![resource]
+    }
+}
+
+impl crate::widget::controls::ActionControls for Button {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        use crate::widget::{ControlBindingKind, ControlBindingMetadata};
+        if let Some(action) = &self.action {
+            return vec![action.metadata(self.id.clone())];
+        }
+        let mut bindings = Vec::new();
+        if let Some(path) = &self.on_click_path {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
+            });
+        }
+        if self.on_click.is_some() {
+            bindings.push(ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::LegacyCallback,
+            });
+        }
+        bindings
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.action.is_some()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            let before = action.is_available();
+            action.refresh_availability(allowed);
+            if before != action.is_available() {
+                self.dirty = true;
+            }
         }
     }
 }
@@ -1837,7 +1833,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn a_shared_button_answers_both_the_single_entry_and_legacy_routing() {
+    fn a_shared_button_answers_through_an_ordinary_container() {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
         let mut column = crate::widget::Column::new().push(Box::new(
@@ -1863,34 +1859,7 @@ mod tests {
                 .is_some()
         );
 
-        // An app still routing through the read-only hooks reaches the button
-        // through an ordinary container, as it did before the single entry.
-        let legacy = column
-            .start_resource_operation(
-                tilo_actions::InvocationId::new(),
-                kind,
-                "tilo.ui.control.invoke",
-                payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(legacy.is_some(), "legacy start reaches the shared button");
-        let child = &mut column.children_mut()[0];
-        assert!(
-            child
-                .invoke_resource_operation_v2(
-                    kind,
-                    "tilo.ui.control.invoke",
-                    payload,
-                    &doc,
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_some(),
-            "a direct legacy call on the button is answered"
-        );
-        assert_eq!(clicks.load(Ordering::SeqCst), 3);
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
     fn layout_fit_host(
@@ -2254,16 +2223,15 @@ mod tests {
             let mut scene = Scene::new();
             let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (_, height) = text.measure("Refresh", 14.0, None);
-            paint_icon_and_label(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
+            ButtonLabel {
+                icon: None,
+                text: "Refresh",
+                style: TextStyle::new(14.0),
+                wrap_width: None,
+            }
+            .paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
                 rect,
-                None,
-                "Refresh",
-                14.0,
-                None,
-                crate::text_render::TextWeight::Regular,
                 vello::peniko::Color::WHITE,
             );
             let actual = &scene.encoding().resources.glyph_runs[0];
@@ -2566,13 +2534,17 @@ mod tests {
             button.activate(&mut doc, &automerge::ROOT);
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            let intent = button.take_control_invocation().expect("one intent");
+            let intent =
+                crate::widget::controls::take_control_invocation(&mut button).expect("one intent");
             assert_eq!(
                 intent.address,
                 tilo_actions::ActionAddress::new("doc:1", "save")
             );
             assert!(intent.arguments.is_empty());
-            assert_eq!(button.control_action_bindings().len(), 1);
+            assert_eq!(
+                crate::widget::controls::control_action_bindings(&button).len(),
+                1
+            );
         }
 
         fn action_availability_revokes_and_restores_without_overriding_authored_state() {
@@ -2589,16 +2561,16 @@ mod tests {
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
             let mut button = Button::new("save", "Save", None).on_action(binding);
             button.activate(&mut AutoCommit::new(), &automerge::ROOT);
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&button));
             assert!(
-                Widget::take_control_invocation(&mut button).is_none(),
+                crate::widget::controls::take_control_invocation(&mut button).is_none(),
                 "revocation drops queued authority"
             );
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "doc:1", "save",
@@ -2607,11 +2579,11 @@ mod tests {
             assert!(Widget::is_enabled(&button));
 
             button.set_enabled(false);
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::new(),
             );
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "doc:1", "save",
@@ -2625,7 +2597,7 @@ mod tests {
 
         fn legacy_button_paths_are_explicit_in_inventory() {
             let button = Button::new("legacy", "Legacy", Some("flag")).on_click(|| {});
-            let bindings = button.control_action_bindings();
+            let bindings = crate::widget::controls::control_action_bindings(&button);
             assert!(bindings.iter().any(|entry| matches!(
                 entry.kind,
                 crate::widget::ControlBindingKind::CollaborativeDocument(_)
@@ -3545,7 +3517,7 @@ mod tests {
                 .on_effect(|| {})
                 .tooltip("Search");
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let resources = Widget::resources(&button, &doc);
+                let resources = crate::resources::resources(&button, &doc);
                 assert_eq!(resources.len(), 1);
                 assert_eq!(resources[0].label, name);
                 assert!(

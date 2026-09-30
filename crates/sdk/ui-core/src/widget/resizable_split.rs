@@ -217,6 +217,12 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -442,16 +448,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         "ResizableSplit"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let l = self.left.take_structure_dirty();
         let r = self.right.take_structure_dirty();
@@ -462,14 +458,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // Without this, straying outside the strip mid-drag routes the
         // release to a sibling and the drag silently ends early.
         self.divider_drag.is_some()
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
     }
 
     fn draw_with_presence(
@@ -535,6 +523,35 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             None,
             &paint_rect,
         );
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
+    for ResizableSplit<L, R>
+{
+    fn presence_key(&self) -> Option<PresenceKey> {
+        None
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGated
+    for ResizableSplit<L, R>
+{
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        None
     }
 }
 

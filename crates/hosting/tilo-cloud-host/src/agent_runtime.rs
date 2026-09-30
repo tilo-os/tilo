@@ -225,21 +225,12 @@ impl Drop for CloudAgentRuntime {
         }
     }
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn handle_certified_command(
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
+    host: read_attachment::CommandHost<'_>,
     evidence: &CertifiedAction,
-    queued: &mut AgentWorkQueue,
     policy_time: &tilo_action_broker::peer_actions::PolicyTime,
-    reads: &mut read_attachment::ReadCache,
 ) -> Result<Option<ActionMessage>, String> {
+    let (owner, reads_supported) = (host.owner, host.reads_supported);
     let action = evidence.action();
     if !matches!(
         &action.message,
@@ -275,21 +266,9 @@ async fn handle_certified_command(
     }
     // The same locked Store and fresh caller proof continue into the command
     // (no second open and second proof of the identical caller).
-    handle_command(
-        root,
-        owner,
-        provider,
-        offer,
-        reads_supported,
-        evidence,
-        queued,
-        policy_time,
-        store,
-        caller,
-        reads,
-    )
-    .await
-    .map(Some)
+    handle_command(host, evidence, policy_time, store, caller)
+        .await
+        .map(Some)
 }
 /// Fresh retained status for the invocation the certified evidence itself
 /// names (its Invoke or Status). Read-only; the caller is re-authenticated
@@ -443,15 +422,10 @@ const RUNTIME_TICK: Duration = Duration::from_millis(10);
 /// pumped every [`IDLE_WORKER_PUMP`] instead of every tick. Any command,
 /// step submission or child settlement makes the loop active again at once.
 const IDLE_AFTER: Duration = Duration::from_secs(2);
-/// Budget of one serialized worker-document owner turn; a turn over it
-/// retires the signer, fail-closed.
-#[cfg(not(test))]
-const WORKER_DOCUMENT_TURN: Duration = Duration::from_secs(5);
-/// Tests run many actual runtimes at once on a shared runner, where one full
-/// Store commit alone can exceed production's budget; they check behaviour,
-/// not latency (the retire-on-expiry path has its own tests).
-#[cfg(test)]
-const WORKER_DOCUMENT_TURN: Duration = Duration::from_secs(60);
+/// Stall budget of one serialized worker-document owner turn: the owner
+/// renews it at each completed step, and only a turn that stops progressing
+/// for a whole budget retires the signer, fail-closed.
+const WORKER_DOCUMENT_TURN: Duration = tilo_action_broker::owner_turn::STALL_BUDGET;
 const IDLE_WORKER_PUMP: Duration = Duration::from_millis(100);
 /// A tick that took at least this long yields to the executor afterwards.
 const HEAVY_TICK: Duration = Duration::from_millis(2);
@@ -626,7 +600,8 @@ async fn run(
                         last_active = Instant::now();
                     }
                     let controls = read_attachment::OwnerControls { workers: workers.as_ref(), launcher: launcher.as_ref() };
-                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued,&mut reads,controls).await;
+                    let host = read_attachment::CommandHost { root: &root, owner: &owner, provider: provider.as_ref(), offer: offer.as_ref(), reads_supported, queued: &mut queued, reads: &mut reads };
+                    read_attachment::dispatch(command, host, controls).await;
                 }
             },
             // A submitted agent step runs its tick now (see STEP_WAKE).
@@ -672,7 +647,7 @@ async fn run(
                 // apply opens Store only in its callback; refresh and release the deferred signer
                 // after the exact committed bytes have entered the worker cache.
                 while let Some(pending)=documents.as_mut().and_then(|requests|requests.try_recv().ok()){
-                    let(complete,result)=crate::agent_documents::apply_worker_document(&owner,pending,Instant::now()+WORKER_DOCUMENT_TURN);
+                    let(complete,result)=crate::agent_documents::apply_worker_document(&owner,pending,WORKER_DOCUMENT_TURN);
                     documents_applied += 1;
                     publish_due = true;
                     match result {
@@ -810,23 +785,22 @@ async fn run(
         .and(worker_close)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn handle_command(
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
+    host: read_attachment::CommandHost<'_>,
     evidence: &CertifiedAction,
-    queued: &mut AgentWorkQueue,
     policy_time: &tilo_action_broker::peer_actions::PolicyTime,
     store: crate::StoreGuard,
     caller: VerifiedAgentCaller,
-    reads: &mut read_attachment::ReadCache,
 ) -> Result<ActionMessage, String> {
+    let read_attachment::CommandHost {
+        root,
+        owner,
+        provider,
+        offer,
+        reads_supported,
+        queued,
+        reads,
+    } = host;
     let action = evidence.action();
     match &action.message {
         ActionMessage::CatalogueRefresh { scope } => {

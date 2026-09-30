@@ -300,7 +300,7 @@ impl MailState {
 
     /// Hand the framework host the heads captured before this event's first
     /// message action, so the app records one undo boundary bracketing it. Wired
-    /// through [`ui::widget::Widget::take_committed_action`]. Rising-edge.
+    /// through [`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action). Rising-edge.
     pub fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }
@@ -896,8 +896,8 @@ impl MailState {
 
 /// Wall-clock "now" in minutes since the Unix epoch.
 pub fn now_minutes() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |d| (d.as_secs() / 60) as i64)
 }
 

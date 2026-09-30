@@ -90,11 +90,16 @@ def architecture_matrix(
     if not architectures or invalid:
         detail = ", ".join(sorted(invalid)) or "empty selection"
         raise ValueError(f"architectures must contain only x86_64 and/or aarch64: {detail}")
+    # Tools from the first architecture run on its small runner; compiling the
+    # whole collection is CPU-bound and takes the large one.
     return {
         "include": [
             {
                 "arch": architecture,
                 "runner": "runner" if architecture == "x86_64" else "runner-arm64",
+                "build_runner": (
+                    "runner-large" if architecture == "x86_64" else "runner-large-arm64"
+                ),
             }
             for architecture in architectures
         ]
@@ -287,6 +292,24 @@ def apps_from_changes(
     return sorted(selected.difference(OS_INTEGRATED_APPS))
 
 
+def prior_collection_base(source: str, collection_builder: str, builder: str) -> str | None:
+    """The commit a main push may select a partial rebuild relative to, or None.
+
+    A partial rebuild reuses the published collection's other tapps and needs
+    its shared runtime to be byte-identical to the one built now. That runtime
+    is compiled from source, which the commit range selects on, and carries
+    system libraries from the builder image, which no source diff shows. So a
+    collection built with another builder image, or with an unrecorded one,
+    must be rebuilt in full; publication would otherwise refuse the changed
+    runtime after every app was built.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        return None
+    if not builder or collection_builder != builder:
+        return None
+    return source
+
+
 def app_from_tag(tag: str, catalog: dict[str, dict]) -> str | None:
     match = re.fullmatch(r"app-(.+)-v[0-9].*", tag)
     if not match:
@@ -349,6 +372,17 @@ def plan(args: argparse.Namespace) -> dict:
             + ", ".join(sorted(integrated))
         )
     features = cfg.get("features", {})
+    for name in selected:
+        cargo_manifest = args.root / "apps" / name / "Cargo.toml"
+        if not features.get(name) or not cargo_manifest.is_file():
+            continue
+        declared = tomllib.loads(cargo_manifest.read_text()).get("features", {})
+        undeclared = [feature for feature in features[name] if feature not in declared]
+        if undeclared:
+            raise ValueError(
+                f"{args.config.name} selects features {name} does not declare: "
+                + ", ".join(undeclared)
+            )
     cargo_features = [
         f"{catalog[name]['package']}/{feature}"
         for name in selected
@@ -391,8 +425,17 @@ def main() -> int:
     parser.add_argument("--event", default="")
     parser.add_argument("--architectures", default="")
     parser.add_argument("--main-architectures", default="")
+    parser.add_argument("--prior-collection-base", action="store_true",
+                        help="print the partial-rebuild base, or nothing for a full rebuild")
+    parser.add_argument("--collection-source", default="")
+    parser.add_argument("--collection-builder", default="")
+    parser.add_argument("--builder", default="")
     args = parser.parse_args()
     try:
+        if args.prior_collection_base:
+            print(prior_collection_base(
+                args.collection_source, args.collection_builder, args.builder) or "")
+            return 0
         if args.architecture_matrix:
             print(
                 json.dumps(

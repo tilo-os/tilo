@@ -192,7 +192,7 @@ fn run_fwupd_transaction(
             let line = match event {
                 Ok(line) => line,
                 Err(error) => {
-                    terminate_process_group(&mut child);
+                    bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
                     return Err(error);
                 }
             };
@@ -222,7 +222,7 @@ fn run_fwupd_transaction(
             break;
         }
         if started.elapsed() > deadline {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
             return Err("firmware update timed out after 45 minutes".into());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -265,17 +265,6 @@ fn read_firmware_progress(
     let _ = tx.send(Err(
         "firmware progress event count exceeded the safety limit".into(),
     ));
-}
-
-fn terminate_process_group(child: &mut std::process::Child) {
-    if let Ok(pid) = i32::try_from(child.id())
-        && let Some(group) = pid.checked_neg()
-    {
-        // SAFETY: fwupdmgr is spawned into its own pid-named process group.
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn progress_percent(line: &str) -> Option<u8> {

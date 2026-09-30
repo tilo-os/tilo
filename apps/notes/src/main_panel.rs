@@ -43,10 +43,11 @@ use winit::keyboard::{Key, NamedKey};
 use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::Widget;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState};
+use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState, EmptyStateContent};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
@@ -1066,7 +1067,7 @@ impl MainPanel {
     /// Whether the undo step the body's last edit opened stays open for the
     /// next letters of the word.
     pub fn keeps_undo_step_open(&self) -> bool {
-        self.editor.keeps_undo_step_open()
+        ui::undo::keeps_undo_step_open(&self.editor)
     }
 
     /// Modal overlays own the visible caret while retaining the underlying edit.
@@ -1661,15 +1662,16 @@ impl Widget for MainPanel {
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
             self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                Some(Icon::FileText),
-                "Start your first note",
-                Some("Capture an idea, a plan, or a decision. You can organise it later."),
-                Some("New note"),
+                &EmptyStateContent {
+                    icon: Some(Icon::FileText),
+                    title: "Start your first note",
+                    message: Some(
+                        "Capture an idea, a plan, or a decision. You can organise it later.",
+                    ),
+                    action_label: Some("New note"),
+                },
                 self.last_pointer,
             )
             .unwrap_or(Rect::ZERO);

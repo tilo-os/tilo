@@ -74,7 +74,6 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
-use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
@@ -88,7 +87,7 @@ use smithay::{
     delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -568,7 +567,7 @@ pub struct State {
     pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
     /// `xdg_toplevel_icon_manager_v1` — a window naming or drawing its own
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
-    pub toplevel_icon_manager: XdgToplevelIconManager,
+    pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
@@ -1892,6 +1891,10 @@ impl State {
         for peer in removed {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        // A new viewer starts at the keyframe `sync_viewers` asked for.
+        if !added.is_empty() {
+            self.seed_share_frame(session, surface);
+        }
     }
 
     /// Reconcile encoder lifetimes and viewer permissions with the active
@@ -1968,18 +1971,24 @@ impl State {
                 }
             }
             self.register_share_session(Arc::clone(&session));
+            self.seed_share_frame(&session, surface);
+        }
+    }
 
-            if let Some(rgba) = self.share_frame(&session, surface, || {
-                crate::compositor::foreign::store()
-                    .snapshot(surface)
-                    .map(|frame| frame.rgba)
-            }) {
-                session.deposit_captured_rgba(rgba);
-                if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                    && let Some(publish) = &self.legacy_stream_publisher
-                {
-                    let _ = publish(frame.into_neighbour_msg());
-                }
+    /// Encode and publish `surface`'s already captured frame, so a viewer
+    /// can start decoding without the window having to damage itself (a
+    /// static window may never do so).
+    fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
+        if let Some(rgba) = self.share_frame(session, surface, || {
+            crate::compositor::foreign::store()
+                .snapshot(surface)
+                .map(|frame| frame.rgba)
+        }) {
+            session.deposit_captured_rgba(rgba);
+            if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+                && let Some(publish) = &self.legacy_stream_publisher
+            {
+                let _ = publish(frame.into_neighbour_msg());
             }
         }
     }
@@ -2232,7 +2241,13 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
-        self.apply_remote_input(peer, surface, event)
+        match self.review_remote_input(peer, surface, event) {
+            Ok(()) => true,
+            Err(denial) => {
+                tracing::debug!(peer, surface, ?denial, "remote input refused");
+                false
+            }
+        }
     }
 
     /// [`Self::apply_remote_input`], reporting which rule refused the event rather than collapsing every refusal to `false`.
@@ -3191,12 +3206,40 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
 pub fn surface_id(surface: &WlSurface) -> u64 {
-    let index = surface
-        .client()
-        .and_then(|c| c.get_data::<ClientState>().map(|d| d.index))
-        // A surface whose client is gone can't collide with a live one; reserving 0 keeps it out of every live client's range.
-        .unwrap_or(0);
-    (u64::from(index) << 32) | u64::from(surface.id().protocol_id())
+    let protocol_id = u64::from(surface.id().protocol_id());
+    if let Some(client) = surface.client() {
+        let index = client.get_data::<ClientState>().map_or(0, |d| d.index);
+        return (u64::from(index) << 32) | protocol_id;
+    }
+    // A client that exits is torn down after it has gone, so its surfaces
+    // keep the id they were known by: that is what their tabs, input
+    // routing and frames are filed under.
+    if surface
+        .data::<smithay::wayland::compositor::SurfaceUserData>()
+        .is_some()
+        && let Some(id) = wl_compositor::with_states(surface, |states| {
+            states.data_map.get::<KnownSurfaceId>().map(|known| known.0)
+        })
+    {
+        return id;
+    }
+    // Reserving index 0 keeps an unknown dead surface out of every live
+    // client's range.
+    protocol_id
+}
+
+/// The [`surface_id`] a surface had while its client was alive.
+struct KnownSurfaceId(u64);
+
+/// Record `surface`'s [`surface_id`] for after its client has gone.
+fn remember_surface_id(surface: &WlSurface) -> u64 {
+    let id = surface_id(surface);
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(|| KnownSurfaceId(id));
+    });
+    id
 }
 
 fn authenticated_toplevel_identity(
@@ -3247,10 +3290,8 @@ impl CompositorHandler for State {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        self.surface_handles.insert(
-            crate::compositor::state::surface_id(surface),
-            surface.clone(),
-        );
+        self.surface_handles
+            .insert(remember_surface_id(surface), surface.clone());
         // A dmabuf remains client-owned until wl_buffer.release. Capture it
         // from pending state on a worker, and block this commit from replacing
         // (and releasing) the previous buffer until that read is done.
@@ -3408,8 +3449,9 @@ impl CompositorHandler for State {
 impl BufferHandler for State {
     fn buffer_destroyed(
         &mut self,
-        _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
     ) {
+        self.toplevel_icon_manager.buffer_destroyed(buffer);
     }
 }
 
@@ -4502,6 +4544,9 @@ impl XdgShellHandler for State {
                     host_launch_title,
                 )
             };
+            crate::shell::launcher::note_launch_presented(&crate::shell::persist::durable_app_id(
+                surface_id, &app_id,
+            ));
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
@@ -4723,6 +4768,9 @@ impl XdgShellHandler for State {
             self.fullscreen_output = None;
             self.fullscreen_target = None;
         }
+        // The tab's size was withheld while fullscreen; the next configure
+        // pass hands it back.
+        crate::compositor::foreign::store().resend_configure(surface_id);
         surface.with_pending_state(|state| {
             state.states.unset(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
@@ -4935,11 +4983,6 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 delegate_idle_inhibit!(State);
-delegate_xdg_toplevel_icon!(State);
-
-/// The icon is double-buffered: it is read on the surface's next commit.
-impl XdgToplevelIconHandler for State {}
-
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
         self.idle_inhibitors.inhibit(surface);

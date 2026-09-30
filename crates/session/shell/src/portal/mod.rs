@@ -47,6 +47,7 @@
     clippy::unnecessary_get_then_check,
     reason = "portal implementation methods mirror fixed freedesktop D-Bus signatures and decode bounded wire/state formats; protocol and adversarial behavior is covered by focused tests"
 )]
+#![deny(clippy::too_many_arguments)]
 
 #[cfg(any(test, target_os = "linux"))]
 pub mod account;
@@ -74,6 +75,8 @@ pub mod global_shortcuts;
 pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
 pub mod input_capture;
+#[cfg(target_os = "linux")]
+pub(crate) mod interface_dispatch;
 pub mod lifecycle;
 // Native media observes this policy on every supported shell host.
 pub mod lockdown;
@@ -176,7 +179,6 @@ pub use usb::UsbBackend;
 #[cfg(target_os = "linux")]
 pub use wallpaper::WallpaperBackend;
 
-#[cfg(any(test, target_os = "linux"))]
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
@@ -1182,7 +1184,8 @@ pub async fn serve_with_inhibit_and_clipboard(
     notification_portal.install_on_bridge(&ctx.notifications);
     let account = AccountBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
     let chooser = AppChooserBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
-    let launcher = DynamicLauncherBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
+    let launcher =
+        DynamicLauncherBackend::with_lifecycle(ctx.clone(), lifecycle.clone(), connection.clone());
     let email = EmailBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
     let screenshot = ScreenshotBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
     let settings_events = ctx.desktop_services.settings.subscribe();
@@ -1197,7 +1200,8 @@ pub async fn serve_with_inhibit_and_clipboard(
         background::BackgroundServiceHandle::new(Arc::new(background_service)),
         lifecycle.clone(),
     );
-    let input_capture = InputCaptureBackend::new(ctx.clone(), lifecycle.clone());
+    let input_capture =
+        InputCaptureBackend::new(ctx.clone(), lifecycle.clone(), connection.clone());
     let input_capture_sessions = input_capture.session_handle();
     let clipboard = ClipboardBackend::with_session_providers(
         vec![
@@ -1218,7 +1222,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let screensaver = screensaver::ScreenSaverService::new(inhibit_registry.clone());
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
-    input_capture.spawn_signal_emitter(connection.clone());
+    input_capture.spawn_signal_emitter();
     let secret = SecretBackend::new(ctx.clone());
     let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 

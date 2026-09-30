@@ -811,7 +811,7 @@ mod tests {
 
             // Find a real message through the app's own provider.
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(!providers.is_empty(), "mail publishes a search provider");
                 // Query a subject word that exists in the sample corpus.
                 let mb = crate::sample::sample_mailbox();
@@ -866,7 +866,7 @@ mod tests {
                 "search activation follows the same explicit Open → SetRead action"
             );
 
-            let folder_hit = app.search_providers()[0]
+            let folder_hit = ui::search::capability::search_providers(&app)[0]
                 .search("Archive")
                 .into_iter()
                 .find(|hit| hit.kind == FOLDER_KIND)
@@ -874,7 +874,7 @@ mod tests {
             let folder_address = folder_hit
                 .action_address()
                 .expect("canonical folder address");
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
                 .expect("folder address resolves against Mail's exported tree");
             let heads_before_folder_navigation = doc.get_heads();

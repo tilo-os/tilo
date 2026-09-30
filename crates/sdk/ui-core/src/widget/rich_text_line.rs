@@ -25,7 +25,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
@@ -1279,16 +1279,13 @@ fn paint_transient_color(
     let x_offset = ctx.xs.get(span.range.start).copied().unwrap_or(0.0);
     let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
     let color = transient_color(theme, span.kind);
-    text_renderer.draw_text_styled(
+    text_renderer.draw_style(
         scene,
         slice,
-        ctx.text_size,
         color,
         translated(transform, x, ctx.text_y),
         None,
-        TextWeight::Regular,
-        false,
-        true,
+        &TextStyle::new(ctx.text_size).with_family(FontChoice::Monospace),
     );
 }
 
@@ -1356,16 +1353,20 @@ fn paint_mark_segment(
     let italic = seg.italic;
     let mono = false;
 
-    text_renderer.draw_text_styled(
+    text_renderer.draw_style(
         scene,
         slice,
-        ctx.text_size,
         color,
         translated(transform, x, ctx.text_y),
         None,
-        weight,
-        italic,
-        mono,
+        &TextStyle::new(ctx.text_size)
+            .with_weight(weight)
+            .with_italic(italic)
+            .with_family(if mono {
+                FontChoice::Monospace
+            } else {
+                FontChoice::SansSerif
+            }),
     );
 }
 

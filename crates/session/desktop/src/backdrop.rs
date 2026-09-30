@@ -263,7 +263,7 @@ impl DesktopBackdrop {
     }
 
     /// Re-encoding the gradient + ~80 grid strokes + noise every frame
-    /// dominated the at-rest `draw=` budget under `QUICK_UI_PERF=1`, so
+    /// dominated the at-rest `draw=` budget under `TILO_UI_PERF=1`, so
     /// this bakes once and replays via translate.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);
@@ -437,6 +437,12 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
+    ui::provides!(
+        dyn ui::permissions::capability::PermissionGated,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::undo::UndoPoints
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -579,16 +585,6 @@ impl Widget for DesktopBackdrop {
         false
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
@@ -616,11 +612,26 @@ impl Widget for DesktopBackdrop {
             child.mark_drawn();
         }
     }
+}
 
+impl ui::undo::UndoPoints for DesktopBackdrop {
+    fn needs_commit(&self) -> bool {
+        self.children().iter().any(|c| ui::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            ui::undo::on_commit(child);
+        }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
     fn presence_key(&self) -> Option<PresenceKey> {
         None
     }
+}
 
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
     fn permission_scope(&self) -> Option<PermissionScope> {
         None
     }

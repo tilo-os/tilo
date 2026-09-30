@@ -29,10 +29,10 @@ fn encode(message: &NeighbourMsg, author: [u8; 32], index: usize) -> Source {
     }
 }
 fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
-    let root = SigningKey::from_bytes(&[51; 32]);
+    let user_key = SigningKey::from_bytes(&[51; 32]);
     let key = SigningKey::from_bytes(&[52; 32]);
     let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
+        user_public_key: user_key.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "archive test".into(),
         capabilities: DeviceCapabilities::primary(),
@@ -40,7 +40,7 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    sign_device_cert(&mut cert, &root).unwrap();
+    sign_device_cert(&mut cert, &user_key).unwrap();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let workspace = tilo_relay::room_workspace_id(room).unwrap();
     let now = SystemTime::now();
@@ -54,12 +54,12 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
     .unwrap();
     state
         .install_seed(
-            tilo_browser_runtime::fixture_seed(room, &cert, &[cert.clone()]).unwrap(),
+            super::peer_fixture::fixture_seed(room, &cert, &[cert.clone()]).unwrap(),
             &key,
             now,
         )
         .unwrap();
-    tilo_browser_runtime::fixture_writer_insert(&mut state, &key, "Recovery test", now).unwrap();
+    super::peer_fixture::fixture_writer_insert(&mut state, &key, "Recovery test", now).unwrap();
     let messages = state.bootstrap_messages(&key, now).unwrap();
     let mut directory = WorkspaceDirectory::new(cert.user_public_key, cert.device_public_key);
     directory.add_workspace(workspace, "archive test").unwrap();
@@ -74,7 +74,7 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
         .unwrap();
     let mut host = cert.clone();
     host.capabilities = DeviceCapabilities::host();
-    sign_device_cert(&mut host, &root).unwrap();
+    sign_device_cert(&mut host, &user_key).unwrap();
     let auth = PublicEnrollment {
         root_public_key: cert.user_public_key,
         host_certificate: host,
@@ -175,7 +175,7 @@ fn tampered_payload_rejected() {
             let mut mutation = DocumentMutation::decode(&envelope.payload).unwrap();
             match &mut mutation {
                 DocumentMutation::Snapshot(b) | DocumentMutation::Incremental(b) => b.push(9),
-            };
+            }
             envelope.payload = mutation.encode().unwrap();
         }
     });
@@ -194,9 +194,9 @@ fn wrong_room_and_record_rejected() {
             } = m
             {
                 if room {
-                    *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into()
+                    *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
                 } else {
-                    *record_id = "tab:0000000000000042".into()
+                    *record_id = "tab:0000000000000042".into();
                 }
             }
         });
@@ -306,7 +306,7 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     let writer_export = readable("so.tilo.word-processor", writer).unwrap();
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
-    let mut chat = recovered.docs[&("so.tilo.chat".into(), "".into())].clone();
+    let mut chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
     let channel = chat::doc::ChatDoc::list_channels(&chat).remove(0).id;
     chat::doc::ChatDoc::push_message(
         &mut chat,

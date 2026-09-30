@@ -252,6 +252,38 @@ impl<R: Read + Seek> BoundedArchive<R> {
         read_capped(file, name, declared, cap, max_total, &mut self.total)
     }
 
+    /// The first `len` bytes of the part `name` (fewer when it is shorter),
+    /// inflating no more than that: for a header check on a part too large
+    /// to read whole.
+    ///
+    /// # Errors
+    /// [`ZipError::Missing`] when there is no such part, a read failure
+    /// otherwise.
+    pub fn read_prefix(&mut self, name: &str, len: usize) -> Result<Vec<u8>, ZipError> {
+        let file = match self.archive.by_name(name) {
+            Ok(file) => file,
+            Err(RawZipError::FileNotFound) => {
+                return Err(ZipError::Missing {
+                    name: name.to_string(),
+                });
+            }
+            Err(source) => {
+                return Err(ZipError::Member {
+                    name: name.to_string(),
+                    source,
+                });
+            }
+        };
+        let mut prefix = Vec::with_capacity(len);
+        file.take(len as u64)
+            .read_to_end(&mut prefix)
+            .map_err(|source| ZipError::Read {
+                name: name.to_string(),
+                source,
+            })?;
+        Ok(prefix)
+    }
+
     /// [`read`](Self::read), decoded as UTF-8. A doctype is allowed — use
     /// [`read_xml`](Self::read_xml) for formats whose XML never carries one.
     ///

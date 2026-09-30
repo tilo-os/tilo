@@ -74,7 +74,7 @@ mod tests {
         rc::{Rc, Weak},
     };
     use ui::{
-        application::{HostContext, LaunchTarget, RestoreInput},
+        application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         application_view::InstanceViewStore,
         portable_storage::PortableStorage,
         record::RecordOwners,
@@ -102,13 +102,15 @@ mod tests {
         ));
         let context = HostContext::prepare(
             definition,
-            records,
-            views,
-            "device".into(),
-            instance,
-            permissions,
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "device".into(),
+                instance_id: instance,
+                permissions,
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -180,13 +182,15 @@ mod tests {
         ));
         let context = HostContext::prepare(
             definition,
-            records,
-            views,
-            "device".into(),
-            1,
-            permissions,
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "device".into(),
+                instance_id: 1,
+                permissions,
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();

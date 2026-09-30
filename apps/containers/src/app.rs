@@ -15,7 +15,7 @@
 //! fighting a flexbox tree.
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -563,7 +563,7 @@ impl ContainersApp {
             history_arm_restart: None,
             #[cfg(test)]
             history_runtime_replacement: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             live,
             seed_demo,
             seeded: false,
@@ -832,7 +832,7 @@ impl ContainersApp {
         self.toast = Some(Toast {
             message: message.into(),
             error,
-            born: Instant::now(),
+            born: ui::time::now(),
         });
     }
 
@@ -843,7 +843,7 @@ impl ContainersApp {
             return;
         }
         let Some(tx) = self.bg_tx.clone() else { return };
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         #[cfg(test)]
         if let Some(controlled) = &self.controlled_runtime {
             let _ = controlled.send(ControlledRuntimeRequest::Refresh(
@@ -1283,7 +1283,7 @@ impl ContainersApp {
     /// selects that container — the same "find and jump to" the old inline
     /// search bar did, but through the shared search surface.
     pub(crate) fn open_container_palette(&mut self) {
-        let resources = self.resources(&AutoCommit::new());
+        let resources = ui::resources::resources(self, &AutoCommit::new());
         let entries: Vec<CommandEntry> = flatten(&resources)
             .into_iter()
             .filter(|action| action.action.id == "select")
@@ -1297,10 +1297,9 @@ impl ContainersApp {
 
     #[cfg(test)]
     pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
-        let intent = self
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = self.resources(doc);
+        let resources = ui::resources::resources(self, doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         let kind = spec.kind;
@@ -2180,9 +2179,12 @@ impl ContainersApp {
 }
 
 impl Widget for ContainersApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -2193,122 +2195,6 @@ impl Widget for ContainersApp {
             "containers.volume",
             "containers.distrobox",
         ]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("containers", "containers.engine", "Containers");
-        if let Ok(spec) = ActionSpec::operation(
-            "create",
-            "Create container",
-            OperationKind::View,
-            "containers.engine",
-            &["create"],
-        ) {
-            let spec = if self.engine.live {
-                spec
-            } else {
-                spec.unavailable(
-                    "engine_offline",
-                    "Creating containers requires a connected Podman engine",
-                )
-            };
-            root.actions.push(spec);
-        }
-        for container in &self.engine.containers {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            ));
-        }
-        for image in &self.engine.images {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(image_resource(image, self.engine.live));
-        }
-        for volume in &self.engine.volumes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(volume_resource(volume, self.engine.live));
-        }
-        for distrobox in &self.engine.distroboxes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(distrobox_resource(distrobox, self.engine.live));
-        }
-        vec![root]
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if let Some(container_id) = id
-            .strip_prefix("container:")
-            .and_then(|rest| rest.strip_suffix(":logs"))
-        {
-            let container = self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)?;
-            return container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            )
-            .children
-            .into_iter()
-            .find(|child| child.id.0 == id);
-        }
-        if let Some(container_id) = id.strip_prefix("container:") {
-            return self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)
-                .map(|item| {
-                    container_resource(
-                        item,
-                        self.engine.live,
-                        self.continuation_runtime_identity.as_ref(),
-                    )
-                });
-        }
-        if let Some(reference) = id.strip_prefix("image:") {
-            return self
-                .engine
-                .images
-                .iter()
-                .find(|item| item.reference() == reference)
-                .map(|item| image_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("volume:") {
-            return self
-                .engine
-                .volumes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| volume_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("distrobox:") {
-            return self
-                .engine
-                .distroboxes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| distrobox_resource(item, self.engine.live));
-        }
-        None
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 
     fn start_operation(
@@ -2367,8 +2253,19 @@ impl Widget for ContainersApp {
         if self.seed_demo && !self.seeded {
             self.seed_demo_scene(doc);
         }
-        // Periodically re-probe the engine for fresh stats / state.
-        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
+        // Periodically re-probe the engine for fresh stats / state. Controlled
+        // fixtures own that cadence through the request channel; a wall-clock
+        // tick would race their emptiness asserts under a slow runner.
+        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
+            #[cfg(test)]
+            {
+                self.controlled_runtime.is_none()
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        } {
             self.spawn_refresh();
         }
         self.hydrate_selection(doc);
@@ -3027,6 +2924,139 @@ impl Widget for ContainersApp {
         self.has_focus
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::search::capability::SearchSource for ContainersApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for ContainersApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("containers", "containers.engine", "Containers");
+        if let Ok(spec) = ActionSpec::operation(
+            "create",
+            "Create container",
+            OperationKind::View,
+            "containers.engine",
+            &["create"],
+        ) {
+            let spec = if self.engine.live {
+                spec
+            } else {
+                spec.unavailable(
+                    "engine_offline",
+                    "Creating containers requires a connected Podman engine",
+                )
+            };
+            root.actions.push(spec);
+        }
+        for container in &self.engine.containers {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children.push(container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            ));
+        }
+        for image in &self.engine.images {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children.push(image_resource(image, self.engine.live));
+        }
+        for volume in &self.engine.volumes {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children
+                .push(volume_resource(volume, self.engine.live));
+        }
+        for distrobox in &self.engine.distroboxes {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children
+                .push(distrobox_resource(distrobox, self.engine.live));
+        }
+        vec![root]
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            let container = self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)?;
+            return container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            )
+            .children
+            .into_iter()
+            .find(|child| child.id.0 == id);
+        }
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)
+                .map(|item| {
+                    container_resource(
+                        item,
+                        self.engine.live,
+                        self.continuation_runtime_identity.as_ref(),
+                    )
+                });
+        }
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_resource(item, self.engine.live));
+        }
+        None
+    }
+}
+
+impl ui::widget::controls::ActionControls for ContainersApp {
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
@@ -3037,14 +3067,12 @@ impl Widget for ContainersApp {
             .pending_control_invocation
             .install_custody(domain, attachment);
     }
-
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.palette.take_control_invocation() {
             return Some(invocation);
         }
         self.pending_control_invocation.take_legacy_compatibility()
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         if self.palette_open {
             self.palette.control_action_bindings()
@@ -3116,17 +3144,11 @@ impl Widget for ContainersApp {
             bindings
         }
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+impl ui::history_mode::capability::DocumentHistory for ContainersApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3291,10 +3313,6 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event for one embedded hand-laid field"
-    )]
     pub(crate) fn route_create_input(
         &mut self,
         field: CreateField,
@@ -3500,7 +3518,7 @@ impl ContainersApp {
     /// draw path, mirroring `NavSplit::self_tick`). The first draw sees
     /// `dt == 0` so the rail never teleports.
     pub(crate) fn tick_sidebar(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = self
             .sidebar_tick
             .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
@@ -3823,8 +3841,7 @@ mod tests {
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
-            let intent = app
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("the host receives an inert resource intent");
             assert_eq!(
                 intent.address,
@@ -3852,7 +3869,7 @@ mod tests {
             app.search_index.sync(&app.engine);
 
             let doc = AutoCommit::new();
-            let root = Widget::resources(&app, &doc).remove(0);
+            let root = ui::resources::resources(&app, &doc).remove(0);
             assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
             let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
             assert!(
@@ -3861,7 +3878,7 @@ mod tests {
                     .all(|resource| resource.id.0 != omitted)
             );
             assert_eq!(
-                Widget::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
+                ui::resources::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
                 Some(omitted.clone())
             );
 
@@ -3870,7 +3887,7 @@ mod tests {
                 .retain(|container| format!("container:{}", container.id) != omitted);
             app.search_index.sync(&app.engine);
             assert!(
-                Widget::resource(&app, &doc, &omitted).is_none(),
+                ui::resources::resource(&app, &doc, &omitted).is_none(),
                 "a stale palette address cannot recreate removed authority"
             );
             assert!(
@@ -3918,6 +3935,20 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"
+        );
+    }
+
+    #[test]
+    fn controlled_runtime_owns_refresh_cadence() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        app.last_refresh = Instant::now()
+            .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
+            .expect("refresh interval fits below Instant::now");
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            requests.try_recv().is_err(),
+            "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
         );
     }
 
@@ -4028,11 +4059,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.sync(&mut doc, &automerge::ROOT);
-        let intent = Widget::take_control_invocation(&mut app).expect("retained intent");
+        let intent =
+            ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");
         assert_eq!(intent.address.action, "restart");
         assert!(intent.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
         assert!(requests.try_recv().is_err());
     }
 

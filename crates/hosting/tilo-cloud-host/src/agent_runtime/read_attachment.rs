@@ -568,6 +568,19 @@ pub(crate) struct OwnerControls<'a> {
     pub(crate) workers: Option<&'a AgentWorkers>,
     pub(crate) launcher: Option<&'a launcher::managed::ManagedLauncher>,
 }
+/// What the runtime loop lends each owner command: the host root and owner,
+/// the agent-control provider and grant offer it currently serves, whether
+/// private reads are supported, and the work queue and read cache only the
+/// loop mutates.
+pub(super) struct CommandHost<'a> {
+    pub(super) root: &'a Path,
+    pub(super) owner: &'a RuntimeOwner,
+    pub(super) provider: Option<&'a Arc<AgentControlProvider>>,
+    pub(super) offer: Option<&'a GrantOffer>,
+    pub(super) reads_supported: bool,
+    pub(super) queued: &'a mut AgentWorkQueue,
+    pub(super) reads: &'a mut ReadCache,
+}
 fn is_revocation(evidence: &CertifiedAction) -> bool {
     matches!(
         &evidence.action().message,
@@ -577,21 +590,16 @@ fn is_revocation(evidence: &CertifiedAction) -> bool {
         }
     )
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
-pub(super) async fn dispatch(
-    command: Command,
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
-    queued: &mut AgentWorkQueue,
-    reads: &mut ReadCache,
-    controls: OwnerControls<'_>,
-) {
+pub(super) async fn dispatch(command: Command, host: CommandHost<'_>, controls: OwnerControls<'_>) {
+    let CommandHost {
+        root,
+        owner,
+        provider,
+        offer,
+        reads_supported,
+        queued,
+        reads,
+    } = host;
     // Reads are disposable. A lost mutation waiter still requires exact retained
     // status/uncertainty; do not change already-started mutation semantics.
     let disposable = matches!(
@@ -660,15 +668,17 @@ pub(super) async fn dispatch(
             }
         }
         CommandKind::Action => handle_certified_command(
-            root,
-            owner,
-            provider,
-            offer,
-            reads_supported,
+            CommandHost {
+                root,
+                owner,
+                provider,
+                offer,
+                reads_supported,
+                queued,
+                reads,
+            },
             &command.evidence,
-            queued,
             &command.policy_time,
-            reads,
         )
         .await
         .map(CommandReply::Action)

@@ -34,6 +34,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -892,10 +893,7 @@ impl Widget for PairDeviceScreen {
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.status,
             &self.status,
             Role::Body,
@@ -903,10 +901,7 @@ impl Widget for PairDeviceScreen {
             true,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.code_label,
             CODE_LABEL,
             Role::Label,
@@ -915,10 +910,7 @@ impl Widget for PairDeviceScreen {
         );
         self.draw_code_boxes(scene, transform, text_renderer, theme, presence, plan);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.payload_label,
             PAYLOAD_LABEL,
             Role::Label,
@@ -929,10 +921,7 @@ impl Widget for PairDeviceScreen {
             .draw(scene, transform, text_renderer, theme, presence);
         if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 err,
                 Role::Error,

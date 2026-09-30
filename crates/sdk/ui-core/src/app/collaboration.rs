@@ -257,9 +257,11 @@ impl App {
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
         let current = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.presence_payload())
-                .ok()
-                .flatten()
+            self.inspect_node(id, |widget| {
+                crate::presence::capability::presence_payload(widget)
+            })
+            .ok()
+            .flatten()
         });
         if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
@@ -292,7 +294,7 @@ impl App {
     /// focus.
     #[cfg(feature = "native")]
     fn broadcast_location_presence(&mut self) {
-        let current = self.root_widget.presence_payload();
+        let current = crate::presence::capability::presence_payload(self.root_widget.as_ref());
         if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
@@ -351,11 +353,13 @@ impl App {
         else {
             return;
         };
-        self.root_widget
-            .restore_view_state(&crate::view::ViewContribution {
+        crate::view::capability::restore_view_state(
+            self.root_widget.as_mut(),
+            &crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
                 view_mode: view.view_mode,
-            });
+            },
+        );
         self.layout.layout_dirty = true;
         self.needs_sync = true;
     }
@@ -525,7 +529,13 @@ impl App {
         let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
             && self.actions.last_published_actions.is_some()
             && self.actions.action_directory_snapshot.is_none();
-        if action_surface_may_have_changed || published_snapshot_was_evicted {
+        // The broker refused the last surface: republish it now, not on the
+        // next unrelated change.
+        let refused_surface = self.collaboration.manager.take_action_surface_failed();
+        if refused_surface {
+            self.actions.last_published_actions = None;
+        }
+        if action_surface_may_have_changed || published_snapshot_was_evicted || refused_surface {
             // The normal idle pump also repairs invalidation from a later
             // model sync or a presence-only batch. Neither necessarily brings
             // another action event after a terminal operation was published.

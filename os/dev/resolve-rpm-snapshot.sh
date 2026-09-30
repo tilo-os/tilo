@@ -6,7 +6,8 @@
 # and prints the digest-pinned RPMS_REF. Never reads a hand-kept pin file.
 #
 #   resolve-rpm-snapshot.sh           print registry.../rpms@sha256:...
-#   resolve-rpm-snapshot.sh --exists  exit 0 if the fingerprint tag resolves
+#   resolve-rpm-snapshot.sh --exists  exit 0 if the fingerprint tag resolves, 1 if
+#                                     it does not exist, 3 if the registry failed
 #   resolve-rpm-snapshot.sh --tag     print set-<fingerprint> only
 #
 # Needs: python3, cosign, skopeo, jq. Registry read access for the tag.
@@ -35,15 +36,28 @@ fingerprint="$(python3 "$repo/os/dev/rpm-snapshot-fingerprint.py")"
   || { printf 'resolve-rpm-snapshot: invalid fingerprint\n' >&2; exit 1; }
 tag="set-$fingerprint"
 tagged="registry.tilo.so/tilo/rpms:$tag"
+TMPDIR_RESOLVE="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_RESOLVE"' EXIT
 
 if [ "$mode" = tag ]; then
   printf '%s\n' "$tag"
   exit 0
 fi
 
-if ! digest="$(skopeo inspect --format '{{.Digest}}' "docker://$tagged" 2>/dev/null)"; then
-  printf 'resolve-rpm-snapshot: no published snapshot for %s\n' "$tagged" >&2
-  exit 1
+# Without skopeo the lookup fails with "not found", which must not read as
+# "not published".
+command -v skopeo >/dev/null \
+  || { printf 'resolve-rpm-snapshot: skopeo is required\n' >&2; exit 3; }
+
+# Exit 1: the tag does not exist. Exit 3: the registry could not be asked, which
+# says nothing about the tag; a caller must not treat it as "not published".
+if ! digest="$(skopeo inspect --format '{{.Digest}}' "docker://$tagged" 2>"$TMPDIR_RESOLVE/err")"; then
+  if grep -qE 'manifest unknown|name unknown|not found' "$TMPDIR_RESOLVE/err"; then
+    printf 'resolve-rpm-snapshot: no published snapshot for %s\n' "$tagged" >&2
+    exit 1
+  fi
+  printf 'resolve-rpm-snapshot: could not look up %s: %s\n' "$tagged" "$(tail -n 1 "$TMPDIR_RESOLVE/err")" >&2
+  exit 3
 fi
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
   || { printf 'resolve-rpm-snapshot: tag %s has no digest\n' "$tagged" >&2; exit 1; }
@@ -58,7 +72,7 @@ fi
 [[ "${BASE_REF:-}" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] \
   || { printf 'resolve-rpm-snapshot: BASE_REF is not a digest-pinned fedora-bootc\n' >&2; exit 1; }
 
-for tool in cosign skopeo jq; do
+for tool in cosign jq; do
   command -v "$tool" >/dev/null \
     || { printf 'resolve-rpm-snapshot: %s is required\n' "$tool" >&2; exit 1; }
 done

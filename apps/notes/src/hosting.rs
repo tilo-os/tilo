@@ -28,28 +28,16 @@ pub fn default_notebook() -> RecordCheckout {
     )
 }
 
-/// Prepare Notes from the trusted native launcher environment. Legacy files
-/// are considered only for a standalone personal launch; a workspace must
-/// never inherit a private notebook merely because it was opened first.
+/// Prepare Notes from the trusted native launcher environment.
 /// # Errors
-/// Refuses invalid host identity, authority, storage, canonical records, or
-/// legacy input through the same recovery-preserving paths as `prepare_default`.
+/// Refuses invalid host identity, authority, storage or canonical records
+/// through the same recovery-preserving paths as `prepare_default`.
 pub fn prepare_native(
     runner_inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let mut native = NativeProcessHost::open(crate::definition())?;
     let instance_id = native.instance_id();
-    let legacy_root = if native.workspace_scoped() {
-        None
-    } else {
-        crate::storage::default_root().map_err(LaunchError::Operation)?
-    };
-    prepare_default(
-        native.host_mut(),
-        instance_id,
-        legacy_root.as_deref(),
-        runner_inputs,
-    )
+    prepare_default(native.host_mut(), instance_id, None, runner_inputs)
 }
 
 /// Prepare the real component, importing a quiescent legacy workspace only
@@ -111,9 +99,9 @@ fn prepare_default_notebook(
             }
             if let Some(root) = legacy_root {
                 let metadata_path = crate::storage::workspace_file_path(root);
-                let has_source = match std::fs::metadata(&metadata_path) {
+                let has_source = match crate::files::metadata(&metadata_path) {
                     Ok(_) => true,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(tilo_files::FsError::NotFound) => false,
                     Err(error) => {
                         return Err(LaunchError::Operation(format!(
                             "{}: {error}",

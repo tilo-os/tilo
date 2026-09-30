@@ -419,7 +419,7 @@ mod tests {
         // The source remains native text while effects/views are discoverable.
         {
             let (mut app, doc) = synced();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "typst.workspace");
             assert_eq!(
@@ -454,7 +454,7 @@ mod tests {
                     .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "effects/views do not create document undo boundaries"
             );
         }

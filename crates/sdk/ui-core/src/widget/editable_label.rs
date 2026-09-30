@@ -21,7 +21,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
@@ -281,16 +281,13 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
-        text_renderer.draw_text_font(
+        text_renderer.draw_style(
             scene,
             &self.value,
-            self.size,
             color,
             text_transform,
             Some(width),
-            TextWeight::Regular,
-            false,
-            &self.family,
+            &TextStyle::new(self.size).with_family(self.family.clone()),
         );
     }
 
@@ -653,7 +650,7 @@ mod tests {
             let mut label = EditableLabel::new("Draft title");
             label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
             label.begin_edit();
-            let before = label.input.get_state();
+            let before = crate::undo::get_state(&label.input);
             let mut renderer = crate::TextRenderer::new();
             let mut draw = |label: &mut EditableLabel| {
                 let mut scene = Scene::new();
@@ -670,7 +667,7 @@ mod tests {
             label.suppress_caret_paint(true);
             assert_eq!(draw(&mut label).saturating_add(1), visible);
             assert!(label.is_editing());
-            assert_eq!(label.input.get_state(), before);
+            assert_eq!(crate::undo::get_state(&label.input), before);
             assert_eq!(label.current_text(), "Draft title");
             label.suppress_caret_paint(false);
             assert_eq!(draw(&mut label), visible);

@@ -163,8 +163,8 @@ impl SelectedSemanticRead<'_> {
 
     /// Run the reader over the caller's canonical record at its committed heads.
     ///
-    /// `document` must be the record store's current loan of the scope's record
-    /// (hosted invocation) or the app's mounted primary document. Nothing is
+    /// `document` must be the record store's current loan of the record (the
+    /// scope's, for a hosted invocation) or the app's mounted primary document. Nothing is
     /// committed: a document with a pending edit refuses. The original caller is
     /// rechecked after projection, immediately before the page is returned.
     pub(crate) fn read(
@@ -173,14 +173,14 @@ impl SelectedSemanticRead<'_> {
         document: &AutoCommit,
     ) -> Result<tilo_actions::ActionOutput, SemanticReadError> {
         self.check_contract()?;
-        let route = match scope {
+        let record = match scope {
             Some(scope) => {
                 scope
                     .check_read_loan(document)
                     .map_err(|_| SemanticReadError::InvalidOwner)?;
-                scope.route().clone()
+                crate::invocation_scope::RecordStamp::from(scope.route())
             }
-            None => crate::invocation_scope::mounted_document_route(document)
+            None => crate::invocation_scope::identified_record(document)
                 .ok_or(SemanticReadError::MissingQualifiedOwner)?,
         };
         if document.pending_ops() != 0 {
@@ -193,9 +193,9 @@ impl SelectedSemanticRead<'_> {
         let result = serde_json::json!({
             "version": 1,
             "record": {
-                "roomId": route.cluster_id.to_string(),
-                "appId": route.app_id,
-                "recordId": route.record.unwrap_or_default(),
+                "roomId": record.room.map(|room| room.to_string()),
+                "appId": record.app_id,
+                "recordId": record.record_id,
             },
             "basis": { "heads": hex },
             "content": page.content,

@@ -494,6 +494,14 @@ impl Action for MailAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Whether a message was read is state about it, not a change to it.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 /// Register Mail's action decoder for palette execution + remote replay.
@@ -1455,7 +1463,7 @@ mod tests {
         // delete, and surfaces them in the one palette. Drives the real resource hook.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let handlers: std::collections::HashSet<String> = app
                 .local_resource_operation_handlers()
                 .iter()
@@ -1548,7 +1556,7 @@ mod tests {
             );
 
             app.inject_mail_search_snapshot_failure();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let mailbox = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "mail.mailbox")
@@ -1572,7 +1580,7 @@ mod tests {
                 "only a successful replacement clears the retained error"
             );
             assert!(
-                !Widget::resources(&app, &state.doc)
+                !ui::resources::resources(&app, &state.doc)
                     .iter()
                     .flat_map(|root| &root.children)
                     .any(|resource| resource.id.as_str() == "mail.search-status")
@@ -1852,7 +1860,7 @@ mod tests {
         // Phase `mailbox_batch_actions_bind_stable_ids_and_purge_is_confirmed`.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
             let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
             let args = serde_json::json!({"ids": [id.clone(), id]});
@@ -1889,6 +1897,8 @@ mod tests {
         // Phase `purge_action_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset`.
         {
             let mut doc = AutoCommit::new();
+            MailDoc::register_message(&mut doc, "inbox");
+            MailDoc::register_message(&mut doc, "trash");
             MailDoc::set_folder_for(&mut doc, "inbox", Folder::Inbox);
             MailDoc::set_folder_for(&mut doc, "trash", Folder::Trash);
             let heads_before = doc.get_heads();
@@ -2089,7 +2099,7 @@ mod tests {
         // registry.
         {
             let (app, state) = seeded_app();
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let spec = resources[0]
                 .actions
                 .iter()

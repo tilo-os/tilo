@@ -17,7 +17,6 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use sha2::{Digest, Sha256};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 #[cfg(test)]
@@ -75,9 +74,7 @@ pub enum ParentPatch<'a> {
 
 impl EditorDoc {
     /// Return the durable project identity, minting it once inside the shared
-    /// document. For an imported legacy document that already has content we
-    /// derive the migration ID from its canonical saved bytes, so independent
-    /// peers choose the same value before the migration write is merged.
+    /// document.
     pub fn ensure_project_id(doc: &mut AutoCommit, proposed: &str) -> String {
         if let Ok(Some((Value::Scalar(value), _))) = doc.get(&ROOT, "project_id")
             && let ScalarValue::Str(id) = value.as_ref()
@@ -85,9 +82,7 @@ impl EditorDoc {
         {
             return id.to_string();
         }
-        let id = if doc.get(&ROOT, "files").ok().flatten().is_some() {
-            Self::legacy_project_id(doc)
-        } else if uuid::Uuid::parse_str(proposed).is_ok() {
+        let id = if uuid::Uuid::parse_str(proposed).is_ok() {
             proposed.to_string()
         } else {
             uuid::Uuid::new_v4().to_string()
@@ -96,21 +91,6 @@ impl EditorDoc {
         id
     }
 
-    fn legacy_project_id(doc: &mut AutoCommit) -> String {
-        let mut bytes = Sha256::digest(doc.save())
-            .into_iter()
-            .take(16)
-            .collect::<Vec<_>>();
-        // UUID variant/version bits make this a valid stable resource identity.
-        if let Some(byte) = bytes.get_mut(6) {
-            *byte = (*byte & 0x0f) | 0x50;
-        }
-        if let Some(byte) = bytes.get_mut(8) {
-            *byte = (*byte & 0x3f) | 0x80;
-        }
-        uuid::Uuid::from_slice(&bytes)
-            .map_or_else(|_| uuid::Uuid::new_v4().to_string(), |id| id.to_string())
-    }
     /// Get-or-create the durable file-record namespace. Unlike `buffers`, this
     /// is the collaborative project tree rather than a cache of editor panes.
     pub fn files_map(doc: &mut AutoCommit) -> Option<ObjId> {

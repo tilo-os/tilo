@@ -16,7 +16,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -25,8 +25,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::EncodedAction;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::toggle_group::Segment;
@@ -279,7 +280,7 @@ impl ThemesApp {
             // Seed wide so the first frame (and the default 1280px shot) builds
             // the docked layout without a structure round-trip.
             build_width: BREAKPOINT,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             gallery_toggle,
             gallery_toggle_hidden,
             toggle_shows_close: false,
@@ -442,7 +443,7 @@ impl ThemesApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions.dispatch_with_context(
             state,
@@ -578,7 +579,7 @@ impl ThemesApp {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
-                Ok(_) => {
+                Ok(()) => {
                     self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
                     Ok(())
@@ -615,9 +616,9 @@ impl ThemesApp {
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Persisted libraries are read-only at startup, including legacy Text
-        // and a restored version with no catalog roots. Explicit edits create
-        // only their addressed native override inside the canonical action.
+        // Persisted libraries are read-only at startup, including a restored
+        // version with no catalog roots. Explicit edits touch only their
+        // addressed record inside the canonical action.
         if !self.selected.is_empty() {
             return;
         }
@@ -1400,20 +1401,14 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["themes.apply", "themes.export", "themes.new"]
-    }
-
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn start_operation(
@@ -1474,13 +1469,6 @@ impl Widget for ThemesApp {
             return self.completed_apply.take();
         }
         None
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Themes action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1640,7 +1628,7 @@ impl Widget for ThemesApp {
         // Advance the reveal animation (frame-rate-independent; `needs_redraw`
         // keeps frames flowing while it settles).
         let layout = self.layout_class();
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64();
         self.last_tick = now;
         self.gallery_flap.tick(layout, dt);
@@ -1731,19 +1719,13 @@ impl Widget for ThemesApp {
             let fill = theme.tokens.colors.semantic.success;
             draw::fill_rrect(scene, t, pill, 13.0, fill);
             draw::text_center(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &self.status,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 // Ink measured against the pill, not a literal white: a light
                 // preset's success green needs dark ink to stay legible.
                 theme.on_surface(fill).ink,
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Semibold,
+                pill,
             );
         }
     }
@@ -1924,6 +1906,31 @@ impl Widget for ThemesApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for ThemesApp {
+    /// Publish the open theme library + its themes so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ThemesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for ThemesApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2115,9 +2122,7 @@ mod tests {
     }
 
     fn route_narrow_view_invocation(app: &mut ThemesApp, state: &mut ui::State) {
-        let invocation = app
-            .narrow_tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut app.narrow_tabs)
             .expect("view selection emitted its canonical invocation");
         let index = invocation.arguments["index"]
             .as_u64()
@@ -2522,7 +2527,7 @@ mod tests {
             );
             assert!(app.status.contains("Exported"));
 
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             assert!(
                 resources[0]
                     .actions
@@ -2566,7 +2571,7 @@ mod tests {
                 crate::actions::ThemesAction::CreateCustomTheme { .. }
             ));
             assert!(
-                Widget::resources(&app, &state.doc)[0]
+                ui::resources::resources(&app, &state.doc)[0]
                     .actions
                     .iter()
                     .any(|action| {
@@ -2698,7 +2703,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the boundary is consumed once"
             );
 
@@ -2744,7 +2749,7 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Cancelled { .. })
             ));
 
-            let apply = Widget::resources(&app, &st.doc)
+            let apply = ui::resources::resources(&app, &st.doc)
                 .into_iter()
                 .flat_map(|resource| resource.children)
                 .flat_map(|theme| theme.actions)

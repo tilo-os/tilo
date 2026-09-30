@@ -22,9 +22,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -424,19 +424,20 @@ impl ChannelBrowser {
         }
         let text_size = theme.tokens.typography.scale.sm;
         self.query_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.query,
-            &self.query_selection,
-            "Search channels",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.query,
+                selection: &self.query_selection,
+                placeholder: "Search channels",
+                show_caret: self.is_focused,
+            },
             Rect::new(row.x0 + 12.0, row.y0, row.x1 - 12.0, row.y1),
             &TextStyle::new(text_size),
-            theme.tokens.colors.text_primary,
-            theme.tokens.colors.text_dim,
-            theme.tokens.colors.accent[5].with_alpha_factor(0.3),
-            theme.tokens.colors.accent[5],
-            self.is_focused,
+            QueryInk::accented(
+                theme.tokens.colors.text_primary,
+                theme.tokens.colors.text_dim,
+                theme.tokens.colors.accent[5],
+            ),
         );
     }
 
@@ -524,10 +525,6 @@ impl ChannelBrowser {
     /// row's identity. Role chip and time/badge are split into their own
     /// helpers below to keep this under clippy's line budget; neither
     /// reads `self`, so both are associated functions.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Channel rows combine render context with row bounds, channel metadata, selection state, and time for their activity display."
-    )]
     fn draw_row(
         scene: &mut Scene,
         transform: Affine,
@@ -823,11 +820,12 @@ impl ChannelBrowser {
         let cy = f64::midpoint(footer.y0, footer.y1);
 
         let mut x = footer.x0 + 4.0;
-        for (key, label) in [
-            ("\u{2191}\u{2193}", "Navigate"),
-            ("Enter", "Select"),
-            ("Esc", "Close"),
-        ] {
+        let hints = [
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!("palette-hint-select")),
+            ("Esc", crate::i18n!("palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
             let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);

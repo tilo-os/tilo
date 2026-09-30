@@ -326,15 +326,18 @@ mod tests {
             let mut app = crate::app::SlidesApp::demo(None);
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let target = app.resources(&doc)[0].children[2].id.0.clone();
+            let target = ui::resources::resources(&app, &doc)[0].children[2]
+                .id
+                .0
+                .clone();
             let slide_id = target.strip_prefix("slides.slide:").unwrap();
-            let hit = app.search_providers()[0]
+            let hit = ui::search::capability::search_providers(&app)[0]
                 .search("")
                 .into_iter()
                 .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))
                 .unwrap();
             let address = hit.action_address().unwrap();
-            let resource = app.resource(&doc, &address.resource).unwrap();
+            let resource = ui::resources::resource(&app, &doc, &address.resource).unwrap();
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
             assert!(matches!(
                 app.start_operation(

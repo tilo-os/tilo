@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,21 +64,21 @@ const TOPBAR_HEIGHT: f64 = 44.0;
 fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
     const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
     let base = root.join(storage::PAGES_DIR);
-    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canonical_root = crate::files::canonical(root).unwrap_or_else(|| root.to_path_buf());
     Arc::new(move |source: &str| {
         if source.contains("://") || source.starts_with('/') {
             return None;
         }
         let source = source.split(['?', '#']).next().unwrap_or(source);
-        let candidate = std::fs::canonicalize(base.join(source)).ok()?;
+        let candidate = crate::files::canonical(&base.join(source))?;
         if !candidate.starts_with(&canonical_root) {
             return None;
         }
-        let metadata = std::fs::metadata(&candidate).ok()?;
-        if !metadata.is_file() || metadata.len() > MAX_IMAGE_BYTES {
+        let metadata = crate::files::metadata(&candidate).ok()?;
+        if !crate::files::is_file(&metadata) || metadata.len > MAX_IMAGE_BYTES {
             return None;
         }
-        std::fs::read(candidate).ok()
+        crate::files::read(&candidate).ok()
     })
 }
 
@@ -240,8 +239,8 @@ fn adopt_portable_markdown_assets(
     let Some(parent) = markdown_path.parent() else {
         return Ok(markdown.to_string());
     };
-    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
-        .unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || crate::files::canonical(parent))?
+        .unwrap_or_else(|| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     for segment in markdown.split_inclusive('\n') {
         let (line, newline) = segment
@@ -256,8 +255,7 @@ fn adopt_portable_markdown_assets(
             continue;
         }
         let Some(candidate) =
-            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
-                .ok()
+            file_effect(scope, || crate::files::canonical(&parent.join(destination)))?
                 .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
@@ -288,8 +286,8 @@ fn adopt_canonical_markdown_assets(
     let Some(parent) = markdown_path.parent() else {
         return Ok((markdown.to_string(), Vec::new()));
     };
-    let canonical_parent = file_effect(scope, || std::fs::canonicalize(parent))?
-        .unwrap_or_else(|_| parent.to_path_buf());
+    let canonical_parent = file_effect(scope, || crate::files::canonical(parent))?
+        .unwrap_or_else(|| parent.to_path_buf());
     let mut output = String::with_capacity(markdown.len());
     let mut assets = HashMap::<String, Vec<u8>>::new();
     let mut imported_paths = HashMap::<PathBuf, String>::new();
@@ -307,8 +305,7 @@ fn adopt_canonical_markdown_assets(
             continue;
         }
         let Some(candidate) =
-            file_effect(scope, || std::fs::canonicalize(parent.join(destination)))?
-                .ok()
+            file_effect(scope, || crate::files::canonical(&parent.join(destination)))?
                 .filter(|candidate| candidate.starts_with(&canonical_parent))
         else {
             output.push_str(segment);
@@ -350,7 +347,8 @@ fn available_export_asset_name(
 ) -> Result<String, String> {
     let candidate = folder.join(name);
     if !file_effect(scope, || candidate.exists())?
-        || file_effect(scope, || std::fs::read(&candidate))?.is_ok_and(|existing| existing == bytes)
+        || file_effect(scope, || crate::files::read(&candidate))?
+            .is_ok_and(|existing| existing == bytes)
     {
         return Ok(name.to_string());
     }
@@ -463,7 +461,7 @@ fn write_portable_markdown_export_scoped(
         let exported_name = if let Some(name) = copied.get(&source_name) {
             name.clone()
         } else {
-            file_effect(scope, || std::fs::create_dir_all(&folder))?
+            file_effect(scope, || crate::files::create_dir_all(&folder))?
                 .map_err(|error| error.to_string())?;
             let name = available_export_asset_name(&folder, &source_name, &bytes, scope)?;
             file_effect(scope, || atomic_file::write(&folder.join(&name), &bytes))?
@@ -482,14 +480,9 @@ fn write_portable_markdown_export_scoped(
 
 fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str), String> {
     const MAX_IMAGE_BYTES: u64 = crate::notebook::MAX_ASSET_BYTES as u64;
-    let file = std::fs::File::open(source).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(MAX_IMAGE_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_IMAGE_BYTES {
-        return Err("Image is larger than 1 MiB".into());
-    }
+    let bytes = crate::files::read_bounded(source, MAX_IMAGE_BYTES)
+        .map_err(|error| error.to_string())?
+        .ok_or("Image is larger than 1 MiB")?;
     let extension = if bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
         "png"
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -513,7 +506,8 @@ fn import_image_asset_scoped(
 ) -> Result<String, String> {
     let (bytes, extension) = file_effect(scope, || read_image_asset(source))??;
     let assets = root.join("assets");
-    file_effect(scope, || std::fs::create_dir_all(&assets))?.map_err(|error| error.to_string())?;
+    file_effect(scope, || crate::files::create_dir_all(&assets))?
+        .map_err(|error| error.to_string())?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
     file_effect(scope, || atomic_file::write(&assets.join(&name), &bytes))?
         .map_err(|error| error.to_string())?;
@@ -535,14 +529,9 @@ fn load_image(
 }
 
 fn read_bounded_markdown(path: &std::path::Path) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(MAX_MARKDOWN_IMPORT_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_MARKDOWN_IMPORT_BYTES {
-        return Err("Markdown file is larger than 1 MiB".into());
-    }
+    let bytes = crate::files::read_bounded(path, MAX_MARKDOWN_IMPORT_BYTES)
+        .map_err(|error| error.to_string())?
+        .ok_or("Markdown file is larger than 1 MiB")?;
     let body = String::from_utf8(bytes).map_err(|_| "Markdown file is not UTF-8".to_string())?;
     if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
         return Err("Markdown file contains more than 10,000 blocks".into());
@@ -572,7 +561,7 @@ pub struct NotesApp {
     /// the editor spans to the window bottom.
     status_bubble: ui::StatusBubble,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: ui::clock::Instant,
+    last_toast_tick: ui::time::Instant,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
@@ -614,7 +603,7 @@ pub struct NotesApp {
     canonical_asset_manifest: Vec<(String, String)>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
-    canonical_assets_waiting: Option<ui::clock::Instant>,
+    canonical_assets_waiting: Option<ui::time::Instant>,
     /// Whether this instance already offered to move inline images into the
     /// content store.
     inline_assets_offered: bool,
@@ -626,9 +615,6 @@ pub struct NotesApp {
     import_control_emitted: bool,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
-    /// Dispatches the notebook upgrade when it opens. Its undo boundary is
-    /// never handed to the host: a format upgrade is not a person's edit.
-    upgrade_actions: ui::ActionHost,
     /// Last mouse position in logical coords. Used to hit-test
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
@@ -638,7 +624,7 @@ pub struct NotesApp {
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
-    started: ui::clock::Instant,
+    started: ui::time::Instant,
     /// Whether the first `sync` has run (which (re)bases `started`).
     synced_once: bool,
     /// True once we've taken on shared document state — either by
@@ -883,7 +869,7 @@ impl NotesApp {
         main.set_image_store(Some(canonical_image_store(&canonical_assets, None)));
         let mut app = Self::build_widget(workspace, sidebar, main, None);
         app.canonical_assets = canonical_assets;
-        app.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
+        app.canonical_assets_waiting = waiting.then(ui::time::now);
         app.canonical_asset_manifest = crate::notebook::asset_manifest(doc)?;
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
@@ -944,7 +930,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: ui::clock::Instant::now(),
+            last_toast_tick: ui::time::now(),
             shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
@@ -970,9 +956,8 @@ impl NotesApp {
             pending_import_generation: 0,
             import_control_emitted: false,
             pending_events: Vec::new(),
-            upgrade_actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
-            started: ui::clock::Instant::now(),
+            started: ui::time::now(),
             synced_once: false,
             adopted: canonical,
             seeded: canonical,
@@ -1071,7 +1056,7 @@ impl NotesApp {
         // Counts stay live when revealed, but each new word must not restart
         // a decorative animation while the user is concentrating on writing.
         if announce {
-            self.status_bubble.poke(ui::clock::Instant::now());
+            self.status_bubble.poke(ui::time::now());
         }
     }
 
@@ -1079,7 +1064,7 @@ impl NotesApp {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(ui::clock::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -1111,7 +1096,7 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
@@ -1346,11 +1331,15 @@ impl NotesApp {
             ui::portal::open_uri_scoped(url, scope.effect_scope()?)
         } else {
             let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
+            let failed = tx.clone();
+            let spawned = ui::rt::spawn_thread("notes-open-link", move || {
                 let result =
                     ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
                 let _ = tx.send(result);
             });
+            if let Err(error) = spawned {
+                let _ = failed.send(Err(format!("could not open the link: {error}")));
+            }
             rx
         };
         self.external_link_opens.push(ExternalLinkJob {
@@ -1565,7 +1554,7 @@ impl NotesApp {
         }
     }
 
-    /// Default constructor — resolves the workspace root via `xdg-paths`,
+    /// Default constructor — resolves the workspace root via `tilo-paths`,
     /// falls back to `./notes` if the home dir is unavailable.
     ///
     /// # Errors
@@ -1593,10 +1582,11 @@ impl NotesApp {
             let url =
                 url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
             ui::portal::to_local_path(&url).ok_or_else(|| {
-                if cfg!(target_arch = "wasm32") {
-                    "Markdown launch does not support local file URLs in the browser".to_string()
-                } else {
-                    "Markdown launch requires a local file URL".to_string()
+                match tilo_files::availability(tilo_files::Feature::NativePaths) {
+                    tilo_files::Availability::Unsupported(reason) => {
+                        format!("Markdown launch does not support local file URLs here: {reason}")
+                    }
+                    _ => "Markdown launch requires a local file URL".to_string(),
                 }
             })?
         } else if target.contains("://") {
@@ -1623,7 +1613,7 @@ impl NotesApp {
         // Base the seed-grace window on the first sync (collab is live by
         // now), not spawn — see `started`'s doc comment.
         if !self.synced_once {
-            self.started = ui::clock::Instant::now();
+            self.started = ui::time::now();
             self.synced_once = true;
         }
         // Apply local deletions through their canonical action BEFORE reading
@@ -1953,9 +1943,9 @@ impl NotesApp {
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
     pub fn bypass_seed_grace_for_test(&mut self) {
-        self.started = ui::clock::Instant::now()
+        self.started = ui::time::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(ui::clock::Instant::now);
+            .unwrap_or_else(ui::time::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -1980,7 +1970,7 @@ impl NotesApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory workspace is updated by
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory workspace is updated by
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &NotesAction) {
@@ -2129,30 +2119,6 @@ impl NotesApp {
         Ok(())
     }
 
-    /// Bring a notebook still holding first-format pages to rich text, once
-    /// it is open. A no-op for a current notebook.
-    fn upgrade_notebook(&mut self, doc: &mut AutoCommit) {
-        if !NotesDoc::needs_upgrade(doc) {
-            return;
-        }
-        let action = NotesAction::UpgradeNotebook;
-        match self.upgrade_actions.try_dispatch_with_context(
-            doc,
-            actions::NOTES_ACTION_TYPE,
-            &action,
-            actions::history_context(&action),
-        ) {
-            Ok(()) => {
-                // Not a person's edit: no undo step for it.
-                let _ = self.upgrade_actions.take_committed();
-                self.bound_page = None;
-                self.canonical_synced = None;
-                self.self_dirty = true;
-            }
-            Err(error) => tracing::error!(%error, "notes: notebook upgrade refused"),
-        }
-    }
-
     fn dispatch_canonical_action(
         &mut self,
         doc: &mut AutoCommit,
@@ -2247,8 +2213,7 @@ impl NotesApp {
             _ => None,
         };
         if let Some((resource_id, action_id)) = resource_action {
-            let resource = self
-                .resource(doc, &resource_id)
+            let resource = ui::resources::resource(self, doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }
@@ -3047,7 +3012,8 @@ impl NotesApp {
                 ui::portal::PortalOutcome::Opened(path),
             ) => {
                 let completion = self.markdown_job.begin();
-                std::thread::spawn(move || {
+                let target = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-markdown-export", move || {
                     let result = write_portable_markdown_export_scoped(
                         asset_root.as_deref(),
                         &canonical_assets,
@@ -3057,6 +3023,14 @@ impl NotesApp {
                     );
                     completion.complete(MarkdownJobResult::Exported { path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Exported {
+                            path: target,
+                            result: Err(format!("could not start the export: {error}")),
+                        });
+                }
             }
             (MarkdownTransfer::Import, ui::portal::PortalOutcome::Opened(path)) => {
                 let completion = self.markdown_job.begin();
@@ -3064,7 +3038,8 @@ impl NotesApp {
                     .legacy_fixture_storage
                     .as_ref()
                     .map(|legacy| legacy.root.clone());
-                std::thread::spawn(move || {
+                let source = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-markdown-import", move || {
                     let result = (|| {
                         let body = file_effect(scope.as_ref(), || read_bounded_markdown(&path))??;
                         if let Some(root) = root {
@@ -3076,6 +3051,14 @@ impl NotesApp {
                     })();
                     completion.complete(MarkdownJobResult::Imported { path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Imported {
+                            path: source,
+                            result: Err(format!("could not start the import: {error}")),
+                        });
+                }
             }
             (MarkdownTransfer::InsertImage { page }, ui::portal::PortalOutcome::Opened(path)) => {
                 let completion = self.markdown_job.begin();
@@ -3083,10 +3066,20 @@ impl NotesApp {
                     .legacy_fixture_storage
                     .as_ref()
                     .map(|legacy| legacy.root.clone());
-                std::thread::spawn(move || {
+                let source = path.clone();
+                let spawned = ui::rt::spawn_thread("notes-insert-image", move || {
                     let result = load_image(root.as_deref(), &path, scope.as_ref());
                     completion.complete(MarkdownJobResult::Image { page, path, result });
                 });
+                if let Err(error) = spawned {
+                    self.markdown_job
+                        .begin()
+                        .complete(MarkdownJobResult::Image {
+                            page,
+                            path: source,
+                            result: Err(format!("could not start the image import: {error}")),
+                        });
+                }
             }
             (_, ui::portal::PortalOutcome::Cancelled) => {
                 if let Some(operation) = self.markdown_invocation.take() {
@@ -3541,7 +3534,7 @@ impl NotesApp {
             *assets = snapshot;
         }
         self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then(ui::clock::Instant::now);
+        self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
             // images that were placeholders while their bytes were on the way.
@@ -4236,72 +4229,14 @@ impl NotesApp {
 }
 
 impl Widget for NotesApp {
-    fn has_pending_control_invocation(&self) -> bool {
-        !self.adopted
-            || self.pending_markdown_source.is_some()
-            || self
-                .children()
-                .iter()
-                .any(|child| child.has_pending_control_invocation())
-    }
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        self.legacy_fixture_storage.as_ref()?;
-        if self.legacy_read_blocked.is_some() {
-            return Some(Err(
-                "Current note is unreadable; its draft has not been saved".into(),
-            ));
-        }
-        self.flush_main_panel_edit();
-        let legacy = self.legacy_fixture_storage.as_ref()?;
-        let bodies = legacy.page_saver.try_flush();
-        let metadata = legacy.saver.try_flush();
-        Some(bodies.and(metadata))
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if !self.import_control_emitted
-            && let Some(resource) = self.pending_import_resource()
-            && let Some(spec) = resource.actions.first()
-            && let Ok(binding) =
-                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
-            && let Ok(intent) = binding.invoke(())
-        {
-            self.import_control_emitted = true;
-            return Some(intent);
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_control_invocation)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        if address.resource == "notes.pending-import" && address.action == "finalize" {
-            match result {
-                Err(error) => {
-                    self.pending_markdown_source = None;
-                    self.import_control_emitted = false;
-                    self.transfer_toasts.push(
-                        format!("Import failed: {error}"),
-                        ui::widget::toast::ToastKind::Error,
-                    );
-                    self.complete_markdown_operation(Err(error.to_string()));
-                    self.self_dirty = true;
-                }
-                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
-                    self.complete_markdown_operation(Ok(output.clone()));
-                }
-                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
-            }
-        }
-        for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
-        }
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
 
     fn start_operation(
         &mut self,
@@ -4430,7 +4365,6 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
-        self.upgrade_notebook(state);
         if self.legacy_fixture_storage.is_none() {
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
@@ -4498,68 +4432,6 @@ impl Widget for NotesApp {
         {
             self.pending_block_reveal = None;
         }
-    }
-
-    /// Publish the open notebook + its pages (nested by the tree) so the host's
-    /// Ctrl+K action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        self.notes_invocation_domain(doc)
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        resources.extend(self.pending_import_resource());
-        resources
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "notes.pending-import" {
-            return self.pending_import_resource();
-        }
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before a sidebar affordance dispatched
-    /// its page-tree action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the page's editor; everything else
-        // through the app's own host. One event does one or the other.
-        let body = self.main.body_editor_mut().take_committed_action();
-        let notes = self.actions.take_committed();
-        body.or(notes)
-    }
-
-    /// Typing a word in a note is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.main.keeps_undo_step_open()
-    }
-
-    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
-    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
-    /// every page findable there by title, alongside the actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        // Broadcast which page we're viewing as a Tab location so peers
-        // can render "indicative mist" on the sidebar row that leads here.
-        // This is per-peer (never in the shared doc), which is what lets
-        // two instances view different pages.
-        let sel = self.workspace.selected()?;
-        Some((
-            PresenceKey::Tab {
-                id: sel.to_string(),
-            },
-            PresencePayload::Arrived,
-        ))
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4829,7 +4701,7 @@ impl Widget for NotesApp {
         // Transient floating status bubble (bottom-right), in place of the
         // old permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.transfer_toasts
             .tick(now.saturating_duration_since(self.last_toast_tick));
         self.last_toast_tick = now;
@@ -4854,7 +4726,7 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(ui::clock::Instant::now()))
+        (!self.motion_reduced && self.status_bubble.needs_frame(ui::time::now()))
             || !self.transfer_toasts.is_empty()
             || (self.pending_markdown_source.is_some() && !self.import_control_emitted)
     }
@@ -5035,6 +4907,142 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for NotesApp {
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        self.legacy_fixture_storage.as_ref()?;
+        if self.legacy_read_blocked.is_some() {
+            return Some(Err(
+                "Current note is unreadable; its draft has not been saved".into(),
+            ));
+        }
+        self.flush_main_panel_edit();
+        let legacy = self.legacy_fixture_storage.as_ref()?;
+        let bodies = legacy.page_saver.try_flush();
+        let metadata = legacy.saver.try_flush();
+        Some(bodies.and(metadata))
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for NotesApp {
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        // Broadcast which page we're viewing as a Tab location so peers
+        // can render "indicative mist" on the sidebar row that leads here.
+        // This is per-peer (never in the shared doc), which is what lets
+        // two instances view different pages.
+        let sel = self.workspace.selected()?;
+        Some((
+            PresenceKey::Tab {
+                id: sel.to_string(),
+            },
+            PresencePayload::Arrived,
+        ))
+    }
+}
+
+impl ui::search::capability::SearchSource for NotesApp {
+    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
+    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
+    /// every page findable there by title, alongside the actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for NotesApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        resources.extend(self.pending_import_resource());
+        resources
+    }
+    /// Publish the open notebook + its pages (nested by the tree) so the host's
+    /// Ctrl+K action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        self.notes_invocation_domain(doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "notes.pending-import" {
+            return self.pending_import_resource();
+        }
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for NotesApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if !self.import_control_emitted
+            && let Some(resource) = self.pending_import_resource()
+            && let Some(spec) = resource.actions.first()
+            && let Ok(binding) =
+                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
+            && let Ok(intent) = binding.invoke(())
+        {
+            self.import_control_emitted = true;
+            return Some(intent);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if address.resource == "notes.pending-import" && address.action == "finalize" {
+            match result {
+                Err(error) => {
+                    self.pending_markdown_source = None;
+                    self.import_control_emitted = false;
+                    self.transfer_toasts.push(
+                        format!("Import failed: {error}"),
+                        ui::widget::toast::ToastKind::Error,
+                    );
+                    self.complete_markdown_operation(Err(error.to_string()));
+                    self.self_dirty = true;
+                }
+                Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
+                    self.complete_markdown_operation(Ok(output.clone()));
+                }
+                Ok(ui::widget::ResourceOperationStart::Accepted) => {}
+            }
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.adopted
+            || self.pending_markdown_source.is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| ui::widget::controls::has_pending_control_invocation(*child))
+    }
+}
+
+impl ui::undo::CommittedActions for NotesApp {
+    /// Hand the host the heads captured before a sidebar affordance dispatched
+    /// its page-tree action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // A body edit dispatches through the page's editor; everything else
+        // through the app's own host. One event does one or the other.
+        let body = self.main.body_editor_mut().take_committed_action();
+        let notes = self.actions.take_committed();
+        body.or(notes)
+    }
+    /// Typing a word in a note is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.main.keeps_undo_step_open()
     }
 }
 
@@ -5688,10 +5696,9 @@ mod tests {
     }
 
     fn admit_pending_import(app: &mut NotesApp, state: &mut ui::State) {
-        let intent = app
-            .take_control_invocation()
-            .expect("import emits a host intent");
-        let resource = Widget::resource(app, &state.doc, &intent.address.resource).unwrap();
+        let intent =
+            ui::widget::controls::take_control_invocation(app).expect("import emits a host intent");
+        let resource = ui::resources::resource(app, &state.doc, &intent.address.resource).unwrap();
         let spec = resource
             .actions
             .iter()
@@ -5726,7 +5733,7 @@ mod tests {
             started,
             ui::widget::ResourceOperationStart::Completed(_)
         ));
-        app.on_control_invocation_result(&intent.address, &Ok(started));
+        ui::widget::controls::on_control_invocation_result(app, &intent.address, &Ok(started));
         app.sync(&mut state.doc, &state.root);
     }
 
@@ -5778,7 +5785,7 @@ mod tests {
                     "Imported heading"
                 );
                 assert!(
-                    Widget::take_committed_action(&mut app).is_some(),
+                    ui::undo::take_committed_action(&mut app).is_some(),
                     "import uses canonical action/history path"
                 );
                 app.flush_saves();
@@ -6358,7 +6365,7 @@ mod tests {
 
             // Palette side: the welcome page resource's delete spec (built before we
             // delete the page, while it still exists in the tree).
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -6452,7 +6459,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                Widget::take_committed_action(&mut app).is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "the boundary is rising-edge — cleared on read"
             );
 
@@ -6509,7 +6516,7 @@ mod tests {
                 .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
-            assert!(!app.status_bubble.is_visible(std::time::Instant::now()));
+            assert!(!app.status_bubble.is_visible(ui::time::now()));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
@@ -6523,11 +6530,11 @@ mod tests {
             );
             assert!(
                 app.status_bubble
-                    .is_visible(std::time::Instant::now() + std::time::Duration::from_secs(60)),
+                    .is_visible(ui::time::now() + std::time::Duration::from_secs(60)),
                 "an unresolved save failure must not fade out"
             );
             assert!(
-                !app.status_bubble.needs_frame(std::time::Instant::now()),
+                !app.status_bubble.needs_frame(ui::time::now()),
                 "persistent status must not cause an idle redraw loop"
             );
         }
@@ -6572,7 +6579,7 @@ mod tests {
         // host. The real window host drains that edge at the end of the frame;
         // mirror that lifecycle here so subsequent tests bracket only the
         // user action they dispatch.
-        let _ = Widget::take_committed_action(&mut app);
+        let _ = ui::undo::take_committed_action(&mut app);
         (app, state, tmp, welcome)
     }
 
@@ -6605,7 +6612,7 @@ mod tests {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     child.kill().unwrap();
                     child.wait().unwrap();
                     panic!("isolated clipboard regression timed out");
@@ -6689,8 +6696,7 @@ mod tests {
                 "a fresh navigation clears the old forward branch"
             );
 
-            let notebook = app
-                .resources(&state.doc)
+            let notebook = ui::resources::resources(&app, &state.doc)
                 .into_iter()
                 .find(|resource| resource.id.as_str() == "notes.notebook")
                 .expect("notebook resource");
@@ -7039,7 +7045,7 @@ mod tests {
             || ("notes.notebook".into(), "import-markdown"),
             |page| (format!("notes.page:{page}"), "export-markdown"),
         );
-        let resource = Widget::resource(app, &state.doc, &resource_id).unwrap();
+        let resource = ui::resources::resource(app, &state.doc, &resource_id).unwrap();
         let spec = resource
             .actions
             .iter()
@@ -7139,7 +7145,7 @@ mod tests {
                     .unwrap();
             }
             let resource =
-                Widget::resource(&app, &state.doc, &format!("notes.page:{page}")).unwrap();
+                ui::resources::resource(&app, &state.doc, &format!("notes.page:{page}")).unwrap();
             let spec = resource
                 .actions
                 .iter()
@@ -7317,10 +7323,11 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
-            let intent = app.take_control_invocation().unwrap();
+            let intent = ui::widget::controls::take_control_invocation(&mut app).unwrap();
             // The separate FrameHarness revocation regression proves this host
             // refusal route. Here assert its original asynchronous receipt too.
-            app.on_control_invocation_result(
+            ui::widget::controls::on_control_invocation_result(
+                &mut app,
                 &intent.address,
                 &Err(tilo_actions::DoorError::Unavailable {
                     code: "permission_denied".into(),
@@ -7332,7 +7339,7 @@ mod tests {
                 tilo_actions::InvocationUpdate::Failed { .. }
             ));
             assert!(app.pending_markdown_source.is_none());
-            assert!(app.take_control_invocation().is_none());
+            assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
             assert_eq!(state.doc.get_heads(), before);
             assert_eq!(std::fs::read_to_string(source).unwrap(), "Private source");
         }
@@ -7482,7 +7489,7 @@ mod tests {
             // the page's own edit.
             app.sync(&mut state.doc, &state.root);
             assert!(
-                Widget::take_committed_action(&mut app).is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the mark-only edit is an undoable Notes action"
             );
             assert_eq!(
@@ -7540,7 +7547,7 @@ mod tests {
             .unwrap();
             app.sync(&mut state.doc, &state.root);
 
-            let resolved = Widget::resource(&app, &state.doc, &old_address.resource)
+            let resolved = ui::resources::resource(&app, &state.doc, &old_address.resource)
                 .expect("the original block's resource resolves lazily");
             assert_eq!(resolved.id.0, old_address.resource);
             assert!(

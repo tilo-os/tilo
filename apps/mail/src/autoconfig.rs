@@ -554,7 +554,7 @@ mod tests {
                 atomic::{AtomicBool, Ordering},
                 mpsc,
             };
-            use std::time::{Duration, Instant};
+            use ui::time::Duration;
             /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
             const HANG_BOUND: Duration = Duration::from_secs(30);
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -577,7 +577,7 @@ mod tests {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "discovery never connected");
+                        assert!(ui::time::now() < deadline, "discovery never connected");
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("local listener: {error}"),

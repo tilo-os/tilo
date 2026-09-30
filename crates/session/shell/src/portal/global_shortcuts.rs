@@ -267,7 +267,7 @@ impl ShellGlobalShortcutsService {
             return false;
         }
         let events = self.events.lock().ok().and_then(|slot| slot.clone());
-        let timestamp = now_millis();
+        let timestamp = tilo_clock::unix_now_ms();
         let activated: Vec<_> = hits
             .into_iter()
             .filter(|binding| {
@@ -300,7 +300,7 @@ impl ShellGlobalShortcutsService {
             return false;
         };
         if let Some(events) = self.events.lock().ok().and_then(|slot| slot.clone()) {
-            let timestamp = now_millis();
+            let timestamp = tilo_clock::unix_now_ms();
             for (session, id) in activated {
                 events.deactivate(&session, &id, timestamp);
             }
@@ -789,13 +789,13 @@ impl GlobalShortcutsBackend {
         &self,
         #[zbus(signal_emitter)] sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session: ObjectPath<'_>,
         shortcuts: Vec<ShortcutWire>,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        let connection = sig.connection();
         let Some((auth, current)) = self.authenticate_session(hdr, &session).await else {
             return (2, HashMap::new());
         };
@@ -1511,14 +1511,6 @@ fn physical_code(physical: &PhysicalKey) -> Option<String> {
         PhysicalKey::Code(code) => Some(format!("{code:?}")),
         PhysicalKey::Unidentified(_) => None,
     }
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

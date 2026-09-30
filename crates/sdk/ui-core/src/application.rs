@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 mod host;
 mod open_file;
+pub mod registry;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
@@ -52,6 +53,18 @@ pub enum RestoreInput {
     Local(SavedInstanceView),
 }
 
+/// Host-supplied storage, identity and authority for one instance, checked by
+/// [`HostContext::prepare`] before any factory runs.
+pub struct HostContextInputs {
+    pub records: RecordStore,
+    pub views: Rc<InstanceViewStore>,
+    pub device_id: String,
+    pub instance_id: InstanceId,
+    pub permissions: Rc<RefCell<PermissionContext>>,
+    pub author: UserId,
+    pub action_context: tilo_actions::ActionContext,
+}
+
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
 pub struct HostContext {
     /// The app's package id, matching both its definition and its record namespace.
@@ -65,6 +78,8 @@ pub struct HostContext {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// See [`Self::write_as_author`].
+    writes_as_author: bool,
     wake_scope: WakeScope,
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
@@ -128,33 +143,12 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects denied authority, invalid/foreign namespaces and unavailable records.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host inputs are explicit rather than resolved from ambient state"
-    )]
     pub fn prepare(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
-            records,
-            views,
-            device_id,
-            instance_id,
-            permissions,
-            author,
-            action_context,
-            target,
-            None,
-        )
+        Self::prepare_scoped(definition, inputs, target, None)
     }
 
     /// Reserve a host-named new record through the same checked construction
@@ -164,23 +158,21 @@ impl HostContext {
     ///
     /// # Errors
     /// Rejects foreign namespaces, denied authority and occupied identities.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit authenticated host inputs"
-    )]
     pub fn prepare_new_record(
         definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
+        inputs: HostContextInputs,
         record_id: RecordId,
     ) -> Result<Self, LaunchError> {
-        Self::prepare_scoped(
-            definition,
+        Self::prepare_scoped(definition, inputs, &LaunchTarget::New, Some(record_id))
+    }
+
+    fn prepare_scoped(
+        definition: &ApplicationDefinition,
+        inputs: HostContextInputs,
+        target: &LaunchTarget,
+        new_record_id: Option<RecordId>,
+    ) -> Result<Self, LaunchError> {
+        let HostContextInputs {
             records,
             views,
             device_id,
@@ -188,27 +180,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
-            &LaunchTarget::New,
-            Some(record_id),
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one validation path for minted and host-named records"
-    )]
-    fn prepare_scoped(
-        definition: &ApplicationDefinition,
-        records: RecordStore,
-        views: Rc<InstanceViewStore>,
-        device_id: String,
-        instance_id: InstanceId,
-        permissions: Rc<RefCell<PermissionContext>>,
-        author: UserId,
-        action_context: tilo_actions::ActionContext,
-        target: &LaunchTarget,
-        new_record_id: Option<RecordId>,
-    ) -> Result<Self, LaunchError> {
+        } = inputs;
         validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
@@ -277,6 +249,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
+            writes_as_author: false,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
@@ -288,6 +261,16 @@ impl HostContext {
             content: None,
             open_file: None,
         })
+    }
+    /// Commit this instance's edits to its record under an actor of its
+    /// author's own ([`crate::record::author_writer`]) rather than the
+    /// record's writer, which every instance sharing the record's store
+    /// writes as. For a host that mounts several authors on one store (a
+    /// page's mounts of one profile and device), so history can tell whose
+    /// edit each change is. The record's writer, which the store persists,
+    /// is unchanged, as is everything written outside the instance.
+    pub fn write_as_author(&mut self) {
+        self.writes_as_author = true;
     }
     /// Lend the component the host's content store for this storage scope:
     /// opaque bytes addressed by hash that outlive the component and that
@@ -326,6 +309,10 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// The application this context was prepared for.
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
     pub fn author(&self) -> &UserId {
         &self.author
     }
@@ -349,6 +336,23 @@ impl HostContext {
     /// [`crate::host::current`] resolved when the host prepared it.
     pub fn services(&self) -> &crate::host::HostServices {
         &self.services
+    }
+    /// This app's secrets, in the store its host provides: the system's
+    /// (the Secret Service, the Keychain, the browser's wrapped store) or a
+    /// host's own. Other apps' secrets are out of reach.
+    pub fn secrets(&self) -> crate::secrets::SecretStore {
+        self.services.secrets.store(&self.app_id)
+    }
+    /// This app's private file areas (data, config, cache, state): the
+    /// per-user directories natively, the origin-private file system in a
+    /// page. See [`crate::storage`] for what belongs where.
+    pub fn files(&self) -> crate::storage::AppFiles {
+        crate::storage::AppFiles::for_app(&self.app_id)
+    }
+    /// This app's preferences: its own section of the desktop settings
+    /// document, named by the app id.
+    pub fn settings(&self) -> crate::storage::Settings {
+        crate::storage::Settings::for_app(&self.app_id)
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -388,6 +392,7 @@ impl HostContext {
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             operation_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
         }
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
@@ -413,7 +418,7 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || saved.record_kind != self.record.kind.as_str()
+                    || !self.record.kind.names(&saved.record_kind)
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -431,6 +436,31 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
+    /// Whether the app keeps one record per room, its package primary
+    /// (Chat's conversation), rather than a record per window. Definitions
+    /// do not declare this; Chat's record kind names it.
+    pub fn keeps_room_record(&self) -> bool {
+        self.record_kind.as_str() == "chat.workspace"
+    }
+
+    /// The launch target of an instance with no saved record: a new record
+    /// of its own, or the room's record (created on first use) for an app
+    /// that [keeps one](Self::keeps_room_record).
+    pub fn unsaved_target(&self, records: &RecordStore) -> LaunchTarget {
+        if !self.keeps_room_record() {
+            return LaunchTarget::New;
+        }
+        let checkout = RecordCheckout::package_primary(self.record_kind.clone());
+        if records.try_open_record(&checkout).is_ok() {
+            LaunchTarget::Record {
+                checkout,
+                reveal: None,
+            }
+        } else {
+            LaunchTarget::PrimaryNew
+        }
+    }
+
     /// Whether the component opens files of `media_type` (parameters and case ignored).
     pub fn opens_media_type(&self, media_type: &str) -> bool {
         open_file::media_type_essence(media_type)
@@ -686,7 +716,8 @@ impl AppComponent {
             crate::semantic_document_read::retirement::MountConstructionRetirement::new(
                 context.retirement.as_ref(),
             );
-        root.install_control_custody(
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
             &context.control_domain(),
             crate::control_custody::CustodyAttachment::Initial,
         );
@@ -723,7 +754,7 @@ impl AppComponent {
         let Some(root) = self.root.as_deref() else {
             return vec![];
         };
-        root.search_providers()
+        crate::search::capability::search_providers(root)
             .into_iter()
             .filter_map(|provider| {
                 // The host independently collects nested component boundaries.
@@ -759,7 +790,8 @@ impl AppComponent {
             return Err(LaunchError::BindingMismatch);
         }
         if let Some(root) = &mut self.root {
-            root.install_control_custody(
+            crate::widget::controls::install_control_custody(
+                root.as_mut(),
                 &self.context.control_domain(),
                 crate::control_custody::CustodyAttachment::Dynamic,
             );
@@ -876,7 +908,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| root.unsaved_documents(doc))
+            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -906,9 +938,11 @@ impl AppComponent {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
-            errors.extend(root.checkpoint_components());
+            errors.extend(crate::component_lifecycle::checkpoint_components(root));
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         errors.extend(crate::close_admission::retry_reports(
             &mut self.pending_reports,
@@ -927,9 +961,12 @@ impl AppComponent {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.finish_admitted_close());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::finish_admitted_close(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         let mut report = ComponentCloseReport {
             recovery: Some(
@@ -1004,9 +1041,12 @@ impl AppComponent {
         // Parent View has already been captured. Each child still owns its live
         // tree and captures/closes exactly once before any parent root is dropped.
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.close_components());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         self.close_report = Some(report.clone());
         if let Err(error) = self.teardown() {
@@ -1022,7 +1062,9 @@ impl AppComponent {
         // the parent here, and never consult a root after teardown removed it.
         if let Some(root) = self.root.as_deref_mut() {
             let _entry = self.context.wake_scope.enter();
-            reports.extend(root.take_component_close_reports());
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root,
+            ));
         }
         if !self.report_drained
             && let Some(report) = &self.close_report
@@ -1439,13 +1481,15 @@ mod bound_lifetime_tests {
         let prepare = |target, supplied| {
             HostContext::prepare_scoped(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 target,
                 supplied,
             )
@@ -1482,13 +1526,15 @@ mod bound_lifetime_tests {
         let prepare = |checkout| {
             HostContext::prepare(
                 &definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 &LaunchTarget::Record {
                     checkout,
                     reveal: None,
@@ -1540,13 +1586,15 @@ mod bound_lifetime_tests {
             let prepare = |target: &LaunchTarget| {
                 HostContext::prepare(
                     &definition,
-                    records.clone(),
-                    views.clone(),
-                    "D".into(),
-                    7,
-                    Rc::new(RefCell::new(PermissionContext::permissive())),
-                    UserId("probe-author".into()),
-                    tilo_actions::ActionContext::default(),
+                    HostContextInputs {
+                        records: records.clone(),
+                        views: views.clone(),
+                        device_id: "D".into(),
+                        instance_id: 7,
+                        permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                        author: UserId("probe-author".into()),
+                        action_context: tilo_actions::ActionContext::default(),
+                    },
                     target,
                 )
                 .unwrap()
@@ -1624,13 +1672,15 @@ mod bound_lifetime_tests {
             };
             let context = HostContext::prepare(
                 &definition,
-                records,
-                views,
-                "D".into(),
-                7,
-                Rc::new(RefCell::new(PermissionContext::permissive())),
-                UserId("probe-author".into()),
-                tilo_actions::ActionContext::default(),
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: "D".into(),
+                    instance_id: 7,
+                    permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
+                    author: UserId("probe-author".into()),
+                    action_context: tilo_actions::ActionContext::default(),
+                },
                 &LaunchTarget::New,
             )
             .unwrap();
@@ -1677,13 +1727,15 @@ mod portable_tests {
         let prepare = |views, permissions| {
             HostContext::prepare(
                 &definition,
-                records.clone(),
-                views,
-                probe::DEVICE.into(),
-                7,
-                permissions,
-                probe::author(),
-                probe::provenance(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 7,
+                    permissions,
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 &LaunchTarget::New,
             )
         };
@@ -1717,14 +1769,16 @@ mod portable_tests {
         assert!(matches!(
             HostContext::prepare(
                 &denied,
-                records,
-                views,
-                probe::DEVICE.into(),
-                8,
-                probe::permissions(),
-                probe::author(),
-                probe::provenance(),
-                &LaunchTarget::New
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 8,
+                    permissions: probe::permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance()
+                },
+                &LaunchTarget::New,
             ),
             Err(LaunchError::CapabilityDenied(_))
         ));

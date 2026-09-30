@@ -239,7 +239,9 @@ impl OwnerDocumentRoutes {
         let mut current = vec![];
         collect(root, &mut current);
         // Hidden live subtrees retain their admitted collaboration owners.
-        root.visit_framework_history(&mut |_, live| collect(live, &mut current));
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current)
+        });
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| {
                 current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok()

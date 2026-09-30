@@ -894,7 +894,7 @@ impl WindowGroup {
         self.bar.close_rect_for_tests(tab_id)
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
@@ -1097,7 +1097,8 @@ impl WindowGroup {
             self.closing_hosts.remove(&id);
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
                 let (_, mut host) = self.hosts.remove(idx);
-                self.close_reports.extend(host.close_components());
+                self.close_reports
+                    .extend(crate::component_lifecycle::close_components(&mut host));
             }
             self.bar.finalize_close(id);
         }
@@ -1675,7 +1676,13 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
-    crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::component_lifecycle::ComponentLifecycle
+    );
 
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         (!self.is_closing()).then(|| self.active_tab_id())
@@ -1698,29 +1705,6 @@ impl Widget for WindowGroup {
     // History ownership must cover every retained tab. Closing a group or
     // switching tabs must not hide an inactive document from durability or
     // retire its framework History route.
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.unsaved_documents(doc))
-            .collect()
-    }
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.checkpoint_components())
-            .collect()
-    }
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.finish_admitted_close())
-            .collect()
-    }
-    fn has_pending_control_invocation(&self) -> bool {
-        self.hosts
-            .iter()
-            .any(|(_, host)| host.has_pending_control_invocation())
-    }
     #[allow(
         private_interfaces,
         reason = "finite toolkit resource ownership requests"
@@ -1733,22 +1717,6 @@ impl Widget for WindowGroup {
             request.visit(host)?;
         }
         Ok(())
-    }
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        for (_, host) in &self.hosts {
-            host.visit_framework_history(visitor);
-        }
-    }
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.visit_framework_history_mut(visitor);
-        }
     }
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
@@ -1858,25 +1826,6 @@ impl Widget for WindowGroup {
             child.visit_components(request)?;
         }
         Ok(())
-    }
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            self.close_reports.extend(child.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            reports.extend(child.take_component_close_reports());
-        }
-        reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.hosts
-            .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
-            .collect()
     }
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
@@ -2258,6 +2207,76 @@ impl Widget for WindowGroup {
     }
 }
 
+impl crate::component_lifecycle::ComponentLifecycle for WindowGroup {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| host.unsaved_documents(doc))
+            .collect()
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.checkpoint_components())
+            .collect()
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.finish_admitted_close())
+            .collect()
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+}
+
+impl crate::widget::controls::ActionControls for WindowGroup {
+    fn has_pending_control_invocation(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|(_, host)| host.has_pending_control_invocation())
+    }
+}
+
+impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for (_, host) in &self.hosts {
+            host.visit_framework_history(visitor);
+        }
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.visit_framework_history_mut(visitor);
+        }
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2368,42 +2387,18 @@ mod tests {
     }
 
     impl Widget for RetainedTraversalProbe {
+        crate::provides!(
+            dyn crate::history_mode::capability::FrameworkHistoryTopology,
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::component_lifecycle::ComponentLifecycle
+        );
+
         crate::testing::inert_widget_methods!(
             apply_layout,
             draw,
             get_rect,
             name = "RetainedTraversalProbe"
         );
-        fn unsaved_documents(
-            &self,
-            _: &AutoCommit,
-        ) -> Vec<crate::close_admission::UnsavedDocument> {
-            self.hits.unsaved.set(self.hits.unsaved.get() + 1);
-            vec![]
-        }
-        fn checkpoint_components(&mut self) -> Vec<String> {
-            self.hits.checkpoint.set(self.hits.checkpoint.get() + 1);
-            vec![]
-        }
-        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.hits.finish.set(self.hits.finish.get() + 1);
-            vec![]
-        }
-        fn has_pending_control_invocation(&self) -> bool {
-            self.pending_control
-        }
-        fn visit_framework_history(
-            &self,
-            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-        ) {
-            self.hits.history.set(self.hits.history.get() + 1);
-        }
-        fn visit_framework_history_mut(
-            &mut self,
-            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-        ) {
-            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
-        }
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"
@@ -2424,6 +2419,45 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(Style::default())
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for RetainedTraversalProbe {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.hits.unsaved.set(self.hits.unsaved.get() + 1);
+            vec![]
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.hits.checkpoint.set(self.hits.checkpoint.get() + 1);
+            vec![]
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.hits.finish.set(self.hits.finish.get() + 1);
+            vec![]
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for RetainedTraversalProbe {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.pending_control
+        }
+    }
+
+    impl crate::history_mode::capability::FrameworkHistoryTopology for RetainedTraversalProbe {
+        fn visit_framework_history(
+            &self,
+            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+        ) {
+            self.hits.history.set(self.hits.history.get() + 1);
+        }
+        fn visit_framework_history_mut(
+            &mut self,
+            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+        ) {
+            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
         }
     }
 
@@ -2489,12 +2523,14 @@ mod tests {
         let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
         let doc = AutoCommit::new();
 
-        group.unsaved_documents(&doc);
-        group.checkpoint_components();
-        group.finish_admitted_close();
-        group.visit_framework_history(&mut |_, _| {});
-        group.visit_framework_history_mut(&mut |_, _| {});
-        assert!(group.has_pending_control_invocation());
+        crate::component_lifecycle::unsaved_documents(&group, &doc);
+        crate::component_lifecycle::checkpoint_components(&mut group);
+        crate::component_lifecycle::finish_admitted_close(&mut group);
+        crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
+        crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
+        assert!(crate::widget::controls::has_pending_control_invocation(
+            &group
+        ));
         group
             .visit_resource_owners_mut(
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,

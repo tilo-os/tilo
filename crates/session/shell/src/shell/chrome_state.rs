@@ -712,6 +712,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Window-management operations an action asked for. The overlay host
+    /// drains them on its next update and runs each exactly as its chord
+    /// would, since the focused group's widgets live there.
+    shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -850,6 +854,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1022,6 +1027,19 @@ impl ChromeState {
 
     pub fn take_fullscreen_toggle_request(&mut self) -> bool {
         std::mem::take(&mut self.fullscreen_toggle_requested)
+    }
+
+    /// Run `action` as if its chord had been pressed once, on the overlay
+    /// host's next update.
+    pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        self.shortcut_action_requests.push(action);
+        self.bump();
+    }
+
+    pub fn take_shortcut_action_requests(
+        &mut self,
+    ) -> Vec<settings_store::hardware::ShortcutAction> {
+        std::mem::take(&mut self.shortcut_action_requests)
     }
 
     pub fn request_input_source(&mut self, index: usize) {
@@ -1924,6 +1942,91 @@ impl ChromeState {
             _ => focused,
         };
         self.focus_strip_index(next)
+    }
+
+    /// Focus `strip` of the active workspace. `false` when it is already
+    /// focused or not in the active workspace.
+    pub fn focus_strip(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let index = {
+            let tree = self.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().position(|s| s.id == strip))
+        };
+        index.is_some_and(|index| self.focus_strip_index(index))
+    }
+
+    /// The strip an agent works in: `current` while it is still in the active
+    /// workspace, else an empty strip nobody `claimed` yet, else a new strip
+    /// named `label` at the bottom. `None` without an active workspace.
+    pub fn agent_strip(
+        &mut self,
+        current: Option<crate::shell::state::StripId>,
+        claimed: impl Fn(crate::shell::state::StripId) -> bool,
+        label: &str,
+    ) -> Option<crate::shell::state::StripId> {
+        let strip = {
+            let mut tree = self.tree_mut();
+            let ws = tree.desktop.active_workspace_mut()?;
+            if let Some(current) = current.filter(|id| ws.strips.iter().any(|s| s.id == *id)) {
+                return Some(current);
+            }
+            let free = ws
+                .strips
+                .iter()
+                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
+                .map(|s| s.id);
+            if let Some(free) = free {
+                return Some(free);
+            }
+            let strip = crate::shell::state::Strip::new(
+                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+                label.to_owned(),
+            );
+            let id = strip.id;
+            ws.strips.push(strip);
+            tree.flush_to_disk();
+            id
+        };
+        self.bump();
+        Some(strip)
+    }
+
+    /// Remove `strip` from the active workspace if it holds no window and is
+    /// not the workspace's last strip. Focus moves to the first strip when it
+    /// had it. Returns whether the strip went.
+    pub fn remove_strip_if_empty(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let removed = {
+            let mut tree = self.tree_mut();
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
+                return false;
+            };
+            let Some(index) = ws
+                .strips
+                .iter()
+                .position(|s| s.id == strip && s.window_groups.is_empty())
+            else {
+                return false;
+            };
+            if ws.strips.len() < 2 {
+                return false;
+            }
+            let ws_id = ws.id;
+            ws.strips.remove(index);
+            let first = ws.strips.first().map(|s| s.id);
+            if tree.desktop.active_strip.get(&ws_id) == Some(&strip)
+                && let Some(first) = first
+            {
+                tree.desktop.active_strip.insert(ws_id, first);
+            }
+            tree.desktop.active_group.remove(&strip);
+            tree.flush_to_disk();
+            true
+        };
+        if removed {
+            self.bump();
+        }
+        removed
     }
 
     pub fn switch_workspace(&mut self, dir: i32) -> bool {

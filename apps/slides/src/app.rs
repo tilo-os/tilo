@@ -9,7 +9,6 @@
 //! selection, mode — is per-peer and stays local.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use ui::widget::{AppModel, ModelPath};
@@ -25,10 +24,11 @@ use winit::keyboard::{Key, NamedKey};
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -49,9 +49,9 @@ use crate::model::{
 };
 use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
-use crate::render;
+use crate::render::{self, DeckAssets};
 use crate::strings::{tr, tr_args};
-use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
+use crate::toolbar_tools::{MenuPress, ToolMetrics, ToolbarTools, ToolbarToolsLayout};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
@@ -91,17 +91,12 @@ fn presentation_filter() -> FileFilter {
 }
 
 fn read_presentation_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_PRESENTATION_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
-        return Err(std::io::Error::new(
+    crate::assets::read_bounded(path, MAX_PRESENTATION_FILE_BYTES)?.ok_or_else(|| {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "presentation file is larger than 64 MiB",
-        ));
-    }
-    Ok(bytes)
+        )
+    })
 }
 
 fn load_presentation_from_path(
@@ -132,7 +127,9 @@ fn save_presentation_to_path(
             crate::odp::write_odp(deck, content).map_err(|error| error.to_string())?,
         )
     };
-    std::fs::write(path, bytes).map_err(|error| error.to_string())
+    tilo_files::file_at(&path)
+        .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,31 +180,29 @@ impl DocumentWorker {
     fn new(content: ContentStore) -> Result<Self, String> {
         let (tx, jobs) = std::sync::mpsc::sync_channel(1);
         let (results, rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("slides-document-io".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    let result = match job {
-                        DocumentJob::Open { generation, path } => DocumentJobResult::Open {
-                            generation,
-                            result: load_presentation_from_path(&path, &content),
-                        },
-                        DocumentJob::Save {
-                            generation,
-                            path,
-                            deck,
-                        } => DocumentJobResult::Save {
-                            generation,
-                            result: save_presentation_to_path(&deck, &path, &content),
-                        },
-                    };
-                    if results.send(result).is_err() {
-                        break;
-                    }
+        ui::rt::spawn_thread("slides-document-io", move || {
+            while let Ok(job) = jobs.recv() {
+                let result = match job {
+                    DocumentJob::Open { generation, path } => DocumentJobResult::Open {
+                        generation,
+                        result: load_presentation_from_path(&path, &content),
+                    },
+                    DocumentJob::Save {
+                        generation,
+                        path,
+                        deck,
+                    } => DocumentJobResult::Save {
+                        generation,
+                        result: save_presentation_to_path(&deck, &path, &content),
+                    },
+                };
+                if results.send(result).is_err() {
+                    break;
                 }
-            })
-            .map(|_| Self { tx, rx })
-            .map_err(|error| format!("could not start presentation I/O worker: {error}"))
+            }
+        })
+        .map(|_| Self { tx, rx })
+        .map_err(|error| format!("could not start presentation I/O worker: {error}"))
     }
 }
 
@@ -469,6 +464,16 @@ struct ChromeMetrics {
     s4: f64,
 }
 
+impl ToolMetrics for ChromeMetrics {
+    fn pill_w(&self, label: &str, icon: bool) -> f64 {
+        Self::pill_w(self, label, icon)
+    }
+
+    fn menu_row_h(&self) -> f64 {
+        self.control_h()
+    }
+}
+
 impl ChromeMetrics {
     fn key(text: &str, font: f32, weight: TextWeight) -> (String, u16, u16) {
         (
@@ -679,14 +684,6 @@ struct RoutedEvent<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// Mutable rendering resources forwarded together through editor paint layers.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
 /// the element's rich-text body through `SlidesAction::EditElementText`.
@@ -803,6 +800,9 @@ pub struct SlidesApp {
     rect: Rect,
     node: Option<NodeId>,
     seeded: bool,
+    /// Mounted on a record another participant created: its deck is theirs
+    /// to seed, so an uninitialized document is left untouched.
+    joined: bool,
     bootstrapped: bool,
 
     mode: Mode,
@@ -841,7 +841,7 @@ pub struct SlidesApp {
     /// on the same element within the double-click window enters text edit; a
     /// single press just selects and arms a move, so a selected element drags on
     /// the very first grab.
-    last_click: Option<(Id, std::time::Instant, Point)>,
+    last_click: Option<(Id, ui::time::Instant, Point)>,
     /// A press inside the text box being edited is held: its drag selects
     /// text in the box, not the element.
     text_drag: bool,
@@ -877,7 +877,7 @@ pub struct SlidesApp {
     inspector_breakpoint: f64,
     /// Last instant the flap animation advanced, for frame-rate-independent
     /// easing across `draw` calls.
-    last_flap_tick: std::time::Instant,
+    last_flap_tick: ui::time::Instant,
     /// Cleared after the first layout is resolved; until then the flap's eased
     /// reveal is snapped to the resolved default so the very first frame at a
     /// narrow width shows the (closed) flap without a one-frame flash.
@@ -1053,6 +1053,7 @@ impl SlidesApp {
             rect: Rect::ZERO,
             node: None,
             seeded: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             bootstrapped: false,
             mode: Mode::Edit,
             canonical_deck: None,
@@ -1078,7 +1079,7 @@ impl SlidesApp {
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
-            last_flap_tick: std::time::Instant::now(),
+            last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
             breakpoint: NARROW_BREAKPOINT,
@@ -1871,14 +1872,9 @@ impl SlidesApp {
         let tools_first = buttons.len();
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            tools_x,
-            tools_right,
-            by,
-            bh,
+            Rect::new(tools_x, by, tools_right, by + bh),
             toolbar,
-            &|label| m.pill_w(label, false),
-            &|label| m.pill_w(label, true),
-            m.control_h(),
+            m,
         );
         // The overflow button may sit left of the nominal tools slot when
         // nothing else fits, so the title yields to the leftmost control that
@@ -2031,14 +2027,9 @@ impl SlidesApp {
         ];
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            r.x0 + 390.0,
-            r.x0 + 620.0,
-            r.y0 + 10.0,
-            62.0,
+            Rect::new(r.x0 + 390.0, r.y0 + 10.0, r.x0 + 620.0, r.y0 + 72.0),
             toolbar,
-            &|label| self.chrome_metrics.pill_w(label, false),
-            &|label| self.chrome_metrics.pill_w(label, true),
-            self.chrome_metrics.control_h(),
+            &self.chrome_metrics,
         );
         let mut labels = vec![Label {
             pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
@@ -4122,7 +4113,7 @@ impl SlidesApp {
         tr.set_text_scale(1.0);
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4164,7 +4155,7 @@ impl SlidesApp {
         }
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4185,7 +4176,7 @@ impl SlidesApp {
     /// painted later, on top of the dimming scrim.
     fn draw_editor_panels_base(
         &self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         rail_overlay: bool,
         insp_overlay: bool,
@@ -4272,15 +4263,14 @@ impl SlidesApp {
             .filter(|_| self.editing_text)
             .map(|editor| editor.element_id.as_str());
         render::draw_slide_except(
-            scene,
-            t,
-            tr,
-            theme,
-            pal,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            DeckAssets {
+                palette: pal,
+                images: &self.images,
+            },
             slide,
             chrome.slide_dest,
             14.0,
-            &self.images,
             editing,
         );
         chrome::stroke_round(
@@ -4415,7 +4405,7 @@ impl SlidesApp {
     /// viewport so it can never bleed over the pinned Add/Dup/Del row.
     fn draw_editor_rail(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         rail_overlay: bool,
@@ -4505,7 +4495,16 @@ impl SlidesApp {
         let images = &self.images;
         sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
             if let Some(slide) = deck.slides.get(i) {
-                render::draw_slide(scene, base, tr, theme, pal, slide, rect, 6.0, images);
+                render::draw_slide(
+                    &mut PaintCtx::new(scene, base, tr, theme),
+                    DeckAssets {
+                        palette: pal,
+                        images,
+                    },
+                    slide,
+                    rect,
+                    6.0,
+                );
             }
         });
         self.page_sidebar = sb;
@@ -4572,7 +4571,7 @@ impl SlidesApp {
     /// labels.
     fn draw_editor_inspector_layer(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         insp_overlay: bool,
@@ -4795,7 +4794,7 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let c = &theme.tokens.colors;
-        let mut paint = PaintContext {
+        let mut paint = PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -4847,7 +4846,7 @@ impl SlidesApp {
     }
 
     fn draw_button_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -4877,20 +4876,17 @@ impl SlidesApp {
         };
         if !label.is_empty() {
             chrome::text_centered(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 label,
                 rect,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 fg,
-                TextWeight::Semibold,
             );
         }
     }
 
     fn draw_button_icon_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         icon: Icon,
@@ -4908,15 +4904,14 @@ impl SlidesApp {
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
         draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
         chrome::text_vcenter(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
-            rect,
-            ir.x1 + 5.0,
-            13.0,
+            Rect {
+                x0: ir.x1 + 5.0,
+                ..rect
+            },
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -4972,7 +4967,7 @@ impl SlidesApp {
     }
 
     fn draw_button_palette(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         rect: Rect,
         kind: PaletteKind,
         selected: bool,
@@ -5003,22 +4998,21 @@ impl SlidesApp {
                 &rect,
             );
             chrome::text_vcenter(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 kind.label(),
-                rect,
-                dot.x1 + 6.0,
-                12.0,
+                Rect {
+                    x0: dot.x1 + 6.0,
+                    ..rect
+                },
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                TextWeight::Semibold,
             );
             paint.scene.pop_layer();
         }
     }
 
     fn draw_button_segment(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -5055,14 +5049,11 @@ impl SlidesApp {
             &shape_of(rect.inset(-0.5), r - 0.5),
         );
         chrome::text_centered(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
             rect,
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -5169,15 +5160,14 @@ impl SlidesApp {
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let palette = self.palette(theme);
         self.overview.draw(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.rect,
             &self.deck,
             self.cur_slide,
-            &palette,
-            &self.images,
+            DeckAssets {
+                palette: &palette,
+                images: &self.images,
+            },
         );
     }
 }
@@ -5271,7 +5261,7 @@ fn write_demo_image() -> Option<PathBuf> {
         let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
         *px = Rgb([red, green, blue]);
     }
-    let path = std::env::temp_dir().join("slides-demo-image.png");
+    let path = tilo_paths::temp_dir()?.join("slides-demo-image.png");
     img.save(&path).ok()?;
     Some(path)
 }
@@ -5593,12 +5583,13 @@ impl AudiencePresentationProvider for SlidesApp {
 impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::AudiencePresentationProvider
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
@@ -5667,6 +5658,9 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
+        if self.joined && SlidesDoc::is_uninitialized(state) {
+            return;
+        }
         self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
@@ -5785,7 +5779,7 @@ impl Widget for SlidesApp {
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
         self.sync_flaps(dt, theme.reduce_motion);
@@ -6103,13 +6097,18 @@ impl Widget for SlidesApp {
                 }
                 let (role, name, mut state) = self.semantic_copy(&button.hit);
                 state.focusable = !state.disabled;
-                Some(
-                    AccessNode::new(role)
-                        .with_name(name)
-                        .with_action_target(target)
-                        .with_bounds(button.rect)
-                        .with_state(state),
-                )
+                let node = AccessNode::new(role)
+                    .with_name(name)
+                    .with_action_target(target)
+                    .with_bounds(button.rect)
+                    .with_state(state);
+                // The notes box reads out what it holds, as a field would.
+                Some(match (&button.hit, self.slide()) {
+                    (Hit::EditNotes, Some(slide)) if !slide.notes.is_empty() => {
+                        node.with_value(slide.notes.clone())
+                    }
+                    _ => node,
+                })
             })
             .collect();
 
@@ -6286,20 +6285,32 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
     }
+}
 
+impl ui::undo::UndoPoints for SlidesApp {
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }
+}
 
+impl ui::search::capability::SearchSource for SlidesApp {
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SlidesApp {
     /// The deck's resource tree for the shell's one Ctrl+K palette — every
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
@@ -6309,14 +6320,21 @@ impl Widget for SlidesApp {
         }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
         }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
+}
 
+impl ui::history_mode::capability::DocumentHistory for SlidesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for SlidesApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
@@ -6327,19 +6345,11 @@ impl Widget for SlidesApp {
             .and_then(|editor| editor.host.widget_mut().take_committed_action());
         typed.or_else(|| self.actions.take_committed())
     }
-
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
         self.text_editor
             .as_ref()
             .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
-    }
-
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -7025,7 +7035,7 @@ impl SlidesApp {
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
                 cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
             });
-            self.last_click = Some((id.clone(), std::time::Instant::now(), p));
+            self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
 
             // Already editing this exact text box → a click inside it places
@@ -10754,6 +10764,23 @@ mod tests {
     // --- shared multiline speaker-notes editor ------------------------------
 
     #[test]
+    fn the_notes_box_reads_out_the_slides_notes() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Edit speaker notes") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "thank the hosts");
+        app.reload(&doc);
+        let tree = app.accessibility().expect("editor semantics");
+        let notes = find(&tree).expect("the notes box is exposed");
+        assert_eq!(notes.value.as_deref(), Some("thank the hosts"));
+    }
+
+    #[test]
     fn notes_typing_writes_through_and_up_down_move_the_caret() {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
         sized(&mut app, 1280.0, 800.0);
@@ -11489,21 +11516,21 @@ mod history_interruption_tests {
             app.cur_slide = 1;
             app.begin_notes_edit(&mut doc);
             assert!(
-                Widget::resources(&app, &doc)
+                ui::resources::resources(&app, &doc)
                     .iter()
                     .any(|r| r.id.as_str().contains("slides"))
             );
             restore(&mut doc, &selected);
             let heads = doc.get_heads();
             assert!(
-                Widget::resources(&app, &doc).is_empty(),
+                ui::resources::resources(&app, &doc).is_empty(),
                 "unreconciled resources cannot retain old action payloads"
             );
             app.sync(&mut doc, &automerge::ROOT);
             assert!(!app.editing_notes);
             assert!(app.deck.index_of(&id).is_none());
             assert_eq!(doc.get_heads(), heads);
-            assert!(!Widget::resources(&app, &doc).is_empty());
+            assert!(!ui::resources::resources(&app, &doc).is_empty());
         }
     }
 }

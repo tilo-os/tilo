@@ -385,10 +385,6 @@ impl Chip {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate chip painting combines scene, transform, theme and text renderer with bounds, label, lead and style"
-    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,

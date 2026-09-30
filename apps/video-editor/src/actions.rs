@@ -279,12 +279,6 @@ pub struct ClipData {
 
 impl ClipData {
     pub fn from_clip(c: &Clip) -> Self {
-        // An older in-memory project can still enter through file import or a
-        // test fixture. Normalise its stack before it crosses the action
-        // boundary so the next ordinary collaborative write persists ids;
-        // never rely on random identity during `Action::apply`.
-        let mut normalised = c.clone();
-        normalised.ensure_effect_ids();
         Self {
             id: c.id.to_string(),
             track: c.track.to_string(),
@@ -302,7 +296,7 @@ impl ClipData {
             fade_in: c.fade_in,
             fade_out: c.fade_out,
             transition_duration: c.transition_duration,
-            effects: normalised.effects,
+            effects: c.effects.clone(),
             transform: c.transform,
             speed: c.speed,
             curves: c.curves.clone(),
@@ -320,7 +314,7 @@ impl ClipData {
     /// unparseable id) so `apply` can no-op instead of fabricating a value,
     /// which would break replay determinism.
     fn to_clip(&self) -> Option<Clip> {
-        let mut clip = Clip {
+        Some(Clip {
             id: self.id.parse::<Uuid>().ok()?,
             track: self.track.parse::<Uuid>().ok()?,
             media: self.media.parse::<Uuid>().ok()?,
@@ -353,9 +347,7 @@ impl ClipData {
             link: self.link.as_ref().and_then(|l| l.parse::<Uuid>().ok()),
             sound_split: self.sound_split,
             link_follows: self.link_follows,
-        };
-        clip.ensure_effect_ids();
-        Some(clip)
+        })
     }
 }
 
@@ -565,11 +557,6 @@ pub enum VideoEditorAction {
     /// tie-break, so replay never derives an ordinal from receiver state.
     AddEffect {
         clip: String,
-        /// Retained solely to decode actions authored by older clients. New
-        /// actions do not make an unrelated concurrent append fail closed.
-        #[serde(default)]
-        expected_stack: Vec<Uuid>,
-        #[serde(default)]
         ordinal: usize,
         effect: crate::model::ClipEffect,
     },
@@ -759,15 +746,9 @@ pub enum ClipFieldPatch {
         expected: String,
         value: String,
     },
-    Json {
-        field: ClipJsonField,
-        expected: String,
-        value: String,
-    },
     /// A new, typed compound value. It is atomic at the action boundary (a
     /// curve edit or transform preset is one authored gesture), then expands
-    /// into the document's keyed maps. `Json` above is retained only so old
-    /// persisted actions remain decodable; new UI/resource actions use this.
+    /// into the document's keyed maps.
     Compound {
         field: ClipCompoundField,
         expected: ClipCompound,
@@ -831,16 +812,6 @@ pub enum ClipTextField {
 pub enum MarkerTextField {
     Name,
     Note,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClipJsonField {
-    Transform,
-    Curves,
-    Key,
-    Mask,
-    Animation,
-    Markers,
 }
 
 /// Named compound clip records. Each is represented by leaf CRDT fields or
@@ -1041,19 +1012,6 @@ fn patch_matches(clip: &Clip, patch: &ClipFieldPatch) -> bool {
             ClipTextField::Track => clip.track.to_string() == *expected,
             ClipTextField::Transition => clip.transition.as_str() == expected,
         },
-        ClipFieldPatch::Json {
-            field, expected, ..
-        } => {
-            let current = match field {
-                ClipJsonField::Transform => serde_json::to_string(&clip.transform),
-                ClipJsonField::Curves => serde_json::to_string(&clip.curves),
-                ClipJsonField::Key => serde_json::to_string(&clip.key),
-                ClipJsonField::Mask => serde_json::to_string(&clip.mask),
-                ClipJsonField::Animation => serde_json::to_string(&clip.anim),
-                ClipJsonField::Markers => serde_json::to_string(&clip.markers),
-            };
-            current.is_ok_and(|current| current == *expected)
-        }
         ClipFieldPatch::Compound {
             field, expected, ..
         } => {
@@ -1112,19 +1070,6 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             match field {
                 ClipTextField::Track => "track",
                 ClipTextField::Transition => "transition",
-            },
-            value,
-        ),
-        ClipFieldPatch::Json { field, value, .. } => VideoDoc::set_existing_clip_text(
-            doc,
-            id,
-            match field {
-                ClipJsonField::Transform => "transform",
-                ClipJsonField::Curves => "curves",
-                ClipJsonField::Key => "key",
-                ClipJsonField::Mask => "mask",
-                ClipJsonField::Animation => "anim",
-                ClipJsonField::Markers => "markers",
             },
             value,
         ),
@@ -1195,14 +1140,6 @@ fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
         ClipFieldPatch::Text { field, .. } => match field {
             ClipTextField::Track => "track",
             ClipTextField::Transition => "transition",
-        },
-        ClipFieldPatch::Json { field, .. } => match field {
-            ClipJsonField::Transform => "transform",
-            ClipJsonField::Curves => "curves",
-            ClipJsonField::Key => "key",
-            ClipJsonField::Mask => "mask",
-            ClipJsonField::Animation => "anim",
-            ClipJsonField::Markers => "markers",
         },
         ClipFieldPatch::Compound { field, .. } => match field {
             ClipCompoundField::Transform => "transform",
@@ -1353,7 +1290,6 @@ impl Action for VideoEditorAction {
             }
             VideoEditorAction::AddEffect {
                 clip,
-                expected_stack,
                 ordinal,
                 effect,
             } => {
@@ -1369,17 +1305,7 @@ impl Action for VideoEditorAction {
                         return Err(ActionError::Refused("invalid authored effect id".into()));
                     }
                 }
-                // Pre-rank clients included the complete stack they saw. Its
-                // length is an authored fact in that legacy payload, unlike
-                // the receiver's current stack length, so it is safe as a
-                // deterministic compatibility rank. New actions always send
-                // `ordinal` explicitly (including zero for the first entry).
-                let authored_ordinal = if *ordinal == 0 && !expected_stack.is_empty() {
-                    expected_stack.len()
-                } else {
-                    *ordinal
-                };
-                if !VideoDoc::add_clip_effect(doc, clip_id, *effect, authored_ordinal) {
+                if !VideoDoc::add_clip_effect(doc, clip_id, *effect, *ordinal) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -3022,7 +2948,6 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
                     encode(&VideoEditorAction::AddEffect {
                         clip: add_clip.to_string(),
-                        expected_stack: Vec::new(),
                         ordinal: add_ordinal,
                         effect,
                     })
@@ -4424,7 +4349,7 @@ mod tests {
         // Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
             assert_eq!(project.kind, "video.project");
@@ -4569,7 +4494,7 @@ mod tests {
         // stack through the same narrow effects action the inspector uses.
         {
             let (app, mut doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -4616,7 +4541,7 @@ mod tests {
         let mut app = VideoEditorApp::new();
         let mut doc = doc.clone();
         app.sync(&mut doc, &automerge::ROOT);
-        Widget::resources(&app, &doc)
+        ui::resources::resources(&app, &doc)
     }
 
     fn clip_id(res: &Resource) -> Uuid {
@@ -4715,7 +4640,7 @@ mod tests {
         // inspector edit to 0.9 would — a slider value folded into one action.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
             let from_spec = prompted_encode(spec, "0.9");
 
@@ -4828,7 +4753,7 @@ mod tests {
             use tilo_actions::params::ArgValue;
 
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -6235,13 +6160,11 @@ mod tests {
             let initial = ctx.project.clip(clip).expect("fixture clip").effects.len();
             let first = VideoEditorAction::AddEffect {
                 clip: clip.to_string(),
-                expected_stack: Vec::new(),
                 ordinal: initial,
                 effect: crate::model::ClipEffect::new(EffectKind::Sepia),
             };
             let second = VideoEditorAction::AddEffect {
                 clip: clip.to_string(),
-                expected_stack: Vec::new(),
                 ordinal: initial,
                 effect: crate::model::ClipEffect::new(EffectKind::Vignette),
             };
@@ -6274,7 +6197,6 @@ mod tests {
             let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
             let add = VideoEditorAction::AddEffect {
                 clip: clip.to_string(),
-                expected_stack: Vec::new(),
                 ordinal: 0,
                 effect,
             };
@@ -6319,7 +6241,6 @@ mod tests {
             let marker = crate::model::Marker::new(2.0, "beat", 3);
             let add_effect = VideoEditorAction::AddEffect {
                 clip: clip.to_string(),
-                expected_stack: Vec::new(),
                 ordinal: 0,
                 effect,
             };

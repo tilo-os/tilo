@@ -33,8 +33,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -642,6 +643,8 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
@@ -761,12 +764,13 @@ impl Widget for Dropdown {
 
         if self.open {
             self.filter_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.filter,
-                &self.filter_selection,
-                "Type to filter…",
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.filter,
+                    selection: &self.filter_selection,
+                    placeholder: "Type to filter…",
+                    show_caret: self.is_focused,
+                },
                 Rect::new(
                     self.rect.x0 + PAD_X,
                     self.rect.y0,
@@ -774,11 +778,7 @@ impl Widget for Dropdown {
                     self.rect.y1,
                 ),
                 &TextStyle::new(FONT),
-                theme.text_primary,
-                theme.text_dim,
-                theme.accent_primary.with_alpha_factor(0.3),
-                theme.accent_primary,
-                self.is_focused,
+                QueryInk::accented(theme.text_primary, theme.text_dim, theme.accent_primary),
             );
         } else {
             let (label, color) = if self.selected.is_empty() {
@@ -1003,50 +1003,6 @@ impl Widget for Dropdown {
         "Dropdown"
     }
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("dropdown");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-
     fn test_id(&self) -> Option<&str> {
         if self.id.is_empty() {
             Some("dropdown")
@@ -1172,6 +1128,50 @@ impl Widget for Dropdown {
     /// While open, grabs every event — see module docs.
     fn wants_pointer_capture(&self) -> bool {
         self.open
+    }
+}
+
+impl crate::widget::controls::ActionControls for Dropdown {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("dropdown");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
+            }]
+        } else if self.on_change.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 
@@ -1954,12 +1954,12 @@ mod tests {
                 .on_change(|_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_string_action_binding());
             let mut doc = AutoCommit::new();
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&dropdown));
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -1975,7 +1975,7 @@ mod tests {
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
             assert_eq!(
-                Widget::take_control_invocation(&mut dropdown)
+                crate::widget::controls::take_control_invocation(&mut dropdown)
                     .unwrap()
                     .arguments["value"],
                 "Asia/Tokyo"

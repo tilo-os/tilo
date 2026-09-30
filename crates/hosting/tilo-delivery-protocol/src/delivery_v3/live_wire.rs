@@ -769,5 +769,7 @@ impl AgentActivity {
     }
 }
 
+pub mod legacy_window;
+
 #[cfg(test)]
 mod tests;

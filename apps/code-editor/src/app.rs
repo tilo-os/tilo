@@ -37,7 +37,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
@@ -136,6 +136,8 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
@@ -304,21 +306,6 @@ impl Widget for BottomPanelToggle {
         self.button.perform_action(action, state, path)
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
-    }
-
     fn set_interaction_environment(
         &mut self,
         environment: ui::interaction::InteractionEnvironment,
@@ -333,6 +320,21 @@ impl Widget for BottomPanelToggle {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.button.mark_drawn();
+    }
+}
+
+impl ui::widget::controls::ActionControls for BottomPanelToggle {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
     }
 }
 
@@ -906,7 +908,7 @@ impl CodeApp {
             next_new_file_id,
             next_new_folder_id,
             flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            flap_tick: ui::time::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
             // 1280px) docks the sidebar; corrected from the real width once
             // `apply_layout` measures the window.
@@ -1042,7 +1044,7 @@ impl CodeApp {
     /// still animating (so the host keeps pumping frames). Called once per
     /// draw, mirroring the proven weather/chat pattern.
     fn tick_flap(&mut self) -> bool {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.flap_tick).as_secs_f64().min(0.1);
         self.flap_tick = now;
         self.flap.reconcile(self.sidebar_layout());
@@ -1591,7 +1593,7 @@ impl CodeApp {
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
         // every frame, so poking unconditionally would pin the bubble open.
         if changed {
-            self.status_bubble.poke(Instant::now());
+            self.status_bubble.poke(ui::time::now());
         }
     }
 
@@ -1601,7 +1603,7 @@ impl CodeApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.refresh_status();
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
@@ -1615,7 +1617,7 @@ impl CodeApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status.bubble_text();
         if label.is_empty() {
             return;
@@ -2714,8 +2716,8 @@ impl CodeApp {
     /// frame shows genuine hits from the genuine walk rather than canned rows.
     pub fn shots_project_search(&mut self, needle: &str) {
         self.start_project_search(search::Query::new(needle));
-        let deadline = Instant::now() + std::time::Duration::from_secs(20);
-        while self.search_job.is_some() && Instant::now() < deadline {
+        let deadline = ui::time::now() + std::time::Duration::from_secs(20);
+        while self.search_job.is_some() && ui::time::now() < deadline {
             self.poll_search();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3424,6 +3426,13 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
@@ -4047,26 +4056,6 @@ impl Widget for CodeApp {
         )
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
-            .into_iter()
-            .flat_map(Widget::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
-    }
-
     /// Expose the panes so headless driving can address them by name. Without
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
@@ -4093,47 +4082,6 @@ impl Widget for CodeApp {
             out.push(&mut self.panel);
         }
         out
-    }
-
-    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
-    /// palette. Any omitted file/symbol/result resolves lazily below through
-    /// its canonical address. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::project_root(&self.code_resource_ctx())]
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    /// Resolve a searched file, symbol, or result through the current widget
-    /// state. This is deliberately lazy: a palette row carries only an inert
-    /// canonical address until activation.
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::apply_command`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -4202,15 +4150,6 @@ impl Widget for CodeApp {
             .flatten()
     }
 
-    /// Publish canonical file, symbol and live project-result search rows. Each
-    /// row points at an exported resource action, so there is no callback-only
-    /// path with weaker semantics than the palette/agent door.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
-        )]
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4255,7 +4194,7 @@ impl Widget for CodeApp {
             || self.lsp_status.is_working()
             // Keep frames coming while the floating status bubble is lingering
             // / fading, so it hides itself without needing a stray pointer event.
-            || self.status_bubble.needs_frame(Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4274,6 +4213,81 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
+    }
+}
+
+impl ui::search::capability::SearchSource for CodeApp {
+    /// Publish canonical file, symbol and live project-result search rows. Each
+    /// row points at an exported resource action, so there is no callback-only
+    /// path with weaker semantics than the palette/agent door.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
+        )]
+    }
+}
+
+impl ui::resources::PublishesResources for CodeApp {
+    /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
+    /// palette. Any omitted file/symbol/result resolves lazily below through
+    /// its canonical address. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            vec![crate::actions::project_root(&self.code_resource_ctx())]
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    /// Resolve a searched file, symbol, or result through the current widget
+    /// state. This is deliberately lazy: a palette row carries only an inert
+    /// canonical address until activation.
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for CodeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = self
+            .children()
+            .into_iter()
+            .flat_map(ui::widget::controls::control_action_bindings)
+            .collect::<Vec<_>>();
+        if self.palette.is_visible() {
+            bindings.extend(self.palette.control_action_bindings());
+        }
+        bindings
+    }
+}
+
+impl ui::undo::CommittedActions for CodeApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// `Self::apply_command`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 

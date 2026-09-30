@@ -296,13 +296,26 @@ fn sheets_workbook() -> Vec<SheetTable> {
     raw.insert((3, 7), "far".into());
     let values: HashMap<Addr, CellValue> = crate::formula::recalculate(&raw);
     vec![
-        SheetTable::from_cells("Budget 2026", &raw, &fmt, &values),
-        SheetTable::from_cells("Empty", &HashMap::new(), &HashMap::new(), &HashMap::new()),
+        SheetTable::from_cells(
+            "Budget 2026",
+            &raw,
+            &fmt,
+            &values,
+            &std::collections::HashSet::new(),
+        ),
+        SheetTable::from_cells(
+            "Empty",
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &std::collections::HashSet::new(),
+        ),
         SheetTable::from_cells(
             "Q1",
             &HashMap::from([((0, 0), "1".into())]),
             &HashMap::new(),
             &HashMap::new(),
+            &std::collections::HashSet::new(),
         ),
     ]
 }

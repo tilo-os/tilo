@@ -15,9 +15,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
@@ -92,7 +93,7 @@ pub struct CalculatorApp {
     /// delivery. Individual custom-painted controls remain semantic children.
     host_focused: bool,
     /// Time + position of the last press, for double-click detection.
-    last_click: Option<ui::clock::Instant>,
+    last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
     seeded: bool,
@@ -108,7 +109,7 @@ pub struct CalculatorApp {
     /// When `Some`, an edit landed at this time and has not yet been sealed into
     /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
     /// coalesces into a single Ctrl+Z step once editing pauses.
-    last_edit_time: Option<ui::clock::Instant>,
+    last_edit_time: Option<ui::time::Instant>,
     node: Option<NodeId>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
@@ -309,7 +310,7 @@ impl CalculatorApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory model is mutated by the
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory model is mutated by the
     /// caller for immediate feedback; `store` then reconciles it (a no-op for the
     /// list the action already wrote), and `sync` re-adopts the document on
     /// undo/redo or a merged peer patch.
@@ -417,10 +418,11 @@ impl CalculatorApp {
     }
 
     fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
+        ctx.fill_rect(self.topbar, c.surfaces.raised);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
@@ -438,12 +440,12 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
+                ctx.fill_round(r, 8.0, c.accent[5]);
             }
             let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
@@ -452,15 +454,12 @@ impl CalculatorApp {
                 m.label()
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 label,
-                TopbarLabels::SEG_FONT,
+                &TextStyle::new(TopbarLabels::SEG_FONT).with_weight(TextWeight::Semibold),
                 col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
 
@@ -471,11 +470,11 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
@@ -488,26 +487,20 @@ impl CalculatorApp {
             c.text_dim
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.rad_rect,
             "RAD",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             rad_col,
             Align::Center,
-            TextWeight::Semibold,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.deg_rect,
             "DEG",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             deg_col,
             Align::Center,
-            TextWeight::Semibold,
         );
     }
 
@@ -531,7 +524,7 @@ impl CalculatorApp {
         }
 
         // Double-click detection (≤400 ms, within 5 px).
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         let double = self
             .last_click
             .is_some_and(|t| now.duration_since(t).as_millis() <= 400)
@@ -1227,6 +1220,13 @@ impl CalculatorApp {
 }
 
 impl Widget for CalculatorApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -1254,10 +1254,6 @@ impl Widget for CalculatorApp {
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         self.host_focused
             .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1540,7 +1536,7 @@ impl Widget for CalculatorApp {
             // Mark an uncommitted edit so `needs_commit` can seal it into an
             // undo checkpoint once editing pauses (character-key edits are not
             // committed by the App's per-event path, only coalesced here).
-            self.last_edit_time = Some(ui::clock::Instant::now());
+            self.last_edit_time = Some(ui::time::now());
         }
     }
 
@@ -1871,34 +1867,6 @@ impl Widget for CalculatorApp {
         }
     }
 
-    /// Seal a burst of edits into one undo checkpoint after a short pause, so
-    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
-    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
-    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
-    /// bespoke stack.
-    fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1911,6 +1879,45 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::undo::UndoPoints for CalculatorApp {
+    /// Seal a burst of edits into one undo checkpoint after a short pause, so
+    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
+    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
+    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
+    /// bespoke stack.
+    fn needs_commit(&self) -> bool {
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+}
+
+impl ui::resources::PublishesResources for CalculatorApp {
+    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
+    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for CalculatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its history / graph action, so it records one undo boundary for the whole
+    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2423,7 +2430,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -2469,7 +2476,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -3014,6 +3021,7 @@ mod tests {
     /// commit. Fresh app + state per phase.
     #[test]
     fn formula_edits_sync_through_crdt_and_framework_undo() {
+        use ui::undo::needs_commit;
         // phase undo_redo_of_formula_edit_routes_through_ui_state
         {
             // Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
@@ -3045,8 +3053,7 @@ mod tests {
                 app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
-            let before = app
-                .take_committed_action()
+            let before = ui::undo::take_committed_action(&mut app)
                 .expect("formula actions expose one undo bracket");
             assert!(
                 state.record_committed_action(before, None, None),
@@ -3113,7 +3120,7 @@ mod tests {
             app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.relayout();
             app.layout_active();
-            assert!(!app.needs_commit(), "no edit yet → nothing to commit");
+            assert!(!needs_commit(&app), "no edit yet → nothing to commit");
             let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
             tap(&mut app, &mut st, five);
             assert_eq!(app.model.expr, "5", "seal: tapped 5");
@@ -3122,7 +3129,7 @@ mod tests {
                 "an edit must arm the coalescing timer"
             );
             assert!(
-                !app.needs_commit(),
+                !needs_commit(&app),
                 "a just-made edit must not seal a checkpoint mid-burst"
             );
             // Once the coalesce window has elapsed the widget asks to checkpoint.
@@ -3132,12 +3139,12 @@ mod tests {
                     .unwrap(),
             );
             assert!(
-                app.needs_commit(),
+                needs_commit(&app),
                 "after the pause the edit must seal into a checkpoint"
             );
             // The App calls on_commit after snapshotting; that clears the pending edit.
-            app.on_commit();
-            assert!(!app.needs_commit(), "seal: on_commit clears needs_commit");
+            ui::undo::on_commit(&mut app);
+            assert!(!needs_commit(&app), "seal: on_commit clears needs_commit");
             assert!(
                 app.last_edit_time.is_none(),
                 "seal: on_commit clears the timer"

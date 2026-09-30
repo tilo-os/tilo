@@ -2,7 +2,8 @@
 name = "tilo-moq"
 version = "0.1.0"
 edition = "2024"
-publish = false
+publish.workspace = true
+description = "Tilo live plane over MoQ: the moq-lite live relay, its WebTransport admission carrier and the HTTPS fallback, plus the tilo-voice/1 object profile."
 license.workspace = true
 
 [features]
@@ -10,6 +11,7 @@ default = []
 relay = ["dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:hex", "dep:bytes", "dep:tokio", "dep:url", "dep:serde", "dep:serde_json"]
 
 [dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

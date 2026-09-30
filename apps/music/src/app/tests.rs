@@ -187,7 +187,7 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         let path = std::env::temp_dir().join(format!(
             "tilo-music-shot-profile-{}-{}.json",
             std::process::id(),
-            Instant::now().elapsed().as_nanos()
+            ui::time::now().elapsed().as_nanos()
         ));
         let mut profile = crate::storage::DeviceProfile::default();
         profile.playback.current = Some("sentinel-track".into());
@@ -449,7 +449,7 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
         app.tick();
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "paused decoder failed to preroll: {}",
             app.audio.diagnostics()
         );
@@ -2133,7 +2133,7 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
         app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
         app.pb.queue_index = 0;
         app.pb.current = Some("tk_g1".into());
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let queue = resources[0]
             .children
             .iter()
@@ -2233,11 +2233,11 @@ fn global_search_and_canonical_views_route_without_mutation() {
         // the legacy app callback.
         let (mut app, mut doc) = app_with_doc();
         let track = app.lib.tracks.values().next().unwrap().clone();
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
         let playlist = app.lib.playlists.first().unwrap().clone();
-        let providers = Widget::search_providers(&app);
+        let providers = ui::search::capability::search_providers(&app);
         for (query, expected) in [
             (
                 track.title.as_str(),
@@ -2269,7 +2269,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(Widget::search_providers(&app));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query(&track.title);
         let row = palette
@@ -2318,7 +2318,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(Widget::search_providers(&app));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query(&artist.name);
         let row = palette
@@ -2365,8 +2365,8 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let builds = app.library_search_builds;
         let track = app.lib.tracks.values().next().expect("seed track").clone();
 
-        let first = Widget::search_providers(&app);
-        let second = Widget::search_providers(&app);
+        let first = ui::search::capability::search_providers(&app);
+        let second = ui::search::capability::search_providers(&app);
         assert_eq!(
             app.library_search_builds, builds,
             "retrieval does not reindex"
@@ -2397,7 +2397,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
             "one changed library revision rebuilds the catalog exactly once"
         );
         assert!(
-            Widget::search_providers(&app)[0]
+            ui::search::capability::search_providers(&app)[0]
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {
@@ -3065,7 +3065,7 @@ fn live_audio_render_proof(app: &mut MusicApp) {
         let p0 = app.playhead_ms;
         let f0 = app.audio.frames_rendered();
         let mut advanced = false;
-        let mut last_print = std::time::Instant::now();
+        let mut last_print = ui::time::now();
         for _ in 0..400 {
             app.tick();
             if last_print.elapsed() >= Duration::from_millis(500) {
@@ -3074,7 +3074,7 @@ fn live_audio_render_proof(app: &mut MusicApp) {
                     app.playhead_ms,
                     app.audio.frames_rendered()
                 );
-                last_print = std::time::Instant::now();
+                last_print = ui::time::now();
             }
             if app.playhead_ms > p0 + 250.0 && app.audio.frames_rendered() > f0 {
                 advanced = true;

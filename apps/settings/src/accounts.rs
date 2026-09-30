@@ -27,16 +27,8 @@
 //! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
 //! unchanged while the on-disk store is the shared one. Consequently the
 //! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
-//! view-models** populated from the shared store — the legacy
-//! `MailStore::path` / `MailStore::save` remain only as legacy-format helpers;
-//! every account kind now writes the canonical store.
-//!
-//! # Legacy migration
-//!
-//! Older installs kept `WebDAV` and Nextcloud metadata in per-app JSON files.
-//! [`AccountDirectory::load`] imports those records into the canonical store
-//! once (upsert by stable id), leaving the old files untouched as a rollback
-//! aid. New writes only target the canonical store.
+//! view-models** populated from the shared store; every account kind writes
+//! the canonical store.
 //!
 //! # Credentials are never serialised
 //!
@@ -157,14 +149,6 @@ impl AccountRoot {
         }
     }
 
-    /// A legacy per-app store file (`files/accounts.json`, …).
-    fn legacy_path(&self, relative: &str) -> Option<PathBuf> {
-        match &self.explicit {
-            Some(root) => Some(root.join(relative)),
-            None => settings_store::config_path(std::path::Path::new(relative)),
-        }
-    }
-
     fn mutation_journal_path(&self) -> Result<PathBuf, String> {
         Ok(accounts::accounts_dir_in(&self.require()?).join("mutation-journal.json"))
     }
@@ -190,8 +174,12 @@ impl AccountRoot {
         };
         let bytes = serde_json::to_vec(&journal)
             .map_err(|error| format!("could not serialize account transaction: {error}"))?;
-        atomic_file::write_creating_parent_with_mode(&self.mutation_journal_path()?, &bytes, 0o600)
-            .map_err(|error| format!("could not persist account transaction intent: {error}"))
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &self.mutation_journal_path()?,
+            &bytes,
+            0o600,
+        )
+        .map_err(|error| format!("could not persist account transaction intent: {error}"))
     }
 
     /// # Errors
@@ -243,8 +231,12 @@ impl AccountRoot {
         let vault_path = accounts::vault_dir_in(&self.require()?).join("vault.enc");
         match journal.vault_ciphertext {
             Some(ciphertext) => {
-                atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
-                    .map_err(|error| format!("could not recover credential vault: {error}"))?;
+                tilo_files::native::atomic::write_creating_parent_with_mode(
+                    &vault_path,
+                    &ciphertext,
+                    0o600,
+                )
+                .map_err(|error| format!("could not recover credential vault: {error}"))?;
             }
             None => match std::fs::remove_file(&vault_path) {
                 Ok(()) => {}
@@ -267,7 +259,7 @@ impl AccountRoot {
 }
 
 // ---------------------------------------------------------------------------
-// Mail store — byte-compatible with Mail's `~/.config/tilo/mail/accounts.json`.
+// Mail view-model.
 // ---------------------------------------------------------------------------
 
 /// IMAP receive + SMTP send settings. Field-for-field the shape Mail's
@@ -378,8 +370,7 @@ impl MailAccount {
     }
 }
 
-/// The mail account list — Mail's `AccountStore` shape, persisted at
-/// `MailStore::PATH`.
+/// The mail account list — Mail's `AccountStore` shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,
@@ -388,41 +379,12 @@ pub struct MailStore {
 }
 
 impl MailStore {
-    /// The path Mail reads and Settings writes, relative to the config
-    /// root: `<config>/tilo/mail/accounts.json`.
-    pub const REL_PATH: &'static str = "mail/accounts.json";
-
-    pub fn path() -> Option<PathBuf> {
-        settings_store::config_path(std::path::Path::new("mail/accounts.json"))
-    }
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (`no config
-    /// dir`), or if creating the parent directory or writing the JSON file
-    /// fails (permissions, missing/read-only filesystem, etc).
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 
     pub fn remove(&mut self, id: &str) -> bool {
@@ -433,7 +395,7 @@ impl MailStore {
 }
 
 // ---------------------------------------------------------------------------
-// DAV store — CalDAV (calendar) and WebDAV (files), parallel files.
+// DAV store — CalDAV (calendar) and WebDAV (files).
 // ---------------------------------------------------------------------------
 
 /// A `CalDAV` / `WebDAV` account. Both speak HTTP(S) to a base URL with a
@@ -471,10 +433,8 @@ impl DavAccount {
     }
 }
 
-/// A DAV account list. The *same* struct backs both the calendar store
-/// (`<config>/tilo/calendar/accounts.json`, consumed by Calendar) and the
-/// files store (`<config>/tilo/files/accounts.json`, consumed by the file
-/// apps) — they differ only by path.
+/// A DAV account list. The *same* struct backs both the calendar and the
+/// files view of the canonical store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DavStore {
     #[serde(default = "default_version")]
@@ -483,45 +443,12 @@ pub struct DavStore {
 }
 
 impl DavStore {
-    /// The `CalDAV` (calendar) store path.
-    pub fn calendar_path() -> Option<PathBuf> {
-        settings_store::config_path(std::path::Path::new("calendar/accounts.json"))
-    }
-
-    /// The `WebDAV` (files) store path.
-    pub fn files_path() -> Option<PathBuf> {
-        AccountRoot::live().legacy_path(Self::FILES_REL_PATH)
-    }
-
-    /// The `WebDAV` store path relative to the config root.
-    pub const FILES_REL_PATH: &'static str = "files/accounts.json";
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load_from(path: Option<PathBuf>) -> Self {
-        path.and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if `path` is `None` (`no config dir`), or if creating
-    /// the parent directory or writing the JSON file fails (permissions,
-    /// missing/read-only filesystem, etc).
-    pub fn save_to(&self, path: Option<PathBuf>) -> std::io::Result<PathBuf> {
-        let path = path.ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 }
 
@@ -578,8 +505,7 @@ impl NextcloudAccount {
     }
 }
 
-/// The Nextcloud account list, persisted at
-/// `<config>/tilo/nextcloud/accounts.json`.
+/// The Nextcloud account list.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextcloudStore {
     #[serde(default = "default_version")]
@@ -588,43 +514,12 @@ pub struct NextcloudStore {
 }
 
 impl NextcloudStore {
-    pub fn path() -> Option<PathBuf> {
-        AccountRoot::live().legacy_path(Self::REL_PATH)
-    }
-
-    /// The legacy Nextcloud store path relative to the config root.
-    pub const REL_PATH: &'static str = "nextcloud/accounts.json";
-
-    fn load_from(path: Option<PathBuf>) -> Self {
-        path.and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
-    }
-
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
     }
 
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
-    }
-
-    pub fn load() -> Self {
-        Self::load_from(Self::path())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if no config directory can be resolved (`no config
-    /// dir`), or if creating the parent directory or writing the JSON file
-    /// fails (permissions, missing/read-only filesystem, etc).
-    pub fn save(&self) -> std::io::Result<PathBuf> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json())?;
-        Ok(path)
     }
 }
 
@@ -772,8 +667,7 @@ pub struct AccountDirectory {
 impl AccountDirectory {
     /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. Legacy `WebDAV`
-    /// and Nextcloud JSON is imported idempotently before projecting the view.
+    /// Calendar read, so the shapes can no longer drift apart.
     pub fn load() -> Self {
         Self::load_in(&AccountRoot::live())
     }
@@ -781,40 +675,7 @@ impl AccountDirectory {
     /// [`Self::load`] from the stores under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
-        let mut shared = root.store();
-        if let Some(config_root) = root.path() {
-            let marker = accounts::accounts_dir_in(&config_root).join("legacy-settings-import-v1");
-            if !marker.exists() {
-                let changed = import_legacy_accounts(
-                    &mut shared,
-                    &DavStore::load_from(root.legacy_path(DavStore::FILES_REL_PATH)),
-                    &NextcloudStore::load_from(root.legacy_path(NextcloudStore::REL_PATH)),
-                );
-                let persisted = if changed {
-                    match root.save_store(&shared) {
-                        Ok(()) => true,
-                        Err(error) => {
-                            tracing::warn!(target: "tilo::settings", %error, "could not persist imported legacy accounts");
-                            false
-                        }
-                    }
-                } else {
-                    true
-                };
-                let mark_imported = || -> std::io::Result<()> {
-                    if let Some(parent) = marker.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    atomic_file::write(&marker, b"imported\n")
-                };
-                if persisted && let Err(error) = mark_imported() {
-                    // Without a durable marker the import safely repeats as
-                    // upserts. Reporting this matters because a subsequently
-                    // removed legacy account could otherwise reappear.
-                    tracing::warn!(target: "tilo::settings", %error, "could not mark legacy account import complete");
-                }
-            }
-        }
+        let shared = root.store();
         Self {
             mail: mail_store_from_shared(&shared),
             calendar: caldav_store_from_shared(&shared),
@@ -1077,40 +938,6 @@ fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStor
     }
 }
 
-/// Import old per-app account metadata without duplicating records. Credentials
-/// were `serde(skip)` in those formats, so this operation cannot move or expose
-/// a password; existing vault entries remain keyed by the same stable ids.
-pub fn import_legacy_accounts(
-    shared: &mut accounts::AccountStore,
-    webdav: &DavStore,
-    nextcloud: &NextcloudStore,
-) -> bool {
-    let before = shared.len();
-    for legacy in &webdav.accounts {
-        let id = accounts::AccountId::from(legacy.id.clone());
-        if shared.get(&id).is_none() {
-            let mut stored = accounts::Account::new(id, WEBDAV_TYPE);
-            stored.display_name.clone_from(&legacy.label);
-            stored.enabled = legacy.enabled;
-            stored.tint = legacy.tint;
-            stored.set_config(legacy);
-            shared.upsert(stored);
-        }
-    }
-    for legacy in &nextcloud.accounts {
-        let id = accounts::AccountId::from(legacy.id.clone());
-        if shared.get(&id).is_none() {
-            let mut stored = accounts::Account::new(id, NEXTCLOUD_TYPE);
-            stored.display_name.clone_from(&legacy.label);
-            stored.enabled = legacy.enabled;
-            stored.tint = legacy.tint;
-            stored.set_config(legacy);
-            shared.upsert(stored);
-        }
-    }
-    shared.len() != before
-}
-
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Shared by every account store and the region store so they all resolve
 /// the same directory — and, through [`settings_store`], the same directory
@@ -1187,9 +1014,6 @@ mod tests {
     /// no store ever writes a password.
     #[test]
     fn account_stores_round_trip_without_passwords() {
-        // The relative path Mail reads.
-        assert_eq!(MailStore::REL_PATH, "mail/accounts.json");
-
         let mut acct = MailAccount::new(AccountConfig {
             email: "a@x.example".into(),
             password: "hunter2".into(),
@@ -1283,63 +1107,6 @@ mod tests {
             ),
         ] {
             assert_eq!(short_url(url), short, "{url}");
-        }
-    }
-
-    /// Legacy `WebDAV`/Nextcloud import is idempotent, carries no secret, and never resurrects a removed account.
-    #[test]
-    fn legacy_account_import_is_one_time_and_secret_free() {
-        // Case `legacy_webdav_and_nextcloud_import_is_idempotent_and_secret_free`.
-        {
-            let mut web = DavAccount::new("Files", "https://dav.example/files", "ada");
-            web.password = "must-not-migrate".into();
-            let mut cloud = NextcloudAccount::new("Cloud", "https://cloud.example", "ada");
-            cloud.password = "also-must-not-migrate".into();
-            let files = DavStore {
-                version: 1,
-                accounts: vec![web.clone()],
-            };
-            let clouds = NextcloudStore {
-                version: 1,
-                accounts: vec![cloud.clone()],
-            };
-            let mut shared = accounts::AccountStore::new();
-
-            assert!(import_legacy_accounts(&mut shared, &files, &clouds));
-            assert!(!import_legacy_accounts(&mut shared, &files, &clouds));
-            assert_eq!(shared.len(), 2);
-            let json = serde_json::to_string(&shared).expect("canonical store serializes");
-            assert!(!json.contains("must-not-migrate"));
-            assert!(!json.contains("also-must-not-migrate"));
-            assert_eq!(webdav_store_from_shared(&shared).accounts[0].id, web.id);
-            assert_eq!(
-                nextcloud_store_from_shared(&shared).accounts[0].id,
-                cloud.id
-            );
-        }
-
-        // Case `completed_legacy_import_does_not_resurrect_a_removed_account`.
-        {
-            let dir = tempfile::tempdir().expect("scratch config root");
-            let root = AccountRoot::at(dir.path().join("tilo"));
-            let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
-            DavStore {
-                version: 1,
-                accounts: vec![legacy.clone()],
-            }
-            .save_to(root.legacy_path(DavStore::FILES_REL_PATH))
-            .expect("seed legacy store");
-
-            assert_eq!(AccountDirectory::load_in(&root).files.accounts.len(), 1);
-            let id = accounts::AccountId::from(legacy.id);
-            let mut canonical = root.store();
-            assert!(canonical.remove(&id));
-            root.save_store(&canonical).expect("persist removal");
-
-            assert!(
-                AccountDirectory::load_in(&root).files.accounts.is_empty(),
-                "the durable one-time marker prevents legacy metadata from resurrecting a removal"
-            );
         }
     }
 

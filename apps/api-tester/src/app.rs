@@ -49,7 +49,7 @@ use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -418,6 +418,9 @@ pub struct ApiTesterApp {
     last_cursor: Point,
     seeded: bool,
     adopted: bool,
+    /// Mounted on a record another participant created: its content is
+    /// theirs to seed, so an empty document is left untouched.
+    joined: bool,
     dirty: bool,
     /// Set when the child set changed; drained by `take_structure_dirty`.
     last_sig: ChildSig,
@@ -676,6 +679,7 @@ impl ApiTesterApp {
             last_cursor: Point::ZERO,
             seeded: false,
             adopted: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             dirty: true,
             last_sig: ChildSig::default(),
             persisted_once: false,
@@ -992,7 +996,7 @@ impl ApiTesterApp {
         http::build_outgoing(&req, &self.env_vars())
     }
 
-    /// Kick off a real request on a worker thread.
+    /// Kick off a real request on the app runtime.
     fn send(&mut self) {
         if self.sending {
             return;
@@ -1003,8 +1007,8 @@ impl ApiTesterApp {
         self.error = None;
         self.dirty = true;
         let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let outcome = match http::send_blocking(&out) {
+        drop(ui::rt::app().spawn(async move {
+            let outcome = match http::send(&out).await {
                 Ok(response) => SendOutcome::Ok {
                     response,
                     method,
@@ -1013,7 +1017,7 @@ impl ApiTesterApp {
                 Err(e) => SendOutcome::Err(e),
             };
             let _ = tx.send(outcome);
-        });
+        }));
     }
 
     /// Drain any finished send result from the worker.
@@ -2884,16 +2888,13 @@ impl ApiTesterApp {
                 let mut cx = text_x0;
                 for tok in &line.tokens {
                     let col = token_color(theme, tok.kind);
-                    tr.draw_text_styled(
+                    tr.draw_style(
                         scene,
                         &tok.text,
-                        size,
                         col,
                         t * Affine::translate((cx, screen_y + 3.0)),
                         None,
-                        TextWeight::Regular,
-                        false,
-                        true,
+                        &TextStyle::new(size).with_family(FontChoice::Monospace),
                     );
                     let (w, _) =
                         tr.measure_styled(&tok.text, size, None, TextWeight::Regular, false, true);
@@ -2946,16 +2947,13 @@ impl ApiTesterApp {
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + line_h >= area.y0 && y <= area.y1 {
-                tr.draw_text_styled(
+                tr.draw_style(
                     scene,
                     line,
-                    size,
                     c.text_primary,
                     t * Affine::translate((area.x0 + PAD, y + 3.0)),
                     None,
-                    TextWeight::Regular,
-                    false,
-                    true,
+                    &TextStyle::new(size).with_family(FontChoice::Monospace),
                 );
             }
             y += line_h;
@@ -3363,12 +3361,21 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 // ===========================================================================
 
 impl Widget for ApiTesterApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::API_TESTER_OPERATION_TYPE]
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        if self.joined && !self.adopted && ApiDoc::is_empty(state, path) {
+            return;
+        }
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
@@ -3878,26 +3885,6 @@ impl Widget for ApiTesterApp {
         self.rect
     }
 
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
-    /// collections, saved requests, environments, and variables currently in the
-    /// shared document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -3991,6 +3978,32 @@ impl Widget for ApiTesterApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.sending || !self.pending_history.is_empty() || !self.adopted
+    }
+}
+
+impl ui::search::capability::SearchSource for ApiTesterApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for ApiTesterApp {
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
+    /// collections, saved requests, environments, and variables currently in the
+    /// shared document. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::undo::CommittedActions for ApiTesterApp {
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -4694,7 +4707,7 @@ mod tests {
     fn resource_send_performs_a_real_http_round_trip() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -4706,7 +4719,7 @@ mod tests {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
-                            Instant::now() < deadline,
+                            ui::time::now() < deadline,
                             "the app's HTTP request never reached the probe server"
                         );
                         std::thread::sleep(Duration::from_millis(10));

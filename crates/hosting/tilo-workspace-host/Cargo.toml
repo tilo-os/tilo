@@ -9,6 +9,7 @@ publish.workspace = true
 test-support = ["tilo-action-broker/test-support", "tilo-relay/test-support"]
 media = ["dep:tilo-moq", "dep:url", "dep:quinn", "dep:web-transport-quinn"]
 [dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 tempfile.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -49,6 +50,7 @@ calculator = { path = "../../../apps/calculator" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 collab-types = { path = "../../collab/collab-types" }
+channel-crypto = { path = "../../collab/channel-crypto" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 runtime-collab = { path = "../../runtime/runtime-collab" }

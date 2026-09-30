@@ -549,6 +549,19 @@ impl Action for ChatAction {
         // ordering host for a message row.
         ExecutionLocus::ClientLocal
     }
+
+    /// A read watermark is shared state about the channel, not a message.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            ChatAction::MarkRead { .. } => tilo_actions::ChangeKind::Housekeeping,
+            ChatAction::AgentAuthored { send, .. }
+                if !matches!(**send, ChatAction::AgentAuthored { .. }) =>
+            {
+                send.change_kind()
+            }
+            _ => tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
 impl ChatAction {
@@ -817,10 +830,6 @@ fn bounded_agent_name(name: &str) -> String {
     name.get(..end).unwrap_or(name).to_owned()
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "canonical leaf constructor mirrors the replayable SendMessage action payload; callers must supply every authored field before dispatch"
-)]
 pub fn send_message_action(
     channel: &str,
     id: &str,
@@ -1670,7 +1679,7 @@ fn build_channel_resource(
             "attach",
             "Attach file",
             "File path",
-            "/var/workspace/report.pdf",
+            "Documents/report.pdf",
             OperationKind::Effect,
             CHAT_OPERATION_TYPE,
             {

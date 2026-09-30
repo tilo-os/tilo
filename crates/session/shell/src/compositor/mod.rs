@@ -11,6 +11,8 @@ pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(target_os = "linux")]
+pub mod agent_seats;
+#[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
 #[cfg(target_os = "linux")]
@@ -60,7 +62,6 @@ pub mod output_heads;
 #[cfg(target_os = "linux")]
 pub mod output_management;
 pub mod pacing;
-#[cfg(target_os = "linux")]
 pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
@@ -281,7 +282,8 @@ pub fn parse_firstboot_only_from_args() -> bool {
 /// Pure, testable `--provision-identity` flag parser.
 ///
 /// Unlike `--firstboot`, this is a *separate entry point*: runs the identity ceremony and exits
-/// without starting a compositor. The `tilo-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
+/// without starting a compositor. It runs as the user, putting the key in the user's own home
+/// instead of root's.
 pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.contains(&"--provision-identity")
 }
@@ -377,6 +379,12 @@ fn value_to_backend(value: &str) -> BackendKind {
         "headless" => BackendKind::Headless,
         _ => BackendKind::Winit,
     }
+}
+
+/// The chord that releases a held pointer or captured keys, as the on-screen
+/// display names it.
+pub fn release_chord_label() -> String {
+    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
 }
 
 #[cfg(test)]

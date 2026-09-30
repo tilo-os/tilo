@@ -5,10 +5,20 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Runs a Windows virtual machine appliance."
+
+[package.names]
+de = "Windows-Apps"
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["processes"]
+optional = ["files.open", "files.paths", "threads"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

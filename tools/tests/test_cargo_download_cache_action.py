@@ -8,17 +8,17 @@ ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/restore-cargo-downloads"
 PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
-    "build-builder-image.yml": 2,
-    "canonical-verifier-bundle.yml": 1,
+    "build-ci-builder.yml": 2,
     "lint.yml": 1,
     "release-apps.yml": 1,
 }
 PREPARED_CONSUMERS = {
-    "check.yml": 7,
-    "legacy-app-e2e.yml": 1,
-    "nightly.yml": 1,
-    "refresh-visual-baselines.yml": 1,
-    "weekly-quality.yml": 1,
+    "release-verifier-bundles.yml": 1,
+    "check.yml": 5,
+    "ci-legacy-apps.yml": 1,
+    "ci-nightly.yml": 2,
+    "dev-visual-baselines.yml": 1,
+    "ci-weekly-quality.yml": 1,
 }
 
 
@@ -39,10 +39,11 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
             self.assertIn("value: ${{ steps.restore.outputs.cache-primary-key }}", action)
             self.assertNotIn('hashFiles', action.split('outputs:', 1)[1].split('runs:', 1)[0])
             self.assertIn("value: ${{ steps.restore.outputs.cache-hit }}", action)
-        with self.subTest(phase='rust build action composes download and compiler caches'):
+        with self.subTest(phase='rust build action restores downloads; the runner provides the compiler cache'):
             action = (ROOT / PREPARE_ACTION_PATH / "action.yml").read_text(encoding="utf-8")
             self.assertEqual(action.count(f"uses: ./{ACTION_PATH}"), 1)
-            self.assertEqual(action.count("bash tools/ci/sccache.sh prepare"), 1)
+            self.assertNotIn("sccache", action)
+            self.assertNotIn("compiler_cache_env", action)
             self.assertIn(
                 "value: ${{ steps.cargo-downloads.outputs.cache-hit }}",
                 action,
@@ -74,7 +75,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
             self.assertEqual(remaining_keys, 3)
         with self.subTest(phase='builder cold canary seeds a missing architecture cache'):
             workflow = (
-                ROOT / ".forgejo" / "workflows" / "build-builder-image.yml"
+                ROOT / ".forgejo" / "workflows" / "build-ci-builder.yml"
             ).read_text(encoding="utf-8")
             cold = workflow.split("  cache-cold:", 1)[1].split("  cache-warm:", 1)[0]
 
@@ -91,8 +92,8 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         with self.subTest(phase='path filtered consumers track the shared action'):
             workflows = ROOT / ".forgejo" / "workflows"
             expected = {
-                "build-builder-image.yml": (ACTION_PATH,),
-                "legacy-app-e2e.yml": (ACTION_PATH, PREPARE_ACTION_PATH),
+                "build-ci-builder.yml": (ACTION_PATH,),
+                "ci-legacy-apps.yml": (ACTION_PATH, PREPARE_ACTION_PATH),
                 "release-apps.yml": (ACTION_PATH,),
             }
             for name, actions in expected.items():

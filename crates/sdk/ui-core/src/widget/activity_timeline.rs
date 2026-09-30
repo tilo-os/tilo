@@ -26,6 +26,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
@@ -143,26 +144,26 @@ impl ChipKind {
         ChipKind::Deletes,
     ];
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDITS",
-            ChipKind::Comments => "COMMENTS",
-            ChipKind::Governance => "GOVERNANCE",
-            ChipKind::Deletes => "DELETES",
-        }
+    pub fn label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits",
+            ChipKind::Comments => "history-chip-comments",
+            ChipKind::Governance => "history-chip-access",
+            ChipKind::Deletes => "history-chip-deletions",
+        })
     }
 
     /// Used when the full label set will not fit; every chip switches
     /// together, or mixed lengths would read as a rendering accident.
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDIT",
-            ChipKind::Comments => "NOTE",
-            ChipKind::Governance => "GOV",
-            ChipKind::Deletes => "DEL",
-        }
+    pub fn short_label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits-short",
+            ChipKind::Comments => "history-chip-comments-short",
+            ChipKind::Governance => "history-chip-access-short",
+            ChipKind::Deletes => "history-chip-deletions-short",
+        })
     }
 
     /// `All` is empty because "no op-class filter" is how [`HistoryFilter`]
@@ -179,9 +180,6 @@ impl ChipKind {
     }
 }
 
-/// Below this width the row drops its author identity hash and the chip
-/// strip switches to [`ChipKind::short_label`].
-const COMPACT_WIDTH: f64 = 420.0;
 /// Below this width the trailing time + revert slots shrink so the summary
 /// keeps a usable share of the row.
 const NARROW_WIDTH: f64 = 340.0;
@@ -603,10 +601,16 @@ impl ActivityTimeline {
     pub fn active_filter_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.active_chip != ChipKind::All {
-            parts.push(self.active_chip.label().to_string());
+            parts.push(self.active_chip.label());
         }
-        for op in &self.filter.op_classes {
-            let label = format!("{op:?}").to_uppercase();
+        let chip_classes = self.active_chip.op_classes();
+        for op in self
+            .filter
+            .op_classes
+            .iter()
+            .filter(|op| !chip_classes.contains(op))
+        {
+            let label = crate::history_source::op_class_label(*op);
             if !parts.contains(&label) {
                 parts.push(label);
             }
@@ -949,10 +953,6 @@ impl ActivityTimeline {
     }
 
     // ---------- geometry ----------
-
-    fn is_compact(&self) -> bool {
-        self.rect.width() < COMPACT_WIDTH
-    }
 
     /// Proportional to the pane with a floor so a name is never squeezed to
     /// nothing.
@@ -1519,10 +1519,6 @@ impl ActivityTimeline {
         self.dirty = true;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "recursive grouping threads two output collections and a shared expansion budget alongside the active filters"
-    )]
     fn emit_group(
         &self,
         g: &HistoryGroup,
@@ -1729,101 +1725,119 @@ fn draw_chip(
     );
 }
 
+/// A visual row's full-width band and its nesting depth.
+#[derive(Clone, Copy)]
+struct RowSlot {
+    rect: Rect,
+    depth: usize,
+}
+
+impl RowSlot {
+    /// The band less its depth's indent: where the row's own content sits.
+    fn indented(self) -> Rect {
+        Rect::new(
+            self.rect.x0 + px(self.depth) * INDENT,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        )
+    }
+}
+
+/// A row's pointer, selection and keyboard-focus state this frame.
+#[derive(Clone, Copy)]
+struct RowEmphasis {
+    hovered: bool,
+    selected: bool,
+    focused: bool,
+}
+
+/// Where an entry row's columns paint, resolved once by `draw_row`.
+struct EntryRowLayout {
+    /// The indented row.
+    row: Rect,
+    /// The row's centre line.
+    cy: f64,
+    text_size: f32,
+    author_slot_w: f64,
+    /// The pointer is over a revertible entry and a host handles reverts.
+    offers_revert: bool,
+    /// Summary width given up to the revert chip; zero unless `offers_revert`.
+    chip_reserve: f64,
+}
+
+/// A band header's group and the title column both of its lines share.
+struct BandHeader<'a> {
+    rg: &'a RowGroup,
+    /// The inset header row.
+    row: Rect,
+    title_x: f64,
+    title_size: f32,
+}
+
+/// The filter strip's frame-wide paint inputs, shared by its chip row and
+/// its author pill: chip text size and the selected / idle chip colours.
+struct FilterStripPaint {
+    strip: Rect,
+    text_size: f32,
+    active_fill: Color,
+    idle_fill: Color,
+    active_text: Color,
+    idle_text: Color,
+}
+
+/// When a row's change was made; empty for the genesis, which no one made
+/// at any time worth naming.
+fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
+    if entry.is_genesis() {
+        String::new()
+    } else {
+        format_relative_time(entry.timestamp, now)
+    }
+}
+
 impl ActivityTimeline {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "row composition passes shared paint inputs plus independent hover, selection and focus state to its drawing stages"
-    )]
     fn draw_row(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        full_row: Rect,
-        depth: usize,
+        ctx: &mut PaintCtx<'_>,
+        slot: RowSlot,
         entry: &HistoryEntry,
-        is_hovered: bool,
-        is_selected: bool,
-        is_focused: bool,
+        emphasis: RowEmphasis,
         now: SystemTime,
     ) {
-        let row = Rect::new(
-            full_row.x0 + px(depth) * INDENT,
-            full_row.y0,
-            full_row.x1,
-            full_row.y1,
-        );
-        Self::draw_row_chrome(
-            scene,
-            transform,
-            theme,
-            full_row,
-            row,
-            depth,
-            is_selected,
-            is_hovered,
-            is_focused,
-        );
+        Self::draw_row_chrome(ctx, slot, emphasis);
 
+        let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        let dot_x = Self::draw_row_avatar(scene, transform, row, cy, entry);
+        // A genesis row names no one: no avatar, no author, no time.
+        let dot_x = if entry.is_genesis() {
+            row.x0 + 8.0 + AVATAR_DIAM / 2.0
+        } else {
+            Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry)
+        };
 
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        // The indent comes out of the author cluster, not the summary — the
-        // summary is what the reader is here for.
-        let author_slot_w = (self.author_slot_w() - px(depth) * INDENT).max(72.0);
-        let compact = self.is_compact();
-        Self::draw_row_author(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            row,
-            cy,
-            entry,
-            compact,
-            author_slot_w,
-            text_size,
-            dot_x,
-        );
-
-        let glyph_x = row.x0 + author_slot_w;
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
-        let chip_reserve = if is_hovered && self.on_revert.is_some() && entry.is_revertible() {
-            self.revert_chip_w() + 6.0
-        } else {
-            0.0
+        let offers_revert = emphasis.hovered && self.on_revert.is_some() && entry.is_revertible();
+        let layout = EntryRowLayout {
+            row,
+            cy,
+            text_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+            // The indent comes out of the author cluster, not the summary —
+            // the summary is what the reader is here for.
+            author_slot_w: (self.author_slot_w() - px(slot.depth) * INDENT).max(72.0),
+            offers_revert,
+            chip_reserve: if offers_revert {
+                self.revert_chip_w() + 6.0
+            } else {
+                0.0
+            },
         };
-        let is_redacted_row = self.draw_row_body(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            row,
-            cy,
-            entry,
-            now,
-            glyph_x,
-            chip_reserve,
-            text_size,
-        );
-
-        self.draw_row_trailing(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            row,
-            cy,
-            entry,
-            now,
-            chip_reserve,
-            text_size,
-            is_hovered,
-            is_redacted_row,
-        );
+        if !entry.is_genesis() {
+            self.draw_row_author(ctx, &layout, entry, dot_x);
+        }
+        self.draw_row_body(ctx, &layout, entry, now);
+        self.draw_row_trailing(ctx, &layout, entry, now);
     }
 
     /// The avatar dot; returns its center x so the author cluster can start
@@ -1851,21 +1865,23 @@ impl ActivityTimeline {
 
     /// The depth rail plus the selection/hover backdrop, under everything
     /// else in the row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "row chrome needs both full and indented bounds plus independent selection, hover and focus treatments"
-    )]
-    fn draw_row_chrome(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        full_row: Rect,
-        row: Rect,
-        depth: usize,
-        is_selected: bool,
-        is_hovered: bool,
-        is_focused: bool,
-    ) {
+    fn draw_row_chrome(ctx: &mut PaintCtx<'_>, slot: RowSlot, emphasis: RowEmphasis) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let RowSlot {
+            rect: full_row,
+            depth,
+        } = slot;
+        let row = slot.indented();
+        let RowEmphasis {
+            hovered: is_hovered,
+            selected: is_selected,
+            focused: is_focused,
+        } = emphasis;
         // The rail: a hairline per nesting level, so rows read as belonging
         // to the bands above them rather than just starting further right.
         let surface = theme.tokens.colors.surfaces.raised;
@@ -1939,52 +1955,35 @@ impl ActivityTimeline {
         }
     }
 
-    /// The author name, and its identity-hash suffix when there's room for it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "author rendering shares the row layout measurements so avatar, name and identity hash fit the same allocated slot"
-    )]
+    /// The author's name. Their identity is the dot's colour and, in full,
+    /// the provenance detail; a row is read by the name.
     fn draw_row_author(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        cy: f64,
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        layout: &EntryRowLayout,
         entry: &HistoryEntry,
-        compact: bool,
-        author_slot_w: f64,
-        text_size: f32,
         dot_x: f64,
     ) {
-        let mut x_cursor = dot_x + AVATAR_DIAM / 2.0 + 8.0;
-
-        let short_size = (text_size - 2.0).max(10.0);
-        let short = entry.author.identity_short.as_str();
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let &EntryRowLayout {
+            row,
+            cy,
+            text_size,
+            author_slot_w,
+            ..
+        } = layout;
+        let x = dot_x + AVATAR_DIAM / 2.0 + 8.0;
         let slot_end = row.x0 + author_slot_w - 6.0;
-        let full_name_w = f64::from(
-            text_renderer
-                .measure(entry.author.name.as_str(), text_size, None)
-                .0,
-        );
-        // The hash is shown out of whatever the name leaves over, and
-        // dropped rather than truncating the name.
-        let short_w = if compact || short.is_empty() {
-            0.0
-        } else {
-            let w = f64::from(text_renderer.measure(short, short_size, None).0) + 6.0;
-            if x_cursor + full_name_w + w <= slot_end {
-                w
-            } else {
-                0.0
-            }
-        };
-        let name_budget = (slot_end - x_cursor - short_w).max(24.0);
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
             text_size,
-            name_budget,
+            (slot_end - x).max(24.0),
         );
         let name_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -1992,47 +1991,35 @@ impl ActivityTimeline {
             &name,
             text_size,
             theme.tokens.colors.text_primary,
-            translated(transform, (x_cursor, name_top)),
+            translated(transform, (x, name_top)),
             None,
         );
-        let (name_w, _) = text_renderer.measure(&name, text_size, None);
-        x_cursor += f64::from(name_w) + 6.0;
-
-        if short_w > 0.0 {
-            let short_top = text_top(text_renderer, short_size, cy);
-            text_renderer.draw_text(
-                scene,
-                short,
-                short_size,
-                theme.tokens.colors.text_dim,
-                translated(transform, (x_cursor, short_top)),
-                None,
-            );
-        }
     }
 
     /// The op-class glyph and the summary column, including the redaction
-    /// strike-through when the change was redacted. Returns whether it was —
-    /// the caller uses that to veto the revert chip across a redaction
-    /// boundary.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "summary rendering consumes the parent row geometry and trailing action reservation without recomputing layout"
-    )]
+    /// strike-through when the change was redacted.
     fn draw_row_body(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        cy: f64,
+        ctx: &mut PaintCtx<'_>,
+        layout: &EntryRowLayout,
         entry: &HistoryEntry,
         now: SystemTime,
-        glyph_x: f64,
-        chip_reserve: f64,
-        text_size: f32,
-    ) -> bool {
+    ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let &EntryRowLayout {
+            row,
+            cy,
+            text_size,
+            author_slot_w,
+            chip_reserve,
+            ..
+        } = layout;
+        let glyph_x = row.x0 + author_slot_w;
         let glyph = op_class_glyph(entry.op_class);
         let line_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -2100,32 +2087,33 @@ impl ActivityTimeline {
                 &strike,
             );
         }
-        is_redacted_row
     }
 
     /// The relative-time slot, and the `[Revert]` chip when it applies.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "timestamp and revert rendering share row geometry, current time and independent hover and redaction conditions"
-    )]
     fn draw_row_trailing(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        cy: f64,
+        ctx: &mut PaintCtx<'_>,
+        layout: &EntryRowLayout,
         entry: &HistoryEntry,
         now: SystemTime,
-        chip_reserve: f64,
-        text_size: f32,
-        is_hovered: bool,
-        is_redacted_row: bool,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let &EntryRowLayout {
+            row,
+            cy,
+            text_size,
+            offers_revert,
+            chip_reserve,
+            ..
+        } = layout;
         let rel = fit_text(
             text_renderer,
-            &format_relative_time(entry.timestamp, now),
+            &row_time(entry, now),
             text_size,
             self.time_slot_w(),
         );
@@ -2142,12 +2130,7 @@ impl ActivityTimeline {
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if !self.preview_selection
-            && self.on_revert.is_some()
-            && is_hovered
-            && entry.is_revertible()
-            && !is_redacted_row
-        {
+        if !self.preview_selection && offers_revert && entry.redaction.is_none() {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,
@@ -2167,56 +2150,39 @@ impl ActivityTimeline {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "group rendering combines shared paint inputs with the selected group, interaction state and optional name field"
-    )]
     fn draw_group_row(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         full_row: Rect,
         gi: usize,
-        is_hovered: bool,
-        is_focused: bool,
-        naming: Option<&NameField>,
+        emphasis: RowEmphasis,
         now: SystemTime,
     ) {
         let Some(rg) = self.row_groups.get(gi) else {
             return;
         };
+        let naming = self
+            .naming
+            .as_ref()
+            .filter(|n| matches!(n.target, NameTarget::Group(g) if g == gi))
+            .map(|n| &n.field);
+        let is_hovered = emphasis.hovered;
         let row = Rect::new(
             full_row.x0 + px(rg.depth) * INDENT,
             full_row.y0 + 2.0,
             full_row.x1,
             full_row.y1 - 2.0,
         );
-        Self::draw_group_row_chrome(
-            scene, transform, theme, full_row, row, rg, is_hovered, is_focused,
-        );
+        Self::draw_group_row_chrome(ctx, full_row, row, rg, emphasis);
 
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let title_x = row.x0 + 26.0;
-        let chips = self.group_chip_rects_local(row, rg);
-        Self::draw_group_row_title(
-            scene,
-            transform,
-            tr,
-            theme,
-            row,
+        let band = BandHeader {
             rg,
-            is_hovered,
-            naming,
-            title_x,
-            title_size,
-            if self.preview_selection {
-                row.x1 + 8.0
-            } else {
-                self.group_chip_rects_full(row, rg).left_edge(row.x1)
-            },
-        );
+            row,
+            title_x: row.x0 + 26.0,
+            title_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+        };
+        let chips = self.group_chip_rects_local(row, rg);
+        self.draw_group_row_title(ctx, &band, is_hovered, naming);
 
         // Line two: who and how much, plus — right-aligned — when. Stacked
         // under the title's *measured* line box (top pad + line + gap; 27 px
@@ -2224,12 +2190,16 @@ impl ActivityTimeline {
         // two lines apart. The group row itself is still a fixed
         // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
         // the row height has to follow the text scale for that (F5).
-        let (_, title_h) = tr.measure("Ag", title_size, None);
+        let (_, title_h) = ctx.text.measure("Ag", band.title_size, None);
         let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
-        Self::draw_group_row_meta(
-            scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
-        );
+        Self::draw_group_row_meta(ctx, &band, now, meta_y);
 
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         if !self.preview_selection && (is_hovered || naming.is_some()) {
             let (name_rect, restore_rect) = chips;
             if name_rect.area() > 0.0 {
@@ -2254,20 +2224,24 @@ impl ActivityTimeline {
 
     /// The band header's depth rail, backdrop, name spine and disclosure
     /// triangle — everything drawn before any text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "group chrome uses full and indented geometry, group nesting data and independent hover and focus state"
-    )]
     fn draw_group_row_chrome(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         full_row: Rect,
         row: Rect,
         rg: &RowGroup,
-        is_hovered: bool,
-        is_focused: bool,
+        emphasis: RowEmphasis,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let RowEmphasis {
+            hovered: is_hovered,
+            focused: is_focused,
+            ..
+        } = emphasis;
         let colors = &theme.tokens.colors;
         let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
@@ -2356,23 +2330,30 @@ impl ActivityTimeline {
 
     /// The band title, or the in-place rename field when `naming` is set;
     /// plus the "still open" dot.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "group title and inline rename share measured title geometry and the actual action-chip boundary"
-    )]
     fn draw_group_row_title(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        rg: &RowGroup,
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        band: &BandHeader<'_>,
         is_hovered: bool,
         naming: Option<&NameField>,
-        title_x: f64,
-        title_size: f32,
-        chip_x0: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let &BandHeader {
+            rg,
+            row,
+            title_x,
+            title_size,
+        } = band;
+        let chip_x0 = if self.preview_selection {
+            row.x1 + 8.0
+        } else {
+            self.group_chip_rects_full(row, rg).left_edge(row.x1)
+        };
         let colors = &theme.tokens.colors;
         let title_y = row.y0 + 6.0;
         let actions_w = if is_hovered || naming.is_some() {
@@ -2422,22 +2403,24 @@ impl ActivityTimeline {
 
     /// Line two: subtitle, right-aligned relative time, and the packed
     /// author dots between them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "group metadata shares typography and alignment measurements with the title while formatting its timestamp"
-    )]
     fn draw_group_row_meta(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        rg: &RowGroup,
+        ctx: &mut PaintCtx<'_>,
+        band: &BandHeader<'_>,
         now: SystemTime,
-        title_x: f64,
         meta_y: f64,
-        title_size: f32,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let &BandHeader {
+            rg,
+            row,
+            title_x,
+            title_size,
+        } = band;
         let colors = &theme.tokens.colors;
         let meta_size = (title_size - 2.0).max(10.0);
         let rel = format_relative_time(rg.last_time, now);
@@ -2559,13 +2542,17 @@ impl ActivityTimeline {
         // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
         // where the chip is painted); selected: solid accent with ink chosen
         // against it, no edge.
-        let (active_fill, _) = crate::surface::chip_colors(theme, true);
-        let (idle_fill, _) = crate::surface::chip_colors(theme, false);
-        let active_text = theme
-            .tokens
-            .colors
-            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
-        let idle_text = theme.tokens.colors.text_dim;
+        let paint = FilterStripPaint {
+            strip,
+            text_size: chip_text_size,
+            active_fill: crate::surface::chip_colors(theme, true).0,
+            idle_fill: crate::surface::chip_colors(theme, false).0,
+            active_text: theme
+                .tokens
+                .colors
+                .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
+            idle_text: theme.tokens.colors.text_dim,
+        };
 
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
         // with what was just painted.
@@ -2598,33 +2585,16 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
+                total += f64::from(tr.measure(&l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
             }
             total
         };
         let use_short = measure_run(text_renderer, false) > chips_budget;
 
-        self.draw_filter_chips(
-            scene,
-            transform,
-            text_renderer,
-            chip_text_size,
-            strip,
-            chips_budget,
-            use_short,
-            (active_fill, idle_fill, active_text, idle_text),
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_filter_chips(&mut ctx, &paint, chips_budget, use_short);
         if self.show_author_pill {
-            self.draw_author_pill(
-                scene,
-                transform,
-                text_renderer,
-                chip_text_size,
-                strip,
-                &author_label,
-                author_full_w,
-                (active_fill, idle_fill, active_text, idle_text),
-            );
+            self.draw_author_pill(&mut ctx, &paint, &author_label, author_full_w);
         } else {
             self.author_pill_rect = Rect::ZERO;
         }
@@ -2632,21 +2602,27 @@ impl ActivityTimeline {
 
     /// The `[All] [Edits] [Comments] ...` chip row; populates
     /// [`Self::chip_rects`] so hit-testing lines up with what was painted.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "filter chip rendering uses measured strip capacity and label mode together with resolved active and idle colors"
-    )]
     fn draw_filter_chips(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        chip_text_size: f32,
-        strip: Rect,
+        ctx: &mut PaintCtx<'_>,
+        paint: &FilterStripPaint,
         chips_budget: f64,
         use_short: bool,
-        (active_fill, idle_fill, active_text, idle_text): (Color, Color, Color, Color),
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            ..
+        } = ctx.reborrow();
+        let &FilterStripPaint {
+            strip,
+            text_size: chip_text_size,
+            active_fill,
+            idle_fill,
+            active_text,
+            idle_text,
+        } = paint;
         let mut x = strip.x0;
         for chip in ChipKind::ALL {
             let label = if use_short {
@@ -2654,7 +2630,7 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = text_renderer.measure(&label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = f64::midpoint(strip.y0, strip.y1);
@@ -2671,10 +2647,10 @@ impl ActivityTimeline {
             let text_color = if active { active_text } else { idle_text };
             let edge = (!active).then(|| crate::surface::edge_on(body));
             crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
+            let (lw, lh) = text_renderer.measure(&label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 chip_text_size,
                 text_color,
                 translated(
@@ -2691,21 +2667,27 @@ impl ActivityTimeline {
     }
 
     /// The right-anchored `author:...` pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "author pill rendering uses the measured label width and strip geometry together with resolved active and idle colors"
-    )]
     fn draw_author_pill(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        chip_text_size: f32,
-        strip: Rect,
+        ctx: &mut PaintCtx<'_>,
+        paint: &FilterStripPaint,
         author_label: &str,
         author_full_w: f64,
-        (active_fill, idle_fill, active_text, idle_text): (Color, Color, Color, Color),
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            ..
+        } = ctx.reborrow();
+        let &FilterStripPaint {
+            strip,
+            text_size: chip_text_size,
+            active_fill,
+            idle_fill,
+            active_text,
+            idle_text,
+        } = paint;
         let cy = f64::midpoint(strip.y0, strip.y1);
         let chip_h = (strip.height() - 8.0).max(20.0);
         let arx1 = strip.x1;
@@ -2786,11 +2768,16 @@ impl ActivityTimeline {
             Some(NameTarget::Selection)
         );
 
-        let clear_w = 54.0_f64;
+        let clear_label = crate::i18n!("history-selection-clear");
+        let name_label = crate::i18n!("history-selection-name");
+        let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
+            (f64::from(tr.measure(label, size, None).0) + 20.0).max(min)
+        };
+        let clear_w = chip_w(tr, &clear_label, 54.0);
         let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
             0.0
         } else {
-            96.0_f64
+            chip_w(tr, &name_label, 96.0)
         };
         let clear = Rect::new(
             bar.x1 - 8.0 - clear_w,
@@ -2799,9 +2786,9 @@ impl ActivityTimeline {
             bar.center().y + 11.0,
         );
         self.clear_selection_rect = clear;
-        draw_chip(scene, transform, tr, theme, clear, "Clear", false);
+        draw_chip(scene, transform, tr, theme, clear, &clear_label, false);
 
-        let label = format!("{n} change{} selected", if n == 1 { "" } else { "s" });
+        let label = crate::i18n!("history-selection-count", "count" => n);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, size, label_budget);
         let label_top = text_top(tr, size, bar.center().y);
@@ -2836,7 +2823,7 @@ impl ActivityTimeline {
             );
             if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
                 self.name_selection_rect = action;
-                draw_chip(scene, transform, tr, theme, action, "Name these", true);
+                draw_chip(scene, transform, tr, theme, action, &name_label, true);
             }
         }
     }
@@ -3039,21 +3026,29 @@ impl Widget for ActivityTimeline {
                     VisualRow::Entry(entry, depth) => {
                         let item = self.entries.get(*entry)?;
                         let id = crate::widget::history_group::hex16(&item.id);
+                        let said = if item.is_genesis() {
+                            item.summary.clone()
+                        } else {
+                            format!("{}: {}", item.author.name, item.summary)
+                        };
                         let name = Self::entry_breadcrumb(item).map_or_else(
-                            || format!("{}: {}", item.author.name, item.summary),
-                            |breadcrumb| {
-                                format!("{breadcrumb}: {}: {}", item.author.name, item.summary)
-                            },
+                            || said.clone(),
+                            |breadcrumb| format!("{breadcrumb}: {said}"),
                         );
                         Some(
                             AccessNode::new(Role::ListItem)
                                 .with_action_target(format!("timeline-entry:{id}"))
                                 .with_name(name)
-                                .with_description(format!(
-                                    "{} · {}",
-                                    op_class_glyph(item.op_class),
-                                    format_relative_time(item.timestamp, self.now())
-                                ))
+                                .with_description(
+                                    [
+                                        op_class_glyph(item.op_class).to_owned(),
+                                        row_time(item, self.now()),
+                                    ]
+                                    .into_iter()
+                                    .filter(|part| !part.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                )
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(depth.saturating_add(1))
                                 .with_bounds(bounds)
@@ -3268,10 +3263,6 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let now = self.now();
-        let naming_group = match self.naming.as_ref().map(|n| (&n.target, &n.field)) {
-            Some((NameTarget::Group(g), f)) => Some((*g, f.clone())),
-            _ => None,
-        };
         let selection = self.selection;
         let focused_row = self.focused_row();
         // Clip to the row band: without it the line straddling the bottom
@@ -3293,47 +3284,28 @@ impl ActivityTimeline {
             let Some(row) = self.row_rect(i) else {
                 continue;
             };
-            let is_hovered = self.hover_row == Some(i);
+            let emphasis = RowEmphasis {
+                hovered: self.hover_row == Some(i),
+                selected: false,
+                focused: focused_row == Some(i),
+            };
             let Some(&visual_row) = self.rows.get(i) else {
                 continue;
             };
+            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
             match visual_row {
                 VisualRow::Group(g) => {
-                    let naming = naming_group
-                        .as_ref()
-                        .filter(|(ng, _)| *ng == g)
-                        .map(|(_, f)| f);
-                    self.draw_group_row(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        row,
-                        g,
-                        is_hovered,
-                        focused_row == Some(i),
-                        naming,
-                        now,
-                    );
+                    self.draw_group_row(&mut ctx, row, g, emphasis, now);
                 }
                 VisualRow::Entry(e, depth) => {
                     let Some(entry) = self.entries.get(e) else {
                         continue;
                     };
-                    let selected = selection.is_some_and(|(a, b)| e >= a && e <= b);
-                    self.draw_row(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        row,
-                        depth,
-                        entry,
-                        is_hovered,
-                        selected,
-                        focused_row == Some(i),
-                        now,
-                    );
+                    let emphasis = RowEmphasis {
+                        selected: selection.is_some_and(|(a, b)| e >= a && e <= b),
+                        ..emphasis
+                    };
+                    self.draw_row(&mut ctx, RowSlot { rect: row, depth }, entry, emphasis, now);
                 }
             }
         }
@@ -3956,6 +3928,41 @@ mod tests {
     }
 
     #[test]
+    fn a_genesis_row_names_no_author_and_no_time() {
+        use crate::a11y::Role;
+        let mut genesis = entry(OpClass::EditMeta, "Unknown participant", 0, 1);
+        genesis.summary = "Created".into();
+        genesis.context = Some(tilo_actions::ActionContext {
+            facets: vec![crate::widget::history::genesis_facet()],
+            ..tilo_actions::ActionContext::default()
+        });
+        let entries = vec![genesis, entry(OpClass::Splice, "Alice", 10, 2)];
+        let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+        let semantics = Widget::accessibility(&t).expect("timeline semantics");
+        let rows: Vec<_> = semantics
+            .children
+            .iter()
+            .filter(|node| node.role == Role::ListItem)
+            .map(|node| (node.name.clone(), node.description.clone()))
+            .collect();
+        assert_eq!(
+            rows[0],
+            (
+                Some("Created".to_owned()),
+                Some(op_class_glyph(OpClass::EditMeta).to_owned())
+            ),
+            "the version the document was created as, by no one at no time"
+        );
+        assert_eq!(rows[1].0.as_deref(), Some("Alice: op 2 by Alice"));
+        assert!(
+            rows[1]
+                .1
+                .as_deref()
+                .is_some_and(|text| text.contains(" · "))
+        );
+    }
+
+    #[test]
     fn timeline_rows_are_accessible_keyboard_and_hover_targets() {
         fn accessibility_reports_list_role_name_and_count() {
             use crate::a11y::Role;
@@ -4153,7 +4160,7 @@ mod tests {
                 detail.contains("2 hidden"),
                 "counts what it is hiding: {detail}"
             );
-            assert!(detail.contains("COMMENTS"), "names the filter: {detail}");
+            assert!(detail.contains("Comments"), "names the filter: {detail}");
         }
 
         fn a_host_time_range_is_named_in_the_explanation() {

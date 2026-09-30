@@ -912,9 +912,9 @@ impl NavShell {
     /// reaches `adjust_layout_with_measure` first and never lands here.
     fn resolve_panes_fallback(&mut self) {
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_children(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_children(&theme, tr)
+        });
     }
 
     fn apply_child_layout(
@@ -1077,15 +1077,7 @@ impl NavShell {
 }
 
 impl Widget for NavShell {
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = child.has_action_control_bindings();
-            }
-        });
-        found
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.overview.sync(state, path);
@@ -1524,6 +1516,18 @@ impl Widget for NavShell {
     }
 }
 
+impl crate::widget::controls::ActionControls for NavShell {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = crate::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
+    }
+}
+
 impl NavShell {
     /// Routes `event` to child panes in front-to-back order: an open overlay
     /// drawer is topmost so it routes first; otherwise the front content
@@ -1835,11 +1839,13 @@ mod tests {
             lay_out(&mut ns, 420.0, 500.0);
             for open in [false, true, false] {
                 ns.snap_sidebar(open);
-                let inventory = ns
-                    .control_action_bindings()
+                let inventory = crate::widget::controls::control_action_bindings(&ns)
                     .iter()
                     .any(|b| matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
-                assert_eq!(ns.has_action_control_bindings(), inventory);
+                assert_eq!(
+                    crate::widget::controls::has_action_control_bindings(&ns),
+                    inventory
+                );
                 assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
             }
         }

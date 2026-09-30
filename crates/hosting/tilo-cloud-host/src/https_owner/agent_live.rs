@@ -124,15 +124,9 @@ pub(crate) fn range_selection(
         .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
 }
 
-fn wall_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 /// Strictly increasing and restart-robust (wall clock based).
 fn next_seq(last: &mut u64) -> u64 {
-    *last = (*last + 1).max(wall_ms());
+    *last = (*last + 1).max(tilo_clock::unix_now_ms());
     *last
 }
 
@@ -577,7 +571,7 @@ impl<S: LiveSink> Publisher<S> {
         }
         let frame = PresenceFrame {
             seq: next_seq(&mut agent.presence_seq),
-            sent_at_ms: wall_ms(),
+            sent_at_ms: tilo_clock::unix_now_ms(),
             focus,
             pointer: None,
             selection,
@@ -605,7 +599,7 @@ impl<S: LiveSink> Publisher<S> {
             tool: tool
                 .map(|tool| bounded_display_text(&tool, MAX_AGENT_TOOL_BYTES))
                 .filter(|tool| !tool.is_empty()),
-            at_ms: wall_ms(),
+            at_ms: tilo_clock::unix_now_ms(),
             status: Some(agent.status.to_owned()),
         };
         agent.activity_at = Some(now);

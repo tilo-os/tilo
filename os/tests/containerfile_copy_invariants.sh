@@ -55,14 +55,25 @@ containerfile="$repo/os/Containerfile"
 # joycond's binary, unit and modules-load snippet (through desktop-binaries)
 # and its Joy-Con-scoped udev rule are deliberate additions. So is
 # /usr/lib/tilo/web-engine-entitled.conf, the image-owned list of packages
-# the launcher lets build a web engine's own renderer sandbox.
+# the launcher lets build a web engine's own renderer sandbox. The
+# tilo-identity.service user unit (a one-shot chain-v1 repair) is gone; the
+# compositor verifies and repairs identity at startup. The session flight
+# recorder and tilo-session-report (through desktop-binaries) are deliberate
+# additions: the image's tilo-session now records each login. The
+# systemd-boot-random-seed drop-in, which skips the seed refresh on a
+# read-only /boot, is a deliberate addition. The rootfs
+# takes its build outputs from native-builder-payload, the builder's outputs
+# copied unchanged, so it no longer needs the compile stage's intermediate
+# cache.
+# tilo-esp-write and its unit, the only writer of the read-only ESP, are
+# deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=611c169dee65937945d96c8f1959b9753fc81e5ef823575ae40918b9738f208a
+expected_contract=e17ce8194539352f9f6fcb1f8ffc7f853ff99b0f46f2bf2be93cde60712ea0b6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -82,7 +93,7 @@ duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
 
 instructions="$(containerfile_instructions "$containerfile" | awk '
   $1 == "FROM" { stage=$NF; next }
-  stage == "rootfs" && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
+  (stage == "rootfs" || stage == "rootfs-base") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
@@ -99,9 +110,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
-# Keep the current 149-instruction bound exact and reviewed.
-[ "$instructions" -le 149 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 149)" >&2
+# Pinning the unpacked base's directory times to the epoch adds one RUN.
+# Keep the current 150-instruction bound exact and reviewed.
+[ "$instructions" -le 150 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 150)" >&2
   exit 1
 }
 

@@ -273,8 +273,8 @@ fn resource_and_search_providers_bound_large_books() {
             .id;
         let mut doc = AutoCommit::new();
         let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&Widget::resources(&app, &doc));
-        palette.set_providers(Widget::search_providers(&app));
+        palette.load_open_resources(&ui::resources::resources(&app, &doc));
+        palette.set_providers(ui::search::capability::search_providers(&app));
         palette.open();
         palette.set_query("navy");
         assert_eq!(palette.result_labels(), vec!["Grace Hopper"]);
@@ -352,7 +352,7 @@ fn resource_and_search_providers_bound_large_books() {
         );
 
         let mut doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let address = crate::actions::open_contact_address(id);
         let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("the search address resolves in the agent-visible tree");
@@ -1787,7 +1787,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         // Back-date the toast past its lifetime and draw again → it clears,
         // and the loop is then free to idle.
         if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = Instant::now()
+            *shown = ui::time::now()
                 .checked_sub(TOAST_LIFETIME)
                 .unwrap()
                 .checked_sub(Duration::from_millis(50))
@@ -3028,7 +3028,7 @@ fn first_run_is_empty_and_actionable() {
     }
 }
 
-/// The on-disk book persists creations and deletions, merges with a diverged replica, and imports legacy books and real VCF files.
+/// The on-disk book persists creations and deletions, merges with a diverged replica, and imports real VCF files.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -3373,7 +3373,7 @@ fn imports_recognise_identities_without_duplicating() {
         let result = app.import_paths(&mut doc, &[malicious_file]);
         assert_eq!(result.conflicts, 1);
         assert!(result.failure_message().contains("review"));
-        let resources = Widget::resources(&app, &doc);
+        let resources = ui::resources::resources(&app, &doc);
         let review = resources[0]
             .children
             .iter()
@@ -3479,8 +3479,8 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         // The picker is drained on this frame; parsing happens on a worker so
         // a slow vCard cannot block rendering. Drive a few frames instead of
         // assuming the scheduler has already run that worker.
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             app.sync(&mut doc, &ROOT);
             if !app.portal_in_flight() {
                 break;

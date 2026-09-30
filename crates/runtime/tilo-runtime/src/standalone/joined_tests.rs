@@ -6,9 +6,11 @@
               endpoints for the whole test"
 )]
 use super::*;
+use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
+use tilo_action_broker::channel_encryption::{ChannelAccess, InboundChannelGovernance};
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
 };
@@ -27,6 +29,9 @@ use tilo_workspace_host::{
 };
 
 type Authority = Arc<std::sync::Mutex<(SessionOwner, CollaborationService)>>;
+
+/// What a sealed write says, which no file outside its key holders may hold.
+const SECRET: &str = "only the room's key holders read this";
 
 #[derive(Clone)]
 struct JoinService(Authority);
@@ -93,41 +98,206 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
+/// A room a real durable owner governs, hosted by a relay with the join
+/// service, and the governor's own session on it once it publishes.
+struct HostedRoom {
+    authority: Authority,
+    relay: tilo_relay::Relay,
+    server: iroh::Endpoint,
+    relay_root: std::path::PathBuf,
+    room: RoomId,
+    topic: u64,
+    governor: DeviceCert,
+    governor_key: SigningKey,
+    host: DeviceCert,
+}
+
+impl HostedRoom {
+    async fn start(dir: &std::path::Path) -> Self {
+        let governing = SessionOwner::initialize(&dir.join("authority")).unwrap();
+        let governor = governing.peer().authority().clone();
+        let governor_key = read_device_key(
+            &IdentityPaths::under(governing.root().join("identity")).device_privkey,
+        )
+        .unwrap();
+        let host = governing.host_certificate().clone();
+        let host_key = read_device_key(
+            &IdentityPaths::under(governing.root().join("host-identity")).device_privkey,
+        )
+        .unwrap();
+        let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let room = RoomId::parse(governing.peer().room()).unwrap();
+        let topic = room_topic(room).unwrap();
+        let hint = IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: WorkspaceHostMode::CertifiedHost,
+            room: room.to_string(),
+            workspace_id: topic,
+            governing_authority: governor.clone(),
+            endpoint_addr: server.addr(),
+            host_user_public_key: host.user_public_key,
+            host_device_certificate: host.clone(),
+            packet_relay_url: "https://relay.invalid".into(),
+        }
+        .transport_hint(&host_key)
+        .unwrap();
+        let relay_root = dir.join("relay");
+        let baseline = governing.peer().admitted_room().unwrap().clone().save();
+        tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
+            .unwrap()
+            .save_snapshot(&baseline)
+            .unwrap();
+        let authority: Authority = Arc::new(std::sync::Mutex::new((
+            governing,
+            CollaborationService::new(vec![hint]),
+        )));
+        let relay = tilo_relay::Relay::start_on_endpoint_with_protocols(
+            tilo_relay::RelayConfig {
+                state_root: relay_root.clone(),
+                identity_root: dir.join("relay-identity"),
+                full_replica_status: dir.join("replica/status.json"),
+                home_peer_bundle: dir.join("home-peer.toml"),
+                trust_policy: tilo_relay::TrustPolicy::AllowList {
+                    users: vec![hex::encode(governor.user_public_key)],
+                },
+                workspaces: vec![tilo_relay::WorkspaceBinding {
+                    id: topic,
+                    pin: true,
+                    replication: tilo_relay::ReplicationIntent::FullWorkspace,
+                    admitted_users: vec![],
+                    shell_authority: Some(
+                        tilo_peer_state::retained_proof::RetentionAuthority::new(
+                            &room.to_string(),
+                            governor.clone(),
+                        )
+                        .unwrap(),
+                    ),
+                    checkpoint_prefix_recovery:
+                        tilo_relay::CheckpointPrefixRecovery::NativeOwnerDurableBaseline,
+                }],
+                ..Default::default()
+            },
+            tilo_relay::daemon::RelayIdentity {
+                user_public_key: governor.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host.clone(),
+                revocations: RevocationList::new(),
+            },
+            server.clone(),
+            vec![(
+                WORKSPACE_JOIN_ALPN.to_vec(),
+                Box::new(WorkspaceJoinProtocol::new(JoinService(Arc::clone(
+                    &authority,
+                )))),
+            )],
+        )
+        .await
+        .unwrap();
+        Self {
+            authority,
+            relay,
+            server,
+            relay_root,
+            room,
+            topic,
+            governor,
+            governor_key,
+            host,
+        }
+    }
+
+    /// An editor's invitation for a device of `recipient`.
+    fn invite(&self, recipient: [u8; 32]) -> String {
+        let now = ns(SystemTime::now());
+        let mut authority = self.authority.lock().unwrap();
+        let (owner, service) = &mut *authority;
+        let issued = service
+            .issue(
+                owner,
+                self.governor.device_public_key,
+                IssueInvitationRequest {
+                    request_id: [93; 32],
+                    role: MemberRole::Editor,
+                    recipient_user_public_key: Some(recipient),
+                    invitee_name: Some("Runtime".into()),
+                    expires_at_ns: now.saturating_add(60_000_000_000),
+                },
+                now,
+            )
+            .unwrap();
+        join::encode_invitation_text(&issued.signed_invitation)
+    }
+
+    /// Admit the room's current members at the relay, open the governor's
+    /// session once `member` is subscribed, and publish the room's history
+    /// through it.
+    async fn publish_history(&self, member: [u8; 32]) -> (RelayCoeditSession, iroh::Endpoint) {
+        let (access, publications) = {
+            let authority = self.authority.lock().unwrap();
+            let owner = &authority.0;
+            (
+                owner.peer().governed_access(SystemTime::now()).unwrap(),
+                owner
+                    .outgoing()
+                    .iter()
+                    .map(|entry| (entry.bytes.to_vec(), entry.kind))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        self.relay
+            .replace_governed_workspace_access(self.topic, true, access, self.relay_root.clone())
+            .await
+            .unwrap();
+        let endpoint = local_endpoint(&self.governor_key).await;
+        let client = tilo_relay::RelayClient::connect_v2_to_enrolled_home_peer(
+            endpoint.clone(),
+            self.server.addr(),
+            self.host.user_public_key,
+            self.host.device_public_key,
+            self.governor.clone(),
+            self.governor_key.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        let publisher =
+            RelayCoeditSession::join(client, self.topic, self.governor.device_public_key).unwrap();
+        tilo_test_env::within("the governor's session", async {
+            while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
+        })
+        .await;
+        tilo_test_env::within("the member's session", async {
+            while !self.relay.is_subscribed(self.topic, &member).await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        for (bytes, kind) in &publications {
+            let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+            let checkpoint = *kind == tilo_peer_state::transport::Retention::Checkpoint;
+            let (channel, _) = tilo_peer_state::transport::retention(&message, checkpoint).unwrap();
+            if checkpoint {
+                publisher.publish_checkpoint(channel, bytes.clone())
+            } else {
+                publisher.publish_retained_delta(channel, bytes.clone())
+            }
+            .unwrap();
+        }
+        (publisher, endpoint)
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let mut governing = SessionOwner::initialize(&directory.path().join("authority")).unwrap();
-    let governor = governing.peer().authority().clone();
-    let governor_key =
-        read_device_key(&IdentityPaths::under(governing.root().join("identity")).device_privkey)
-            .unwrap();
-    let host = governing.host_certificate().clone();
-    let host_key = read_device_key(
-        &IdentityPaths::under(governing.root().join("host-identity")).device_privkey,
-    )
-    .unwrap();
-    let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
-    let room = RoomId::parse(governing.peer().room()).unwrap();
-    let topic = room_topic(room).unwrap();
-    let hint = IrohWorkspaceHostHintV1 {
-        version: 1,
-        mode: WorkspaceHostMode::CertifiedHost,
-        room: room.to_string(),
-        workspace_id: topic,
-        governing_authority: governor.clone(),
-        endpoint_addr: server.addr(),
-        host_user_public_key: host.user_public_key,
-        host_device_certificate: host.clone(),
-        packet_relay_url: "https://relay.invalid".into(),
-    }
-    .transport_hint(&host_key)
-    .unwrap();
+    let governing = Box::pin(HostedRoom::start(directory.path())).await;
+    let room = governing.room;
 
     // The runtime's device: certified by its person as a foreign device.
     let device_key = SigningKey::from_bytes(&[91; 32]);
@@ -144,72 +314,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         signature: [0; 64],
     };
     sign_device_cert(&mut device, &root_key).unwrap();
-
-    let service = CollaborationService::new(vec![hint.clone()]);
-    let now = ns(SystemTime::now());
-    let issued = service
-        .issue(
-            &mut governing,
-            governor.device_public_key,
-            IssueInvitationRequest {
-                request_id: [93; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: Some(device.user_public_key),
-                invitee_name: Some("Runtime".into()),
-                expires_at_ns: now + 60_000_000_000,
-            },
-            now,
-        )
-        .unwrap();
-    let relay_root = directory.path().join("relay");
-    let baseline = governing.peer().admitted_room().unwrap().clone().save();
-    tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
-        .unwrap()
-        .save_snapshot(&baseline)
-        .unwrap();
-    let authority: Authority = Arc::new(std::sync::Mutex::new((governing, service)));
-    let relay = tilo_relay::Relay::start_on_endpoint_with_protocols(
-        tilo_relay::RelayConfig {
-            state_root: relay_root.clone(),
-            identity_root: directory.path().join("relay-identity"),
-            full_replica_status: directory.path().join("replica/status.json"),
-            home_peer_bundle: directory.path().join("home-peer.toml"),
-            trust_policy: tilo_relay::TrustPolicy::AllowList {
-                users: vec![hex::encode(governor.user_public_key)],
-            },
-            workspaces: vec![tilo_relay::WorkspaceBinding {
-                id: topic,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: vec![],
-                shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
-                        &room.to_string(),
-                        governor.clone(),
-                    )
-                    .unwrap(),
-                ),
-                checkpoint_prefix_recovery:
-                    tilo_relay::CheckpointPrefixRecovery::NativeOwnerDurableBaseline,
-            }],
-            ..Default::default()
-        },
-        tilo_relay::daemon::RelayIdentity {
-            user_public_key: governor.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        server.clone(),
-        vec![(
-            WORKSPACE_JOIN_ALPN.to_vec(),
-            Box::new(WorkspaceJoinProtocol::new(JoinService(Arc::clone(
-                &authority,
-            )))),
-        )],
-    )
-    .await
-    .unwrap();
+    let invitation = governing.invite(device.user_public_key);
 
     let custody = HostIdentity {
         device_cert: device.clone(),
@@ -230,7 +335,6 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         ),
     )
     .unwrap();
-    let invitation = join::encode_invitation_text(&issued.signed_invitation);
     assert_eq!(joined.join(&invitation).await.unwrap(), room);
     joined
         .owner
@@ -260,56 +364,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
 
     // The governor publishes the room's history through its host; the
     // runtime's own session admits it.
-    let (access, publications) = {
-        let authority = authority.lock().unwrap();
-        let owner = &authority.0;
-        (
-            owner.peer().governed_access(SystemTime::now()).unwrap(),
-            owner
-                .outgoing()
-                .iter()
-                .map(|entry| (entry.bytes.to_vec(), entry.kind))
-                .collect::<Vec<_>>(),
-        )
-    };
-    relay
-        .replace_governed_workspace_access(topic, true, access, relay_root)
-        .await
-        .unwrap();
-    let publisher_endpoint = local_endpoint(&governor_key).await;
-    let client = tilo_relay::RelayClient::connect_v2_to_enrolled_home_peer(
-        publisher_endpoint.clone(),
-        server.addr(),
-        host.user_public_key,
-        host.device_public_key,
-        governor.clone(),
-        governor_key,
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    let publisher = RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap();
-    tilo_test_env::within("the governor's session", async {
-        while !matches!(publisher.recv().await, Some(Inbound::Ready { .. })) {}
-    })
-    .await;
-    tilo_test_env::within("the runtime's session", async {
-        while !relay.is_subscribed(topic, &device.device_public_key).await {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    for (bytes, kind) in &publications {
-        let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let checkpoint = *kind == tilo_peer_state::transport::Retention::Checkpoint;
-        let (channel, _) = tilo_peer_state::transport::retention(&message, checkpoint).unwrap();
-        if checkpoint {
-            publisher.publish_checkpoint(channel, bytes.clone())
-        } else {
-            publisher.publish_retained_delta(channel, bytes.clone())
-        }
-        .unwrap();
-    }
+    let (publisher, publisher_endpoint) = governing.publish_history(device.device_public_key).await;
     let chat = tilo_test_env::within("the governor's history", async {
         loop {
             if let Ok(chat) = joined.owner.with_current(room, |view| {
@@ -365,9 +420,255 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         }
     })
     .await;
+
+    // A sealed write, as an SDK app seals it under a key only the room's
+    // key holders have: this member's owner and the host keep only its
+    // ciphertext, and the governor receives it sealed.
+    let channel = collab_types::document_channel_id("so.tilo.chat", &room.to_string(), "");
+    let content = channel_crypto::ChannelGroup::create(
+        channel,
+        channel_crypto::MemberKey::generate("steward").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let mut doc = AutoCommit::load(&chat).unwrap();
+    let heads = doc.get_heads();
+    doc.put(ROOT, "secret", SECRET).unwrap();
+    doc.commit();
+    let message = joined
+        .owner
+        .with_current(room, |view| {
+            view.peer().clone().publish_incremental(
+                "so.tilo.chat",
+                "",
+                doc.save_after(&heads),
+                &device_key,
+                SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument { mut envelope, .. } = message else {
+        panic!("a signed document write")
+    };
+    let (metadata, sealed) = content
+        .seal_content(
+            envelope.artifact,
+            collab_types::ContentRetention::Delta,
+            &envelope.payload,
+        )
+        .unwrap();
+    envelope.payload = sealed;
+    envelope.encryption = Some(metadata);
+    collab_types::sign_op(&mut envelope, &device_key).unwrap();
+    joined
+        .commit(OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::Document {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+                envelope,
+            },
+        })
+        .await
+        .expect("a keyless member keeps a sealed write as ciphertext");
+    tilo_test_env::within("the sealed write at the governor", async {
+        loop {
+            if let Some(Inbound::Delta { author, data }) = publisher.recv().await
+                && author == device.device_public_key
+                && let Ok(NeighbourMsg::AppDocument { envelope, .. }) = postcard::from_bytes(&data)
+                && envelope.encryption.is_some()
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    for file in files_under(directory.path()) {
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(
+            !bytes
+                .windows(SECRET.len())
+                .any(|window| window == SECRET.as_bytes()),
+            "{} holds the plaintext",
+            file.display()
+        );
+    }
     publisher.close().await;
     publisher_endpoint.close().await;
-    relay.shutdown().await;
+    governing.relay.shutdown().await;
+}
+
+const SDK_TEST: &str = "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward";
+const SDK_HELPER: &str = "TILO_JOINED_SDK_HELPER";
+const SDK_APP: &str = "so.tilo.chat";
+const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined room";
+
+#[test]
+fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
+    // Helper role: an ordinary SDK app in the joined room writes once. The
+    // SDK holds the write until the runtime's channel service is admitted by
+    // the room's steward, then seals and sends it.
+    if std::env::var_os(SDK_HELPER).is_some() {
+        let mut manager = ui::collaboration::CollaborationManager::new();
+        let started = std::time::Instant::now();
+        while !manager.is_connected() && started.elapsed() < tilo_test_env::hang_bound() {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(manager.is_connected(), "{:?}", manager.state());
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "text", SDK_WRITTEN).unwrap();
+        doc.commit();
+        assert!(
+            manager.send(ui::collaboration::CollabRequest::document_snapshot(
+                doc.save()
+            ))
+        );
+        loop {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let Some(profile) = super::super::tests::isolated_root(SDK_TEST) else {
+        return;
+    };
+    let session = super::super::Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    let (_, device) = tilo_identity_host::broker::trusted_current_device(session.room()).unwrap();
+    let governor_root = profile.parent().unwrap().join("governor");
+    std::fs::create_dir_all(&governor_root).unwrap();
+    let governing = tilo_rt::app()
+        .block_on(Box::pin(HostedRoom::start(&governor_root)))
+        .unwrap();
+    let room = session.joiner().unwrap()(&governing.invite(device.user_public_key)).unwrap();
+    assert_eq!(room, governing.room.to_string());
+    let (publisher, publisher_endpoint) = tilo_rt::app()
+        .block_on(governing.publish_history(device.device_public_key))
+        .unwrap();
+    let steward =
+        tilo_workspace_host::channel_steward::Steward::open(&governing.authority.lock().unwrap().0)
+            .unwrap();
+
+    let log = std::fs::File::create(profile.join("sdk-app.log")).unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", SDK_TEST, "--nocapture"])
+        .env(SDK_HELPER, "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
+        .stderr(std::process::Stdio::from(log));
+    let mut app = crate::unix::launch(
+        command,
+        SDK_APP,
+        &room,
+        &crate::unix::ServiceSockets {
+            collab: session.broker.capnp_socket(),
+            identity: &session.identity_socket,
+            blobs: &session.blob_socket,
+        },
+    )
+    .unwrap();
+
+    // The governor's steward answers the runtime's access request over the
+    // room's relay session; the app's write then arrives sealed.
+    let sealed = tilo_rt::app().block_on(tilo_test_env::within(
+        "the SDK app's sealed write at the governor",
+        async {
+            let mut inbound = Vec::new();
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    received = publisher.recv() => match received.expect("the governor's session") {
+                        Inbound::Presence { payload, .. } => inbound.extend(
+                            postcard::from_bytes(&payload)
+                                .ok()
+                                .and_then(InboundChannelGovernance::from_message),
+                        ),
+                        Inbound::Delta { author, data } if author == device.device_public_key => {
+                            if let Ok(NeighbourMsg::AppDocument { envelope, .. }) = postcard::from_bytes(&data)
+                                && envelope.encryption.is_some()
+                            {
+                                break *envelope;
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ = tick.tick() => {
+                        let authority = governing.authority.lock().unwrap();
+                        steward.pump(
+                            &authority.0,
+                            &tilo_workspace_host::channel_steward::RelayGovernance::new(
+                                &publisher,
+                                std::mem::take(&mut inbound),
+                            ),
+                        );
+                    }
+                }
+            }
+        },
+    ))
+    .unwrap();
+    let _ = app.kill();
+    let _ = app.wait();
+
+    // A key holder reads it: the steward opens what the app sealed.
+    let metadata = sealed.encryption.unwrap();
+    let (ChannelAccess::Ready(keys), _) = steward.keys().access(governing.room, metadata.channel)
+    else {
+        panic!("the steward holds the channel's keys")
+    };
+    let plaintext = keys
+        .open_content(sealed.artifact, &metadata, &sealed.payload)
+        .unwrap();
+    let collab_types::DocumentMutation::Snapshot(bytes) =
+        collab_types::DocumentMutation::decode(&plaintext).unwrap()
+    else {
+        panic!("the app sent its document as a snapshot")
+    };
+    let doc = AutoCommit::load(&bytes).unwrap();
+    let text = automerge::ReadDoc::get(&doc, ROOT, "text")
+        .unwrap()
+        .and_then(|(value, _)| value.into_string().ok());
+    assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
+    // Neither the runtime's profile nor the host keeps it in the clear.
+    for root in [&profile, &governor_root] {
+        for file in files_under(root) {
+            let bytes = std::fs::read(&file).unwrap();
+            assert!(
+                !bytes
+                    .windows(SDK_WRITTEN.len())
+                    .any(|window| window == SDK_WRITTEN.as_bytes()),
+                "{} holds the plaintext",
+                file.display()
+            );
+        }
+    }
+    tilo_rt::app()
+        .block_on(async {
+            publisher.close().await;
+            publisher_endpoint.close().await;
+            governing.relay.shutdown().await;
+        })
+        .unwrap();
+}
+
+/// Every regular file under `root`: the host's relay store, the runtime's
+/// record. A service socket holds no data.
+fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    assert!(!files.is_empty());
+    files
 }
 
 #[test]

@@ -58,12 +58,13 @@ fn owned_resources<W: Widget + ?Sized>(
     // A delivered invocation resolves against its invoker's own view,
     // rebuilt now; outside one this is the widget's own view.
     let participant = crate::invocation_scope::current_participant();
-    let local = root.resources_for(participant.as_ref(), doc);
+    let local = crate::resources::resources_for(root, participant.as_ref(), doc);
     let eager_claim = address.is_some_and(|address| claims(&local, address) != 0);
     resources.extend(local);
     if let Some(address) = address
         && !eager_claim
-        && let Some(resource) = root.resource_for(participant.as_ref(), doc, &address.resource)
+        && let Some(resource) =
+            crate::resources::resource_for(root, participant.as_ref(), doc, &address.resource)
     {
         resources.push(resource);
     }
@@ -78,8 +79,7 @@ fn provider<W: Widget + ?Sized>(
     binding: &CallbackBinding,
     address: &ActionAddress,
 ) -> Option<Resource> {
-    let mut found = root
-        .search_providers()
+    let mut found = crate::search::capability::search_providers(root)
         .into_iter()
         .filter(|p| {
             p.callback_binding()
@@ -488,11 +488,17 @@ impl ResourceRequest<'_> {
                             .map_err(|error| refused("record_unavailable", error))?;
                         // Exact current owner only. The callback receives no document
                         // loan; default forwarding stops at nested owner boundaries.
-                        live.on_control_invocation_result(&target.address, outcome);
+                        crate::widget::controls::on_control_invocation_result(
+                            live,
+                            &target.address,
+                            outcome,
+                        );
                         *delivered = true;
                         return Ok(());
                     }
-                    Self::Discard => while live.take_control_invocation().is_some() {},
+                    Self::Discard => {
+                        while crate::widget::controls::take_control_invocation(live).is_some() {}
+                    }
                     Self::Drain(output) if interactive => {
                         let owner = owner.ok_or_else(|| {
                             refused(
@@ -503,7 +509,9 @@ impl ResourceRequest<'_> {
                         owner
                             .validate()
                             .map_err(|e| refused("record_unavailable", e))?;
-                        while let Some(intent) = live.take_control_invocation() {
+                        while let Some(intent) =
+                            crate::widget::controls::take_control_invocation(live)
+                        {
                             output.controls.push((
                                 LegacyResourceTarget {
                                     owner: owner.clone(),
@@ -540,7 +548,9 @@ impl ResourceRequest<'_> {
                                 .filter(|d| d.contract.availability.is_available())
                                 .map(|d| d.address)
                                 .collect();
-                            live.refresh_control_action_availability(&allowed);
+                            crate::widget::controls::refresh_control_action_availability(
+                                live, &allowed,
+                            );
                         }
                     }
                     Self::Document {
@@ -747,7 +757,7 @@ fn execute_owned(
                 }
                 if state.pending.is_some()
                     || doc.pending_ops() != 0
-                    || root.needs_commit()
+                    || crate::undo::needs_commit(root)
                     || !history.matches_recorded_frontier(doc)
                 {
                     return Err(refused(
@@ -850,14 +860,15 @@ fn execute_owned(
                     doc,
                     envelope.base_change_hashes(),
                     None,
-                    root.get_state(),
+                    crate::undo::get_state(root),
                     Some(services.author.clone()),
                 );
                 if changed {
                     state.generation = Some(next);
                     state.statuses.clear();
                 }
-                root.document_action_applied(
+                crate::history_mode::capability::document_action_applied(
+                    root,
                     &envelope.action,
                     &envelope.base_change_hashes(),
                     doc,

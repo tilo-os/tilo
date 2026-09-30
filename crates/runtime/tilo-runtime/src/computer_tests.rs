@@ -12,6 +12,12 @@ struct FakeCompositor {
 
 impl FakeCompositor {
     fn start(size: (u32, u32)) -> Self {
+        Self::start_sized(move |_| size)
+    }
+
+    /// A compositor whose snapshot size depends on the command, as an
+    /// agent's strip viewport does on the agent.
+    fn start_sized(size_of: impl Fn(&Value) -> (u32, u32) + Send + 'static) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("control.sock");
         let scratch = dir.path().join("scratch");
@@ -32,6 +38,7 @@ impl FakeCompositor {
                     json!({"err":{"code":"parse_error","message":"unknown key"}})
                 } else {
                     if command["op"] == "snapshot" {
+                        let size = size_of(&command);
                         let image = image::RgbaImage::from_pixel(
                             size.0,
                             size.1,
@@ -249,5 +256,111 @@ fn drags_move_the_cursor_to_their_end() {
     assert_eq!(
         position[0].text["detail"]["coordinate"],
         json!([300.0, 400.0])
+    );
+}
+
+fn agent(id: &str) -> Agent {
+    Agent {
+        id: id.into(),
+        label: format!("Agent {id}"),
+    }
+}
+
+#[test]
+fn every_command_names_the_agent_it_acts_for() {
+    let fake = FakeCompositor::start((800, 600));
+    let key = Action {
+        text: Some("shift+a".into()),
+        no_screenshot: Some(true),
+        ..act("key")
+    };
+    fake.computer
+        .run_as(Some(&agent("a")), &[key], false)
+        .unwrap();
+    let ops = fake.ops();
+    assert_eq!(ops.len(), 3);
+    for op in &ops {
+        assert_eq!(op["agent"], "a", "{op}");
+        assert_eq!(op["agent_label"], "Agent a", "{op}");
+    }
+    fake.computer.run(&[act("screenshot")], false).unwrap();
+    assert!(
+        fake.ops().iter().all(|op| op.get("agent").is_none()),
+        "a run for nobody names nobody"
+    );
+}
+
+#[test]
+fn each_agent_acts_in_the_frame_of_its_own_strip() {
+    // The compositor crops each agent's snapshot to its strip: here `a`
+    // works in a short strip and `b` in a tall one.
+    let fake = FakeCompositor::start_sized(|command| match command["agent"].as_str() {
+        Some("a") => (800, 200),
+        _ => (800, 600),
+    });
+    let (a, b) = (agent("a"), agent("b"));
+    let shot_a = fake
+        .computer
+        .run_as(Some(&a), &[act("screenshot")], false)
+        .unwrap();
+    assert_eq!(shot_a[0].text["height"], 200);
+    let click = |y| Action {
+        coordinate: Some([10.0, y]),
+        no_screenshot: Some(true),
+        ..act("left_click")
+    };
+    assert!(
+        fake.computer
+            .run_as(Some(&b), &[click(10.0)], false)
+            .is_err(),
+        "b has not seen its strip yet; a's screenshot is not b's"
+    );
+    fake.computer
+        .run_as(Some(&b), &[act("screenshot")], false)
+        .unwrap();
+    fake.computer
+        .run_as(Some(&b), &[click(500.0)], false)
+        .unwrap();
+    assert!(
+        fake.computer
+            .run_as(Some(&a), &[click(500.0)], false)
+            .is_err(),
+        "500 is outside a's strip even though it is inside b's"
+    );
+    let position = fake
+        .computer
+        .run_as(Some(&a), &[act("cursor_position")], false)
+        .unwrap();
+    assert_eq!(
+        position[0].text["detail"]["coordinate"],
+        json!([0.0, 0.0]),
+        "b's click did not move a's pointer"
+    );
+}
+
+#[test]
+fn seating_and_leaving_are_one_command_each() {
+    let fake = FakeCompositor::start((800, 600));
+    let a = agent("a");
+    fake.computer
+        .run_as(Some(&a), &[act("screenshot")], false)
+        .unwrap();
+    fake.ops();
+    fake.computer.seat(&a).unwrap();
+    fake.computer.leave(&a).unwrap();
+    assert_eq!(
+        fake.ops(),
+        vec![
+            json!({"op":"agent_seat","agent":"a","agent_label":"Agent a"}),
+            json!({"op":"agent_leave","agent":"a","agent_label":"Agent a"}),
+        ]
+    );
+    let click = Action {
+        coordinate: Some([10.0, 10.0]),
+        ..act("left_click")
+    };
+    assert!(
+        fake.computer.run_as(Some(&a), &[click], false).is_err(),
+        "a left: its last frame is forgotten with it"
     );
 }

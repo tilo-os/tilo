@@ -200,7 +200,7 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
     let bus = pipeline.bus().expect("fixture pipeline has a bus");
     let deadline = tilo_test_env::hang_deadline();
     let mut reached_eos = false;
-    while std::time::Instant::now() < deadline {
+    while ui::time::now() < deadline {
         let Some(message) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) else {
             continue;
         };

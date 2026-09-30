@@ -209,7 +209,7 @@ impl ReadTheme {
 }
 
 /// Reading face. Unlike the ebook reader (which only offered Sans/Mono because
-/// it draws through the proportional/monospace `draw_text_styled` path), the
+/// it draws through the proportional/monospace `draw_style` path), the
 /// feeds reader renders the body through `ui::richtext::RichTextLayout`, which
 /// exposes a real `FontFamily::Serif`. So we offer a genuine serif option for
 /// long-form reading, plus the proportional sans and a fixed-width mono.

@@ -225,6 +225,12 @@ impl Row {
 }
 
 impl Widget for Row {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -233,23 +239,6 @@ impl Widget for Row {
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
         crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    /// Legacy adapter: offered through [`Widget::start_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.start_operation(
-            &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-            doc,
-            path,
-        )
     }
 
     /// Forward the per-frame update pass; every child runs, and a
@@ -464,14 +453,6 @@ impl Widget for Row {
     fn is_focused(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
 
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
     // children once one reports dirty, leaving their flags uncleared --
@@ -485,20 +466,6 @@ impl Widget for Row {
             .iter_mut()
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 
     fn draw_with_presence(
@@ -553,7 +520,7 @@ impl Widget for Row {
             }
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -566,7 +533,7 @@ impl Widget for Row {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
@@ -581,6 +548,37 @@ impl Widget for Row {
         for child in &mut self.children {
             child.release_scene_cache();
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Row {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Row {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Row {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 

@@ -294,3 +294,64 @@ fn a_window_icon_set_by_the_client_becomes_its_tab_artwork() {
     );
     let _keep = (xdg, icon);
 }
+
+/// Chromium's order: the icon object goes first, then its buffer, then the
+/// commit. The protocol only requires the buffer to outlive the icon object.
+#[test]
+fn a_client_that_frees_its_icon_after_set_icon_stays_connected_and_keeps_it() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    let manager: xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1 =
+        h.bind("xdg_toplevel_icon_manager_v1", 1);
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.Browser".into());
+    surface.commit();
+    h.pump();
+
+    let buffer = solid_buffer(&h, 32, [0xff, 0x10, 0x20, 0x30]);
+    let icon = manager.create_icon(&qh, ());
+    icon.add_buffer(&buffer, 1);
+    manager.set_icon(&toplevel, Some(&icon));
+    icon.destroy();
+    buffer.destroy();
+    surface.commit();
+    h.pump();
+
+    assert!(
+        h.conn.protocol_error().is_none(),
+        "freeing the buffer after its icon object is legal: {:?}",
+        h.conn.protocol_error()
+    );
+    let artwork = shell::app_icons::for_tile(&h.window_tile("org.example.Browser"))
+        .expect("the icon survives its protocol objects");
+    let pixels = artwork.pixels(32).expect("the copied pixels");
+    assert_eq!(
+        pixels.data.data().get(0..4),
+        Some(&[0x10, 0x20, 0x30, 0xff][..])
+    );
+    let _keep = xdg;
+}
+
+#[test]
+fn freeing_an_icon_buffer_while_its_icon_object_lives_is_a_no_buffer_error() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let manager: xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1 =
+        h.bind("xdg_toplevel_icon_manager_v1", 1);
+    let qh = h.queue.handle();
+    let buffer = solid_buffer(&h, 16, [0xff, 0, 0, 0]);
+    let icon = manager.create_icon(&qh, ());
+    icon.add_buffer(&buffer, 1);
+    buffer.destroy();
+    h.pump();
+    let error = h.conn.protocol_error().expect("a protocol error");
+    assert_eq!(error.object_interface, "xdg_toplevel_icon_v1");
+    assert_eq!(error.code, u32::from(xdg_toplevel_icon_v1::Error::NoBuffer));
+}

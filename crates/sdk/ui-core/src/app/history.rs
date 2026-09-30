@@ -50,7 +50,9 @@ impl App {
             crate::bound_dispatch::legacy_document::discard_legacy_controls(
                 self.root_widget.as_mut(),
             );
-            while self.root_widget.take_control_invocation().is_some() {}
+            while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
+                .is_some()
+            {}
         }
     }
     fn capture_history_entry(&mut self) {
@@ -396,7 +398,9 @@ impl App {
             && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
             handled = self.focus_tab(self.input.modifiers.state().shift_key());
-        } else if let Some(history) = &mut self.history {
+        } else if let Some(history) = &mut self.history
+            && let Some(root) = self.layout.root_node
+        {
             if history.captures_input()
                 && self
                     .focused_node
@@ -415,13 +419,16 @@ impl App {
             history.route_event(
                 self.root_widget.as_mut(),
                 event,
-                scale,
-                &self.input.modifiers,
-                &mut self.state.doc,
-                &self.state.root,
-                &mut handled,
-                &mut focus,
-                &self.layout.taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
             );
         } else if let Some(root) = self.layout.root_node {
             self.root_widget.handle_event(

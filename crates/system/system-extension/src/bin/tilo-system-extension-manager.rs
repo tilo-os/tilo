@@ -8,11 +8,9 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
@@ -31,6 +29,8 @@ const STATUS_PATH: &str = "/run/tilo/system-extension-api/status.json";
 const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
 const MAX_BOOTC_STATUS_BYTES: u64 = 1024 * 1024;
 const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Helper diagnostics are discarded, but still bounded while they are drained.
+const HELPER_STDERR_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -513,67 +513,19 @@ fn bounded_stdout(
     label: &str,
 ) -> Result<Vec<u8>, String> {
     let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        // A timed-out helper may have passed stdout to a descendant. Give the
-        // transaction its own process group so killing it also closes every
-        // inherited pipe and the bounded reader cannot remain pinned.
-        .process_group(0);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not start {label}: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("{label} stdout is unavailable"))?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let read_limit = limit.saturating_add(1);
-        let _ = stdout.take(read_limit).read_to_end(&mut bytes);
-        bytes
-    });
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) => {}
-            Err(error) => return Err(format!("could not wait for {label}: {error}")),
-        }
-        if Instant::now() >= deadline {
-            if let Ok(pid) = i32::try_from(child.id()) {
-                // SAFETY: the child was placed in a process group whose id is
-                // its pid; a negative pid targets exactly that group.
-                if let Some(process_group) = pid.checked_neg() {
-                    unsafe { libc::kill(process_group, libc::SIGKILL) };
-                }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| format!("{label} output reader failed"))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
-        return Err(format!("{label} output exceeds {limit} bytes"));
+    command.args(args);
+    let output = bounded_command::run_prepared_with_limits(
+        command,
+        None,
+        usize::try_from(limit).unwrap_or(usize::MAX),
+        HELPER_STDERR_LIMIT,
+        timeout,
+    )
+    .map_err(|error| format!("{label}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("{label} failed with {}", output.status));
     }
-    let Some(status) = status else {
-        return Err(format!(
-            "{label} timed out after {} ms",
-            timeout.as_millis()
-        ));
-    };
-    if !status.success() {
-        return Err(format!("{label} failed with {status}"));
-    }
-    Ok(bytes)
+    Ok(output.stdout)
 }
 
 fn current_host_image() -> Result<HostImage, String> {
@@ -705,6 +657,7 @@ fn save_json<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn boot_packs_and_catalogues_are_digest_pinned_signed_and_matched() {
@@ -853,7 +806,7 @@ mod tests {
                 "overflow probe",
             )
             .unwrap_err();
-            assert!(error.contains("output exceeds"), "{error}");
+            assert!(error.contains("exceeds 4096 bytes"), "{error}");
 
             let hangs = directory.path().join("hangs");
             // The probe outlives the hang bound, so returning within it proves

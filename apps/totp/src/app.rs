@@ -16,7 +16,7 @@
 //! from the global focus order (the modal manages its own field focus).
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -28,6 +28,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -36,7 +37,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::OperationKind;
 use ui::tokens::spacing::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Banner, BannerKind, Button, ButtonFace, TextInput, Widget};
+use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -314,7 +315,7 @@ impl AuthenticatorApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the event are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). Callers reload the in-memory vault
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the in-memory vault
     /// from the document afterward for immediate feedback; `sync` reconciles it
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
@@ -417,7 +418,7 @@ impl AuthenticatorApp {
     }
 
     fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), Instant::now(), kind));
+        self.toast = Some((msg.into(), ui::time::now(), kind));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -1162,6 +1163,12 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TOTP_OPERATION_TYPE]
     }
@@ -1309,16 +1316,15 @@ impl Widget for AuthenticatorApp {
                     .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
             };
             Banner::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 banner,
-                BannerKind::Error,
-                BannerKind::Error.default_icon(),
-                banner_message,
-                None,
-                false,
+                &BannerContent {
+                    kind: BannerKind::Error,
+                    icon: BannerKind::Error.default_icon(),
+                    title: banner_message,
+                    message: None,
+                    dismissible: false,
+                },
                 self.last_mouse,
             );
             Button::paint(
@@ -1376,16 +1382,7 @@ impl Widget for AuthenticatorApp {
 
         // Modal owns all input while open.
         if self.add_panel.is_open() {
-            self.add_panel.handle_event(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.add_panel.handle_event(event, ctx);
             if let Some(ev) = self.add_panel.take_event() {
                 self.apply_add_panel_event(ev, ctx.state);
             }
@@ -1440,42 +1437,6 @@ impl Widget for AuthenticatorApp {
         self.list.set_selected(self.selected);
     }
 
-    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
-    /// to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
-        if self.persistence_pending
-            && let Some(root) = resources.first_mut()
-        {
-            *root = root
-                .clone()
-                .with_action(crate::actions::retry_persist_operation());
-        }
-        resources
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "totp.vault" {
-            return self.resources(doc).pop();
-        }
-        let raw_id = id.strip_prefix("totp.account:")?;
-        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
-        let ordered = self.vault.ordered();
-        let index = ordered
-            .iter()
-            .position(|account| account.id == account_id)?;
-        ordered.get(index).map(|account| {
-            crate::actions::provide_account_resource(
-                account,
-                index,
-                ordered.len(),
-                account.secret_is_valid(),
-            )
-        })
-    }
-
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -1495,22 +1456,6 @@ impl Widget for AuthenticatorApp {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its account action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
-    /// the retained
-    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
-    /// makes every account findable there by issuer or account name alongside
-    /// the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn name(&self) -> &'static str {
@@ -1724,16 +1669,73 @@ impl Widget for AuthenticatorApp {
         if !self.reduce_motion {
             return None;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap_or_default();
         let until_next_second =
             Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
-        Some(Instant::now() + until_next_second)
+        Some(ui::time::now() + until_next_second)
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
+    }
+}
+
+impl ui::search::capability::SearchSource for AuthenticatorApp {
+    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
+    /// the retained
+    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
+    /// makes every account findable there by issuer or account name alongside
+    /// the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for AuthenticatorApp {
+    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
+    /// to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`], which reads the accounts straight from the document.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
+        if self.persistence_pending
+            && let Some(root) = resources.first_mut()
+        {
+            *root = root
+                .clone()
+                .with_action(crate::actions::retry_persist_operation());
+        }
+        resources
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "totp.vault" {
+            return self.resources(doc).pop();
+        }
+        let raw_id = id.strip_prefix("totp.account:")?;
+        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
+        let ordered = self.vault.ordered();
+        let index = ordered
+            .iter()
+            .position(|account| account.id == account_id)?;
+        ordered.get(index).map(|account| {
+            crate::actions::provide_account_resource(
+                account,
+                index,
+                ordered.len(),
+                account.secret_is_valid(),
+            )
+        })
+    }
+}
+
+impl ui::undo::CommittedActions for AuthenticatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its account action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -1766,7 +1768,7 @@ mod tests {
             let deadline = app
                 .next_wake_deadline()
                 .expect("the discrete countdown schedules its next second");
-            let delay = deadline.saturating_duration_since(Instant::now());
+            let delay = deadline.saturating_duration_since(ui::time::now());
             assert!(delay > Duration::ZERO);
             assert!(delay <= Duration::from_secs(1));
         }
@@ -2259,7 +2261,7 @@ mod tests {
             );
             // And the host has one undo boundary to record for it.
             assert!(
-                Widget::take_committed_action(&mut app).is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the add action registered exactly one undo boundary for the host"
             );
         }
@@ -2281,7 +2283,7 @@ mod tests {
 
             assert!(!app.has_local_secret(id));
             let resource =
-                Widget::resource(app, &state.doc, &crate::actions::account_resource_id(id))
+                ui::resources::resource(app, &state.doc, &crate::actions::account_resource_id(id))
                     .expect("the shared account resolves locally");
             let copy = resource
                 .actions
@@ -2371,7 +2373,7 @@ mod tests {
             let mut app = AuthenticatorApp::demo_persistence_error();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             let retry = root
                 .actions
                 .iter()
@@ -2473,7 +2475,7 @@ mod tests {
             assert!(app.persistence_pending);
 
             let state = ui::State::new();
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             assert!(root.actions.iter().any(|action| action.id == "retry-save"));
         }
     }

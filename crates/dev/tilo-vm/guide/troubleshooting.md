@@ -26,7 +26,7 @@ before that needs the same step. The error prints the exact command;
 **Protocol mismatch.** The VM's tilo-vmd and your `tilo-vm` disagree; both
 protocol numbers are in the message. If `tilo-vm` is older, update your
 checkout and rebuild it the way the docs build it: `cargo build -p tilo-vm`,
-then run `target/debug/tilo-vm` (`rcargo` works as a drop-in for `cargo`).
+then run `target/debug/tilo-vm` (any cargo drop-in works).
 If the VM is older, it depends on the VM: one running a bootc dev image moves
 onto a current one with `tilo-vm vm upgrade`; one that is not (no `bootc`)
 cannot be upgraded in place, so create a VM from a dev image

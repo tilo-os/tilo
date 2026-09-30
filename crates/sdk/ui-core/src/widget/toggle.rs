@@ -488,6 +488,12 @@ impl Toggle {
 }
 
 impl Widget for Toggle {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -647,6 +653,43 @@ impl Widget for Toggle {
         Some(node)
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
+            && !permissions.check(&scope)
+        {
+            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                overlay,
+                None,
+                &self.rect,
+            );
+        }
+
+        if let Some(key) = crate::presence::capability::presence_key(self)
+            && let Some(peers) = presence.here.get(&key)
+            && let Some(user) = peers.first()
+        {
+            presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Toggle {
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
             None
@@ -656,11 +699,15 @@ impl Widget for Toggle {
             })
         }
     }
+}
 
+impl crate::permissions::capability::PermissionGated for Toggle {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
+}
 
+impl crate::widget::controls::ActionControls for Toggle {
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -673,16 +720,6 @@ impl Widget for Toggle {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("toggle");
         if let Some(action) = &self.action {
@@ -704,39 +741,12 @@ impl Widget for Toggle {
             }]
         }
     }
-
-    fn draw_with_presence(
+    fn refresh_control_action_availability(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = self.permission_scope()
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = self.presence_key()
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
         }
     }
 }
@@ -1149,12 +1159,12 @@ mod tests {
                 .on_change(|_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_bool_action_binding());
             let mut doc = AutoCommit::new();
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut toggle,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&toggle));
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut toggle,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -1170,7 +1180,7 @@ mod tests {
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
             assert_eq!(
-                Widget::take_control_invocation(&mut toggle)
+                crate::widget::controls::take_control_invocation(&mut toggle)
                     .unwrap()
                     .arguments["value"],
                 true

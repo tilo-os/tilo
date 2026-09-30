@@ -45,14 +45,14 @@ impl HostIdentity {
         ws: WorkspaceId,
     ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
         let (cert, revocations) = if let Some(paths) = &self.identity_paths {
-            let stored_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-                .map_err(|e| e.to_string())?;
+            let stored_key =
+                tilo_user_identity::persist::load_device_key(paths).map_err(|e| e.to_string())?;
             if stored_key.verifying_key() != self.device_signing_key.verifying_key() {
                 return Err("native device custody changed".into());
             }
             let store =
                 crate::registry::IdentityRegistryStore::from_env().map_err(|e| e.to_string())?;
-            let registry = store.migrate_legacy_primary().map_err(|e| e.to_string())?;
+            let registry = store.load_reconciled().map_err(|e| e.to_string())?;
             let mut selected = registry
                 .workspace_identities
                 .iter()
@@ -129,7 +129,7 @@ impl HostIdentity {
         let Ok(registry_store) = crate::registry::IdentityRegistryStore::from_env() else {
             return (fallback_cert, fallback_revocations);
         };
-        let Ok(registry) = registry_store.migrate_legacy_primary() else {
+        let Ok(registry) = registry_store.load_reconciled() else {
             return (fallback_cert, fallback_revocations);
         };
         let selected = registry.workspace_identities.iter().find_map(|(room, id)| {

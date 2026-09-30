@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{
-    GroupingConfig, HistoryGroup, NamedRange, OpFamily, group_entries,
+    GroupingConfig, HistoryGroup, NamedRange, OpFamily, authors_more, authors_pair, group_entries,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,10 +54,8 @@ impl ActivityBrief {
         let who = match self.authors.as_slice() {
             [] => String::new(),
             [author] => author.name.clone(),
-            [first, second] => format!("{} and {}", first.name, second.name),
-            [first, second, rest @ ..] => {
-                format!("{}, {} + {}", first.name, second.name, rest.len())
-            }
+            [first, second] => authors_pair(&first.name, &second.name),
+            [first, second, rest @ ..] => authors_more(&first.name, &second.name, rest.len()),
         };
         if who.is_empty() {
             self.title.clone()
@@ -111,8 +109,10 @@ impl ActivityDigest {
     }
 
     fn from_recent(recent: &[HistoryEntry], limit: usize, named_ranges: &[NamedRange]) -> Self {
+        // People are the participants history could name.
         let people = recent
             .iter()
+            .filter(|entry| entry.author.name != super::UNKNOWN_AUTHOR_NAME)
             .map(|entry| {
                 (
                     entry.author.name.clone(),
@@ -155,10 +155,13 @@ impl ActivityDigest {
                 let group_detail = group.subtitle(recent);
                 let detail = if title == group.title(recent) {
                     group_detail
-                } else if group_detail.is_empty() {
-                    format!("{} changes", group.len())
                 } else {
-                    format!("{} changes · {group_detail}", group.len())
+                    let count = crate::i18n!("history-group-changes", "count" => group.len());
+                    if group_detail.is_empty() {
+                        count
+                    } else {
+                        format!("{count} · {group_detail}")
+                    }
                 };
                 ActivityBrief {
                     title,
@@ -209,21 +212,25 @@ fn digest_outcome_title(
         [only] => Some(only.as_str()),
         _ => None,
     };
-    match group.families.as_slice() {
-        [OpFamily::Governance] => "Updated workspace access".to_string(),
-        [OpFamily::Comment] => subject.map_or_else(
-            || "Continued the discussion".to_string(),
-            |resource| format!("Discussed {resource}"),
+    let (general, about) = match group.families.as_slice() {
+        [OpFamily::Governance] => ("history-outcome-access", None),
+        [OpFamily::Comment] => (
+            "history-outcome-discussion",
+            Some("history-outcome-discussed"),
         ),
-        [OpFamily::Deletion] => subject.map_or_else(
-            || "Organized shared content".to_string(),
-            |resource| format!("Organized {resource}"),
+        [OpFamily::Deletion] => (
+            "history-outcome-organized-content",
+            Some("history-outcome-organized"),
         ),
-        [OpFamily::Edit] => subject.map_or_else(
-            || "Updated shared content".to_string(),
-            |resource| format!("Worked on {resource}"),
+        [OpFamily::Edit] => (
+            "history-outcome-updated-content",
+            Some("history-outcome-worked-on"),
         ),
-        _ => "Updated the workspace".to_string(),
+        _ => ("history-outcome-workspace", None),
+    };
+    match (about, subject) {
+        (Some(key), Some(resource)) => crate::i18n!(key, "resource" => resource),
+        _ => crate::i18n!(general),
     }
 }
 
@@ -305,6 +312,20 @@ mod tests {
                 digest.headline().as_deref(),
                 Some("bob, ada + 2 · Prepare launch brief")
             );
+        }
+        // phase: a_participant_history_cannot_name_is_not_counted_as_a_person
+        {
+            let entries = vec![
+                entry(1, "Ada", 100),
+                entry(2, super::super::UNKNOWN_AUTHOR_NAME, 101),
+            ];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.total_changes, 2);
+            assert_eq!(digest.people, 1);
         }
         // phase: unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts
         {
@@ -415,5 +436,44 @@ mod tests {
                     .all(|brief| brief.work_session_id.is_some())
             );
         }
+    }
+
+    #[test]
+    fn a_german_desktop_reads_its_catch_up_in_german() {
+        crate::i18n::I18nManager::install(
+            "en-US",
+            "de-DE",
+            &[
+                ("en-US", include_str!("../../locales/en-US.ftl")),
+                ("de-DE", include_str!("../../locales/de-DE.ftl")),
+            ],
+        )
+        .unwrap();
+        let shared = [entry(1, "Ada", 100), entry(2, "Maren", 110)];
+        let digest = ActivityDigest::from_entries(&shared, SystemTime::UNIX_EPOCH, 3);
+        assert_eq!(
+            digest.headline().as_deref(),
+            Some("Ada und Maren · Prepare launch brief")
+        );
+
+        let mut first = entry(3, "Ada", 100);
+        let mut second = entry(4, "Ada", 110);
+        second.author = first.author.clone();
+        for item in [&mut first, &mut second] {
+            if let Some(context) = item.context.as_mut() {
+                context.group = None;
+            }
+        }
+        let digest = ActivityDigest::from_entries(&[first, second], SystemTime::UNIX_EPOCH, 3);
+        let brief = &digest.briefs[0];
+        assert_eq!(brief.title, "An Launch brief gearbeitet");
+        assert_eq!(brief.detail, "2 Änderungen · Ada · +2 −0 Zeichen");
+
+        use crate::widget::activity_timeline::ChipKind;
+        assert_eq!(ChipKind::Governance.label(), "Zugriff");
+        assert_eq!(
+            super::super::op_class_label(OpClass::Splice),
+            "Text / Struktur"
+        );
     }
 }

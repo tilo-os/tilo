@@ -27,7 +27,7 @@ Automatic RPM snapshots cancel an obsolete run when a newer snapshot input
 lands. Explicit snapshot publication is non-cancellable, verifies that its
 input paths stayed unchanged, and rebases its resulting pin across unrelated
 `main` commits before promotion.
-Use an explicit **Snapshot / RPM repository** dispatch when a sequence of
+Use an explicit **Build / RPM snapshot** dispatch when a sequence of
 package-input commits repeatedly supersedes the automatic run; it retains the
 same signed native build and freshness checks.
 
@@ -371,7 +371,7 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - The release-signing role (`AWS_SIGNING_ROLE_ARN`, OIDC audience
   `tilo-release-signing`) must trust scheduled runs on `main` as well as
   manual `main` dispatches and `v*` tags; the nightly publication signs with it.
-- Desktop payload publication (`package-desktop.yml` scheduled/manual runs on
+- Desktop payload publication (`release-desktop.yml` scheduled/manual runs on
   `main`) writes the immutable payload with the CI account's package token
   (`secrets.REGISTRY_TOKEN`) and advances the `TILO_DESKTOP_PAYLOAD_*` channel
   variables with the repository-scoped `secrets.RELEASE_TOKEN`; it needs no OIDC.

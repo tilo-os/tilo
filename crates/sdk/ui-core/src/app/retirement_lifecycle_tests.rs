@@ -1,6 +1,8 @@
 //! Real SDK construction/lifecycle tests; the marker is resource-only.
 use super::*;
-use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use crate::application::{
+    AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use crate::application_test_support::{ProbeHost, definition, runner_inputs, runner_permissions};
 use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
@@ -64,6 +66,8 @@ struct Root {
     observed: Rc<Observations>,
 }
 impl Widget for Root {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     crate::testing::delegate_widget_methods!(
         inner: sync,
         build_layout,
@@ -72,6 +76,13 @@ impl Widget for Root {
         handle_event,
         get_rect
     );
+
+    fn name(&self) -> &str {
+        "retirement lifecycle probe"
+    }
+}
+
+impl crate::widget::controls::ActionControls for Root {
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -83,11 +94,7 @@ impl Widget for Root {
             self.observed.panic_install.get() != Some(index),
             "control installation probe"
         );
-        self.inner.install_control_custody(domain, attachment);
-    }
-
-    fn name(&self) -> &str {
-        "retirement lifecycle probe"
+        crate::widget::controls::install_control_custody(&mut self.inner, domain, attachment);
     }
 }
 crate::testing::test_app_widget!(
@@ -369,13 +376,15 @@ fn worker_fixture(
     let prepare = |target| {
         HostContext::prepare(
             &definition,
-            records.clone(),
-            views.clone(),
-            DEVICE.into(),
-            18,
-            permissions.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 18,
+                permissions: permissions.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             target,
         )
         .unwrap()

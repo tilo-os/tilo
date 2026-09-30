@@ -28,9 +28,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
@@ -619,13 +616,8 @@ impl ScreenCastBackend {
 
     /// `Start` — provision a real `PipeWire` node per selected source and
     /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.ScreenCast.Start D-Bus signature"
-    )]
     async fn start(
         &self,
-        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
@@ -796,9 +788,7 @@ impl ScreenCastBackend {
                 cursor_mode: session.cursor_mode,
                 multiple: session.multiple,
                 persist_mode: session.persist_mode,
-                issued_unix_seconds: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_secs()),
+                issued_unix_seconds: tilo_clock::unix_now(),
             };
             let stored = self
                 .restore

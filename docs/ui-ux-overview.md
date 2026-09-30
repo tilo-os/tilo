@@ -137,7 +137,7 @@ acceptance record.
   action works.
 - Keep deterministic test data and pin time/network inputs before visual
   comparison.
-- Render replacement goldens with the manual `refresh-visual-baselines.yml`
+- Render replacement goldens with the manual `dev-visual-baselines.yml`
   workflow. Download its `visual-baseline-candidates-*` artifact, inspect the
   changed PNGs and diff inventory, verify the patch checksum, and apply only
   accepted paths. Commit that review explicitly, then let nightly compare the
