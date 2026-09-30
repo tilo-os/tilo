@@ -139,7 +139,7 @@ if [ "$TILO_HARDWARE_PROFILE" != generic ]; then
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] \
       || die "TILO_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
     python3 "$TILO_OS_DIR/dev/hardware_profile.py" "$TILO_HARDWARE_PROFILE" \
-      "$TILO_OS_DIR/hardware/profiles" "$(uname -m)" "$TILO_OS_DIR/hardware/firmware" \
+      "$TILO_OS_DIR/hardware/profiles" "${TILO_BUILD_ARCH:-$(uname -m)}" "$TILO_OS_DIR/hardware/firmware" \
       "${TILO_TARGET_IMGREF:-}" "${_tilo_profile_args[@]}" \
       || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
 fi
@@ -152,11 +152,20 @@ fi
 # Rust resolve pinned (the tracked Cargo.lock), two builds of the same commit
 # yield the same image (modulo dnf package drift over time — see
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+# A zero clock is what a non-git mirror produces. DNF then rejects every RPM
+# header. A cargo drop-in sets this from the real checkout; refuse the fallback.
+case "$SOURCE_DATE_EPOCH" in
+  ''|0|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
+    ;;
+esac
 export SOURCE_DATE_EPOCH
 # Resolve Windows providers before downloading assets or starting compilation.
 # No ARM payload pins are fabricated: supply published, validated digest refs.
-TILO_WINDOWS_ARCH="$(uname -m)"
+TILO_WINDOWS_ARCH="${TILO_BUILD_ARCH:-$(uname -m)}"
 case "${TILO_NATIVE_BUILDER_ONLY:-0}" in
   0) ;;
   1)

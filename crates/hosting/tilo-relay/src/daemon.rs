@@ -1299,12 +1299,7 @@ impl RelayHandle {
 /// this domain-separated transport key prevents the relay and filesystem
 /// processes from publishing competing address records for one Iroh `NodeId`.
 pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
-    let service_secret =
-        blake3::derive_key("tilo-relay-iroh-service-key-v1", &device_key.to_bytes());
-    iroh::SecretKey::from_bytes(&service_secret)
-        .public()
-        .as_bytes()
-        .to_owned()
+    tilo_relay_protocol::relay_service_node_id(&device_key.to_bytes())
 }
 
 /// Bind the relay plane with a domain-separated transport key. This is one
@@ -1315,8 +1310,7 @@ async fn bind_endpoint(
     device_key: &ed25519_dalek::SigningKey,
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<Endpoint, RelayError> {
-    let secret = iroh::SecretKey::from_bytes(&blake3::derive_key(
-        "tilo-relay-iroh-service-key-v1",
+    let secret = iroh::SecretKey::from_bytes(&tilo_relay_protocol::relay_service_secret(
         &device_key.to_bytes(),
     ));
     let builder = match relay_mode {
