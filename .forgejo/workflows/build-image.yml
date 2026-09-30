@@ -2911,7 +2911,7 @@ jobs:
   board:
     name: "board: ${{ matrix.board }}"
     needs: [plan, build-and-push]
-    if: ${{ always() && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
+    if: ${{ !cancelled() && needs.build-and-push.result != 'skipped' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
     strategy:
       # Each board publishes on its own; one broken board must not cancel another.
       fail-fast: false
