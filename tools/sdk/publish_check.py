@@ -96,9 +96,11 @@ UPSTREAM_SUFFICES = {
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
     "web-transport-quinn": "adds a server entry point for the host's shared HTTP/3 endpoint "
     "and follows the workspace's kio; tilo-net's client uses neither",
+    "wgpu": "a lost device is reported from `poll` instead of panicking; an app on the "
+    "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
-    "feature uses it) and the Windows DX12 shader cache (only the optional "
-    "`dx12-shader-cache` feature); default builds use neither",
+    "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
+    "set; SDK apps use none of them",
     "workspace-hack": "hakari's feature union for this workspace; crates.io's "
     "workspace-hack 0.1.0 is its empty placeholder",
 }
