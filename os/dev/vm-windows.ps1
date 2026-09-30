@@ -96,7 +96,9 @@ function Boot([bool]$installer, [string[]]$flags) {
     $qemu = Resolve-Tool 'qemu-system-aarch64'
     $img = Resolve-Tool 'qemu-img'
     if ($installer) {
-        if (Test-Path -LiteralPath $proof) { throw "stale installer proof file already exists: $proof" }
+        if ((Test-Path -LiteralPath $proof) -and (Get-Item -LiteralPath $proof).Length -ne 0) {
+            throw "stale installer proof file already contains evidence: $proof"
+        }
         if (!(Test-Path -LiteralPath $work)) { & $img create -f qcow2 -F qcow2 -b $medium $work | Out-Null; if ($LASTEXITCODE) { throw 'creating installer overlay failed' } }
         if (!(Test-Path -LiteralPath $target)) { & $img create -f qcow2 $target 40G | Out-Null; if ($LASTEXITCODE) { throw 'creating sparse target failed' } }
         $disks = @('-drive', "if=none,id=medium,format=qcow2,file=$work,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=medium,serial=tilo-installer-medium,bootindex=1', '-drive', "if=none,id=target,format=$targetFormat,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target')

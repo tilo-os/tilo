@@ -1066,6 +1066,10 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
 const WORKSPACE_SWITCH_MS: u64 = 400;
+/// W16 wants ≥ 8 painted frames per open/close. Host demand still
+/// clears when the crossfade settles; the compositor consumes this
+/// many paints on its own.
+const TRANSITION_PAINT_RUN: u32 = 8;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
 /// starts, and the top of the band the room-activity sheet, the
@@ -2995,6 +2999,7 @@ impl ShellOverlayHost {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
+            self.request_compositor_transition_paints();
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
             self.reseed_overview_selection(target > 0.5);
@@ -3042,6 +3047,15 @@ impl ShellOverlayHost {
             Duration::from_millis(WORKSPACE_SWITCH_MS),
             ui::Curve::EaseOut,
         );
+        self.request_compositor_transition_paints();
+    }
+
+    fn request_compositor_transition_paints(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome
+                .borrow_mut()
+                .request_transition_paints(TRANSITION_PAINT_RUN);
+        }
     }
 
     #[must_use]
