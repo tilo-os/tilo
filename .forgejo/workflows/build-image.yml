@@ -2464,6 +2464,19 @@ jobs:
             echo '::notice::installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested'
           fi
 
+      - name: Upload the failed boot's QEMU and serial logs
+        if: failure() && steps.release.outcome == 'failure'
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-os-boot-failure-${{ matrix.arch }}${{ matrix.role && format('-{0}', matrix.role) || '' }}
+          path: |
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/qemu.log
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
+            /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
+          if-no-files-found: ignore
+
       # The lane's gated dev disk, published for this architecture alone as
       # soon as it passed: the other architecture's lane adds its own child
       # and manifest whenever it lands, and neither can hold the other back.
