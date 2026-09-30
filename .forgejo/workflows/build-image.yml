@@ -24,9 +24,6 @@ on:
         type: string
         required: false
         default: '["x86_64","aarch64"]'
-  schedule:
-    # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
-    - cron: "0 2 * * *"
   push:
     tags: ["v*"]
   workflow_dispatch:
