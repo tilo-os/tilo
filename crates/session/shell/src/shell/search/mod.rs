@@ -1115,10 +1115,14 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     ///
-    /// With nothing typed and no kind chosen, the palette offers
-    /// [`jump_back_in`] instead of listing everything.
+    /// With nothing typed and no kind chosen, the desktop-wide palette offers
+    /// [`jump_back_in`] instead of listing everything; scoped to one app it
+    /// still lists that app's commands.
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        if args.needle.trim().is_empty() && args.wanted_kinds.is_empty() {
+        if args.needle.trim().is_empty()
+            && args.wanted_kinds.is_empty()
+            && args.scope != SearchScope::ActiveApp
+        {
             return jump_back_in(self.query(args));
         }
         system::group(self.query(args), row_budget)

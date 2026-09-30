@@ -740,6 +740,27 @@ mod tests {
                 .all(|group| group.total == group.results.len())
         );
 
+        let app_scoped = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::ActiveApp,
+                active_provider_id: Some("host-apps"),
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        assert_eq!(
+            app_scoped
+                .iter()
+                .find(|group| group.kind == ResourceKind::HostApplication)
+                .map(|group| group.total),
+            Some(40),
+            "scoped to one app, the empty palette lists that app's inventory, not a curated pick"
+        );
+
         let listing = registry.query_exhaustive(&crate::shell::search::QueryArgs {
             needle: "",
             scope: SearchScope::All,
