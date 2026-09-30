@@ -715,8 +715,10 @@ workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vo
 workspace-settings-apps-header = STANDARDANWENDUNGEN
 workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
 workspace-settings-your-choice = Deine Wahl
+workspace-settings-resource-extension = .{ $ext }-Dateien
+workspace-settings-resource-scheme = { $scheme }:-Links
 workspace-settings-follow-personal = Persönlichen Standards folgen
-workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
+workspace-settings-use-workspace-choice = Dem Arbeitsbereich folgen
 workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
 workspace-settings-apps-file-types = { $count ->
     [one] 1 Dateityp
@@ -740,10 +742,7 @@ workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeine
 workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
 workspace-settings-what-it-allows = Was es erlaubt
 workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
-workspace-settings-saved-roles = { $count ->
-    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
-   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
-}
+workspace-settings-saved-roles = Rollen verwalten ({ $count })
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
 workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
@@ -880,7 +879,7 @@ emoji-picker-hint = Eingabe fügt ein · Esc schließt
 emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
 emoji-picker-tones = Hauttöne
 emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+emoji-picker-a11y-description = Tippe, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem du geschrieben hast, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
 
 # Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
 emoji-picker-toned = { $name }, { $tone }
@@ -907,7 +906,7 @@ a11y-shell-wheel-add = Arbeitsbereich hinzufügen
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
 overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für Sie
+overview-access-private = Nur für dich
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
@@ -915,9 +914,9 @@ overview-shares = { $count ->
         [one] 1 Element geteilt
        *[other] { $count } Elemente geteilt
     }
-overview-presence-you = Sie sind hier
-overview-presence-you-and-one = Sie und { $name } sind hier
-overview-presence-you-and-many = Sie und { $count } weitere sind hier
+overview-presence-you = Du bist hier
+overview-presence-you-and-one = Du und { $name } seid hier
+overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
 overview-collaborators-here = { $count } Mitwirkende sind hier

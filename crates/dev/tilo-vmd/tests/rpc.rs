@@ -119,6 +119,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 kind: SlotKind::Headless,
                 owner: Owner::default(),
                 outputs: vec![],
+                identity: false,
             })
             .unwrap();
         assert!(created.created);
@@ -131,6 +132,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 kind: SlotKind::Headless,
                 owner: Owner::default(),
                 outputs: vec![],
+                identity: false,
             })
             .unwrap();
         assert!(!again.created, "create is idempotent");
@@ -240,6 +242,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 kind: SlotKind::Headful,
                 owner: Owner::default(),
                 outputs: vec![],
+                identity: false,
             })
             .unwrap();
         let owner = Owner {
@@ -501,6 +504,7 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
                     kind,
                     owner: Owner::default(),
                     outputs: vec![],
+                    identity: false,
                 })
                 .unwrap();
         }

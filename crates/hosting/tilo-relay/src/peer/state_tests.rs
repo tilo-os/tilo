@@ -99,6 +99,7 @@ impl Fixture {
                 tx: delivery,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let source = StateSource {
@@ -239,6 +240,10 @@ impl Fixture {
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         write_state_delivery(delivery, &self.recipient, &session, wire)
             .await
@@ -1234,6 +1239,10 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
         unreachable!()
@@ -1245,25 +1254,18 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         authored_at_ns: 1,
         delta,
     };
-    let reply = handle_commit(&fixture.source.peer, &session, &[7], commit)
-        .await
-        .unwrap();
-    assert!(reply.is_none(), "a commit was acknowledged when admitted");
-    reached.await.unwrap();
+    let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    tokio::select! {
+        _ = &mut committing => panic!("a commit was acknowledged before it was retained"),
+        reached = reached => reached.unwrap(),
+    }
     assert!(fixture.store.load_retained().unwrap().is_empty());
-    assert!(
-        fixture.receivers[0].try_recv().is_err(),
-        "a commit was acknowledged before it was retained"
-    );
     drop(release);
-    let acknowledged = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        fixture.receivers[0].recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(matches!(acknowledged, Envelope::Committed { op, .. } if op == [5; 16]));
+    let acknowledged = tokio::time::timeout(std::time::Duration::from_secs(30), committing)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(acknowledged, Some(Envelope::Committed { op, .. }) if op == [5; 16]));
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
 }
 
@@ -1760,6 +1762,10 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 revocations: &source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
+                positions: None,
+                compactor: None,
+                resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             handle_sync_request(&source.peer, &session, 7, vec![]).await
         });
@@ -1863,6 +1869,10 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     handle_sync_request(&fixture.source.peer, &session, 7, vec![])
         .await
@@ -1990,6 +2000,10 @@ impl Fixture {
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let mut replay = None;
         handle_subscribe(
@@ -1998,6 +2012,7 @@ impl Fixture {
             &mut Vec::new(),
             &mut replay,
             self.store.workspace_id(),
+            Subscription::Whole,
         )
         .await?;
         replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
@@ -2239,6 +2254,10 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 revocations: &writer.source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
+                positions: None,
+                compactor: None,
+                resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             Box::pin(finish_replay_write(
                 ReplayWrite {
@@ -2381,6 +2400,10 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let source = StateSource::new(&writer.recipient, &session);
         let authority = ticket.authority.clone();
@@ -2512,6 +2535,10 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let operation = async move {
             complete_rx.await.unwrap();
@@ -2943,6 +2970,10 @@ impl Fixture {
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
@@ -3290,6 +3321,10 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             revocations: &source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         handle_sync_request(&source.peer, &session, 7, vec![])
             .await

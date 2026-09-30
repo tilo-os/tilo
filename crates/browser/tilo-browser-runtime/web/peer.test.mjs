@@ -320,6 +320,7 @@ function fakeDesktop() {
         async retryAsset(assetId) { mount.retried.push(assetId); if (mount.assetFails) throw new Error('still unavailable'); },
         async flush() { mount.flushed++; if (mount.flushFails) throw new Error('flush failed'); },
         async cleanup() { mount.closed = true; },
+        invokeAction(resource, action) { mount.onInvoke?.(resource, action); return {state: 'completed'}; },
       };
       mounts.push(mount);
       mount.status({phase: 'gpu-pending', id: 1});
@@ -578,6 +579,33 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   assert.equal(agentMount.options.live().agent, 'Reading agent');
   assert.equal(writer.options.live().agent, undefined);
   await helper.cleanup();
+  await peer.dispose();
+});
+
+test('an action through a mount speaks for the person only if it moved that mount\'s caret', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const desktop = fakeDesktop();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, desktop}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const writer = await peer.mountDesktop(undefined, {app: 'so.tilo.word-processor'});
+  const chat = await peer.mountDesktop(undefined, {app: 'so.tilo.chat'});
+  await tick();
+  const [session] = liveCarriers.connects;
+  const selections = () => session.presence.map(bytes => JSON.parse(new TextDecoder().decode(bytes)).selection?.anchor ?? null);
+  const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
+  writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
+  await sent('w1');
+  chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
+  // Posting leaves Chat's caret where it was: the person stays in the writer.
+  chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c1', head: 'c1'}});
+  assert.deepEqual(chat.invokeAction('chat.channel:general', 'post', {value: 'hi'}), {state: 'completed'});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(!selections().includes('c1'));
+  // Selecting a message moves it: Chat speaks now.
+  chat.onInvoke = () => chat.options.live().publishPresence({selection: {anchor: 'c2', head: 'c2'}});
+  chat.invokeAction('chat.message:1', 'select');
+  await sent('c2');
   await peer.dispose();
 });
 
