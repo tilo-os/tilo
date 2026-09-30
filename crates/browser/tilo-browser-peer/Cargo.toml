@@ -46,6 +46,7 @@ toolkit = ["dep:ui"]
 net = ["dep:tilo-net"]
 
 [dev-dependencies]
+tilo-automerge-isolate.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 test-http = { path = "../../dev/test-http" }

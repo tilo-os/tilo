@@ -1381,10 +1381,6 @@ fn validate_additional_alpns<'a>(
 /// Open every configured workspace binding on disk and build the
 /// shared registry `run_peer` and the peer-relay session loop route
 /// through.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "each runtime is configured, then moved into the registry"
-)]
 fn build_workspace_registry(
     cfg: &RelayConfig,
     require_durable_snapshot: bool,
