@@ -856,9 +856,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         };
         // Best effort: the app is open whether or not its directory reads.
         let directory = match peer {
-            Some(peer) if self.detail == Detail::Compact => {
-                self.directory(&peer.to_string()).await.ok()
-            }
+            Some(peer) if self.detail == Detail::Compact => self.first_directory(peer).await.ok(),
             _ => None,
         };
         if let Some(fields) = value.as_object_mut() {
@@ -1040,6 +1038,25 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
         }
         Ok(None)
+    }
+    /// A just-opened instance's [`Self::directory`] once it lists a
+    /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
+    /// publish again while it starts (binding its document), and a page read
+    /// in between is empty, which leaves the caller to query again.
+    async fn first_directory(&self, peer: u64) -> Result<Value, String> {
+        let provider = peer.to_string();
+        let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
+        loop {
+            let directory = self.directory(&provider).await?;
+            let listed = directory
+                .get("resources")
+                .and_then(Value::as_array)
+                .is_some_and(|resources| !resources.is_empty());
+            if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+                return Ok(directory);
+            }
+            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
+        }
     }
     /// A just-opened instance's directory: its top-level resources with
     /// their actions, and the resources beneath them while the page stays
@@ -1292,6 +1309,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 /// its directory, and how often it looks.
 const JUST_LAUNCHED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 const JUST_LAUNCHED_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long an `open` waits more for the new instance's directory to list a
+/// resource once it has published: two query turns cost more.
+const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new

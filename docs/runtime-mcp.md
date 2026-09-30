@@ -203,7 +203,9 @@ launches an installed app and answers, once the new instance has published its
 directory, with its `peer_id` and its `directory`: the compact page of its
 top-level resources with all their actions, and the resources beneath them
 while the page stays within 12 KiB (`"truncated": true` when something was left
-for `tilo_query`). An agent acts on the reply without browsing first.
+for `tilo_query`). An agent acts on the reply without browsing first. An app
+may publish again while it starts, and a directory read in between lists
+nothing, so the reply waits up to 3 s more for one that lists a resource.
 
 `arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
 launch opens content only by hash, read through an authenticated app's scope,
