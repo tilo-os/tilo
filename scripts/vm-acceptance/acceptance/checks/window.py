@@ -8,6 +8,7 @@ import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
+from ..vm import VmError
 
 AREA = "window"
 
@@ -292,21 +293,54 @@ def touch(ctx, res):
                    f"tab bar {res.metrics['scroll_tab_bar']}, window {res.metrics['scroll_content']})")
 
 
-@check("W15", AREA, "Touchpad: four-finger swipe opens the overview, three-finger swipe switches workspace")
+def _strip_scroll(st, sid):
+    return next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == sid)
+
+
+@check("W15", AREA, "Touchpad: a 3-finger pinch toggles the overview, a 3-finger horizontal swipe "
+                    "pans the strip, a 4-finger vertical swipe switches workspace", needs=("workspaces",))
 def touchpad(ctx, res):
-    helptext = ctx.vm.run("input", "--help")
-    if "touchpad" not in helptext:
-        raise Unobservable("tilo-vm input has no touchpad device, so touchpad gestures cannot be driven")
-    ctx.reset()
-    ctx.vm.input("touchpad", "swipe", "--fingers", "4", "0", "-400")
-    ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview after a 4-finger swipe up")
-    ctx.vm.input("touchpad", "swipe", "--fingers", "4", "0", "400")
-    ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after a 4-finger swipe down")
-    if ctx.facts.get("workspaces"):
-        first = ctx.state()["workspace_tree"]["active"]
-        ctx.vm.input("touchpad", "swipe", "--fingers", "3", "0", "400")
-        ctx.wait_state(lambda s: s["workspace_tree"]["active"] != first, 5, "workspace switched by a 3-finger swipe")
-        ctx.vm.input("touchpad", "swipe", "--fingers", "3", "0", "-400")
+    # `tilo-control swipe/pinch` feed the gesture tracker the DRM runtime feeds from libinput,
+    # so this covers the tracker and what it drives, not libinput's touchpad decoding.
+    res.metrics["route"] = "control socket swipe/pinch (the shell's gesture tracker)"
+    _two_windows(ctx)
+    try:
+        ctx.vm.control("pinch", "3", "0.5")
+    except VmError as exc:
+        raise Unobservable(f"the control socket takes no synthetic touchpad gesture: {exc}") from exc
+    ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview after a 3-finger pinch in")
+    ctx.shot("W15-pinch-overview")
+    ctx.vm.control("pinch", "3", "2.0")
+    ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after a 3-finger pinch out")
+
+    st = ctx.state()
+    sid = core.active_strip(st)["id"]
+    strip = _strip_scroll(st, sid)
+    expect(strip["max_scroll_x"] > 20, f"two windows overflow the strip so it can pan ({strip})")
+    # Pan towards the side with room: at either end one direction is clamped.
+    dx = 600 if strip["scroll_x"] > strip["max_scroll_x"] / 2 else -600
+    before = strip["scroll_x"]
+    ctx.vm.control("swipe", "3", str(dx), "0")
+    ctx.settle(1.2)
+    after = _strip_scroll(ctx.state(), sid)["scroll_x"]
+    res.metrics["strip_pan"] = {"dx": dx, "scroll_before": round(before, 1), "scroll_after": round(after, 1)}
+    expect(abs(after - before) > 20, f"a 3-finger swipe of dx={dx} did not pan the strip "
+                                     f"(scroll {before:.1f} -> {after:.1f})")
+
+    expect(ctx.facts.get("workspaces"), "a second workspace to switch to (W10 did not make one)")
+    first = ctx.state()["workspace_tree"]["active"]
+    for dy in (-300, 300):
+        ctx.vm.control("swipe", "4", "0", str(dy))
+        ctx.settle(1.0)
+        if ctx.state()["workspace_tree"]["active"] != first:
+            break
+    else:
+        raise CheckFailed("neither a 4-finger swipe up nor down switched workspace")
+    res.metrics["workspace_swipe_dy"] = dy
+    ctx.shot("W15-swipe-workspace")
+    ctx.vm.control("swipe", "4", "0", str(-dy))
+    ctx.wait_state(lambda s: s["workspace_tree"]["active"] == first, 5,
+                   "the opposite 4-finger swipe switched back")
 
 
 # OVERVIEW_TRANSITION_MS in the shell's overlay host; workspace switches use the same span.
