@@ -1686,6 +1686,31 @@ impl Renderer {
         }
     }
 
+    /// Limit the image atlas to `max_size` pixels per side (8192 by
+    /// default). Images that do not fit after eviction are omitted and
+    /// reported, instead of a 256 MB atlas taking a browser's GPU process
+    /// past its memory limit.
+    pub fn set_image_atlas_max(&mut self, max_size: u32) {
+        self.resolver.set_image_atlas_max(max_size);
+    }
+
+    /// Grow the bump buffers at most once, straight to the
+    /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
+    /// fills up. Each growth reallocates every buffer, which a browser's GPU
+    /// process briefly holds twice.
+    pub fn set_bump_budget_grow_once(&mut self, grow_once: bool) {
+        self.budget.set_grow_once(grow_once);
+    }
+
+    /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
+    /// report using. Scenes past it drop geometry, which the shaders report,
+    /// instead of taking a browser's GPU process past its memory limit.
+    /// Viewport floors come on top.
+    pub fn set_bump_budget_limit(&mut self, bytes: u64) {
+        self.budget.set_max_total_bytes(bytes);
+        self.engine.clear_pool();
+    }
+
     /// Drop transient GPU buffers held only for reuse. In-flight command
     /// buffers keep their own references, so this is safe at a damage-shape
     /// transition and prevents obsolete size classes living forever.

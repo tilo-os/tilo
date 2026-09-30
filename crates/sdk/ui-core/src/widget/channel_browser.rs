@@ -820,11 +820,12 @@ impl ChannelBrowser {
         let cy = f64::midpoint(footer.y0, footer.y1);
 
         let mut x = footer.x0 + 4.0;
-        for (key, label) in [
-            ("\u{2191}\u{2193}", "Navigate"),
-            ("Enter", "Select"),
-            ("Esc", "Close"),
-        ] {
+        let hints = [
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!("palette-hint-select")),
+            ("Esc", crate::i18n!("palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
             let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);

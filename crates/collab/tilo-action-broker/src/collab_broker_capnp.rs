@@ -5794,6 +5794,9 @@ impl collab_service::Server for CapnpCollabService {
             );
             state.retain_host_worker(peer_id, &verified_identity)?;
             state.ensure_channel(&channel_id);
+            state
+                .publisher()
+                .local_route(&crate::route::CrdtRoute::from_channel_key(&channel_id));
 
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
