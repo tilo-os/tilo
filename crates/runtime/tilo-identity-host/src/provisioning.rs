@@ -436,7 +436,21 @@ pub fn install_joined_device(
         target_store.remember_certificate(&identity_id, known)?;
     }
     local_store.remember_certificate(&identity_id, cert.clone())?;
-    copy_home_peers(layout.local_home_peers, &target_system, &local_cert)?;
+    let local_device = persist::read_device_key(&layout.local_system.device_privkey)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if local_device.verifying_key().to_bytes() != local_cert.device_public_key {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "this machine's device key does not match its certificate",
+        ));
+    }
+    let relay_service = tilo_relay_protocol::relay_service_node_id(&local_device.to_bytes());
+    copy_home_peers(
+        layout.local_home_peers,
+        &target_system,
+        &local_cert,
+        relay_service,
+    )?;
     Ok(cert)
 }
 
@@ -502,6 +516,7 @@ fn copy_home_peers(
     source: &Path,
     target_system: &IdentityPaths,
     local_cert: &DeviceCert,
+    relay_service_node_id: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
     let bytes = match fs::read(source) {
@@ -523,15 +538,18 @@ fn copy_home_peers(
     };
     own.retain(|entry| entry.user_public_key == identity_id);
     let device_id = hex::encode(local_cert.device_public_key);
+    let service_id = hex::encode(relay_service_node_id);
     let topic = tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
     let already_dialable = own.iter().any(|entry| {
-        entry.relay_service_node_id == device_id && entry.relay_workspace_ids.contains(&topic)
+        entry.device_node_id == device_id
+            && entry.relay_service_node_id == service_id
+            && entry.relay_workspace_ids.contains(&topic)
     });
     if !already_dialable {
         own.push(tilo_relay_protocol::HomePeerRegistration {
             schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: device_id.clone(),
-            relay_service_node_id: device_id,
+            device_node_id: device_id,
+            relay_service_node_id: service_id,
             relay_endpoint: None,
             label: if local_cert.device_label.trim().is_empty() {
                 "Setup machine".into()
@@ -1068,6 +1086,7 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut local_cert, &root).unwrap();
         persist::write_device_cert(&local_system.device_cert, &local_cert).unwrap();
+        persist::write_device_key(&local_system.device_privkey, &local_device).unwrap();
         let peers = dir.path().join("home-peers.json");
         let own = HomePeerRegistration {
             schema_version: HomePeerRegistration::CURRENT_SCHEMA,
@@ -1157,10 +1176,22 @@ mod tests {
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
         let topic = tilo_relay_protocol::personal_continuity_workspace_id(&user);
+        let service = hex::encode(tilo_relay_protocol::relay_service_node_id(
+            &local_device.to_bytes(),
+        ));
+        assert_ne!(service, hex::encode(local_cert.device_public_key));
         assert!(copied.iter().any(|entry| {
-            entry.relay_service_node_id == hex::encode(local_cert.device_public_key)
+            entry.device_node_id == hex::encode(local_cert.device_public_key)
+                && entry.relay_service_node_id == service
                 && entry.relay_workspace_ids.contains(&topic)
         }));
+        let peers_bytes = std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap();
+        assert!(
+            !peers_bytes
+                .windows(32)
+                .any(|window| window == local_device.to_bytes()),
+            "the setup machine's device secret must stay off the target"
+        );
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
