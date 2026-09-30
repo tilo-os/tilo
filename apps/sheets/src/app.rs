@@ -2882,14 +2882,8 @@ impl SheetsApp {
             self.switch_sheet(doc, sheet);
             let name = self.sheet_names.get(sheet).cloned().unwrap_or_default();
             self.status = format!("{} is already open as {name}", file_label(&path));
-            self.finish_resource_output(Ok(tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({
-                    "already_open": true,
-                    "sheet": name,
-                    "sheet_id": SheetsDoc::sheet_resource_id(doc, sheet),
-                })),
-                resources: Vec::new(),
-            }));
+            // Imports publish a job result, which carries no terminal value.
+            self.finish_resource_output(Ok(tilo_actions::ActionOutput::default()));
             return Ok(());
         }
         if self.interchange_rx.is_some() || self.active_interchange_generation.is_some() {
@@ -8943,11 +8937,15 @@ mod tests {
             let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
                 panic!("{update:?}");
             };
-            let value = output.value.expect("a reopen says what it returned");
-            assert_eq!(value["already_open"], true);
-            assert_eq!(value["sheet_id"].as_str(), imported_id.as_deref());
+            tilo_actions::ResultSpec::Job
+                .validate(&output)
+                .expect("a reopen honours the import's published job result");
             assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
             assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+            assert_eq!(
+                SheetsDoc::sheet_resource_id(&doc, app.active_sheet),
+                imported_id
+            );
         }
 
         // Case `the_import_dialog_reveals_the_open_sheet`.
