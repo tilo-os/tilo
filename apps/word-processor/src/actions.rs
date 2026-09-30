@@ -1414,9 +1414,25 @@ const RETURNING_CHANGES: &[&str] = &[
     "insert-table",
 ];
 
+/// A table's edits that answer with its new cells, whose ids the caller
+/// fills them through.
+const TABLE_RETURNING_CHANGES: &[&str] = &["append-row", "append-column"];
+
 fn returning_changes(mut root: Resource) -> Resource {
-    for action in &mut root.actions {
-        if RETURNING_CHANGES.contains(&action.id.as_str())
+    declare_changes(&mut root, RETURNING_CHANGES);
+    for table in root
+        .children
+        .iter_mut()
+        .filter(|child| child.kind == "word_processor.table")
+    {
+        declare_changes(table, TABLE_RETURNING_CHANGES);
+    }
+    root
+}
+
+fn declare_changes(resource: &mut Resource, ids: &[&str]) {
+    for action in &mut resource.actions {
+        if ids.contains(&action.id.as_str())
             && action.kind == OperationKind::Document
             && action.contract.result == ResultSpec::None
         {
@@ -1425,7 +1441,6 @@ fn returning_changes(mut root: Resource) -> Resource {
             };
         }
     }
-    root
 }
 
 /// The resource tree from the incrementally kept document state: its
