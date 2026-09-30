@@ -46,7 +46,7 @@ pub mod transport;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use custody::{CertifyError, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify};
-pub use document::{ContentCipher, DocumentRoute, OpenedDocument};
+pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
 #[cfg(feature = "net")]

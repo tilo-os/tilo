@@ -188,7 +188,7 @@ fn v1_frame_charge(
 /// certificate channel replays first, because a shell drops what a device
 /// published until it holds that device's certificate, and channels are
 /// otherwise ordered by hash.
-fn lineage_rank(lineage: &str) -> &'static str {
+pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
         let Ok(author) = hex::decode(author) else {
             return false;
@@ -270,8 +270,18 @@ pub(crate) struct ReplayBuild {
     selection: Option<super::shell_selection::Selection>,
     selected: Option<File>,
     shell_selected: bool,
+    skip: Option<ResumeSkip>,
 }
+/// Retained frames a resuming device already holds, by
+/// [`super::resume::frame_digest`]; a replay for it leaves them out.
+pub(crate) type ResumeSkip = std::sync::Arc<std::collections::HashSet<[u8; 32]>>;
 impl ReplayBuild {
+    /// Leave out the retained frames `skip` names (a resuming device holds
+    /// them). Its queue is replayed whole.
+    pub(crate) fn skipping(mut self, skip: Option<ResumeSkip>) -> Self {
+        self.skip = skip;
+        self
+    }
     #[cfg(test)]
     pub(crate) fn stats(&self) -> Option<&WorkStats> {
         self.sorter.as_ref().map(|s| &s.stats)
@@ -286,6 +296,8 @@ struct Candidate {
     coverage: bool,
     charge: u64,
     index: File,
+    /// Held by the resuming device: indexed for coverage, not replayed.
+    held: bool,
 }
 pub(crate) struct ReplaySnapshot {
     root: PathBuf,
@@ -308,6 +320,7 @@ pub(crate) struct ReplaySnapshot {
     batch_number: u64,
     stats: WorkStats,
     digest: fn(&[u8]) -> [u8; 32],
+    skip: Option<ResumeSkip>,
 }
 impl ReplaySnapshot {
     pub(crate) fn stats(&self) -> &WorkStats {
@@ -319,6 +332,10 @@ impl ReplaySnapshot {
     fn pin(&self, pin: u64) -> PathBuf {
         self.root.join("pins").join(format!("{pin:016x}.frame"))
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one frame's measured decode, coverage and resume classification; splitting it would scatter its accounting"
+    )]
     fn classify(&mut self, store: &WorkspaceStore, mut meta: Meta) -> Result<(), StoreError> {
         let continuity =
             super::continuity::load_measured(store, &self.pin(meta.pin), &mut self.stats)?;
@@ -389,6 +406,11 @@ impl ReplaySnapshot {
         // Exact outer re-encoding rejects every unconsumed Envelope suffix;
         // `retained` independently requires complete Coedit consumption.
         let coverage = !meta.pending && retained && encoded == bytes;
+        let held = !meta.pending
+            && self
+                .skip
+                .as_ref()
+                .is_some_and(|skip| skip.contains(blake3::hash(&encoded).as_bytes()));
         drop(encoded);
         let v2 = tilo_delivery_protocol::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("v2 replay re-encoding failed"))?;
@@ -422,6 +444,7 @@ impl ReplaySnapshot {
             coverage,
             charge,
             index,
+            held,
         });
         Ok(())
     }
@@ -467,6 +490,7 @@ impl ReplaySnapshot {
             coverage,
             charge,
             mut index,
+            held,
         } = candidate;
         if meta.pending {
             write_meta(&mut self.cleanup, &meta)?;
@@ -477,9 +501,11 @@ impl ReplaySnapshot {
                 index.write_all(&meta.len.to_le_bytes())?;
                 index.write_all(&[u8::from(coverage || continuity.is_some())])?;
             }
-            meta.key = vec![charge.to_string().into()];
-            write_meta(&mut self.output, &meta)?;
-            increment(&mut self.count)?;
+            if !held {
+                meta.key = vec![charge.to_string().into()];
+                write_meta(&mut self.output, &meta)?;
+                increment(&mut self.count)?;
+            }
         }
         Ok(())
     }
@@ -543,6 +569,7 @@ impl WorkspaceStore {
             sorter: Some(sorter),
             next_pin: 0,
             continuity: Some(File::create(root.join("continuity.manifest"))?),
+            skip: None,
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
@@ -626,6 +653,7 @@ impl WorkspaceStore {
                     batch_number: 0,
                     stats: WorkStats::default(),
                     digest,
+                    skip: build.skip.take(),
                 }));
             }
             if build.phase == 2 && build.selected.is_some() {
