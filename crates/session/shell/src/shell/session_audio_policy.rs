@@ -49,8 +49,33 @@ fn should_enumerate(stable_polls: u8, prefs_changed: bool) -> bool {
     prefs_changed || !graph_is_idle(stable_polls)
 }
 
+/// Devices and hardware only. Streams (including the `pw-dump` this
+/// worker shells) are not part of "the graph is still": comparing
+/// [`AudioGraph::topology_signature`] kept the enumerator awake because
+/// each dump is itself a playback stream.
+fn idle_signature(graph: &AudioGraph) -> String {
+    let names = |devices: &[AudioDevice]| {
+        devices
+            .iter()
+            .map(|device| device.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "sink[{}]|src[{}]|hw[{}]",
+        names(&graph.sinks),
+        names(&graph.sources),
+        graph
+            .hardware
+            .iter()
+            .map(|device| format!("{}:{}", device.id, device.profiles.len()))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 fn topology_unchanged(previous: Option<&str>, graph: &AudioGraph) -> bool {
-    previous == Some(graph.topology_signature().as_str())
+    previous == Some(idle_signature(graph).as_str())
 }
 
 #[derive(Debug)]
@@ -92,7 +117,7 @@ impl SessionAudioPolicyOwner {
                         } else {
                             stable_polls = 0;
                         }
-                        last_sig = Some(graph.topology_signature());
+                        last_sig = Some(idle_signature(&graph));
                         for event in devices.observe(&graph) {
                             let _ = device_tx.send(event);
                         }
@@ -379,7 +404,7 @@ mod tests {
     fn empty_and_volume_only_graphs_are_topology_stable() {
         let empty = AudioGraph::default();
         assert!(
-            topology_unchanged(Some(empty.topology_signature().as_str()), &empty),
+            topology_unchanged(Some(idle_signature(&empty).as_str()), &empty),
             "two empty dumps are the same topology; PartialEq used to miss this              when last_graph stayed unset"
         );
         let mut louder = graph(&["Built-in Audio"]);
@@ -396,6 +421,36 @@ mod tests {
             louder.topology_signature(),
             quieter.topology_signature(),
             "volume is not topology; comparing whole graphs kept pw-dump awake"
+        );
+    }
+
+    #[test]
+    fn a_transient_dump_stream_does_not_keep_the_graph_awake() {
+        let mut still = graph(&["Built-in Audio"]);
+        still.sinks.push(sink(
+            "alsa_output.pci.analog-stereo",
+            "Built-in Audio",
+            true,
+        ));
+        let mut with_dump = still.clone();
+        with_dump.playback_streams.push(media::audio::AudioStream {
+            id: 99,
+            serial: 1,
+            app: "pw-dump".into(),
+            media_name: None,
+            playback: true,
+            target_id: None,
+            volume: None,
+            muted: None,
+        });
+        assert_ne!(
+            still.topology_signature(),
+            with_dump.topology_signature(),
+            "topology_signature still sees streams; idle compare must not"
+        );
+        assert!(
+            topology_unchanged(Some(idle_signature(&still).as_str()), &with_dump),
+            "pw-dump is a stream, not a device; including it in idle compare kept itself awake"
         );
     }
 
