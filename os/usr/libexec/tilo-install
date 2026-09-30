@@ -1631,6 +1631,14 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   if [ -d "$HANDOFF_SRC/var" ]; then
     cp -a "$HANDOFF_SRC/var/." "$HANDOFF_VAR/"
   fi
+  key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
+  if [ -f "$key" ]; then
+    chgrp tilo-identity "$key" || die "tilo-identity group is missing; cannot install the device key"
+    chmod 0640 "$key"
+  fi
+  if [ -d "$DEPLOY_ETC/NetworkManager/system-connections" ]; then
+    find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +
+  fi
   log "  applied the setup handoff"
 fi
 
