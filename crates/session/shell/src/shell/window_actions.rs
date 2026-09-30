@@ -291,7 +291,7 @@ pub(crate) fn close_tab_unrecorded(
     st: &mut ChromeState,
     tab_id: TabId,
 ) -> Result<(), TabActionError> {
-    let surface = {
+    let foreign = {
         let tree = st.tree();
         tree.desktop
             .workspaces
@@ -301,10 +301,13 @@ pub(crate) fn close_tab_unrecorded(
             .flat_map(|group| group.tabs.iter())
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| match &tab.tile {
-                TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                TileContent::Foreign { app_id, surface_id } => Some((app_id.clone(), *surface_id)),
                 _ => None,
             })
     };
+    let launch_key = foreign
+        .as_ref()
+        .map(|(app_id, surface_id)| host_launch_key(app_id, *surface_id));
     let removed = {
         let mut tree = st.tree_mut();
         tab_binding::remove_tab(&mut tree, tab_id)
@@ -315,11 +318,39 @@ pub(crate) fn close_tab_unrecorded(
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().flush_to_disk();
-    if let Some(surface_id) = surface {
+    if let Some((_, surface_id)) = foreign {
         st.request_surface_close(surface_id);
+    }
+    #[cfg(any(test, target_os = "linux"))]
+    if let Some(key) = launch_key.as_deref()
+        && !foreign_tabs_remain_for(&st.tree().desktop, key)
+    {
+        crate::shell::launcher::terminate_unconfined_launches(key);
     }
     st.bump();
     Ok(())
+}
+
+fn host_launch_key(app_id: &str, surface_id: u64) -> String {
+    crate::shell::launcher::launch_key_for_surface(surface_id)
+        .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
+        .unwrap_or_else(|| app_id.to_string())
+}
+
+fn foreign_tabs_remain_for(desktop: &crate::shell::state::DesktopTree, launch_key: &str) -> bool {
+    desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .any(|tab| match &tab.tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                host_launch_key(app_id, *surface_id) == launch_key
+                    || app_id.eq_ignore_ascii_case(launch_key)
+            }
+            _ => false,
+        })
 }
 
 /// [`close_tab`] on the focused group's active tab — the `tab.close`
