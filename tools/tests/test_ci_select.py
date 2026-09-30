@@ -271,7 +271,7 @@ class SelectorTests(unittest.TestCase):
         unrelated = plan(["qdoc/src/lib.rs"])
         self.assertFalse(unrelated["wasm_required"])
         self.assertEqual(unrelated["web_examples"], [])
-        build = plan(["crates/browser/tilo-browser-runtime/scripts/build-web-app.sh"])
+        build = plan(["crates/browser/tilo-browser-runtime/scripts/build.sh"])
         self.assertTrue(build["wasm_required"])
         self.assertEqual(build["web_examples"], ["example-counter"])
         with tempfile.TemporaryDirectory() as directory:
@@ -451,15 +451,16 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("fs", "tilo-cloud-host", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-cloud-host", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone fs and the Cloud host would share the lighter shard.
-            seconds = {"tilo-action-broker": 900, "fs": 100, "tilo-cloud-host": 100, "light": 1}
+            # By time alone tilo-fs and the Cloud host would share the lighter
+            # shard. Placement breaks equal weights by name, so theirs differ.
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-cloud-host": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
             self.assertIn({"tilo-cloud-host", "tilo-action-broker"}, placed)
-            self.assertTrue(any("fs" in names for names in placed))
+            self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
                                         ci_select.TEST_SHARD_APART)

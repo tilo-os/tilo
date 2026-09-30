@@ -48,21 +48,6 @@ env:
   # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
   # adapter and fail instead of silently selecting runner hardware.
   WGPU_ADAPTER_NAME: llvmpipe
-  # Software-Vulkan goldens are intentionally exercised by ci-nightly.yml after
-  # its parallel suite has drained. Under the affected-package shards their
-  # atomic rasterisation changes with runner load, producing repeatable false
-  # pixel deltas even though the same canonical image passes while isolated.
-  GOLDEN_FILTER: >-
-    (package(tilo-ui) and test(typography_visual_regression::)) or
-    (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
-    (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
-  # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images
-  # and take tens of seconds each. Pull-request shards skip them; pushes to
-  # main still run them here, and ci-nightly.yml runs them with the whole
-  # workspace, so a regression is caught at the merge that caused it.
-  PUSH_ONLY_FILTER: >-
-    (package(fs) and binary(collab_release_matrix)) or
-    (package(tilo-rollback) and binary(mechanism))
 
 jobs:
   builder:
@@ -153,6 +138,9 @@ jobs:
       - name: Merge onto main
         id: merge
         uses: ./.forgejo/actions/merge-main
+
+      - name: Nix Cargo lock guard
+        run: python3 scripts/check-nix-cargo-lock.py
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
@@ -315,6 +303,10 @@ jobs:
         with:
           main: ${{ needs.select.outputs.main }}
 
+      # From the merged tree: its package names are the ones nextest sees.
+      - name: Read the shared test filters
+        run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
+
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
@@ -332,7 +324,7 @@ jobs:
       # Where the runner's kernel can enforce Landlock, the PDF helper's
       # sandbox is also required rather than allowed to stand down.
       - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p thumbnail')
+        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p tilo-thumbnail')
         run: |
           asset=$(bash tools/ci/install-pdfium.sh --asset-name)
           ./os/dev/cache-github-assets.sh "$asset"

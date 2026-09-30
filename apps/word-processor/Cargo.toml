@@ -28,7 +28,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -41,7 +41,7 @@ qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
 # Comment replies are written in the SDK rich-text editor, embedded.
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["markdown", "html", "rtf", "epub", "docx", "odt"] }
-spellcheck = { path = "../../crates/text/spellcheck" }
+tilo-spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 # Content addressing everywhere; the device store where the launcher hands
 # one over.

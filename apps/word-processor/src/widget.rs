@@ -11481,6 +11481,14 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        _address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        Some(crate::semantic_read::changes::summary(doc, changes).into())
+    }
 }
 
 impl ui::widget::controls::ActionControls for WordProcessorWidget {

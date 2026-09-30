@@ -30,10 +30,10 @@ android = []
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
 # Single-writer custody of a notebook directory.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../crates/system/atomic-file" }
-app-state = { path = "../../crates/system/app-state" }
+tilo-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-app-state = { path = "../../crates/system/app-state" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }

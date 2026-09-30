@@ -25,9 +25,9 @@ run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
 run 'Path-filtered package dependency triggers' \
   python3 tools/policy/check_workflow_package_paths.py \
-  --check atomic-file .forgejo/workflows/build-ci-builder.yml \
+  --check tilo-atomic-file .forgejo/workflows/build-ci-builder.yml \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
-  --check fs .forgejo/workflows/ci-filesystem.yml \
+  --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
@@ -58,6 +58,7 @@ run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
 run 'Apps declare the capabilities their code uses' \
   python3 tools/policy/check_app_capabilities.py
+run 'Browser desktop registry matches app manifests' python3 tools/web/generate_web_desktop.py --check
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py

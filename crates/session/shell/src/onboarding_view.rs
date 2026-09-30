@@ -4384,10 +4384,11 @@ mod tests {
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
             assert!(navigation.contains("Super+Tab"));
-            assert!(navigation.contains("four-finger swipe"));
+            assert!(navigation.contains("Super+Tab or pinch"));
             assert!(navigation.contains("Super+arrow keys"));
             assert!(navigation.contains("three-finger swipe"));
-            assert!(navigation.contains("Up and down switch workspaces"));
+            assert!(navigation.contains("Up and down go to the strip above or below"));
+            assert!(navigation.contains("a four-finger swipe, switch workspaces"));
             assert!(navigation.contains("Left and right step between tiled windows"));
             assert!(
                 !navigation.contains("Super+W"),

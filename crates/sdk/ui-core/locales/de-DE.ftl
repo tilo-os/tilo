@@ -271,6 +271,7 @@ block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+E
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
+widget-maximized-restore = Wiederherstellen
 tree-rename-field = Umbenennen
 tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
@@ -370,7 +371,9 @@ history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
 palette-results = Ergebnisse
+palette-placeholder = Suchen…
 palette-hint-navigate = Navigieren
+palette-hint-select = Auswählen
 palette-hint-open = Öffnen
 palette-hint-run = Ausführen
 palette-hint-close = Schließen

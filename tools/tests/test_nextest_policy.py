@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 import tomllib
 import unittest
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 
 REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
+FILTERS = REPO / ".config" / "nextest-filters.toml"
 SHELL = REPO / "crates" / "session" / "shell" / "src"
 WORKFLOWS = REPO / ".forgejo" / "workflows"
 
@@ -18,24 +21,6 @@ def native_4k_tests() -> set[str]:
     for source in SHELL.rglob("*.rs"):
         names.update(pattern.findall(source.read_text(encoding="utf-8")))
     return names
-
-
-def folded_values(workflow: str, key: str) -> list[str]:
-    """Values of `key: >-` folded scalars, without a YAML dependency."""
-    values = []
-    lines = workflow.splitlines()
-    for index, line in enumerate(lines):
-        match = re.fullmatch(rf"(\s*){key}: >-", line)
-        if match is None:
-            continue
-        indent = len(match.group(1))
-        body = []
-        for following in lines[index + 1:]:
-            if following.strip() and len(following) - len(following.lstrip()) <= indent:
-                break
-            body.append(following.strip())
-        values.append(" ".join(part for part in body if part))
-    return values
 
 
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:
@@ -96,13 +81,22 @@ class NextestPolicyTests(unittest.TestCase):
             for override in effective_overrides(config, profile)
             if override.get("test-group") == "gpu-golden"
         }
-        for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
-            values = folded_values((WORKFLOWS / name).read_text(encoding="utf-8"), "GOLDEN_FILTER")
-            self.assertEqual(len(values), 1, name)
-            filters[name] = values[0]
+        filters["shared"] = tomllib.loads(FILTERS.read_text(encoding="utf-8"))["golden"]
         normalised = {name: " ".join(value.split()) for name, value in filters.items()}
         self.assertEqual(len(set(normalised.values())), 1, normalised)
 
+    def test_workflows_read_filters_from_the_tested_tree(self) -> None:
+        # A pull request is tested on top of main with its own workflow file;
+        # a filterset copied into that file names packages main may have
+        # renamed, and nextest rejects a package() that matches nothing.
+        for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
+            workflow = (WORKFLOWS / name).read_text(encoding="utf-8")
+            self.assertNotRegex(workflow, r"(?m)^\s*(GOLDEN|PUSH_ONLY)_FILTER:", name)
+            self.assertIn("python3 tools/ci/nextest_filters.py >> \"$GITHUB_ENV\"", workflow, name)
+        output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
+                                check=True, capture_output=True, text=True).stdout
+        names = [line.split("=", 1)[0] for line in output.splitlines()]
+        self.assertEqual(names, ["GOLDEN_FILTER", "PUSH_ONLY_FILTER"])
 
 if __name__ == "__main__":
     unittest.main()

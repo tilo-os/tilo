@@ -36,13 +36,54 @@ instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
 `Build / OS dev` workflow builds every main push and every pull request that
 touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
-the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`).
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
+main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
 and a `release` dispatch of main.
+
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
+`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
+`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
+not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
+disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
+(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
+and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
+systemctl reboot` moves it to main's newest dev image.
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
 does; `tilo-vm guide fedora-loop` maps its commands.
+
+### Board dev images on real hardware
+
+A board dev image is the board layer (`os/Containerfile.board`: firmware, device
+tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
+the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
+UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
+aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
+installs the flashable disk:
+
+| Board | Image of one build | Moving tag (main) |
+| --- | --- | --- |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+
+The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
+disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
+from the firmware boot menu:
+
+```sh
+curl -fLO <disk URL from the job summary>
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
+```
+
+The installed system follows the moving tag, so later builds of main arrive with:
+
+```sh
+sudo bootc upgrade && sudo systemctl reboot
+# or one particular build:
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+```
 
 ## Routine delivery workflow
 
@@ -543,7 +584,7 @@ the OS. The default `filesystem` feature adds the namespace, FUSE projection,
 service protocols and their integration tests.
 
 ```powershell
-cargo test --locked -p fs --no-default-features --lib
+cargo test --locked -p tilo-fs --no-default-features --lib
 cargo test --locked -p scratchpad --all-targets
 ```
 
@@ -1062,7 +1103,7 @@ output, from any command. Point `TMPDIR` at real disk for large parallel builds.
 
 ```bash
 cargo build -p shell            # or ui, fs, terminal, file-explorer, browser
-cargo test -p fs
+cargo test -p tilo-fs
 cargo test -p shell --lib room_activity      # scope it; the compile dominates
 cargo check -p shell --tests                 # before finishing
 ```
@@ -1137,10 +1178,10 @@ Reproduce that locally with:
 
 ```bash
 scripts/test-local.sh                            # the workspace, visual goldens excluded
-scripts/test-local.sh -p fs -p tilo-ui           # selected packages
-scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
+scripts/test-local.sh -p tilo-fs -p tilo-ui           # selected packages
+scripts/test-local.sh -p tilo-fs -- checked_restore   # arguments after -- go to nextest run
 scripts/test-local.sh --goldens                  # only the visual goldens
-CARGO=my-cargo scripts/test-local.sh -p fs       # any cargo drop-in compiles, run here
+CARGO=my-cargo scripts/test-local.sh -p tilo-fs  # any cargo drop-in compiles, run here
 ```
 
 It compiles in your environment, then runs the compiled tests (through

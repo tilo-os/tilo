@@ -266,18 +266,39 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
 
         // ...and it still ends. Mounted flush left as in the sidebar column, so
         // past the rim — clear of its outward shadow — the app must be plainly
-        // visible.
+        // visible. Labels hang past the rim on their own plates, so the probe
+        // takes the first row below the centre that none of the disc's
+        // published targets covers.
         let outside = px(c.x + r_out + RIM_SHADOW_CLEARANCE).min(CANVAS_W - 1);
         assert!(
             f64::from(outside) > footprint.x1 - 1.0 || f64::from(outside) > c.x + r_out,
             "probe at x={outside} is not past the rim at {:.0}",
             c.x + r_out
         );
-        let beyond = luma(outside, row_y);
+        let targets: Vec<_> = disc
+            .accessibility()
+            .map(|node| node.children)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|node| node.bounds)
+            .collect();
+        assert!(
+            !targets.is_empty(),
+            "the disc published no targets, so the probe row would be a guess"
+        );
+        let clear_y = (row_y..CANVAS_H)
+            .find(|&y| {
+                let y = f64::from(y);
+                targets
+                    .iter()
+                    .all(|b| y < b.y0 - LABEL_PLATE_CLEARANCE || y > b.y1 + LABEL_PLATE_CLEARANCE)
+            })
+            .expect("a row past the rim that no label covers");
+        let beyond = luma(outside, clear_y);
         assert!(
             beyond > 170,
             "the disc blacked out the app past its own rim (luma {beyond}/255 at \
-             ({outside},{row_y})) — it is meant to be a slice, not a panel; see {path:?}"
+             ({outside},{clear_y})) — it is meant to be a slice, not a panel; see {path:?}"
         );
     }
 }
@@ -285,3 +306,7 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
 /// Pixels past the rim at which the app must be fully visible again,
 /// clear of the rim's outward shadow.
 const RIM_SHADOW_CLEARANCE: f64 = 36.0;
+
+/// Rows above and below a label's target the probe keeps clear of, for the
+/// plate's anti-aliased edge.
+const LABEL_PLATE_CLEARANCE: f64 = 4.0;

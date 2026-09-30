@@ -374,51 +374,25 @@ name = "browser-runtime-web"
 # app catalogue.
 inputs = ["crates/browser/tilo-browser-runtime/"]
 suites = [
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/abi.test.mjs",
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs",
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-client.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-palette-bridge.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-ticket.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/agent-reads-client.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/app-directory.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/app-installer.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/automerge-check.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/clipboard.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-machine-linking.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-peer-session.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-peer-source.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/core-loader.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-command-bridge.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-launch-focus.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
+  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-speculation.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/dylink.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/host.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity-storage.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-identity-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-peer-session.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-peer-source.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-overlay.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-audio-codecs.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-audio.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-buffers.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/open-file.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-delivery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-media.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-persistence.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-recovery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/relay-live.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
 
@@ -531,7 +505,7 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
-package = "fs"
+package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
@@ -603,6 +577,19 @@ readers = [
   "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
   "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
   "apps/pdf-viewer/tests/capture.rs",
+]
+
+[[cargo]]
+package = "tilo-agent-participant"
+# The session tests mount apps against the controlled font fixture and share
+# the browser peer's relay test support.
+inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
+readers = [
+  "crates/agent/agent-participant/tests/common/mod.rs",
+  "crates/agent/agent-participant/tests/room_actions.rs",
+  "crates/agent/agent-participant/tests/host_agents.rs",
+  "crates/agent/agent-participant/tests/session_coverage.rs",
+  "crates/agent/agent-participant/tests/shared_session.rs",
 ]
 
 [[cargo]]
@@ -1179,10 +1166,6 @@ suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/action-storage.browser.test.mjs"
-reason = "drives a real browser through Playwright, which the ci-fast image does not carry"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
@@ -1191,15 +1174,7 @@ suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/live-fallback.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/media-moq.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
@@ -1207,15 +1182,7 @@ suite = "scripts/moq-browser/bundle.test.mjs"
 reason = "a bun test of the MoQ bundle, which needs its npm dependencies installed from the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/action-storage.test.mjs"
-reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
-reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/peer-session.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
 
 [[unrequired]]

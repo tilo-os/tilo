@@ -487,7 +487,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();
     Ok(renderer)
 }

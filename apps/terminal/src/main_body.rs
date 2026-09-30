@@ -5272,6 +5272,11 @@ impl TerminalWidget {
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
                 Self::map_alt_char(c.as_str())
             }
+            // Hardware Space arrives as `Named(Space)` (often with no `text`).
+            // Control-socket `type` sends `Character` glyphs whose `text` may
+            // also be empty. Both used to fall through, so App/Frame treated
+            // unconsumed Space/Enter as Activate and the PTY never saw them.
+            Key::Character(c) if !ctrl && !alt && !mods.super_key() => Some(c.as_bytes().to_vec()),
             _ => None,
         }
     }
@@ -5332,6 +5337,7 @@ impl TerminalWidget {
     ) -> Option<Vec<u8>> {
         match named {
             NamedKey::Enter => Some(vec![b'\r']),
+            NamedKey::Space => Some(vec![b' ']),
             NamedKey::Backspace => Some(vec![127]),
             // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
             NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),

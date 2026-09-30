@@ -257,26 +257,37 @@ fn bridge_browser_presence(
                 from_device_public_key: device,
                 frame,
             };
-            workspace
+            let delivered = workspace
                 .lock()
                 .await
                 .relay_bridged_live(&device, &envelope);
+            tracing::debug!(
+                workspace_id,
+                from = %hex::encode(&device[..4]),
+                delivered,
+                "browser presence bridged to iroh live members"
+            );
         }
     })
 }
 
+/// Accepted connections belong to their listener's loop: aborting the loop
+/// (dropping the [`WebHandle`]) closes every open connection with it, so a
+/// browser sees its host go away instead of a kept-alive orphan serving it.
 async fn accept_loop(
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     web: Arc<Web>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
+        while connections.try_join_next().is_some() {}
         let acceptor = acceptor.clone();
         let web = web.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let Ok(Ok(tls)) =
                 tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
             else {
@@ -289,11 +300,13 @@ async fn accept_loop(
 
 /// The same routes as plain HTTP on a loopback listener.
 async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
-        tokio::spawn(serve_connection(stream, web.clone()));
+        while connections.try_join_next().is_some() {}
+        connections.spawn(serve_connection(stream, web.clone()));
     }
 }
 
@@ -515,10 +528,18 @@ async fn route(
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            sessions
+            let grant = sessions
                 .finish(&finish.handshake, &finish.ack2)
-                .map(|grant| encoded(&grant))
-                .map_err(|error| session_status(&error))
+                .map_err(|error| session_status(&error))?;
+            Ok(
+                match protocol::encode_grant(
+                    &grant,
+                    protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION,
+                ) {
+                    Ok(bytes) => reply(StatusCode::OK, bytes),
+                    Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                },
+            )
         }
         "/send" => {
             let session = authed()?;

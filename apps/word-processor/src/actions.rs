@@ -1399,7 +1399,33 @@ fn provide_resources_from(
     add_metadata_resources(&mut root, listed);
     add_style_resources(&mut root, listed);
     add_structural_resources(&mut root, listed);
-    vec![root]
+    vec![returning_changes(root)]
+}
+
+/// The edits a caller composes a document with answer with the blocks they
+/// changed ([`crate::semantic_read::changes`]), so it sees the result without
+/// reading the document again. Only these: every declared result grows the
+/// catalogue each open document publishes to the broker, whose reply is
+/// capped.
+const RETURNING_CHANGES: &[&str] = &[
+    "paste",
+    "set-paragraph-style",
+    "apply-named-style",
+    "insert-table",
+];
+
+fn returning_changes(mut root: Resource) -> Resource {
+    for action in &mut root.actions {
+        if RETURNING_CHANGES.contains(&action.id.as_str())
+            && action.kind == OperationKind::Document
+            && action.contract.result == ResultSpec::None
+        {
+            action.contract.result = ResultSpec::Json {
+                schema: serde_json::json!({"type": ["string", "null"]}),
+            };
+        }
+    }
+    root
 }
 
 /// The resource tree from the incrementally kept document state: its
