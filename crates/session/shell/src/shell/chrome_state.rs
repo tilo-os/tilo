@@ -665,8 +665,16 @@ pub struct ChromeState {
     session_action_requests: Vec<os_actions::SessionAction>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
-    /// frame via [`Self::set_fullscreen_group`].
+    /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
+    /// per-output overlay, so the native loop writes `None` here every
+    /// tick; do not park Super+F in this slot (W07).
     fullscreen_group: Option<u64>,
+    /// Super+F (and the action door) park the focused group here. Kept
+    /// separate from [`Self::fullscreen_group`], which the compositor
+    /// rewrites every frame — a value parked there is wiped before
+    /// state-dump can observe it. Unlike [`Self::maximized_group`], this
+    /// covers the output, including the wheel.
+    user_fullscreen_group: Option<u64>,
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there by Expand would be
@@ -846,6 +854,7 @@ impl ChromeState {
             session_lock_requested: false,
             session_action_requests: Vec::new(),
             fullscreen_group: None,
+            user_fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
             single_strip: false,
@@ -1062,7 +1071,7 @@ impl ChromeState {
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
-        self.fullscreen_group
+        self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
     /// Either a client-requested fullscreen or a group the user
@@ -1117,6 +1126,13 @@ impl ChromeState {
     pub fn set_fullscreen_group(&mut self, group: Option<u64>) {
         if self.fullscreen_group != group {
             self.fullscreen_group = group;
+            self.bump();
+        }
+    }
+
+    pub fn set_user_fullscreen_group(&mut self, group: Option<u64>) {
+        if self.user_fullscreen_group != group {
+            self.user_fullscreen_group = group;
             self.bump();
         }
     }

@@ -4752,6 +4752,13 @@ mod tests {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            // The native loop writes `set_fullscreen(None)` every tick so
+            // client xdg stays an overlay. Super+F must survive that wipe.
+            fb.set_fullscreen(None);
+            assert!(
+                fb.fullscreen_group().is_some(),
+                "compositor set_fullscreen(None) must not clear Super+F"
+            );
             let _ = fb.paint_settled();
             assert!(fb.chrome().is_fullscreen());
             let during = fb.widget_registry();
@@ -4786,6 +4793,15 @@ mod tests {
                 st.overlays.overview = true;
                 st.bump();
             });
+            // Latch on the host before update, as Super+Tab does.
+            fb.host_mut().latch_overview_transition();
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "root-transition"),
+                "overview must request frames on the chord, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
             let mut doc = AutoCommit::new();
             fb.pump_apps(&mut doc, &automerge::ROOT);
             assert!(
@@ -4805,13 +4821,22 @@ mod tests {
                 switched = st.switch_workspace(1);
             });
             assert!(switched, "the demo tree has a second workspace");
+            // Latch on the host before update, as Super+PageDown does.
+            fb.host_mut().start_workspace_switch_frames();
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "workspace-switch"),
+                "a workspace switch must request frames on the chord, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
             let mut doc = AutoCommit::new();
             fb.pump_apps(&mut doc, &automerge::ROOT);
             assert!(
                 fb.animation_owners()
                     .iter()
                     .any(|owner| owner == "workspace-switch"),
-                "a workspace switch must request a run of frames; owners {:?}",
+                "a workspace switch must keep requesting a run of frames; owners {:?}",
                 fb.animation_owners()
             );
         }
