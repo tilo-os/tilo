@@ -81,6 +81,54 @@ pub fn windows_provider_name() -> String {
     t("search-provider-desktop-windows")
 }
 
+/// The tile whose face a window row wears — the same artwork the tab
+/// strip and overview card show.
+///
+/// A tab row (`tab.focus`, `tab.close`, `tab.move`, `tab.copy`) wears
+/// that tab. A group-close row wears the group's active tab, or its
+/// first tab if the active one is gone.
+pub fn window_row_tile<'a>(tree: &'a DesktopTree, id: &str) -> Option<&'a TileContent> {
+    let (group_id, tab_id) = window_row_face(id)?;
+    let group = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+        })
+        .find(|group| group.id == group_id)?;
+    if let Some(tab_id) = tab_id {
+        return group
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| &tab.tile);
+    }
+    group
+        .tabs
+        .iter()
+        .find(|tab| tab.id == group.active_tab)
+        .or_else(|| group.tabs.first())
+        .map(|tab| &tab.tile)
+}
+
+fn window_row_face(id: &str) -> Option<(GroupId, Option<TabId>)> {
+    let tab_rest = ["tab.focus:", "tab.close:", "tab.move:", "tab.copy:"]
+        .into_iter()
+        .find_map(|prefix| id.strip_prefix(prefix));
+    if let Some(rest) = tab_rest {
+        let mut parts = rest.split(':');
+        let group = parts.next()?.parse().ok()?;
+        let tab = parts.next()?.parse().ok()?;
+        return Some((group, Some(tab)));
+    }
+    let rest = id.strip_prefix("group.close:")?;
+    let group = rest.split(':').next()?.parse().ok()?;
+    Some((group, None))
+}
+
 /// The exact address of going to `tab` in `group`.
 pub fn tab_focus_id(group: GroupId, tab: TabId) -> String {
     format!("tab.focus:{group}:{tab}")
