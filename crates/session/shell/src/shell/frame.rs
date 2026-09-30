@@ -4479,7 +4479,7 @@ mod tests {
             );
         }
 
-        /// Super+F on a Tilo window (no xdg_toplevel) must cover the wheel.
+        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
         /// Maximize stops beside it; that fallback was the W07 313px gap.
         fn super_f_on_a_tilo_group_covers_the_wheel() {
             let mut fb = FrameBuilder::new((1600, 900));
