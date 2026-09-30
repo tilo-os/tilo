@@ -474,7 +474,7 @@ settings-category-updates-subtitle = Betriebssystem- und Firmware-Updates
 settings-category-about = Info
 settings-category-about-subtitle = Geräteidentität und Übertragung
 
-# Accessibility chrome (text-size list stays the shared English identifiers)
+# About pane
 settings-users-error-title = Diese Änderung konnte nicht übernommen werden
 settings-users-add = Benutzer hinzufügen
 settings-users-empty-accounts = Auf diesem Gerät wurden keine normalen Anmeldekonten gefunden.
@@ -823,3 +823,20 @@ a11y-live-captions = Live-Untertitel
 a11y-live-captions-status = Nicht verfügbar — keine lokale Spracherkennung installiert
 a11y-shared-title = Mit Ihren Apps gemeinsam
 a11y-shared-caption = Seheinstellungen sind dieselben Werte wie in Darstellung — eine Änderung hier oder dort gilt gemeinsam. Zeigergröße, Maustasten sowie Einrast-, Verzöger- und Prellfilter wendet die Eingabeschicht des Compositors an. Farbfilter, Lupe und Zeigerhilfen sind finale Compositor-Effekte. Die Einfügemarkenbreite gehört zum gemeinsamen Toolkit. Der Bildschirmleser lädt in jeder Tilo-App neu, visuelle Hinweise zeichnet die Shell. Die Bildschirmtastatur ist ein isolierter Systemdienst: der Compositor startet sie auf einem privaten Eingabemethoden-Socket und hält ihre Fläche aus Arbeitsflächen-Kacheln. Nicht unterstützte Fähigkeiten stehen ausdrücklich da, statt als tote Schalter gespeichert zu werden.
+settings-about-unknown = unbekannt
+settings-about-identity-card = Arbeitsbereich-Identität
+settings-about-person = Person
+settings-about-not-connected = Nicht verbunden
+settings-about-identity = Identität
+settings-about-identity-caption = Das ist die Identität, die für den aktuellen Arbeitsbereich gewählt ist. Apps erhalten ihr öffentliches Profil; privates Signaturmaterial bleibt außerhalb der Sandbox.
+settings-about-backup-card = Identitäts-Sicherung
+settings-about-backup-caption = Erstelle eine verschlüsselte tragbare Kopie deiner Identität. Tilo fragt nach einer Passphrase, lässt dich den Speicherort wählen und prüft die Kopie, bevor es den Erfolg bestätigt.
+settings-about-backup-button = Verschlüsselte Sicherung erstellen…
+settings-about-system-card = System
+settings-about-os = Betriebssystem
+settings-about-kernel = Kernel
+settings-about-architecture = Architektur
+settings-about-uptime = Laufzeit
+settings-about-hardware-card = Hardware
+settings-about-processor = Prozessor
+settings-about-memory = Speicher

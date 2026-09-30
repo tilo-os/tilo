@@ -474,7 +474,7 @@ settings-category-updates-subtitle = Operating-system and firmware updates
 settings-category-about = About
 settings-category-about-subtitle = Device identity and transfer
 
-# Accessibility chrome (text-size list stays the shared English identifiers)
+# About pane
 settings-users-error-title = Could not apply that change
 settings-users-add = Add user
 settings-users-empty-accounts = No regular login accounts found on this device.
@@ -823,3 +823,20 @@ a11y-live-captions = Live captions
 a11y-live-captions-status = Unavailable — no local speech-to-text engine is installed
 a11y-shared-title = Shared with your apps
 a11y-shared-caption = Vision comforts are the same settings the Appearance pane offers — changing them here or there updates one shared value. Pointer sizing, mouse keys, and the sticky, slow and bounce key filters are applied by the compositor's input layer. Colour filters, the magnifier and pointer guides are final-scene compositor effects. Text-caret width is owned by the shared toolkit. The screen reader reloads in every Tilo app and visual alerts are rendered by shell chrome. The on-screen keyboard is a sandboxed system service: the compositor starts it on a private input-method socket and keeps its surface out of workspace tiles. Unsupported capabilities are identified explicitly instead of being stored as inert toggles.
+settings-about-unknown = unknown
+settings-about-identity-card = Workspace identity
+settings-about-person = Person
+settings-about-not-connected = Not connected
+settings-about-identity = Identity
+settings-about-identity-caption = This is the identity selected for the current workspace. Apps receive its public profile; private signing material stays outside the sandbox.
+settings-about-backup-card = Identity backup
+settings-about-backup-caption = Create an encrypted portable copy of your identity. Tilo asks for a passphrase, lets you choose where to save it, and verifies the copy before confirming success.
+settings-about-backup-button = Create encrypted backup…
+settings-about-system-card = System
+settings-about-os = OS
+settings-about-kernel = Kernel
+settings-about-architecture = Architecture
+settings-about-uptime = Uptime
+settings-about-hardware-card = Hardware
+settings-about-processor = Processor
+settings-about-memory = Memory
