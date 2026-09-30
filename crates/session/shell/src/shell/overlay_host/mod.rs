@@ -5921,6 +5921,11 @@ impl ShellOverlayHost {
 
     /// The switcher as `state-dump` reports it: its windows, which is
     /// selected, and whether each card shows a live preview.
+    /// Whether the power menu is open, for `state_dump`.
+    pub fn power_menu_open(&self) -> bool {
+        self.layers.power_menu.is_open()
+    }
+
     pub fn window_switcher_state_json(&self) -> serde_json::Value {
         self.layers
             .window_switcher
