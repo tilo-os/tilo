@@ -17,6 +17,82 @@ pub type Row = u32;
 /// A cell coordinate, `(col, row)`, zero-based.
 pub type Addr = (Col, Row);
 
+/// One inserted or deleted row/column: the unit every structural action
+/// replays in (a multi-row delete applies one row at a time).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridEdit {
+    /// A blank row inserted above this row.
+    InsertRow(Row),
+    DeleteRow(Row),
+    /// A blank column inserted left of this column.
+    InsertColumn(Col),
+    DeleteColumn(Col),
+}
+
+impl GridEdit {
+    /// Where the cell at `addr` lands; `None` when its row/column is deleted.
+    pub fn map_addr(self, (col, row): Addr) -> Option<Addr> {
+        match self {
+            Self::InsertRow(at) => Some((col, insert_shift(row, at))),
+            Self::DeleteRow(at) => Some((col, delete_shift(row, at)?)),
+            Self::InsertColumn(at) => Some((insert_shift(col, at), row)),
+            Self::DeleteColumn(at) => Some((delete_shift(col, at)?, row)),
+        }
+    }
+
+    /// Where the rectangle with corners `a` and `b` (in either order) lands,
+    /// each corner keeping its role. Mapping the corners independently is
+    /// wrong: deleting a range's first or last line shrinks the range, and
+    /// only deleting every line it covers removes it (`None`).
+    pub fn map_range(self, a: Addr, b: Addr) -> Option<(Addr, Addr)> {
+        match self {
+            Self::InsertRow(_) | Self::InsertColumn(_) => {
+                Some((self.map_addr(a)?, self.map_addr(b)?))
+            }
+            Self::DeleteRow(at) => {
+                let (ra, rb) = delete_span(a.1, b.1, at)?;
+                Some(((a.0, ra), (b.0, rb)))
+            }
+            Self::DeleteColumn(at) => {
+                let (ca, cb) = delete_span(a.0, b.0, at)?;
+                Some(((ca, a.1), (cb, b.1)))
+            }
+        }
+    }
+}
+
+fn insert_shift(line: u32, at: u32) -> u32 {
+    if line >= at {
+        line.saturating_add(1)
+    } else {
+        line
+    }
+}
+
+fn delete_shift(line: u32, at: u32) -> Option<u32> {
+    match line.cmp(&at) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(line.saturating_sub(1)),
+        std::cmp::Ordering::Less => Some(line),
+    }
+}
+
+/// Map a span's two ends (in either order) through deleting line `at`.
+fn delete_span(a: u32, b: u32, at: u32) -> Option<(u32, u32)> {
+    let (lo, hi) = (a.min(b), a.max(b));
+    if lo == at && hi == at {
+        return None;
+    }
+    // A deleted first line is replaced by the next one sliding up into it.
+    let new_lo = if lo > at { lo.saturating_sub(1) } else { lo };
+    let new_hi = if hi >= at { hi.saturating_sub(1) } else { hi };
+    Some(if a <= b {
+        (new_lo, new_hi)
+    } else {
+        (new_hi, new_lo)
+    })
+}
+
 /// Convert a zero-based column index to spreadsheet letters.
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`. The letters are
 /// qdoc's, the same the `.xlsx`/`.ods` codecs write.

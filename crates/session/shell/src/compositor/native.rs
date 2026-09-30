@@ -567,10 +567,15 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         return None;
     }
     if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity));
+        return Some(ClientState::attributed_arc(identity, pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
-        .then(ClientState::new_arc)
+        .then(|| {
+            Arc::new(ClientState {
+                pid: Some(pid),
+                ..ClientState::default()
+            })
+        })
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -786,6 +791,64 @@ fn frozen_floating_return_frame(
 )]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
+}
+
+/// Serve the shell's own file choosers when apps have no portal to reach: no
+/// session bus, as on a provider's headless guest. `attended` says whether an
+/// agent is driving the screen; an unattended session (one that saves into
+/// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
+fn start_chooser_service(
+    portal: Option<&PortalBackend>,
+    attended: Arc<AtomicBool>,
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::compositor::chooser_service::ChooserService> {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
+        return None;
+    }
+    let portal = portal?;
+    let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from);
+    let unattended = save_directory.is_some();
+    let context = crate::compositor::chooser_service::ChooserContext {
+        grants: portal.media_grants.clone(),
+        pickers: Arc::new(portal.pickers.clone()),
+        presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
+        save_directory,
+        wake,
+    };
+    match crate::compositor::chooser_service::ChooserService::start(context) {
+        Ok(service) => {
+            tracing::info!("serving the shell's file choosers to apps without a portal");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Open the files apps asked the chooser service to open, each in the app
+/// that owns its type, in the asking app's workspace.
+fn pump_chooser_opens(
+    service: &crate::compositor::chooser_service::ChooserService,
+    chrome: &crate::shell::chrome_state::Chrome,
+) {
+    for open in service.drain_opens() {
+        let active = chrome.borrow().tree().desktop.active;
+        let outcome = if open.caller.workspace_id == active {
+            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+        } else {
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
+        }
+        let _ = open.reply.send(outcome);
+    }
 }
 
 // This is the ordered protocol event pump; its branches share authentication
@@ -2201,6 +2264,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
+                "power_menu": self.fb.host().power_menu_open(),
             },
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
@@ -2334,6 +2398,18 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+S detaches the workspace wheel from the strip's left
+            // edge and places it at this point. `null` means docked. The
+            // disc's `test_id` is always `wheel_disc`, so a harness that
+            // only diffs target names cannot see the summon.
+            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
+                "x": p.x,
+                "y": p.y,
+            })),
+            // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
+            // Maximize is a different field (`workspace_tree` group.maximized).
+            "fullscreen_group": chrome.fullscreen_group(),
+            "fullscreen": chrome.is_fullscreen(),
         })
     }
 }
@@ -3497,8 +3573,8 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// The agent's strip on screen: its coordinates' origin and its
-    /// screenshots' extent.
+    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
+    /// its screenshots' extent.
     viewport: Rect,
 }
 
@@ -3554,7 +3630,6 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
-    let current = ctx.agents.seat(&agent.id).and_then(|seat| seat.strip);
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3563,7 +3638,19 @@ fn seat_agent(
                 .strip_owner(id)
                 .is_some_and(|owner| owner != agent.id)
         };
-        fb.with_chrome(|chrome| strip = chrome.agent_strip(current, claimed, &label));
+        let mut current = agents.seat(&agent.id).and_then(|seat| seat.strip);
+        // The seated agent moved to another strip nobody else works in: that
+        // strip is its own now, so its next command does not pull it back.
+        if agents.seated() == Some(agent.id.as_str())
+            && let Some(active) = fb.chrome().active_strip_id()
+            && !claimed(active)
+        {
+            current = Some(active);
+        }
+        fb.with_chrome(|chrome| {
+            chrome.set_single_strip(true);
+            strip = chrome.agent_strip(current, claimed, &label);
+        });
     }
     let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
     let peer = {
@@ -3572,8 +3659,8 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb, strip)
-        .ok_or_else(|| agent_refusal("strip_hidden", "the agent's strip is not on screen"))?;
+    let viewport = agent_viewport(fb)
+        .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3594,7 +3681,6 @@ fn seat_agent(
     if let Some(modifiers) = handover.modifiers {
         apply_modifier_mask(ctx, modifiers);
     }
-    let viewport = agent_viewport(fb, strip).unwrap_or(viewport);
     Ok(Some(AgentScope {
         agent: agent.id.clone(),
         peer,
@@ -3603,23 +3689,14 @@ fn seat_agent(
     }))
 }
 
-/// Where an agent working in `strip` sees and acts: the strip's row. A
-/// workspace with no window at all draws its empty-workspace card over the
-/// whole screen instead of rows, and that card is where any agent opens its
-/// first app, so there the viewport is the screen.
-fn agent_viewport(fb: &FrameBuilder, strip: crate::shell::state::StripId) -> Option<Rect> {
-    if let Some(row) = fb.host().strip_row_rect(strip) {
-        return Some(row);
-    }
-    let empty = {
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        tree.desktop
-            .active_workspace()
-            .is_some_and(|ws| ws.strips.iter().all(|s| s.window_groups.is_empty()))
-    };
+/// Where an agent sees and acts: the whole screen. While agents drive the
+/// compositor only the focused strip is presented, filling the work area, and
+/// the seat focuses the agent's own strip on its turn; the launcher, palette,
+/// menus and dialogs its actions open are drawn over the whole screen, so
+/// anything narrower would hide them from it.
+fn agent_viewport(fb: &FrameBuilder) -> Option<Rect> {
     let (w, h) = fb.scene_size();
-    (empty && w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+    (w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
 }
 
 /// Retire `agent`: its window sees the release of everything it still holds,
@@ -3630,19 +3707,26 @@ fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, sta
     };
     run_as_participant(seat.peer, &releases, fb, ctx, state);
     state.remote_seats.drop_peer(seat.peer);
-    if let Some(strip) = seat.strip {
-        let mut removed = false;
-        fb.with_chrome(|chrome| removed = chrome.remove_strip_if_empty(strip));
-        if removed {
-            fb.relayout();
-            client_input::sync_keyboard_focus(state, fb);
+    let last = ctx.agents.is_empty();
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        if let Some(strip) = seat.strip {
+            changed = chrome.remove_strip_if_empty(strip);
         }
+        if last && chrome.single_strip() {
+            chrome.set_single_strip(false);
+            changed = true;
+        }
+    });
+    if changed {
+        fb.relayout();
+        client_input::sync_keyboard_focus(state, fb);
     }
 }
 
 /// Dispatch `command` for the seated agent in `scope`: its coordinates are
-/// relative to its strip, what it lists is what its strip shows, and a pointer
-/// it would move outside the strip is refused.
+/// relative to its viewport, what it lists is what its viewport shows, and a
+/// pointer it would move outside the viewport is refused.
 fn dispatch_for_agent(
     command: test_control::Command,
     scope: &AgentScope,
@@ -3697,10 +3781,7 @@ fn dispatch_for_agent(
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
         return (
-            agent_refusal(
-                "outside_viewport",
-                "the pointer would leave the agent's strip",
-            ),
+            agent_refusal("outside_viewport", "the pointer would leave the screen"),
             Vec::new(),
         );
     }
@@ -5743,6 +5824,9 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     media_grants: crate::portal::GrantStoreHandle,
     media_prompts: crate::portal::PromptQueueHandle,
+    /// The on-screen file chooser's queue, shared with the chooser service
+    /// that apps without a portal reach.
+    pickers: crate::portal::FilePickerQueue,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -6059,7 +6143,7 @@ fn start_portal_backend(
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
     frame_builder
         .host_mut()
-        .set_portal_queues(prompts.clone(), pickers);
+        .set_portal_queues(prompts.clone(), pickers.clone());
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -6073,6 +6157,7 @@ fn start_portal_backend(
     Some(PortalBackend {
         media_grants: grants,
         media_prompts: prompts,
+        pickers,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -6930,6 +7015,12 @@ pub fn run() {
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
+    let chooser_attended = Arc::new(AtomicBool::new(false));
+    let chooser_service = start_chooser_service(
+        portal_backend.as_ref(),
+        Arc::clone(&chooser_attended),
+        Arc::clone(&session_wake),
+    );
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -7448,7 +7539,10 @@ pub fn run() {
         // Poll before processing launch actions so closed workspaces have
         // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&frame_builder.chrome_handle());
+            xwayland.poll(
+                &frame_builder.chrome_handle(),
+                &state.mapped_xwayland_pids(),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
@@ -7467,6 +7561,9 @@ pub fn run() {
             && pump_floating_toplevel_events(service, &mut state)
         {
             force_first_paint = true;
+        }
+        if let Some(service) = chooser_service.as_ref() {
+            pump_chooser_opens(service, &frame_builder.chrome_handle());
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
@@ -9518,7 +9615,7 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due,
+            apps: apps_changed || widget_deadline_due || foreign::frame_callbacks_waiting(&state),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -10272,6 +10369,9 @@ pub fn run() {
         {
             injected_redraw_pending = true;
         }
+        // An agent driving the screen answers the shell's choosers; a viewer
+        // only watching cannot click one.
+        chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
             if conn.closed
                 && let Some(token) = conn.wake.take()
@@ -12832,6 +12932,29 @@ mod tests {
     // state_dump
 
     #[test]
+    fn state_dump_chrome_includes_wheel_summon() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        assert_eq!(
+            state.chrome_state_json().get("wheel_summon"),
+            Some(&serde_json::Value::Null),
+            "the wheel starts docked"
+        );
+
+        fb.chrome_handle()
+            .borrow_mut()
+            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
+        let summoned = &state.chrome_state_json()["wheel_summon"];
+        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
+        assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -13612,11 +13735,16 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// The full-screen chord: the focused Wayland client enters or leaves
-/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
-/// protocol fullscreen, so its window group maximizes instead.
+/// Super+F on a Tilo window covers the output, including the wheel.
+/// Hosted Tilo apps are xdg clients too; sending them a protocol
+/// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
+/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;
+    if frame.host_mut().toggle_focused_group_fullscreen() {
+        return;
+    }
     let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
         state
             .xdg_shell_state
@@ -13629,7 +13757,6 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_maximized();
         return;
     };
     if state

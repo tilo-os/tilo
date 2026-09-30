@@ -19,21 +19,6 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         None
     }
-    /// Records the agent task `task` opened through the desktop's open action,
-    /// from the host's own durable record of each open (never from the agent).
-    /// Consumed by the task's effective scopes
-    /// (`tilo_agent_control_protocol::scopes_with_opened_records`).
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host's record of opened records cannot be read.
-    fn task_opened_records(
-        &self,
-        task: &str,
-    ) -> Result<Vec<tilo_agent_control_protocol::OpenedRecord>, String> {
-        let _ = task;
-        Ok(Vec::new())
-    }
 }
 /// Legacy native projection only; success is not an aggregate durability receipt.
 pub trait LegacyWorkspaceProjection: Send + Sync {
@@ -91,18 +76,6 @@ pub trait DesktopCommands: Send + Sync {
     fn catalogue(&self) -> &dyn tilo_desktop_model::apps::AppCatalogue {
         &()
     }
-    /// [`Self::execute`] for an enrolled agent task. The opener is the broker's
-    /// own revalidated task identity; an owner that records opened records
-    /// keeps it with the durable result so the task may work in the record it
-    /// opened. The default ignores it.
-    fn execute_for_agent(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        opener: DesktopOpener,
-    ) -> DesktopCommandFuture {
-        let _ = opener;
-        self.execute(request, false)
-    }
     /// The owner's kept receipt of a committed desktop command (its command
     /// id and the windows it opened), when the owner keeps one. Read after
     /// a successful execute; the default keeps none.
@@ -125,13 +98,6 @@ pub trait DocumentImports: Send + Sync {
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
     ) -> DesktopCommandFuture;
-}
-
-/// The enrolled agent task an open-application command runs for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DesktopOpener {
-    pub agent: String,
-    pub task: String,
 }
 
 #[derive(Clone)]
@@ -549,12 +515,8 @@ pub trait AppActionGrants: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct HostServices {
-    pub certified_agent_reads: Option<Arc<dyn crate::agent_reads::CertifiedAgentReads>>,
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
     pub native_media: Option<Arc<dyn NativeMediaServices>>,
-    pub enrolled_agents: Option<Arc<dyn crate::enrolled_dispatch::EnrolledAgentOwner>>,
-    /// Durable parent-step path for enrolled task actions with a step identity.
-    pub enrolled_steps: Option<Arc<dyn crate::enrolled_dispatch::EnrolledStepService>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
