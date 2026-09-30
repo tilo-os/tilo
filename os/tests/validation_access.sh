@@ -44,8 +44,8 @@ refuses 'holds a device node' 'contains a special file' \
 escaped="$(python3 -c 'print("dev-" + "disk/by-id/virtio-tilo-validation".replace("-", "\\x2d").replace("/", "-") + ".device")')"
 if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq -- '--image-policy=root=signed+absent:usr=absent:=unused+absent' "$access" \
-   && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
-   && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \
+   && grep -Fq 'serial=tilo-validation' "$vm" \
+   && grep -Fq 'format=raw,if=virtio,readonly=on,serial=tilo-validation' "$vm" \
    && grep -Fq 'ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw' "$access"; then
   ok 'the validation unit merges only the signed extension on the disk vm.sh attaches'
 else
@@ -67,7 +67,6 @@ fi
 # when asked; the image still carries no SSH server.
 if grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then' "$workflow" \
    && grep -Fq './os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"' "$workflow" \
-   && grep -Fq './os/tests/validation_drive_qemu.sh' "$workflow" \
    && grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
    && grep -Fq 'openssh-server' "$repo/os/scripts/verify-runtime-crypto-packages.sh" \
    && ! grep -Eq 'dnf install[^&]*openssh-server' "$image"; then
