@@ -21,12 +21,6 @@ env:
   # write baselines that every other runner correctly rejects.
   VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
   WGPU_ADAPTER_NAME: llvmpipe
-  # Keep this identical to ci-nightly.yml and the nextest gpu-golden override:
-  # candidates are rendered for exactly the tests nightly verifies.
-  GOLDEN_FILTER: >-
-    (package(tilo-ui) and test(typography_visual_regression::)) or
-    (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
-    (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
 
 jobs:
   refresh:
@@ -43,6 +37,9 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
+
+      - name: Read the shared test filters
+        run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
