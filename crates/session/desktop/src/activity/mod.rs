@@ -19,7 +19,10 @@ mod replay;
 #[cfg(test)]
 mod testing;
 pub use index::*;
-pub use pane::{ActivityView, Period, RoomActivityOutcome, RoomActivityPane, RoomScope};
+pub use pane::{
+    ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period, RoomActivityOutcome,
+    RoomActivityPane, RoomScope,
+};
 
 /// A causal document paired with its admitted desktop projection. Implementors
 /// retain native mutation/persistence authority; the default snapshot is read-only.

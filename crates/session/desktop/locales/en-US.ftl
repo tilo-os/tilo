@@ -152,6 +152,16 @@ activity-period-today = Today
 activity-period-week = 7 days
 activity-period-month = 30 days
 activity-people-everyone = Everyone
+
+activity-filter-time = Time
+activity-filter-people = People
+activity-filter-apps = Apps
+activity-filter-kind = Kind
+activity-filter-all = All
+activity-detail-restore = Restore
+activity-history-compare = Compare this change
+activity-history-undo = Undo this change
+activity-history-restore = Restore this version
 activity-first-people = First people…
 activity-more = More…
 activity-pane-timeline = Timeline

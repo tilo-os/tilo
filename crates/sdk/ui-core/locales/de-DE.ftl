@@ -384,3 +384,9 @@ palette-result-count = { $count ->
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
 palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+
+# Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
+history-day-today = Heute
+history-day-yesterday = Gestern
+history-day-this-week = Diese Woche
+history-day-earlier = Früher
