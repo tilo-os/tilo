@@ -3866,18 +3866,22 @@ mod tests {
         invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
         let appearance = settings_store::load_section("appearance");
         assert_eq!(
-            appearance.get("theme").and_then(|v| v.as_str()),
+            appearance.get("theme").and_then(serde_json::Value::as_str),
             Some("dark")
         );
         assert_eq!(
-            appearance.get("high_contrast").and_then(|v| v.as_bool()),
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
             Some(false)
         );
 
         invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
         let appearance = settings_store::load_section("appearance");
         assert_eq!(
-            appearance.get("high_contrast").and_then(|v| v.as_bool()),
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
 
