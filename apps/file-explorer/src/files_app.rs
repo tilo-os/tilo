@@ -563,6 +563,8 @@ pub struct FileExplorerWidget {
     /// while this Files widget still owns the request; the shell gets a weak
     /// witness and cannot act after this widget has gone away.
     pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
+    /// A file handed to the desktop's default handler, until it answers.
+    pending_launch: Option<(PathBuf, ui::portal::LaunchChannel)>,
     next_document_open_token: u64,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
@@ -900,6 +902,7 @@ impl FileExplorerWidget {
             accounts_cache: Vec::new(),
             host_intent: None,
             pending_document_open: None,
+            pending_launch: None,
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -4034,8 +4037,10 @@ impl FileExplorerWidget {
     /// read, focuses the document if it is already open, and launches —
     /// all in one place, shared with every other surface that can open a
     /// file. Only when no host installed a route (a standalone run, off a
-    /// Tilo session) does this fall back to the host's default handler
-    /// (its URI opener, via `CommandRunner::open_default`).
+    /// Tilo session, or a sandboxed Files) does this fall back to the
+    /// desktop's handler (its launch request, via
+    /// `CommandRunner::open_default`), which in a sandbox asks the session to
+    /// open the file in the app that owns it.
     ///
     /// A refusal from the host is shown in the status bar naming the
     /// file; activation never silently does nothing.
@@ -4088,11 +4093,34 @@ impl FileExplorerWidget {
             Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
             Some(Err(reason)) => self.status = Some(reason),
             None => {
-                runner.open_default(&path)?;
-                self.note_recent(&path, crate::recent::RecentUse::Opened);
+                let launch = runner.open_default(&path);
+                self.pending_launch = Some((path, launch));
+                self.poll_pending_launch();
             }
         }
         Ok(true)
+    }
+
+    /// Report the desktop's answer to a file handed to its default handler.
+    fn poll_pending_launch(&mut self) {
+        let Some((path, launch)) = &self.pending_launch else {
+            return;
+        };
+        let outcome = match launch.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::LaunchOutcome::Failed("the desktop did not answer".into())
+            }
+        };
+        let path = path.clone();
+        self.pending_launch = None;
+        match outcome {
+            ui::portal::LaunchOutcome::Opened => {
+                self.note_recent(&path, crate::recent::RecentUse::Opened);
+            }
+            ui::portal::LaunchOutcome::Failed(reason) => self.set_external_status(reason),
+        }
     }
 
     // --- inline rename -------------------------------------------------
@@ -4637,11 +4665,10 @@ pub trait CommandRunner {
     /// audio, plain text, …) so double-click/Enter/Open never silently do
     /// nothing.
     ///
-    /// # Errors
-    ///
-    /// Returns the OS error if the desktop has no default handler
-    /// registered for `path`, or fails to launch it.
-    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()>;
+    /// The desktop's answer arrives on the returned channel: a sandboxed
+    /// explorer asks the session (its portal, or the shell) to open the file
+    /// in the app that owns it.
+    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel;
 }
 
 pub struct SystemRunner;
@@ -4669,16 +4696,10 @@ impl CommandRunner for SystemRunner {
             .spawn()
             .map(|_c| ())
     }
-    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
-        let path = path.to_str().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the desktop opener takes UTF-8 paths",
-            )
-        })?;
-        ui::host::current().opener.open(path)
+        ui::portal::LaunchRequest::open(path).send()
     }
 }
 
@@ -7748,6 +7769,7 @@ impl Widget for FileExplorerWidget {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_deferred_document_open();
+        self.poll_pending_launch();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
         // One bounded catalogue page per idle/sync turn. The palette only

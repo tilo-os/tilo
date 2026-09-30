@@ -30,6 +30,9 @@ url.workspace = true
 [target.'cfg(unix)'.dependencies]
 # `O_NOFOLLOW`/`O_DIRECTORY` when opening a chosen file or folder.
 libc.workspace = true
+# The session shell's chooser service speaks newline-delimited JSON.
+serde.workspace = true
+serde_json.workspace = true
 
 # The XDG Desktop Portal. Selected by target, not by a feature: every Linux
 # app chooses files through the portal, which is where the sandbox's
