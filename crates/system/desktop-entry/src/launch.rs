@@ -92,7 +92,7 @@ const CLEARED_ENV: &[&str] = &[
 ];
 
 /// The desktop name Tilo announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
-pub const XDG_CURRENT_DESKTOP: &str = "tilo";
+pub const XDG_CURRENT_DESKTOP: &str = "tilo:GNOME";
 
 /// Marker set in a host application's environment. Not a capability and not read by anything
 /// Tilo enforces — there so `ps`, a crash report or a confused user can tell it was started by
@@ -323,7 +323,7 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     );
     env.insert(
         "XDG_SESSION_DESKTOP".to_string(),
-        XDG_CURRENT_DESKTOP.to_string(),
+        crate::scan::CURRENT_DESKTOP.to_string(),
     );
     env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
     // Electron releases differ on whether Wayland auto-selection is the
@@ -354,6 +354,10 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         // The session's composing input method serves each workspace display
         // over XIM; X11 toolkits find it through this name.
         env.insert("XMODIFIERS".to_string(), "@im=fcitx".to_string());
+        // XSETTINGS + Xft.dpi cover GTK and Xft. Qt still needs these to
+        // honour the same DPI instead of painting a 96-DPI window.
+        env.insert("QT_AUTO_SCREEN_SCALE_FACTOR".to_string(), "1".to_string());
+        env.insert("QT_ENABLE_HIGHDPI_SCALING".to_string(), "1".to_string());
         // Keep the conventional startup-id channel for X11 clients.  The
         // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
         // from the X client's environment and relays it on map.
@@ -541,7 +545,7 @@ mod tests {
             );
             assert_eq!(
                 launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
-                Some("tilo")
+                Some("tilo:GNOME")
             );
             assert!(
                 !launch.env.contains_key("DISPLAY"),
@@ -600,6 +604,20 @@ mod tests {
                 Some("@im=fcitx"),
                 "X11 apps find the session's input method over XIM"
             );
+            assert_eq!(
+                launch
+                    .env
+                    .get("QT_AUTO_SCREEN_SCALE_FACTOR")
+                    .map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                launch
+                    .env
+                    .get("QT_ENABLE_HIGHDPI_SCALING")
+                    .map(String::as_str),
+                Some("1")
+            );
         }
         // Phase `to_command_starts_from_an_empty_environment`.
         // `env_clear()` then the map: nothing from the launcher's own environment reaches the
@@ -639,8 +657,10 @@ mod tests {
                 "WAYLAND_DISPLAY=wayland-tilo",
                 "XDG_RUNTIME_DIR=/run/user/1000",
                 "DISPLAY=:71",
-                "XDG_CURRENT_DESKTOP=tilo",
+                "XDG_CURRENT_DESKTOP=tilo:GNOME",
                 "XDG_SESSION_DESKTOP=tilo",
+                "QT_AUTO_SCREEN_SCALE_FACTOR=1",
+                "QT_ENABLE_HIGHDPI_SCALING=1",
                 "ELECTRON_OZONE_PLATFORM_HINT=auto",
                 "TILO_HOST_APP=1",
             ] {
