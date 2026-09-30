@@ -159,8 +159,13 @@ impl LocalVoice {
             self.snapshot.capture_active = false;
         }
     }
+    /// Forget the service's state and leave the call, if there is one. With
+    /// no channel there is nothing to leave: a Leave here would itself be
+    /// refused by an absent service and invalidate again, once per reply.
     fn invalidate(&mut self) {
-        let _ = self.submit(Command::Leave);
+        if self.channel.is_some() {
+            let _ = self.submit(Command::Leave);
+        }
         self.snapshot = Snapshot::unavailable();
     }
 }
