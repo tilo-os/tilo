@@ -226,9 +226,9 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 )]
 #[test]
 fn group_row_maximize_and_reorder_paint_visibly() {
-    // Case `group_row_maximized_paints_distinct_pixels_and_hides_siblings`.
+    // Case `group_row_maximized_paints_distinct_pixels_and_fades_siblings`.
     // Verified by checking the maximized group's stored rect absorbs the
-    // row's full inner width while the siblings' collapse to zero.
+    // row's full inner width while fading siblings keep their tiled width.
     {
         fn group_row_maximized_paints_distinct_pixels_and_fades_siblings() {
             let (w, h) = (960u32, 220u32);
