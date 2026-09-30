@@ -90,12 +90,12 @@ fn app_title_lives_only_in_the_window_chrome() {
              (the OS pill carries it); rendered names were {names:?}"
             );
             assert!(
-                names.iter().any(|n| n == cat.label()),
+                names.iter().any(|n| *n == cat.label()),
                 "{cat:?}: the selected settings destination needs an in-content heading; \
              rendered names were {names:?}"
             );
             assert!(
-                names.iter().any(|n| n == cat.subtitle()),
+                names.iter().any(|n| *n == cat.subtitle()),
                 "{cat:?}: the heading needs its explanatory subtitle; rendered names were {names:?}"
             );
         }

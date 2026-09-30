@@ -48,17 +48,19 @@ impl SettingsSearchProvider {
             // The index contains every phrase people can use to find the
             // destination.  The materialised hit stays intentionally lean;
             // it resolves through the canonical `open` action below.
-            let searchable = std::iter::once(category.label())
-                .chain(std::iter::once(category.subtitle()))
+            let label = category.label();
+            let subtitle = category.subtitle();
+            let searchable = [label.as_str(), subtitle.as_str()]
+                .into_iter()
                 .chain(category.keywords().iter().copied())
                 .collect::<Vec<_>>()
                 .join(" ");
             let result = SearchResult::for_action(
                 SETTINGS_KIND,
-                category.label(),
+                &label,
                 crate::actions::open_pane_address(category),
             )
-            .with_subtitle(category.subtitle())
+            .with_subtitle(&subtitle)
             .with_icon(category.icon());
             // Every input above is static, and the result uses precisely the
             // same stable resource id, so this can only fail if a future
@@ -148,7 +150,7 @@ mod tests {
             titles,
             Category::ALL
                 .iter()
-                .map(|category| category.label().to_string())
+                .map(|category| category.label())
                 .collect::<Vec<_>>(),
             "a continuation reaches late categories instead of truncating browse discovery"
         );
