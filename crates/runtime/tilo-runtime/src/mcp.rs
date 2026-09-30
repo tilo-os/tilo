@@ -21,6 +21,60 @@ pub struct McpServer<H> {
     detail: Detail,
     /// The short names compact pages gave long resource ids.
     handles: std::sync::Mutex<page::Handles>,
+    open_files: std::sync::Arc<OpenFiles>,
+}
+
+/// The instance each file last went to through an app's own `open` or
+/// `import-<extension>`, shared by every session of an endpoint: opening
+/// that file again returns that instance instead of starting another that
+/// opens it a second time.
+#[derive(Default)]
+pub struct OpenFiles(std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>);
+
+impl OpenFiles {
+    const MAX: usize = 1024;
+
+    fn key(path: &str) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.into())
+    }
+
+    fn files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<std::path::PathBuf, u64>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record(&self, path: &str, peer: u64) {
+        let mut files = self.files();
+        if files.len() >= Self::MAX {
+            files.clear();
+        }
+        files.insert(Self::key(path), peer);
+    }
+
+    fn peer(&self, path: &str) -> Option<u64> {
+        self.files().get(&Self::key(path)).copied()
+    }
+}
+
+/// The path an app's own file-opening action was given, by the directory's
+/// convention [`McpServer::path_opener`] follows.
+fn opened_file<'a>(action: &str, arguments: &'a serde_json::Map<String, Value>) -> Option<&'a str> {
+    (action == tilo_actions::remote::APPLICATION_OPEN_ACTION || action.starts_with("import-"))
+        .then(|| arguments.get("path").and_then(Value::as_str))
+        .flatten()
+        .filter(|path| !path.is_empty())
+}
+
+/// Whether an invocation's answer leaves open that it did what it asked: it
+/// succeeded, or is still running when the call stopped waiting.
+fn may_have_opened(value: &Value) -> bool {
+    !matches!(
+        value.pointer("/update/state").and_then(Value::as_str),
+        Some("failed" | "cancelled") | None
+    )
 }
 
 #[derive(Default, Deserialize)]
@@ -148,7 +202,15 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             computer: None,
             detail: Detail::Compact,
             handles: std::sync::Mutex::default(),
+            open_files: std::sync::Arc::default(),
         }
+    }
+    /// Share which instance holds which file with the endpoint's other
+    /// sessions.
+    #[must_use]
+    pub fn with_open_files(mut self, open_files: std::sync::Arc<OpenFiles>) -> Self {
+        self.open_files = open_files;
+        self
     }
     fn handles(&self) -> std::sync::MutexGuard<'_, page::Handles> {
         self.handles
@@ -752,6 +814,13 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Some(app_id) => self.peers_of(app_id).await?,
             None => Vec::new(),
         };
+        if let Some(peer) = path
+            .as_deref()
+            .and_then(|path| self.open_files.peer(path))
+            .filter(|peer| before.contains(peer))
+        {
+            return Ok(self.already_open(peer).await);
+        }
         let invocation = a
             .invocation_id
             .as_deref()
@@ -762,9 +831,17 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
         };
+        let file = target
+            .provider
+            .parse::<u64>()
+            .ok()
+            .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
         let mut value = self
             .run(target, a.arguments, invocation, a.revision, wait)
             .await?;
+        if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
+            self.open_files.record(&path, peer);
+        }
         let Some(app_id) = launching else {
             return Ok(value);
         };
@@ -904,11 +981,29 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Ok(value) => value,
             Err(error) => json!({"error":error}),
         };
+        if value.get("error").is_none() && may_have_opened(&value) {
+            self.open_files.record(path, peer);
+        }
         if let Some(fields) = value.as_object_mut() {
             fields.insert("resource".into(), resource.into());
             fields.insert("action".into(), action.into());
         }
         value
+    }
+    /// The answer to opening a file instance `peer` already holds: that
+    /// instance, as an `open` that started it would have answered. The file
+    /// is not opened again, which could drop edits not yet saved.
+    async fn already_open(&self, peer: u64) -> Value {
+        let mut value = serde_json::Map::new();
+        value.insert("update".into(), json!({"state": "succeeded"}));
+        value.insert("peer_id".into(), peer.into());
+        value.insert("opened".into(), json!({"already_open": true}));
+        if self.detail == Detail::Compact
+            && let Ok(directory) = self.directory(&peer.to_string()).await
+        {
+            value.insert("directory".into(), directory);
+        }
+        Value::Object(value)
     }
     /// The action of `provider` that opens `path`, by the directory's
     /// convention.
