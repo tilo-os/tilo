@@ -6419,10 +6419,34 @@ mod tests {
         .unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
-        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xE011);
-        let recipients = net.certified_secret_recipients();
+        let user = [0x44_u8; 32];
+        let (mut net, mut commands) = personal_continuity_network_for_test(user);
+        net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
         let id = crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).unwrap();
-        assert!(recipients.contains(&id));
+        assert!(net.certified_secret_recipients().contains(&id));
+        let request_id = net
+            .send_personal_fabric_action(
+                &id,
+                crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
+                    request_id: [0x7; 16],
+                    session_id: "player:one".into(),
+                },
+            )
+            .expect("enrolled device accepts a personal action");
+        assert_ne!(request_id, [0; 16]);
+        let mut found = false;
+        while let Ok(command) = commands.try_recv() {
+            if matches!(
+                command,
+                NetCmd::PublishPersonalFabricTarget {
+                    payload: PersonalFabricPayload::Action(_),
+                    ..
+                }
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "the action must be handed to the personal transport");
     }
 
     #[test]
