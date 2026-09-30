@@ -6,7 +6,7 @@
 //!   on macOS, the Common Item Dialogs on Windows), or with
 //!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
 //!   handed the session shell's chooser connection (a session with no
-//!   portal), `tilo_dialogs::shell::inherited_picker` in front of either;
+//!   portal), `tilo_dialogs::inherited_shell_picker` in front of either;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -51,11 +51,7 @@ pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
         });
     // A session without a desktop portal draws choosers in its shell, and
     // hands the unattended picker the ones nobody is there to answer.
-    #[cfg(unix)]
-    let shell = tilo_dialogs::shell::inherited_picker(unattended.clone());
-    #[cfg(not(unix))]
-    let shell = None;
-    let files = shell
+    let files = tilo_dialogs::inherited_shell_picker(unattended.clone())
         .or(unattended)
         .unwrap_or_else(|| services.files.clone());
     HostServices {

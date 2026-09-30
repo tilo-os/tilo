@@ -133,6 +133,22 @@ pub fn unattended_picker(
         .map(|picker| Arc::new(picker) as Arc<dyn FilePicker>)
 }
 
+/// The session shell's own choosers ([`shell`]) when the launcher handed this
+/// process a connection to them, with `unattended` answering the ones nobody
+/// is at the computer for; `None` otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn inherited_shell_picker(
+    unattended: Option<Arc<dyn FilePicker>>,
+) -> Option<Arc<dyn FilePicker>> {
+    #[cfg(unix)]
+    return shell::inherited_picker(unattended);
+    #[cfg(not(unix))]
+    {
+        drop(unattended);
+        None
+    }
+}
+
 /// This target's file choosers.
 pub fn system_picker() -> Arc<dyn FilePicker> {
     #[cfg(target_os = "linux")]
