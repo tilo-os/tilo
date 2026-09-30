@@ -513,7 +513,7 @@ fn signal_pid(pid: u32, signal: i32) {
 #[cfg(any(test, target_os = "linux"))]
 struct ProcRow {
     pid: u32,
-    ppid: u32,
+    parent: u32,
     session: u32,
 }
 
@@ -525,8 +525,12 @@ fn scan_proc_rows() -> Vec<ProcRow> {
     dir.flatten()
         .filter_map(|entry| {
             let pid: u32 = entry.file_name().to_string_lossy().parse().ok()?;
-            let (ppid, session, _) = proc_ancestry(pid)?;
-            Some(ProcRow { pid, ppid, session })
+            let (parent, session, _) = proc_ancestry(pid)?;
+            Some(ProcRow {
+                pid,
+                parent,
+                session,
+            })
         })
         .collect()
 }
@@ -550,7 +554,7 @@ fn descendant_and_session_pids(root: u32) -> Vec<u32> {
     let rows = scan_proc_rows();
     let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
     for row in &rows {
-        kids.entry(row.ppid).or_default().push(row.pid);
+        kids.entry(row.parent).or_default().push(row.pid);
     }
     let mut tree = Vec::new();
     let mut stack = vec![root];
@@ -5117,7 +5121,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn host_window_tree(tabs: Vec<(u64, &'static str, u64)>) -> crate::shell::state::WorkspaceTree {
+    fn host_window_tree(tabs: &[(u64, &'static str, u64)]) -> crate::shell::state::WorkspaceTree {
         use crate::shell::state::{Tab, WindowGroup, WindowWidth};
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
@@ -5205,7 +5209,7 @@ mod tests {
         let standin = LauncherStandIn::spawn();
         register_launched_process(standin.pid(), "wine-winefile", None, false);
         remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(vec![(
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
             1,
             "wine-winefile",
             501,
@@ -5225,7 +5229,7 @@ mod tests {
         let standin = LauncherStandIn::spawn();
         register_launched_process(standin.pid(), "wine-winefile", None, false);
         remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
-        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(vec![
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
             (1, "wine-winefile", 501),
             (2, "wine-winefile", 502),
         ]));
