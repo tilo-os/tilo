@@ -43,8 +43,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::i18n::{t, t_args};
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
+use ui::i18n::ArgValue;
 
 fn time_bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
     match crate::actions::time_date_bool_binding(id) {
@@ -314,7 +316,12 @@ impl TimeZoneMap {
     fn active_label(&self) -> String {
         let active = self.hover.or_else(|| self.cursor.filter(|_| self.focused));
         active.and_then(|index| self.points.get(index)).map_or_else(
-            || format!("Selected: {}", self.selected),
+            || {
+                t_args(
+                    "time-map-selected",
+                    &[("zone", ArgValue::from(self.selected.as_str()))],
+                )
+            },
             |point| format!("{} — {}", point.city, point.region),
         )
     }
@@ -427,7 +434,7 @@ impl Widget for TimeZoneMap {
         if self.points.is_empty() {
             text_renderer.draw_text(
                 scene,
-                "Map coordinates are unavailable; use the selector above.",
+                &t("time-map-unavailable"),
                 11.0,
                 theme.text_dim,
                 transform * Affine::translate((plot.x0 + 8.0, plot.center().y - 6.0)),
@@ -561,16 +568,18 @@ impl Widget for TimeZoneMap {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name("Time-zone map")
-                .with_description(
-                    "Installed IANA time zones with published coordinates. Use arrow keys to move and Enter to apply; the searchable selector includes aliases without coordinates.",
-                )
+                .with_name(&t("time-map-a11y-name"))
+                .with_description(&t("time-map-a11y-desc"))
                 .with_value(
                     self.cursor
                         .and_then(|index| self.points.get(index))
                         .map_or_else(|| self.selected.clone(), |point| point.id.clone()),
                 )
-                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.focused)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.focused),
+                ),
         )
     }
 
@@ -811,11 +820,40 @@ impl TimeDatePane {
         let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
         let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
 
+        let clock_format = if self.h24 {
+            t("time-clock-24h")
+        } else {
+            t("time-clock-12h")
+        };
+        let sync = match self.sync_status.synchronized {
+            Some(true) => t("time-sync-ok"),
+            Some(false) if self.initial_auto => t("time-sync-waiting"),
+            Some(false) => t("time-sync-disabled"),
+            None => t("time-sync-unknown"),
+        };
+        let source_name = self
+            .sync_status
+            .source
+            .clone()
+            .unwrap_or_else(|| t("time-source-unknown"));
+        let mapped = self.timezone_points.len();
+        let map_note = if mapped == 0 {
+            t("time-map-empty")
+        } else {
+            t_args(
+                "time-map-count",
+                &[(
+                    "mapped",
+                    ArgValue::from(i64::try_from(mapped).unwrap_or(i64::MAX)),
+                )],
+            )
+        };
+
         let clock = card(
-            "Clock",
+            &t("time-clock-title"),
             rows(vec![
                 setting_row(
-                    "Set time automatically",
+                    &t("time-auto"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.last_auto))
                             .on_action(time_bool_action("automatic-time"))
@@ -823,7 +861,7 @@ impl TimeDatePane {
                     ),
                 ),
                 setting_row(
-                    "24-hour clock",
+                    &t("time-24h"),
                     Box::new(
                         Toggle::from_state(&ui::LocalState::new(self.last_h24))
                             .on_action(time_bool_action("24-hour"))
@@ -831,7 +869,7 @@ impl TimeDatePane {
                     ),
                 ),
                 choice_row(
-                    "Time zone",
+                    &t("time-timezone"),
                     Box::new(
                         Dropdown::from_state(
                             self.timezones.clone(),
@@ -842,33 +880,21 @@ impl TimeDatePane {
                         .with_placeholder(&self.timezone),
                     ),
                 ),
-                value_row("Current time", &now),
-                value_row("Current date", &today),
+                value_row(&t("time-current-time"), &now),
+                value_row(&t("time-current-date"), &today),
             ]),
         );
 
         let formats = card(
-            "Display",
+            &t("time-display-title"),
             rows(vec![
-                value_row("Clock format", if self.h24 { "24-hour" } else { "12-hour" }),
-                caption(
-                    "Date and number formats are set system-wide in \
-                     Region & Formats; this pane shows the clock surface.",
-                ),
+                value_row(&t("time-clock-format"), &clock_format),
+                caption(&t("time-display-caption")),
             ]),
         );
 
-        let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
-            "This tzdata installation does not publish map coordinates. The searchable selector remains complete; Tilo does not guess your location."
-                .to_string()
-        } else {
-            format!(
-                "Showing {mapped} installed zones with coordinates published by tzdata. This chooses a zone; it does not detect your location. Aliases remain in the selector."
-            )
-        };
         let map = card(
-            "Time-zone map",
+            &t("time-map-title"),
             rows(vec![
                 Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
@@ -879,33 +905,20 @@ impl TimeDatePane {
         );
 
         let source = card(
-            "Automatic time source",
+            &t("time-source-title"),
             rows(vec![
-                value_row(
-                    "Synchronization",
-                    match self.sync_status.synchronized {
-                        Some(true) => "Synchronized",
-                        Some(false) if self.initial_auto => "Waiting for synchronization",
-                        Some(false) => "Automatic time is disabled",
-                        None => "Not reported by the time service",
-                    },
-                ),
-                value_row(
-                    "Source",
-                    self.sync_status
-                        .source
-                        .as_deref()
-                        .unwrap_or("Not reported by the active NTP provider"),
-                ),
-                caption(
-                    "Time zones come from the installed IANA tzdata database. Both pickers submit only identifiers from timedated's accepted list.",
-                ),
+                value_row(&t("time-sync"), &sync),
+                value_row(&t("time-source"), &source_name),
+                caption(&t("time-source-caption")),
             ]),
         );
 
         let mut cards = vec![clock, map, source, formats];
         if let Some(notice) = &self.notice {
-            cards.insert(0, card("That did not work", rows(vec![caption(notice)])));
+            cards.insert(
+                0,
+                card(&t("time-notice-title"), rows(vec![caption(notice)])),
+            );
         }
         crate::widgets::cards(cards)
     }
