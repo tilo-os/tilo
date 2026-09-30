@@ -148,16 +148,16 @@ pub struct FilesProvider {
 /// login layout gets a directory under the session cache instead.
 fn indexable_home() -> PathBuf {
     let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
-    if let Some(config) = xdg_paths::config_dir() {
-        if !config.starts_with(&home) {
-            let profile = config.parent().unwrap_or(config.as_path());
-            let profile_home = profile.join("home");
-            return if profile_home.is_dir() {
-                profile_home
-            } else {
-                profile.to_path_buf()
-            };
-        }
+    if let Some(config) = xdg_paths::config_dir()
+        && !config.starts_with(&home)
+    {
+        let profile = config.parent().unwrap_or(config.as_path());
+        let profile_home = profile.join("home");
+        return if profile_home.is_dir() {
+            profile_home
+        } else {
+            profile.to_path_buf()
+        };
     }
     if std::env::var_os("TILO_TEST_CONTROL").is_some()
         || std::env::var_os("TILO_IDENTITY_ROOT").is_some()
