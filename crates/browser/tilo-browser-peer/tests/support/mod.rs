@@ -9,9 +9,6 @@
 
 pub mod https;
 
-// Each browser-peer test binary re-execs as the automerge worker.
-tilo_automerge_isolate::test_worker!();
-
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
