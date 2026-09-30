@@ -246,6 +246,16 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
+For Windows ARM64 development, dispatch `os-dev-installer.yml` with the exact
+`registry.tilo.so/tilo/tilo-ci@sha256:<digest>` from a successful `os-dev.yml`
+ARM64 run. It layers the installer on that already-built unsigned image and
+uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
+`tilo-dev-installer-aarch64-<run>` artifact, verify its SHA-256, decompress the
+qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
+software` on the Windows WHPX host. Keep the medium as the immutable base for
+later throwaway install overlays. Component changes in a running dev VM use
+`tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+
 A CI install medium can instead carry a separately signed generic or Lenovo
 ARM64 target in
 `/var/lib/tilo-installer/target-oci/`. Before changing a disk, the guest
