@@ -6851,6 +6851,21 @@ mod tests {
             rooms.iter().any(|candidate| candidate.to_string() == room),
             "startup must keep the enrolled room"
         );
+        let owner = net
+            .replica
+            .lock()
+            .expect("replica")
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .and_then(|workspace| workspace.owner.clone());
+        assert_eq!(
+            owner.as_deref(),
+            Some(crate::shell::state::local_user_id().as_str())
+        );
     }
 
     #[test]

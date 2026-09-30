@@ -3621,11 +3621,16 @@ impl WorkspaceTree {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
+        // The same person sits at this machine. Without their membership the
+        // room exists but every launch from either of their devices is denied.
+        let user = local_user_id();
+        workspace.set_owner(user.clone());
         self.desktop.workspaces.push(workspace);
         self.room_authority.insert(room, RoomAuthority::Unpinned);
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
+        self.doc_set_owner(id, &user);
         self.flush_to_disk();
         true
     }
