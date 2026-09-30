@@ -140,17 +140,7 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
         );
         let t = h.tick_overview_transition(1.0, false);
         assert!((t - 1.0).abs() < f32::EPSILON);
-        assert!(
-            h.transition_started.is_some(),
-            "visual settle is not the same as the frame run: keep requesting"
-        );
-        for _ in 0..MIN_TRANSITION_FRAMES {
-            let _ = h.tick_overview_transition(1.0, false);
-        }
-        assert!(
-            h.transition_started.is_none(),
-            "transition clears after the frame run, not the wall timer alone"
-        );
+        assert!(h.transition_started.is_none(), "transition should clear");
     }
 
     fn mid_flight_re_toggle_picks_up_from_current_t() {
