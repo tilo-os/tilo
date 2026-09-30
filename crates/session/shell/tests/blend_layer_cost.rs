@@ -127,16 +127,22 @@ fn dest_in_mask_layer_is_affordable_at_viewport_size() {
     masked.pop_layer();
     masked.pop_layer();
 
-    // Warm the pipeline so first-render setup isn't attributed to either shape.
+    // Each shape's first render builds its own pipelines and blend buffers;
+    // warm both so neither's one-time setup is attributed to it, then take
+    // each one's best frame so a loaded machine's stalls are not either.
     let _ = renderer.render(&plain, Color::BLACK);
-
-    let t0 = Instant::now();
-    let _ = renderer.render(&plain, Color::BLACK);
-    let plain_ms = t0.elapsed().as_secs_f64() * 1000.0;
-
-    let t1 = Instant::now();
     let _ = renderer.render(&masked, Color::BLACK);
-    let masked_ms = t1.elapsed().as_secs_f64() * 1000.0;
+    let mut best = |scene: &Scene| {
+        (0..3)
+            .map(|_| {
+                let started = Instant::now();
+                let _ = renderer.render(scene, Color::BLACK);
+                started.elapsed().as_secs_f64() * 1000.0
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let plain_ms = best(&plain);
+    let masked_ms = best(&masked);
 
     eprintln!("plain clip: {plain_ms:.1} ms    DestIn mask: {masked_ms:.1} ms");
     assert!(
