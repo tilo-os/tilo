@@ -2157,18 +2157,26 @@ impl Widget for TileHost {
         if *ctx.handled {
             return;
         }
+        let typing = matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        );
         let live = if let Ok(live) = self.resolve_record() {
             live
-        } else {
-            let Some(live) = self.checked_old_owner_for_recovery() else {
-                *ctx.handled = true;
-                return;
-            };
+        } else if let Some(live) = self.checked_old_owner_for_recovery() {
             Some(live)
+        } else if typing {
+            // A running Terminal (or other live app) must still receive
+            // keystrokes when the tab record is missing or closed. Claiming
+            // handled here dropped Space/Enter/text before the PTY.
+            None
+        } else {
+            *ctx.handled = true;
+            return;
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.record_error.is_some() && !typing {
             *ctx.handled = true;
             return;
         }
@@ -2179,9 +2187,15 @@ impl Widget for TileHost {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
                 history.route_event(app.as_mut(), event, ctx);
-                return;
-            }
-            if !history.live_interactive() {
+                let leftover_typing = matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+                ) && !*ctx.handled
+                    && !history.captures_input();
+                if !leftover_typing {
+                    return;
+                }
+            } else if !history.live_interactive() {
                 return;
             }
         }
