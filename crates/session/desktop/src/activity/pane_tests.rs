@@ -362,6 +362,49 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_first_seen_on_this_device_has_nothing_new() {
+        let (mut tree, workspace, user) = busy_room();
+        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host.clone());
+        pane.load_frontiers();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        let (headline, unread, _) = pane.glance_signal(workspace.raw());
+        assert_eq!(
+            (headline, unread),
+            (None, 0),
+            "the history a device arrives to is not news"
+        );
+
+        tree.grant_in_workspace(
+            workspace,
+            &user,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/home/quinten/later".to_string()),
+                Verb::Read,
+            ),
+        )
+        .expect("the owner may grant in their own room");
+        tree.seed_doc_from_cache();
+        pane.refresh(&mut tree);
+        let after_change = pane.glance_signal(workspace.raw()).1;
+        assert!(after_change > 0, "a change after arriving is");
+
+        let mut next_session = RoomActivityPane::new();
+        next_session.set_host(host);
+        next_session.load_frontiers();
+        next_session.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        next_session.refresh(&mut tree);
+        assert_eq!(
+            next_session.glance_signal(workspace.raw()).1,
+            after_change,
+            "the baseline persists, so the next session still counts only that change"
+        );
+    }
+
+    #[test]
     fn catch_up_is_default_and_closing_advances_only_private_frontier() {
         let (mut tree, workspace, _) = peers_busy_room();
         let before = tree.doc.get_heads();

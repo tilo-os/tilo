@@ -1910,6 +1910,10 @@ impl FrameBuilder {
         self.animation_demand().any()
     }
 
+    pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
+        self.host.content_animating_leaves()
+    }
+
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
         AnimationDemand {
             host: self.host.animation_demand_bits(Instant::now()),

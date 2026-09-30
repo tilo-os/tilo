@@ -10,8 +10,8 @@ room expires, or its relay exits, the relay is stopped and its directory
 removed; nothing is kept.
 
 The room carries only signed document commits, certification and control
-messages. Every browser runs the web core (with the relay peer, feature
-`relay`) and the apps from the signed registry, and renders everything
+messages. Every browser runs the browser runtime's desktop bundle (the
+runtime with its certified peer and every web app) and renders everything
 itself; the page seeds its own desktop and documents.
 
 ## API (plain HTTP, `TILO_ROOMS_API`)
@@ -22,17 +22,17 @@ itself; the page seeds its own desktop and documents.
 | `POST /rooms/<id>/invitations` | `201 {joinUrl, ticket}`: one more guest; `429` beyond `TILO_ROOMS_MAX_GUESTS` |
 | `POST /rooms/<id>/admit` `{ticket, pairingCode}` | `200 {label, device, pairingCode, at}` once the room certified that browser; `403` for a spent or unknown ticket |
 | `GET /rooms/<id>/events` | Server-sent events: `member` per certified device, earlier ones replayed first; `expired` when the room ends |
-| `GET /app/<path>` | the web runtime's page modules, `rooms.mjs`, `join.html`, `page.html` and `registry.json` |
+| `GET /app/<path>` | the browser runtime bundle (page modules, `pkg/`, fonts, data), `rooms.mjs`, `join.html` and `page.html` |
 | `GET /healthz` | `{ok: true}` |
 
 `joinUrl` is `<api>/app/join.html#origin=…&user=…&room=…&ticket=…&admit=…`;
 `createInvitation(room, {record})` in `rooms.mjs` appends `&record=<id>`,
 which the join page opens full screen. The fragment never reaches a server.
 
-`web/rooms.mjs` is the page side, next to `host.mjs` and `relay.mjs`:
-`useRegistry()` (the relay core and the apps from `registry.json`'s signed
-registry), `createRoom`, `joinRoom`, `recordOf`, `createInvitation`,
-`watchMembers`. `web/page.html` does with a room what the site's page does
+`web/rooms.mjs` is the page side, next to the bundle's `host.mjs` and
+`relay.mjs`: `createRoom`, `joinRoom`, `recordOf`, `createInvitation`,
+`watchMembers` (`useRegistry()` is kept for older pages and does nothing:
+the bundle carries every app). `web/page.html` does with a room what the site's page does
 (for review); `web/join.html` is the phone's page. The peer `joinRoom`
 returns joins the room's live plane too: its mounts publish this device's
 caret, selection and pointer and draw the other members' with their labels,
@@ -87,8 +87,8 @@ when UDP or WebTransport is unavailable; documents sync over HTTPS either
 way.
 
 A page publishes one presence per device, from the mount the person acted
-in last. An agent the page runs (a mount with `agent`, or one authored by
-an agent member of its desktop) publishes its own caret under
+in last. An agent the page runs (a mount with `agent`, or
+`peer.agentLive(agent)`) publishes its own caret under
 `/live/grant/agent`: a namespace derived from the room, the device and the
 agent id, labelled as the agent.
 
@@ -125,13 +125,12 @@ TCP port alone only carries the fallback.
 ## Build and run
 
 ```sh
-crates/hosting/tilo-room-service/scripts/build-image.sh /abs/context /abs/registry.json code.tilo.so/tilo/room-service:REV
+crates/hosting/tilo-room-service/scripts/build-image.sh /abs/context code.tilo.so/tilo/room-service:REV
 ```
 
-Locally, with a registry that publishes the relay core
-(`tools/web/local-registry.sh --relay-core DIR BUILD_DIR`), serve the page
-modules of `build-web-dev.sh`'s output plus `web/*` and the registry's
-`registry.json` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
+Locally, serve the output of
+`crates/browser/tilo-browser-runtime/scripts/build.sh DIR --bundle desktop`
+plus `web/*` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
 with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay` and
 `TILO_ROOMS_LOCAL=1`. `http://localhost:8790/app/page.html` then creates a
 room in any browser; its phone link opens `join.html`. The site's dev server

@@ -354,16 +354,29 @@ pub(crate) fn provider_for<'a>(
 /// so a failing one fails the operation instead.
 pub(crate) const FILE_FALLBACK: bool = !cfg!(target_os = "macos");
 
-/// Set (to anything) in a test's environment, it keeps every identity
-/// secret of the session in private files, out of the user's login Keychain
-/// or Secret Service. A release build ignores it.
+/// Set (to anything), it keeps every identity secret of the session in
+/// private files, out of the user's login Keychain or Secret Service: for
+/// tests, and for a locally built release (see [`file_secrets_requested`]).
 pub const FILE_SECRETS_ENV: &str = "TILO_IDENTITY_FILE_SECRETS";
 
-/// Whether this session was told to keep its identity secrets in files
-/// ([`FILE_SECRETS_ENV`]).
+/// Whether this session keeps its identity secrets in files.
+///
+/// A debug build does when told to ([`FILE_SECRETS_ENV`], for tests) or when
+/// the system store would not keep them for its next build (on macOS, a
+/// build without a Developer ID signature, whose Keychain items belong to
+/// that exact build). A release build does only when told to *and* its store
+/// would not keep them, so a locally built bundle can start after a rebuild:
+/// a Developer ID release never keeps secrets in files, and no release does
+/// unasked.
 #[must_use]
 pub fn file_secrets_requested() -> bool {
-    cfg!(debug_assertions) && std::env::var_os(FILE_SECRETS_ENV).is_some()
+    let told = std::env::var_os(FILE_SECRETS_ENV).is_some();
+    let kept = tilo_secrets::items_outlive_rebuilds();
+    if cfg!(debug_assertions) {
+        told || !kept
+    } else {
+        told && !kept
+    }
 }
 
 pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider + '_> {
@@ -390,4 +403,15 @@ pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider 
 
 pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    /// A dev build (cargo's test binaries included) has only the linker's
+    /// ad-hoc signature, so its Keychain items would not outlive it.
+    #[test]
+    fn a_debug_build_without_developer_id_keeps_identity_secrets_in_files() {
+        assert!(!tilo_secrets::items_outlive_rebuilds());
+        assert!(super::file_secrets_requested());
+    }
 }
