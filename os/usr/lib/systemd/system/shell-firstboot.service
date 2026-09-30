@@ -8,6 +8,7 @@ ConditionPathExists=!/etc/tilo/.firstboot-done
 # machine first-boot hook there both wastes startup time and can consume the
 # one-shot marker before the real installation exists.
 ConditionKernelCommandLine=!tilo.install
+After=tilo-firstboot-user.service
 [Service]
 Type=oneshot
 # `--firstboot-only` must exit after setup. `--firstboot` intentionally falls
