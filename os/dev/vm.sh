@@ -133,7 +133,9 @@ cmd_boot() {
   fi
   if [ -n "$validation" ]; then
     [ -f "$validation" ] || die "validation extension not found: $validation"
-    attach_arg="$attach_arg -drive file=$validation,format=raw,if=virtio,readonly=on,serial=tilo-validation"
+    # QEMU's raw block backend does not accept serial= on -drive. The serial
+    # belongs to the virtio block device, which supplies the guest's by-id path.
+    attach_arg="$attach_arg -drive file=$validation,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"
     msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
 
