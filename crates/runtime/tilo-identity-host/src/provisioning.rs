@@ -1092,7 +1092,7 @@ mod tests {
         assert!(!target_system.user_privkey.exists());
         let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
         let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
-            .migrate_legacy_primary()
+            .load_reconciled()
             .unwrap();
         assert_eq!(
             registry.default_identity.as_deref(),
@@ -1134,6 +1134,21 @@ mod tests {
         .unwrap();
         assert_eq!(copied.len(), 1);
         assert_eq!(copied[0].user_public_key, identity_id);
+
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
+        env.set("TILO_IDENTITY_ROOT", dir.path().join("var/lib/tilo"));
+        crate::certificates::authorize_join("workspace", &local_cert)
+            .expect("the setup machine is admitted for remote actions");
+        let stranger_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let mut stranger = local_cert.clone();
+        stranger.device_public_key = stranger_device.verifying_key().to_bytes();
+        stranger.signature = [0; 64];
+        tilo_user_identity::sign_device_cert(&mut stranger, &root).unwrap();
+        assert!(
+            crate::certificates::authorize_join("workspace", &stranger).is_err(),
+            "a device that was not enrolled cannot invoke remote actions"
+        );
     }
 
     #[test]
