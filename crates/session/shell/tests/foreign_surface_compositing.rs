@@ -31,11 +31,12 @@
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 
-use shell::compositor::foreign::{self, store};
+use shell::compositor::foreign::{self, ForeignSurfaceWidget, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
 use shell::shell::state::WorkspaceTree;
 use ui::offscreen::OffscreenRenderer;
+use ui::widget::Widget;
 use vello::peniko::Color;
 
 const W: u32 = 1600;
@@ -187,10 +188,19 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
         let rgba = solid(bw, bh, (0xE0, 0x18, 0xA0));
         store().publish_rgba(surface_id, &rgba, bw, bh);
 
-        // The signal that wakes the compositor's paint loop for a client frame.
+        // A new buffer is edge-triggered via needs_redraw (one shot). Treating
+        // a pending sequence as animation cadence pinned idle off-screen tiles
+        // at the refresh rate; the native loop also wakes on frame_seq.
+        let mut probe = ForeignSurfaceWidget::new(surface_id, "org.example.client".into());
+        probe.place_floating(rect);
+        Widget::mark_drawn(&mut probe);
         assert!(
-            fb.needs_animation_frame(),
+            Widget::needs_redraw(&probe),
             "a freshly committed client frame must request a repaint"
+        );
+        assert!(
+            !Widget::needs_animation_frame(&probe),
+            "a fitting buffer must not pin animation cadence after presentation settles"
         );
 
         // The dissolve is 180 ms, so the very next frame is still mostly card.
