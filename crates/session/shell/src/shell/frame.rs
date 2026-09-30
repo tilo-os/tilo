@@ -887,9 +887,15 @@ impl FrameBuilder {
     }
 
     fn active_tile_is_terminal(&self) -> bool {
-        use crate::shell::state::{AppKind, TileContent};
         let chrome = self.chrome();
         let tree = chrome.tree();
+        let is_terminal = Self::workspace_active_tile_is_terminal(&tree);
+        drop(tree);
+        is_terminal
+    }
+
+    fn workspace_active_tile_is_terminal(tree: &crate::shell::state::WorkspaceTree) -> bool {
+        use crate::shell::state::{AppKind, TileContent};
         let Some(ws) = tree.desktop.active_workspace() else {
             return false;
         };
