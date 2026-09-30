@@ -977,7 +977,9 @@ fn run_system_job(
         if result.is_success()
             && let Some(stage) = req.handoff_stage.as_deref()
         {
-            if let Err(error) = apply_handoff_stage_to_device(&dst, stage) {
+            if let Err(error) =
+                apply_handoff_stage_to_device(&dst, stage, req.source.size, req.target.size)
+            {
                 result = JobResult::VerifyFailed(format!(
                     "could not apply Wi-Fi and identity onto the written disk: {error}"
                 ));
@@ -1109,9 +1111,12 @@ fn run_udisks_job(
     if result.is_success()
         && let Some(stage) = req.handoff_stage.as_deref()
     {
-        if let Err(error) =
-            apply_handoff_stage_to_device(std::path::Path::new(req.target.dev_path()), stage)
-        {
+        if let Err(error) = apply_handoff_stage_to_device(
+            std::path::Path::new(req.target.dev_path()),
+            stage,
+            req.source.size,
+            req.target.size,
+        ) {
             result = JobResult::VerifyFailed(format!(
                 "could not apply Wi-Fi and identity onto the written disk: {error}"
             ));
@@ -1150,7 +1155,12 @@ const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
 
 /// Mount the written disk and copy the staged Wi-Fi / identity tree onto it.
 #[cfg(target_os = "linux")]
-fn apply_handoff_stage_to_device(device: &Path, staged: &Path) -> io::Result<()> {
+fn apply_handoff_stage_to_device(
+    device: &Path,
+    staged: &Path,
+    image_len: u64,
+    device_len: u64,
+) -> io::Result<()> {
     if !staged.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1179,15 +1189,11 @@ fn apply_handoff_stage_to_device(device: &Path, staged: &Path) -> io::Result<()>
             .status();
         result
     };
-    let root_part = find_tilo_root_partition(&loop_dev).or_else(|| {
-        // Single-partition images expose the filesystem on the loop itself.
-        Some(loop_dev.clone())
-    });
-    let Some(root_part) = root_part else {
-        return finish(Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "written disk has no mountable root filesystem",
-        )));
+    let Some(root_part) = find_tilo_root_partition(&loop_dev) else {
+        let _ = std::process::Command::new("losetup")
+            .args(["-d", &loop_dev])
+            .status();
+        return crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
     };
     let mnt = tempfile::Builder::new()
         .prefix("tilo-imager-root-")
@@ -1217,7 +1223,12 @@ pub(crate) fn apply_handoff_stage_onto_mounted_root(mnt: &Path, staged: &Path) -
 }
 
 #[cfg(not(target_os = "linux"))]
-fn apply_handoff_stage_to_device(_device: &Path, _staged: &Path) -> io::Result<()> {
+fn apply_handoff_stage_to_device(
+    _device: &Path,
+    _staged: &Path,
+    _image_len: u64,
+    _device_len: u64,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "applying Wi-Fi and identity onto a written disk requires Linux",
