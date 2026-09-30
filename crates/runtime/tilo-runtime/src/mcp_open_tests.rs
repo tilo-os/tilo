@@ -117,6 +117,7 @@ impl Writer {
                     "select-block",
                     vec![ActionParam::required("block", ParamType::Text, "Paragraph")],
                 ),
+                apply_style_row(),
                 row(
                     DOC,
                     DOC,
@@ -155,6 +156,17 @@ impl Writer {
         }
         rows
     }
+}
+
+/// An action taking another resource: a handle there stands for it.
+fn apply_style_row() -> CatalogueRow {
+    row(
+        DOC,
+        DOC,
+        "word_processor.document",
+        "apply-style",
+        vec![ActionParam::required("style", ParamType::Resource, "Style")],
+    )
 }
 
 fn row(
@@ -287,23 +299,35 @@ impl ActionHost for Writer {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        let page_size = self
+        let arguments = self
             .invoked
             .lock()
             .unwrap()
             .iter()
             .find(|request| request.invocation == *id)
             .map(|request| match &request.argument {
-                InvokeArgument::Json(map) => map.get("pageSize").and_then(Value::as_u64),
-                _ => None,
+                InvokeArgument::Json(map) => map.clone(),
+                _ => serde_json::Map::new(),
             })?;
+        let page_size = arguments.get("pageSize").and_then(Value::as_u64);
         // As the broker validates arguments against the published schema.
-        let update = if page_size.is_some_and(|size| size > 64) {
+        let refusal = if page_size.is_some_and(|size| size > 64) {
+            Some("argument `pageSize` must be at most 64")
+        } else if arguments
+            .get("block")
+            .and_then(Value::as_str)
+            .is_some_and(|block| block.starts_with('r'))
+        {
+            Some("no block has that id")
+        } else {
+            None
+        };
+        let update = if let Some(message) = refusal {
             InvocationUpdate::Failed {
                 invocation: *id,
                 error: tilo_actions::ActionFailure {
                     code: "invalid_arguments".into(),
-                    message: "argument `pageSize` must be at most 64".into(),
+                    message: message.into(),
                     details: None,
                     retryable: false,
                 },
@@ -553,6 +577,67 @@ fn workspace_pages_name_their_resources_in_full() {
     ))
     .unwrap();
     assert_eq!(found["resources"][0]["resource"], PERMISSIONS, "{found}");
+}
+
+/// computer (run 20260930-071012, deck-launch): `set-slide-text` was refused
+/// `slide: "r1"`, the directory's handle for the slide.
+#[test]
+fn a_handle_in_a_resource_argument_is_expanded_and_elsewhere_named_in_full() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let page = call(&mut server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        let doc = resource(&page, "word_processor.document")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let style = resource(&page, "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let styled = call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "apply-style", "arguments": {"style": style}}))
+            .await
+            .unwrap();
+        assert_eq!(styled["update"]["state"], "succeeded", "{styled}");
+        assert!(styled.get("hint").is_none(), "{styled}");
+
+        let selected = call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": style}}))
+            .await
+            .unwrap();
+        assert_eq!(selected["update"]["state"], "succeeded", "{selected}");
+        let adjusted = selected["adjusted"].as_str().unwrap_or_default();
+        assert!(
+            adjusted.contains(&format!("block {style} was refused; used its id {RICH}")),
+            "{selected}"
+        );
+    });
+    let calls = host.invoked();
+    let arguments = |action: &str| {
+        calls
+            .iter()
+            .filter(|call| call.2 == action)
+            .map(|call| call.3.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(arguments("apply-style"), [json!({"style": RICH})]);
+    let selects = arguments("select-block");
+    assert_eq!(selects.len(), 2, "{selects:?}");
+    assert!(
+        selects[0]["block"]
+            .as_str()
+            .is_some_and(|handle| handle.starts_with('r')),
+        "a text argument goes as given first: {selects:?}"
+    );
+    assert_eq!(selects[1], json!({"block": RICH}));
 }
 
 #[test]

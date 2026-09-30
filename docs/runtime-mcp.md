@@ -278,7 +278,11 @@ resource id longer than 24 characters is shown as a session handle such as
 `r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
 which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. A bound UI resource's id is
+they take a resource, and full ids keep working. In `tilo_invoke`'s
+`arguments`, a handle this session issued is replaced by its id where the
+action declares a `resource` parameter. Where the parameter is text, the handle
+goes as given, since it may be meant literally. If the action refuses it, the
+call runs once more with the id, and `adjusted` says so. A bound UI resource's id is
 about 130 characters, repeated in every call. A model reads every page again
 on each later turn, and version 1's rows repeated each resource id three times
 and each contract twice. `detail: "full"` returns version 1 rows, with full
