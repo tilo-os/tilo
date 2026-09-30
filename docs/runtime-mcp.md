@@ -217,6 +217,41 @@ naming why the file is not open (the app started empty either way). Workspace
 pages list `path?` on each application's `open`. Host applications
 (`app.host:…`) open without a path.
 
+### Reading back what an action did
+
+An agent sees the result of an edit in the edit's reply and reads a
+document as text, so it needs no screenshot to check its work. A document
+action whose contract declares a JSON result gets one: after the edit
+applies, ui-core diffs the document from the edit's base heads and asks the
+app through `PublishesResources::document_action_result`.
+
+- **Word Processor.** `read-text` answers Markdown, one block per line ending
+  in its `{#block id}`: headings as `#`…`######`, list items as `- ` or `1. `
+  indented by nesting, and a table as a Markdown table tagged
+  `{#table id}`. It pages up to 64 blocks through `nextCursor`;
+  `format: "segments"` returns the typed segments with their text offsets.
+  `paste` (Markdown, including headings, lists and pipe tables),
+  `set-paragraph-style`, `apply-named-style` and `insert-table` answer with
+  the blocks they changed, rendered the same way (`2 changed:` …, at most 32
+  listed, then `N removed`).
+- **Slides.** The deck's `read` answers the deck as text: each slide's
+  number, layout and `{#id}`, its title as a `# ` line, its body and other
+  elements each ending in its `{#id}`, then its speaker notes. `add-slide`,
+  `set-slide-text`, `move-slide` and the element edits answer with the same
+  outline. `set-slide-text {slide, title?, body?}` replaces a slide's title
+  (first text box) and body (second, a paragraph per line); `slide` is its
+  id or its number as `read` shows it.
+- **File Explorer.** `move {entries, folder, create?}` moves several entries
+  of the current folder into `folder` in one call, creating it unless
+  `create` is false, and answers `moved N into <folder>: …`. Nothing moves
+  when an entry is not there; the error lists the folder's entries.
+  `move-to` into a missing folder names the `move` call that creates it.
+
+Only these actions declare a result: each open document publishes its
+catalogue to the broker, and the broker's catalogue reply is capped at
+256 KiB (`MAX_PRIVATE_BYTES`), which five open Word Processor documents
+already nearly fill.
+
 ### Page format
 
 `tilo_query` pages are compact (surface version 3, reported at `initialize`
