@@ -2025,6 +2025,7 @@ jobs:
             -f os/Containerfile.dev \
             --build-arg "BASE_IMAGE=$base" \
             --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
             --build-arg "TILO_BASE_CREATED=$created" \
             --build-arg TILO_CARGO_FRESHNESS=clean \
