@@ -115,7 +115,29 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
         );
     }
 
+    fn open_an_app_opens_the_app_launcher_and_consumes_its_signal() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let _ = doc.put(
+            &root,
+            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
+            true,
+        );
+
+        host.sync(&mut doc, &root);
+
+        assert!(host.palette_visible(), "the button opens the launcher");
+        assert!(matches!(
+            doc.get(&root, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), ScalarValue::Boolean(false))
+        ));
+    }
+
     bootstrap_default_exposes_accessible_collaboration_choices();
+    open_an_app_opens_the_app_launcher_and_consumes_its_signal();
     catch_up_card_opens_room_activity_and_consumes_its_signal();
     invite_card_opens_the_existing_signed_invite_composer();
 }

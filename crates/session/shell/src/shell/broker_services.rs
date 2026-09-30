@@ -366,7 +366,7 @@ impl NativeLauncher {
     ) -> Option<Result<(), String>> {
         let resource = format!(
             "{}{app}",
-            tilo_agent_control_protocol::OPEN_APP_RESOURCE_PREFIX
+            tilo_desktop_model::commands::OPEN_APP_RESOURCE_PREFIX
         );
         let answer = self
             .1
@@ -376,7 +376,7 @@ impl NativeLauncher {
                 workspace.room,
                 tilo_desktop_model::commands::APP_ID,
                 &resource,
-                tilo_agent_control_protocol::OPEN_APP_ACTION,
+                tilo_desktop_model::commands::OPEN_APP_ACTION,
                 None,
             );
         Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {

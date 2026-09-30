@@ -20,6 +20,8 @@ use tilo_peer_state::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
+pub mod governor;
+
 pub const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
 /// Most outgoing entries one room holds.

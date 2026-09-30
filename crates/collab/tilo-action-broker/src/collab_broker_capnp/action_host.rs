@@ -1384,7 +1384,6 @@ impl CapnpBrokerState {
                 confirmation_token: token.as_deref(),
                 context: request.context.clone(),
             },
-            None,
             origin.cloned(),
         )
         .map(|job| job.id)

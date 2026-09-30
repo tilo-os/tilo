@@ -338,5 +338,32 @@ class HardwareProfileTest(unittest.TestCase):
             self.assertFalse(outside.exists())
 
 
+    def test_boot_modules_match_the_installed_kernel(self):
+        definitions, data = self.definition()
+        data["schema_version"] = 2
+        data["system_firmware"] = []
+        data["boot_modules"] = ["sdhci-of-dwcmshc", "rk808"]
+        tree = self.kernel / "dtb/rockchip/rk3566-orangepi-3b-v2.1.dtb"
+        tree.parent.mkdir(parents=True)
+        tree.write_bytes(self.dtb.read_bytes())
+        data["devicetree"] = "rockchip/rk3566-orangepi-3b-v2.1.dtb"
+        (definitions / "other-board.json").write_text(json.dumps(data))
+        module = self.kernel / "kernel/drivers/mmc/host/sdhci-of-dwcmshc.ko.xz"
+        module.parent.mkdir(parents=True)
+        module.write_bytes(b"modular sd host")
+        (self.kernel / "modules.builtin").write_text("kernel/drivers/mfd/rk808.ko\n", encoding="utf-8")
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                target_update_ref=TARGET_REF)
+        dracut = (self.root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text().splitlines()
+        self.assertEqual(dracut, [
+            "# Hardware-profile firmware and boot modules needed before the root is mounted.",
+            'add_drivers+=" sdhci-of-dwcmshc "',
+        ])
+        module.unlink()
+        with self.assertRaisesRegex(ValueError, "not built in or installed"):
+            prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                    target_update_ref=TARGET_REF)
+
+
 if __name__ == "__main__":
     unittest.main()

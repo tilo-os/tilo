@@ -50,7 +50,6 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -303,7 +302,6 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }

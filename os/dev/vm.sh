@@ -133,7 +133,9 @@ cmd_boot() {
   fi
   if [ -n "$validation" ]; then
     [ -f "$validation" ] || die "validation extension not found: $validation"
-    attach_arg="$attach_arg -drive file=$validation,format=raw,if=virtio,readonly=on,serial=tilo-validation"
+    # QEMU's raw block backend does not accept serial= on -drive. The serial
+    # belongs to the virtio block device, which supplies the guest's by-id path.
+    attach_arg="$attach_arg -drive file=$validation,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"
     msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
 
@@ -249,6 +251,14 @@ cmd_wait() {
     if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greeter up (~$((i*2))s)"; return 0
     fi
+    # A guest may reach greetd without writing kernel/userspace status to the
+    # selected serial port. The installed validation disk supplies SSH access;
+    # use it as an independent readiness signal when available.
+    if (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
+       && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
+       && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
+      msg "greeter up via SSH (~$((i*2))s)"; return 0
+    fi
     vm_running || { boot_diagnose "$TILO_SERIAL" || true
       # A qemu that exits this early usually said why on stderr, which is
       # all that reaches its log; CI keeps nothing else of the run dir.
@@ -259,6 +269,16 @@ cmd_wait() {
     sleep 2
   done
   boot_diagnose "$TILO_SERIAL" || true
+  if [ -s "$TILO_SERIAL" ]; then
+    warn "last lines of $TILO_SERIAL:"
+    tr -d '\000' < "$TILO_SERIAL" | tail -n 120 >&2
+  else
+    warn "the serial log is empty: $TILO_SERIAL"
+  fi
+  if [ -s "$TILO_QEMU_LOG" ]; then
+    warn "last lines of $TILO_QEMU_LOG:"
+    tail -n 40 "$TILO_QEMU_LOG" >&2
+  fi
   die "timed out waiting for greeter (see $TILO_SERIAL)"
 }
 
