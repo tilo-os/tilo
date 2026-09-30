@@ -3120,9 +3120,9 @@ jobs:
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends jq podman skopeo
+            sudo -n apt-get install -y --no-install-recommends git jq podman skopeo
           elif command -v dnf >/dev/null; then
-            sudo -n dnf install -y jq podman skopeo
+            sudo -n dnf install -y git jq podman skopeo
           else
             echo '::error::integration runner must provide apt-get or dnf'
             exit 1
@@ -3203,6 +3203,33 @@ jobs:
           jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
             '{image:$image,sourceRevision:$source}' > tilo-os-integration-index.json
           echo "::notice::published unsigned development index $durable ($index_digest)"
+      # tilo-vm:main-ci follows main's dev images, both architectures: the
+      # origin a machine installed from a dev-disk.yml disk of tag main-ci
+      # upgrades from. It only moves forward along main.
+      - name: Move tilo-vm:main-ci to this commit's dev images
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repository=registry.tilo.so/tilo/tilo-vm
+          source="$repository:main-${GITHUB_SHA:0:7}-ci"
+          moving="$repository:main-ci"
+          raw="$(skopeo inspect --raw "docker://$source")"
+          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          jq -e '[.manifests[].platform.architecture] | sort == ["amd64","arm64"]' <<< "$raw" >/dev/null || {
+            echo "::error::$source does not hold both native dev images"; exit 1; }
+          if current="$(skopeo inspect --override-arch amd64 "docker://$moving" 2>/dev/null \
+                | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" && [[ -n $current ]]; then
+            history="$(mktemp -d "${RUNNER_TEMP:?}/tilo-main-history.XXXXXX")"
+            git -c "http.extraheader=Authorization: token $GIT_TOKEN" clone -q --bare --filter=tree:0 \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$history"
+            git -C "$history" merge-base --is-ancestor "$current" "$GITHUB_SHA" || {
+              echo "::notice::$moving names $current, which is not an ancestor of $GITHUB_SHA; leaving it"
+              exit 0
+            }
+          fi
+          skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
+          echo "::notice::$moving -> $source ($digest)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-os-integration-index

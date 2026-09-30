@@ -36,9 +36,20 @@ instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
 `Build / OS dev` workflow builds every main push and every pull request that
 touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
-the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`).
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
+main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
 and a `release` dispatch of main.
+
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
+`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
+`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
+not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
+disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
+(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
+and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
+systemctl reboot` moves it to main's newest dev image.
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
