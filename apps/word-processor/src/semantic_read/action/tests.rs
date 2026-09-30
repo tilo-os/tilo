@@ -180,7 +180,8 @@ fn read_text_defaults_to_one_markdown_page_of_up_to_64_blocks() {
     assert_eq!(
         page.content["markdown"],
         format!(
-            "## Standup {{#{heading}}}\n| Person | Blocked | {{#table t1}}\n| --- | --- |\n| Maya | no |\n"
+            "## Standup {{#{heading}}}\n| Person {{#{}}} | Blocked {{#{}}} | {{#table t1}}\n| --- | --- |\n| Maya {{#{}}} | no {{#{}}} |\n",
+            cells[0], cells[1], cells[2], cells[3]
         )
     );
     assert!(page.next_cursor.is_none());
