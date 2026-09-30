@@ -64,6 +64,8 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 /// The most entries one `move` takes.
 const MAX_MOVE_ENTRIES: usize = 256;
+/// The most entry names showing a folder answers with.
+const MAX_ANSWERED_ENTRIES: usize = 64;
 
 /// A `move` of several of the current folder's entries into `folder`.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -563,6 +565,8 @@ pub struct FileExplorerWidget {
     /// while this Files widget still owns the request; the shell gets a weak
     /// witness and cannot act after this widget has gone away.
     pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
+    /// A file handed to the desktop's default handler, until it answers.
+    pending_launch: Option<(PathBuf, ui::portal::LaunchChannel)>,
     next_document_open_token: u64,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
@@ -900,6 +904,7 @@ impl FileExplorerWidget {
             accounts_cache: Vec::new(),
             host_intent: None,
             pending_document_open: None,
+            pending_launch: None,
             next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -4034,8 +4039,10 @@ impl FileExplorerWidget {
     /// read, focuses the document if it is already open, and launches —
     /// all in one place, shared with every other surface that can open a
     /// file. Only when no host installed a route (a standalone run, off a
-    /// Tilo session) does this fall back to the host's default handler
-    /// (its URI opener, via `CommandRunner::open_default`).
+    /// Tilo session, or a sandboxed Files) does this fall back to the
+    /// desktop's handler (its launch request, via
+    /// `CommandRunner::open_default`), which in a sandbox asks the session to
+    /// open the file in the app that owns it.
     ///
     /// A refusal from the host is shown in the status bar naming the
     /// file; activation never silently does nothing.
@@ -4088,11 +4095,34 @@ impl FileExplorerWidget {
             Some(Ok(())) => self.note_recent(&path, crate::recent::RecentUse::Opened),
             Some(Err(reason)) => self.status = Some(reason),
             None => {
-                runner.open_default(&path)?;
-                self.note_recent(&path, crate::recent::RecentUse::Opened);
+                let launch = runner.open_default(&path);
+                self.pending_launch = Some((path, launch));
+                self.poll_pending_launch();
             }
         }
         Ok(true)
+    }
+
+    /// Report the desktop's answer to a file handed to its default handler.
+    fn poll_pending_launch(&mut self) {
+        let Some((path, launch)) = &self.pending_launch else {
+            return;
+        };
+        let outcome = match launch.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::LaunchOutcome::Failed("the desktop did not answer".into())
+            }
+        };
+        let path = path.clone();
+        self.pending_launch = None;
+        match outcome {
+            ui::portal::LaunchOutcome::Opened => {
+                self.note_recent(&path, crate::recent::RecentUse::Opened);
+            }
+            ui::portal::LaunchOutcome::Failed(reason) => self.set_external_status(reason),
+        }
     }
 
     // --- inline rename -------------------------------------------------
@@ -4637,11 +4667,10 @@ pub trait CommandRunner {
     /// audio, plain text, …) so double-click/Enter/Open never silently do
     /// nothing.
     ///
-    /// # Errors
-    ///
-    /// Returns the OS error if the desktop has no default handler
-    /// registered for `path`, or fails to launch it.
-    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()>;
+    /// The desktop's answer arrives on the returned channel: a sandboxed
+    /// explorer asks the session (its portal, or the shell) to open the file
+    /// in the app that owns it.
+    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel;
 }
 
 pub struct SystemRunner;
@@ -4669,16 +4698,10 @@ impl CommandRunner for SystemRunner {
             .spawn()
             .map(|_c| ())
     }
-    fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+    fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
-        let path = path.to_str().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "the desktop opener takes UTF-8 paths",
-            )
-        })?;
-        ui::host::current().opener.open(path)
+        ui::portal::LaunchRequest::open(path).send()
     }
 }
 
@@ -5409,9 +5432,9 @@ impl FileExplorerWidget {
     }
 
     /// Say on the status line what became of a shortcut run from the menu,
-    /// when `event` says.
-    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        self.status = match self.shortcut_menu.handle_event(event) {
+    /// when `event` says. Returns whether the status line changed.
+    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
+        let status = match self.shortcut_menu.handle_event(event) {
             Some(crate::shortcut_menu::ShortcutOutcome::Started { label }) => {
                 Some(t_args("files-shortcut-started", &[arg("shortcut", label)]))
             }
@@ -5419,8 +5442,13 @@ impl FileExplorerWidget {
                 "files-shortcut-failed",
                 &[arg("shortcut", label), arg("reason", reason)],
             )),
-            None => return,
+            None => return false,
         };
+        if self.status == status {
+            return false;
+        }
+        self.status = status;
+        true
     }
 
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
@@ -6598,6 +6626,7 @@ impl FileExplorerWidget {
         let mut folder = self.folder_resource_base();
         Self::append_navigation_actions(&mut folder);
         folder.actions.push(Self::go_to_action());
+        folder.actions.push(Self::open_folder_action());
         folder.actions.push(self.move_action());
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
@@ -6618,14 +6647,24 @@ impl FileExplorerWidget {
         folder
     }
 
+    fn go_to_action() -> ActionSpec {
+        Self::show_folder_action("go-to", "Go to folder…")
+    }
+
+    /// `open` with a path, the convention an agent opens an app at a file
+    /// or folder by: Files shows that folder, as `go-to` does.
+    fn open_folder_action() -> ActionSpec {
+        Self::show_folder_action("open", "Open folder")
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "a path string payload is always serializable"
     )]
-    fn go_to_action() -> ActionSpec {
+    fn show_folder_action(id: &'static str, label: &'static str) -> ActionSpec {
         ActionSpec::typed_operation(
-            "go-to",
-            "Go to folder…",
+            id,
+            label,
             "absolute folder path, e.g. /data/in",
             OperationKind::View,
             "files.go-to",
@@ -6639,6 +6678,54 @@ impl FileExplorerWidget {
                     .expect("folder path is serializable")
             },
         )
+        .with_description(
+            "Show the folder at this absolute path; answers with its resource (this folder's id changes) and entries",
+        )
+        .with_contract(ActionContract {
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["resource", "path", "entries"],
+                    "properties": {
+                        "resource": {"type": "string"},
+                        "path": {"type": "string"},
+                        "entries": {"type": "array", "items": {"type": "string"}},
+                        "more": {"type": "integer"}
+                    }
+                }),
+            },
+            ..ActionContract::view()
+        })
+    }
+
+    /// What showing a folder answers: its resource id, its path and its
+    /// first entries (a folder's name ends in `/`), so a caller acts on
+    /// the folder without querying it again.
+    fn folder_answer(&self) -> serde_json::Value {
+        let entries: Vec<String> = self
+            .entries
+            .iter()
+            .take(MAX_ANSWERED_ENTRIES)
+            .map(|entry| {
+                if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                }
+            })
+            .collect();
+        let mut answer = serde_json::json!({
+            "resource": crate::search_provider::folder_resource_id(&self.current_path),
+            "path": self.current_path.display().to_string(),
+            "entries": entries,
+        });
+        let more = self.entries.len().saturating_sub(MAX_ANSWERED_ENTRIES);
+        if more > 0
+            && let Some(fields) = answer.as_object_mut()
+        {
+            fields.insert("more".into(), more.into());
+        }
+        answer
     }
 
     /// `move`: put several of this folder's entries into another folder in
@@ -7540,16 +7627,18 @@ impl Collaborative for FileExplorerWidget {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        self.handle_shortcut_event(event);
+        let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
                     self.open_nearby_device_picker(&targets);
+                    changed = true;
                 }
                 crate::nearby_send::NearbyUiEffect::Offer {
                     transfer,
                     destinations,
                 } => {
+                    changed = true;
                     self.show_collab_panel(CollabPanel {
                         title: t_args(
                             "files-nearby-offer-title",
@@ -7589,6 +7678,7 @@ impl Collaborative for FileExplorerWidget {
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Failed(transfer) => {
+                    changed = true;
                     self.show_collab_panel(CollabPanel {
                         title: t("files-nearby-failed-title"),
                         summary: transfer.name,
@@ -7606,12 +7696,16 @@ impl Collaborative for FileExplorerWidget {
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Status(message) => {
-                    self.status = Some(message);
+                    if self.status.as_deref() != Some(message.as_str()) {
+                        self.status = Some(message);
+                        changed = true;
+                    }
                 }
                 crate::nearby_send::NearbyUiEffect::SendResult(result) => {
                     let Some(invocation) = self.resource_invocation.take() else {
                         continue;
                     };
+                    changed = true;
                     self.resource_result = Some(match result {
                         Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
@@ -7630,7 +7724,9 @@ impl Collaborative for FileExplorerWidget {
                 }
             }
         }
-        self.structure_dirty = true;
+        if changed {
+            self.structure_dirty = true;
+        }
     }
 }
 
@@ -7654,6 +7750,7 @@ impl Widget for FileExplorerWidget {
             "files.new-folder",
             "files.paste",
             "files.go-to",
+            "files.move",
             "files.transfer",
             "files.new-from-template",
             "files.open",
@@ -7748,6 +7845,7 @@ impl Widget for FileExplorerWidget {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_deferred_document_open();
+        self.poll_pending_launch();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(ui::time::now());
         // One bounded catalogue page per idle/sync turn. The palette only
@@ -8915,6 +9013,7 @@ impl FileExplorerWidget {
                     return Err(format!("{} is not a folder Files can open", path.display()));
                 }
                 self.navigate(path);
+                self.operation_result = Some(self.folder_answer());
             }
             (OperationKind::Effect, "files.move") => {
                 let request: MoveRequest =

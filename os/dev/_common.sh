@@ -207,6 +207,17 @@ cargo_build_jobs() {
   printf '%s\n' "$cpus"
 }
 
+# The two digests of bootc install's composefs refusal, read from its log $1:
+#   The UKI has the wrong composefs= parameter (is '<A>', should be '<B>')
+# Older bootc prefixed both with `sha512:` and left <B> unquoted; accept either.
+# Print nothing, and still succeed, when the log holds no such refusal.
+composefs_expected_digest() {
+  { sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'\{0,1\}.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
+}
+composefs_sealed_digest() {
+  { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0

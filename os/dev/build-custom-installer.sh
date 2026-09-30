@@ -200,16 +200,16 @@ if [ "$DEV_LOGIN" = 1 ]; then
 fi
 INSTALL_LOG="$(dirname "$TILO_INSTALLER_DISK")/.install.log"
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
-  want="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  want="$(composefs_expected_digest "$INSTALL_LOG")"
   [ -n "$want" ] || die "the installer disk-image step failed for a reason other than the
   composefs seal; see the message above and $INSTALL_LOG"
-  had="$(sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  had="$(composefs_sealed_digest "$INSTALL_LOG")"
   msg "bootc#2334: the live UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
   msg "pass 2: rewriting that digest into the live UKI and retrying"
   "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_INSTALLER_IMAGE" "$want" \
     || die "could not rewrite the live installer's sealed composefs digest"
   if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
-    want2="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    want2="$(composefs_expected_digest "$INSTALL_LOG")"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
   even though only the UKI under /boot changed. Sealing is circular on this bootc

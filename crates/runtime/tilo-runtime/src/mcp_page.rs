@@ -127,6 +127,11 @@ impl Handles {
             .cloned()
             .unwrap_or_else(|| name.to_owned())
     }
+
+    /// The resource id `handle` stands for, when this session issued it.
+    pub fn issued(&self, handle: &str) -> Option<&str> {
+        self.by_handle.get(handle).map(String::as_str)
+    }
 }
 
 /// `page` with its rows grouped by resource and each action reduced to a
