@@ -1,5 +1,10 @@
 tilo_automerge_isolate::test_worker!();
 
+// The browser client's pending-action correlation, kept as the model these
+// tests check the host against.
+#[path = "support/action_client.rs"]
+mod action_client;
+
 use ed25519_dalek::SigningKey;
 use std::{
     fs,
@@ -2102,7 +2107,7 @@ async fn invoke_and_expect_closed_publication(
             .unwrap()
     };
     let before = writer_heads(&request(origin, "/status", None, None).await.1);
-    let mut pending = tilo_browser_runtime::action_client::PendingActions::default();
+    let mut pending = action_client::PendingActions::default();
     let mut request_id = uuid::Uuid::new_v4();
     let directed = DirectedAction {
         room,
@@ -2212,7 +2217,7 @@ async fn invoke_and_observe_until(
         transport_v2::EnvelopeV2,
     };
     // The production browser correlator, on the actual certified relay/broker path.
-    let mut pending = tilo_browser_runtime::action_client::PendingActions::default();
+    let mut pending = action_client::PendingActions::default();
     let mut request_id = uuid::Uuid::new_v4();
     let directed = DirectedAction {
         room,
@@ -2833,7 +2838,7 @@ async fn active_replacement(
         writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
         let mut client = client;
         let mut replacements = 0;
-        let mut pending = tilo_browser_runtime::action_client::PendingActions::default();
+        let mut pending = action_client::PendingActions::default();
         let mut status_request = None;
         let mut observed_pending = false;
         loop {
