@@ -30,6 +30,8 @@ use crate::widget::{
 const SNAP_IDLE_MS: u32 = 200;
 /// Snap-animation duration (cubic-out).
 const SNAP_ANIM_MS: u32 = 200;
+/// Two pan targets closer than this are the same place on screen.
+const SNAP_SETTLED_PX: f64 = 0.5;
 /// "Make space" slide duration for groups a new insertion pushes along —
 /// matches `window_group.rs`'s spawn fade (420ms cubic-out), which runs
 /// at the same moment, so the two read as one event.
@@ -479,7 +481,19 @@ impl Pan {
         self.last_wheel_at = None;
     }
 
+    /// Restarting an ease that already heads for `sx` would begin its curve
+    /// again from here, and a caller asking every frame would chase the
+    /// target for seconds; nor is a sub-pixel move worth a frame.
     fn ease_to(&mut self, sx: f64, now: Instant) {
+        if let Some(anim) = self.snap_anim
+            && (anim.to - sx).abs() <= SNAP_SETTLED_PX
+        {
+            return;
+        }
+        if self.snap_anim.is_none() && (sx - self.scroll_x).abs() <= SNAP_SETTLED_PX {
+            self.jump_to(sx);
+            return;
+        }
         self.snap_anim = Some(SnapAnim {
             from: self.scroll_x,
             to: sx,
