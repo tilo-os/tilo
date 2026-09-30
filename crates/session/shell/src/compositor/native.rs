@@ -9772,7 +9772,9 @@ pub fn run() {
         }
 
         if should_paint {
-            frame_builder.with_chrome(|chrome| chrome.consume_transition_paint());
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
