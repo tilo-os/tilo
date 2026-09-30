@@ -293,6 +293,210 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
     )
 }
 
+/// Paths for installing a joined device onto a target tree from this machine.
+pub struct JoinedDeviceLayout<'a> {
+    /// Filesystem root of the system being set up.
+    pub target_root: &'a Path,
+    /// Account whose session will present the enrolled person.
+    pub username: &'a str,
+    /// This machine's per-user identity directory.
+    pub local_identity_dir: &'a Path,
+    /// This machine's system identity paths, including its device certificate.
+    pub local_system: &'a IdentityPaths,
+    /// This machine's `home-peers.json`, copied when it is present.
+    pub local_home_peers: &'a Path,
+}
+
+/// Certify a new device onto `layout.target_root` and make both sides accept it.
+///
+/// The human root secret is never written. The target receives a public
+/// identity record, a fleet that includes this machine, and this machine's
+/// home peers. This machine's fleet remembers the new device, so each side
+/// can admit the other when they meet.
+///
+/// # Errors
+///
+/// Returns an error if the account name is unsafe, this machine's device
+/// certificate cannot be read, or any target file cannot be written.
+pub fn install_joined_device(
+    layout: &JoinedDeviceLayout<'_>,
+    user_public_key: [u8; 32],
+    display_name: &str,
+    device_label: &str,
+    now_ns: u64,
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+) -> Result<DeviceCert, io::Error> {
+    if !safe_account_name(layout.username) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "target account name is not a single safe path component",
+        ));
+    }
+    let identity_id = hex::encode(user_public_key);
+    let local_cert = persist::read_device_cert(&layout.local_system.device_cert)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if local_cert.user_public_key != user_public_key {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "this machine's device certificate belongs to a different person",
+        ));
+    }
+    let target_system = IdentityPaths::under(layout.target_root.join("var/lib/tilo"));
+    let cert = persist::provision_joined_device(
+        &target_system,
+        user_public_key,
+        sign,
+        device_label,
+        now_ns,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+
+    let identity_dir = layout
+        .target_root
+        .join("var/home")
+        .join(layout.username)
+        .join(".config/tilo/identity");
+    prepare_identity_directory(&identity_dir)?;
+    let record_id = public_record_id(&identity_id);
+    let record = runtime_identity::public_member_record(
+        if display_name.trim().is_empty() {
+            "My Tilo identity"
+        } else {
+            display_name.trim()
+        },
+        [88, 101, 242],
+        user_public_key,
+    )?;
+    atomic_file::write_with_mode(
+        &identity_dir.join(format!("{record_id}.json")),
+        &record,
+        0o600,
+    )?;
+    atomic_file::write_with_mode(
+        &identity_dir.join("active"),
+        format!("{record_id}\n").as_bytes(),
+        0o600,
+    )?;
+
+    let local_store = crate::device_fleet::DeviceFleetStore::at(
+        layout.local_identity_dir,
+        layout.local_system.clone(),
+    );
+    let mut certificates = local_store.load(&identity_id)?.certificates;
+    if !certificates
+        .iter()
+        .any(|known| known.device_public_key == local_cert.device_public_key)
+    {
+        certificates.push(local_cert);
+    }
+    certificates.push(cert.clone());
+    let target_store =
+        crate::device_fleet::DeviceFleetStore::at(&identity_dir, target_system.clone());
+    for known in certificates {
+        target_store.remember_certificate(&identity_id, known)?;
+    }
+    local_store.remember_certificate(&identity_id, cert.clone())?;
+    copy_home_peers(layout.local_home_peers, &target_system, &identity_id)?;
+    Ok(cert)
+}
+
+/// Certify a new device using this machine's active personal identity.
+///
+/// Loads the active record under `layout.local_identity_dir`, signs with that
+/// person's non-exportable share, and otherwise matches
+/// [`install_joined_device`].
+///
+/// # Errors
+///
+/// Returns an error if the active identity cannot be loaded or signing fails.
+pub fn enroll_from_local_identity(
+    layout: &JoinedDeviceLayout<'_>,
+    display_name: &str,
+    device_label: &str,
+    now_ns: u64,
+) -> Result<DeviceCert, io::Error> {
+    let path =
+        runtime_identity::resolve_active_identity(layout.local_identity_dir).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "this machine has no active personal identity to enroll",
+            )
+        })?;
+    let identity = runtime_identity::load_from_path(path).map_err(identity_load_error)?;
+    if !identity.is_single_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "threshold identity requires the multi-device certificate ceremony",
+        ));
+    }
+    let user_public_key = identity.group_public_key();
+    install_joined_device(
+        layout,
+        user_public_key,
+        display_name,
+        device_label,
+        now_ns,
+        |digest| identity.sign(digest).map_err(|error| error.to_string()),
+    )
+}
+
+fn public_record_id(identity_id: &str) -> String {
+    let prefix: String = identity_id.chars().take(55).collect();
+    format!("identity-{prefix}")
+}
+
+fn safe_account_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 32
+        && bytes
+            .first()
+            .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'_'))
+        && bytes
+            .iter()
+            .skip(1)
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
+fn copy_home_peers(
+    source: &Path,
+    target_system: &IdentityPaths,
+    identity_id: &str,
+) -> io::Result<()> {
+    let bytes = match fs::read(source) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() > 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "home-peer registry exceeds 1 MiB",
+        ));
+    }
+    let entries: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let own: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.user_public_key == identity_id)
+        .collect();
+    let encoded = serde_json::to_vec_pretty(&own)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let parent = target_system
+        .user_pubkey
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "target identity root is missing",
+            )
+        })?;
+    fs::create_dir_all(parent)?;
+    atomic_file::write(&parent.join("home-peers.json"), &encoded)?;
+    Ok(())
+}
+
 /// Prepare the private per-user identity directory before either the key
 /// transaction or its first-use crash journal is written. Keeping this as one
 /// operation prevents the journal preflight and the identity writer from
@@ -333,6 +537,17 @@ fn ensure_collaboration_identity_in_context(
     class: DeviceClass,
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
+
+    match persist::joined_device_is_ready(paths, now_ns_u64()) {
+        Ok(true) => return Ok(ProvisionOutcome::Existing),
+        Ok(false) => {}
+        Err(error) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("pre-enrolled device identity is not usable: {error}"),
+            ));
+        }
+    }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
@@ -737,6 +952,199 @@ mod tests {
     use super::*;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
+
+    #[test]
+    fn prejoined_device_keeps_the_setup_identity() {
+        use ed25519_dalek::Signer;
+
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let paths = IdentityPaths::under(dir.path().join("system"));
+        persist::provision_joined_device(
+            &paths,
+            root.verifying_key().to_bytes(),
+            |digest| Ok(root.sign(digest).to_bytes()),
+            "orange-pi",
+            1_000,
+        )
+        .unwrap();
+
+        let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+        assert_eq!(outcome, ProvisionOutcome::Existing);
+        assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
+        assert!(!paths.user_privkey.exists());
+        assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
+    }
+
+    #[test]
+    fn installed_device_joins_the_setup_fleet_without_the_root_secret() {
+        use ed25519_dalek::Signer;
+        use tilo_relay_protocol::HomePeerRegistration;
+
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let local_device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let identity_id = hex::encode(user);
+        let dir = tempfile::tempdir().unwrap();
+        let local_system = IdentityPaths::under(dir.path().join("local-system"));
+        local_system.ensure_directories().unwrap();
+        let mut local_cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: local_device.verifying_key().to_bytes(),
+            device_label: "setup".into(),
+            capabilities: DeviceCapabilities {
+                can_own_workspaces: true,
+                can_admit_devices: true,
+                can_act_as_host: false,
+                can_read_all_workspaces: true,
+                foreign: false,
+            },
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut local_cert, &root).unwrap();
+        persist::write_device_cert(&local_system.device_cert, &local_cert).unwrap();
+        let peers = dir.path().join("home-peers.json");
+        let own = HomePeerRegistration {
+            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: hex::encode(local_cert.device_public_key),
+            relay_service_node_id: hex::encode([7_u8; 32]),
+            relay_endpoint: None,
+            label: "home".into(),
+            user_public_key: identity_id.clone(),
+            device_cert: None,
+            relay_workspace_ids: vec![1],
+        };
+        let other = HomePeerRegistration {
+            user_public_key: hex::encode([9_u8; 32]),
+            label: "other".into(),
+            ..own.clone()
+        };
+        std::fs::write(
+            &peers,
+            serde_json::to_vec_pretty(&vec![own, other]).unwrap(),
+        )
+        .unwrap();
+
+        let cert = install_joined_device(
+            &JoinedDeviceLayout {
+                target_root: dir.path(),
+                username: "quser",
+                local_identity_dir: &dir.path().join("local-identity"),
+                local_system: &local_system,
+                local_home_peers: &peers,
+            },
+            user,
+            "Quinten",
+            "orange-pi",
+            1_000,
+            |digest| Ok(root.sign(digest).to_bytes()),
+        )
+        .unwrap();
+
+        assert_ne!(
+            cert.device_public_key, local_cert.device_public_key,
+            "joined device must not reuse the setup machine's device key"
+        );
+        let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
+        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(!target_system.user_privkey.exists());
+        let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
+        let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
+            .migrate_legacy_primary()
+            .unwrap();
+        assert_eq!(
+            registry.default_identity.as_deref(),
+            Some(identity_id.as_str())
+        );
+        let record =
+            std::fs::read(&registry.identities.get(&identity_id).unwrap().record_path).unwrap();
+        assert!(!record.windows(32).any(|window| window == root.to_bytes()));
+        let target_fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, target_system)
+            .load(&identity_id)
+            .unwrap();
+        assert!(
+            target_fleet
+                .certificates
+                .iter()
+                .any(|item| { item.device_public_key == cert.device_public_key })
+        );
+        assert!(
+            target_fleet
+                .certificates
+                .iter()
+                .any(|item| { item.device_public_key == local_cert.device_public_key })
+        );
+        let local_fleet = crate::device_fleet::DeviceFleetStore::at(
+            dir.path().join("local-identity"),
+            local_system,
+        )
+        .load(&identity_id)
+        .unwrap();
+        assert!(
+            local_fleet
+                .certificates
+                .iter()
+                .any(|item| { item.device_public_key == cert.device_public_key })
+        );
+        let copied: Vec<HomePeerRegistration> = serde_json::from_slice(
+            &std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(copied.len(), 1);
+        assert_eq!(copied[0].user_public_key, identity_id);
+    }
+
+    #[test]
+    fn enroll_from_local_identity_signs_with_the_active_person_not_a_copied_root() {
+        use tilo_relay_protocol::HomePeerRegistration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_identity = dir.path().join("local-identity");
+        let local_system = IdentityPaths::under(dir.path().join("local-system"));
+        ensure_collaboration_identity(&local_identity, &local_system).unwrap();
+        let local_cert = persist::read_device_cert(&local_system.device_cert).unwrap();
+        let identity_id = hex::encode(local_cert.user_public_key);
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(
+            &peers,
+            serde_json::to_vec_pretty(&[HomePeerRegistration {
+                schema_version: HomePeerRegistration::CURRENT_SCHEMA,
+                device_node_id: hex::encode(local_cert.device_public_key),
+                relay_service_node_id: hex::encode([7_u8; 32]),
+                relay_endpoint: None,
+                label: "home".into(),
+                user_public_key: identity_id.clone(),
+                device_cert: None,
+                relay_workspace_ids: vec![1],
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+
+        let cert = enroll_from_local_identity(
+            &JoinedDeviceLayout {
+                target_root: dir.path(),
+                username: "quser",
+                local_identity_dir: &local_identity,
+                local_system: &local_system,
+                local_home_peers: &peers,
+            },
+            "Quinten",
+            "orange-pi",
+            1_000,
+        )
+        .unwrap();
+
+        assert_ne!(cert.device_public_key, local_cert.device_public_key);
+        assert_eq!(cert.user_public_key, local_cert.user_public_key);
+        let target_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
+        assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
+        assert!(!target_system.user_privkey.exists());
+        assert!(cert.capabilities.can_read_all_workspaces);
+    }
     fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
         super::ensure_primary_identity(identity_dir, FILES)
     }
