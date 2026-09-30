@@ -105,6 +105,10 @@ need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo
 need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
+need "$repo/os/dev-image/usr/lib/systemd/user/tilo-models.service.d/10-nested-user-namespace.conf" 'ProtectSystem=' 'nested-session drop-in does not unset ProtectSystem for the model manager'
+if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/usr" >/dev/null; then
+    bad 'nested-session drop-in leaked into the production image'
+fi
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
 need "$user_model" 'StateDirectory=tilo containers' 'model manager does not provision its persistent roots without a helper process'
 need "$gateway" 'ConfigurationDirectory=tilo' 'model gateway does not provision its private configuration root'

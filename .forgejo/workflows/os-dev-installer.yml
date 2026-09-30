@@ -24,6 +24,9 @@ jobs:
       TILO_LOCAL_TAG: dev-installer-${{ github.run_id }}
       TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
       TILO_IMAGE: ${{ github.event.inputs.os_image }}
+      # This disposable, unsigned medium is exercised only in the WHPX VM.
+      # Physical Windows-direct installs use paired CI-signed offline targets.
+      TILO_UNVERIFIED_VM_INSTALL: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Require a native ARM64 host and an immutable dev image

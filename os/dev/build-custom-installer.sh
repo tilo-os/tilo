@@ -112,6 +112,12 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
          "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
          "$INSTALLER_CONTEXT/rootfs/usr/share/tilo"
 cp -a "$TILO_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
+if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
+  [ -z "$OFFLINE_TARGET_DIR" ] && [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 0 ] \
+    || die "unverified VM install is only for a disposable self-install medium"
+  install -Dm0444 /dev/null \
+    "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/unverified-vm-install"
+fi
 if [ "$REUSE_IMAGE_INSTALLER" = 0 ]; then
   install -Dm0755 "$TILO_OS_DIR/tilo-installer" \
     "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
