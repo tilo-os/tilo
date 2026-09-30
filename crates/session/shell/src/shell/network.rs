@@ -4431,6 +4431,19 @@ impl ShellNetwork {
                 crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
             }));
         }
+        for addr in personal_device_peer_addrs(
+            &personal_device_peer_path(),
+            self.personal_continuity_device.as_ref().and_then(|device| {
+                let bytes = hex::decode(device.as_str()).ok()?;
+                bytes.try_into().ok()
+            }),
+        ) {
+            if let Ok(device) =
+                crate::shell::personal_continuity::DeviceId::new(hex::encode(addr.id.as_bytes()))
+            {
+                recipients.insert(device);
+            }
+        }
         recipients
     }
 
@@ -4452,7 +4465,16 @@ impl ShellNetwork {
         // The fabric has capability-specific gates at each producer, but the
         // master switch is also a strict transport kill switch: not even an
         // otherwise content-free anti-entropy request may leave this device.
-        if !self.continuity_policy().enabled() {
+        // Enrolled devices are an explicit grant made by the setup machine.
+        // Presence and actions between those devices stay available when the
+        // optional continuity features are switched off.
+        if !self.continuity_policy().enabled()
+            && personal_device_peer_addrs(
+                &personal_device_peer_path(),
+                Some(*self.local_peer_id.as_bytes()),
+            )
+            .is_empty()
+        {
             return;
         }
         let Some(user_public_key) = self.personal_continuity_user else {
