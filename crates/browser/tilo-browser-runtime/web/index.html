@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tilo browser runtime</title>
+  <style>
+    html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
+    #surface { height: calc(100% - 28px); }
+    #status { height: 28px; line-height: 28px; padding: 0 8px; }
+  </style>
+</head>
+<body>
+  <div id="surface"></div>
+  <div id="status">Loading…</div>
+  <script type="module">
+    // Diagnostic page: the session desktop (or `?app=` for one application)
+    // with IndexedDB-backed records.
+    import {mountDesktop} from './host.mjs';
+    const status = document.getElementById('status');
+    try {
+      const mount = await mountDesktop(document.getElementById('surface'), {
+        app: new URLSearchParams(location.search).get('app') ?? undefined,
+        onStatus: state => {
+          if (state.phase) status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`;
+        },
+      });
+      globalThis.tiloMount = mount;
+    } catch (error) {
+      status.textContent = `Failed: ${error?.message ?? error}`;
+      throw error;
+    }
+  </script>
+</body>
+</html>

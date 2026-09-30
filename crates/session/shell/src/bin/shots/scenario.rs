@@ -2397,6 +2397,30 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("04-palette-closed"),
             ],
         },
+        // Apps of the manifest registry this host cannot run: on a Mac
+        // Firewall is listed as "Tilo OS only" and Enter opens nothing, while
+        // the desktop-only Terminal is not listed as unavailable.
+        Scenario {
+            name: "palette_unavailable_app",
+            description: "Search 'firewall' (Tilo OS only), press Enter, then search 'terminal'.",
+            actions: vec![
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("firewall"),
+                Action::Wait(2),
+                Action::Snapshot("01-unavailable-listed"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(4),
+                Action::Snapshot("02-after-enter"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::OpenPalette,
+                Action::Wait(2),
+                Action::Type("terminal"),
+                Action::Wait(2),
+                Action::Snapshot("03-desktop-only-app"),
+            ],
+        },
         Scenario {
             name: "palette_close_anim",
             description: "Open the palette, Escape, and capture the exit animation frames.",

@@ -376,7 +376,9 @@ history-action-invalid = That History request isn't valid.
 # Command palette chrome: footer key hints, result count and empty states.
 palette-name = Command palette
 palette-results = Results
+palette-placeholder = Search…
 palette-hint-navigate = Navigate
+palette-hint-select = Select
 palette-hint-open = Open
 palette-hint-run = Run
 palette-hint-close = Close

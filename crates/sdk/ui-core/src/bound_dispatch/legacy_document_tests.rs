@@ -500,7 +500,16 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
     )
     .unwrap();
     assert!(outcome.changed);
-    assert_eq!(outcome.envelope.actor, Some(b"fixture-user".to_vec()));
+    // The author's handle, then this device's part (`device_actor`).
+    assert!(
+        outcome
+            .envelope
+            .actor
+            .as_deref()
+            .is_some_and(|actor| actor.starts_with(b"fixture-user\x1f")),
+        "{:?}",
+        outcome.envelope.actor
+    );
     assert_eq!(
         outcome.envelope.base_change_hashes(),
         *a_probe.ack_heads.borrow()

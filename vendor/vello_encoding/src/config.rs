@@ -813,6 +813,36 @@ impl BumpBudget {
         *self != before
     }
 
+    /// Shrink every reservation by the same factor until the whole budget
+    /// fits in `max_bytes`. A browser's GPU process has a hard memory limit
+    /// (Safari's is 600 MB); seven buffers each allowed a full binding reach
+    /// most of a gigabyte, and a GPU process killed there mid-frame took the
+    /// macOS window server down with it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "each field is scaled down from a u32 by a factor below one"
+    )]
+    pub fn fit_total_bytes(&mut self, max_bytes: u64) {
+        let size = self.size_in_bytes();
+        if size <= max_bytes {
+            return;
+        }
+        let scale = max_bytes as f64 / size as f64;
+        for field in [
+            &mut self.lines,
+            &mut self.binning,
+            &mut self.tiles,
+            &mut self.seg_counts,
+            &mut self.segments,
+            &mut self.blend_spill,
+            &mut self.ptcl,
+        ] {
+            *field = (f64::from(*field) * scale) as u32;
+        }
+    }
+
     /// Bytes this budget reserves, not counting the viewport floors.
     pub fn size_in_bytes(&self) -> u64 {
         u64::from(self.lines) * size_of::<LineSoup>() as u64
@@ -1151,6 +1181,29 @@ mod tests {
         assert_eq!(budget.lines, 2 * 38_037);
         assert_eq!(budget.segments, BumpBudget::INITIAL.segments);
         assert_eq!(budget.blend_spill, BumpBudget::INITIAL.blend_spill);
+    }
+
+    #[test]
+    fn growth_never_passes_a_total_memory_limit() {
+        let mut budget = BumpBudget::INITIAL.with_max_binding_bytes(WEBGPU_DEFAULT_BINDING);
+        let huge = BumpAllocators {
+            lines: u32::MAX / 2,
+            binning: u32::MAX / 2,
+            tile: u32::MAX / 2,
+            seg_counts: u32::MAX / 2,
+            segments: u32::MAX / 2,
+            blend: u32::MAX / 2,
+            ptcl: u32::MAX / 2,
+            ..Default::default()
+        };
+        budget.observe(&huge);
+        assert!(budget.size_in_bytes() > 512 << 20, "{}", budget.size_in_bytes());
+        budget.fit_total_bytes(128 << 20);
+        assert!(budget.size_in_bytes() <= 128 << 20, "{}", budget.size_in_bytes());
+        assert!(budget.ptcl > 0 && budget.lines > 0);
+        let fitted = budget;
+        budget.fit_total_bytes(128 << 20);
+        assert_eq!(budget, fitted, "a budget within the limit is left alone");
     }
 
     #[test]

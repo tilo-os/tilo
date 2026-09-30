@@ -191,6 +191,17 @@ pub struct Package {
     /// produce e.g. `API` from `api-tester`.
     #[serde(default)]
     pub name: Option<String>,
+    /// The name in other languages, keyed by BCP 47 tag:
+    ///
+    /// ```toml
+    /// [package.names]
+    /// de = "Dateien"
+    /// ```
+    ///
+    /// Search matches every one of them, so an app is found by its name
+    /// in either the desktop's language or English.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<String, String>,
     /// Freedesktop-style menu category (`Office`, `Development`, ...);
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]

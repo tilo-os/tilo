@@ -164,6 +164,23 @@ fn stable_access_key(id: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
+/// The app's end of its network fetches: a result is queued and the app woken
+/// to take it, so nothing polls for it frame by frame while a slow or failing
+/// service keeps a request open.
+#[derive(Clone)]
+struct NetSender {
+    tx: Sender<NetMsg>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl NetSender {
+    fn send(&self, msg: NetMsg) -> Result<(), std::sync::mpsc::SendError<NetMsg>> {
+        self.tx.send(msg)?;
+        self.wake.wake();
+        Ok(())
+    }
+}
+
 /// Run a network fetch as a task on the app runtime; its result arrives on
 /// the app's channel.
 fn spawn_net(fetch: impl Future<Output = ()> + Send + 'static) {
@@ -225,7 +242,7 @@ pub struct MapsApp {
     loaded: bool,
 
     // networking
-    net_tx: Sender<NetMsg>,
+    net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
     pending: u32,
     /// Whether background network/portal work may be spawned. False for the
@@ -707,7 +724,11 @@ impl MapsApp {
         nav_open: bool,
         online: bool,
     ) -> Self {
-        let (net_tx, net_rx) = std::sync::mpsc::channel();
+        let (tx, net_rx) = std::sync::mpsc::channel();
+        let net_tx = NetSender {
+            tx,
+            wake: ui::wake::WakeHandle::new(),
+        };
         let cache_bytes = tiles.cache_bytes();
         Self {
             model,
@@ -1920,8 +1941,8 @@ impl MapsApp {
     /// reply for a previous viewport is discarded on drain.
     fn fetch_viewport_pois(&mut self) {
         if self.rect.width() <= 1.0 {
-            // No valid viewport yet — re-arm so the first real frame fetches.
-            self.poi_debounce = Some(ui::time::now() + POI_DEBOUNCE);
+            // No valid viewport yet: `apply_layout` arms the fetch once one
+            // exists, rather than a timer polling for it.
             return;
         }
         if self.model.zoom < POI_MIN_ZOOM {
@@ -5686,26 +5707,29 @@ impl Widget for MapsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Same rule as `needs_idle_sync`: only ask for another frame while
-        // something is legitimately in flight (net, tiles, download) or the
-        // search caret is blinking. Failed tiles back off and clear
-        // `has_inflight()`, so a viewport of unfetchable tiles no longer pins
-        // the loop at 60 Hz.
-        self.pending > 0
-            || self.search.is_focused()
-            || self.search.has_pending_query()
-            || self.endpoints.has_pending_query()
-            || self.poi_debounce.is_some()
-            || self.endpoints.is_focused()
-            || self.locating
+        // Only motion takes a frame every vsync. Network replies, tiles and
+        // download ticks wake the app when they land, however long a slow or
+        // failing service keeps them open; debounces are wake deadlines; the
+        // search caret does not blink.
+        self.locating
             || self.location_rx.is_some()
-            || self.tiles.has_inflight()
-            || self.tiles.progress().is_active()
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.navigation_placement.is_dragging()
             || (!self.motion_reduced && self.navigation_placement.is_handoff_animating())
             || self.map_controls.needs_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.search.query_deadline(),
+            self.endpoints.query_deadline(),
+            self.offline_panel.query_deadline(),
+            self.poi_debounce,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {

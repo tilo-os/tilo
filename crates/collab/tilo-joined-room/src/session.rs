@@ -289,6 +289,12 @@ impl Input {
     pub fn message(&self) -> &NeighbourMsg {
         &self.msg
     }
+    /// Whether the host sent it as part of its retained replay, before
+    /// answering the subscription.
+    #[must_use]
+    pub fn retained(&self) -> bool {
+        self.retained
+    }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
     ///

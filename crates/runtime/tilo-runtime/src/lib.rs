@@ -29,6 +29,10 @@ mod apps;
 pub mod cli;
 pub mod computer;
 mod daemon;
+#[cfg(target_os = "macos")]
+pub mod device_grants;
+#[cfg(target_os = "macos")]
+mod i18n;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;
@@ -49,6 +53,9 @@ tilo_automerge_isolate::test_worker!();
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
+/// The runtime's own actions (the device grants), for `tilo-control
+/// --socket`.
+pub const CONSOLE_SOCKET: &str = "console.sock";
 /// The profile's workspace files, served read only (`tilo-file-provider`).
 pub const FILES_SOCKET: &str = "files.sock";
 

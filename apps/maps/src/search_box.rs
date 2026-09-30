@@ -91,8 +91,9 @@ impl SearchBox {
         self.focused = focused;
     }
 
-    pub(crate) fn has_pending_query(&self) -> bool {
-        self.debounce.is_some()
+    /// When the typed query settles into a live geocode.
+    pub(crate) const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
     }
 
     /// Stable identity for a visible suggestion. The canvas uses this to give
