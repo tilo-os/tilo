@@ -12,6 +12,7 @@ arm64_kernel_config="$repo/os/kernel/config-fragments/aarch64.config"
 x86_kernel_config="$repo/os/kernel/config-fragments/x86_64.config"
 performance_sysctl="$repo/os/usr/lib/sysctl.d/70-tilo-performance.conf"
 image_recipe="$repo/os/Containerfile"
+initramfs_recipe="$repo/os/scripts/build-initramfs.sh"
 kargs="$repo/os/usr/lib/bootc/kargs.d/01-hardening.toml"
 fail=0
 
@@ -611,22 +612,22 @@ grep -Fq 'install -D -m 0755 "$scudo" /usr/lib/tilo/libclang_rt.scudo_standalone
   && grep -Fq 'rpm -e --nodeps compiler-rt clang-resource-filesystem' "$image_recipe" \
   || bad 'runtime retains the full compiler-rt toolchain instead of only Scudo'
 
-grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
+grep -Fq 'dracut --force --reproducible --compress zstd' "$initramfs_recipe" \
   && ok 'signed initramfs uses low-latency Zstandard decompression'
-grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
+grep -Fq 'dracut --force --reproducible --compress zstd' "$initramfs_recipe" \
   || bad 'initramfs compression can regress to a slow distribution default'
 grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"' \
-  "$image_recipe" \
+  "$initramfs_recipe" \
   || bad 'local-root initramfs still carries unused network/NBDE attack surface'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \
+grep -Fq -- '--omit-drivers "ext4 xfs"' "$initramfs_recipe" \
   && ok 'initramfs excludes non-root Ext4/XFS filesystem parsers'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \
+grep -Fq -- '--omit-drivers "ext4 xfs"' "$initramfs_recipe" \
   || bad 'initramfs carries non-root Ext4/XFS filesystem attack surface'
 grep -Fq "printf '%s\\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
-  "$image_recipe" \
+  "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
-grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$image_recipe" \
-  && grep -Fq -- "-path '*/fs/xfs/xfs.ko*'" "$image_recipe" \
+grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
+  && grep -Fq -- "-path '*/fs/xfs/xfs.ko*'" "$initramfs_recipe" \
   || bad 'image build does not preserve signed Ext4/XFS modules for post-root rescue use'
 
 for required in \
