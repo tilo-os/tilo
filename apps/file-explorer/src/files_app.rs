@@ -64,6 +64,8 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 /// The most entries one `move` takes.
 const MAX_MOVE_ENTRIES: usize = 256;
+/// The most entry names showing a folder answers with.
+const MAX_ANSWERED_ENTRIES: usize = 64;
 
 /// A `move` of several of the current folder's entries into `folder`.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -6624,6 +6626,7 @@ impl FileExplorerWidget {
         let mut folder = self.folder_resource_base();
         Self::append_navigation_actions(&mut folder);
         folder.actions.push(Self::go_to_action());
+        folder.actions.push(Self::open_folder_action());
         folder.actions.push(self.move_action());
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
@@ -6644,14 +6647,24 @@ impl FileExplorerWidget {
         folder
     }
 
+    fn go_to_action() -> ActionSpec {
+        Self::show_folder_action("go-to", "Go to folder…")
+    }
+
+    /// `open` with a path, the convention an agent opens an app at a file
+    /// or folder by: Files shows that folder, as `go-to` does.
+    fn open_folder_action() -> ActionSpec {
+        Self::show_folder_action("open", "Open folder")
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "a path string payload is always serializable"
     )]
-    fn go_to_action() -> ActionSpec {
+    fn show_folder_action(id: &'static str, label: &'static str) -> ActionSpec {
         ActionSpec::typed_operation(
-            "go-to",
-            "Go to folder…",
+            id,
+            label,
             "absolute folder path, e.g. /data/in",
             OperationKind::View,
             "files.go-to",
@@ -6665,6 +6678,54 @@ impl FileExplorerWidget {
                     .expect("folder path is serializable")
             },
         )
+        .with_description(
+            "Show the folder at this absolute path; answers with its resource (this folder's id changes) and entries",
+        )
+        .with_contract(ActionContract {
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["resource", "path", "entries"],
+                    "properties": {
+                        "resource": {"type": "string"},
+                        "path": {"type": "string"},
+                        "entries": {"type": "array", "items": {"type": "string"}},
+                        "more": {"type": "integer"}
+                    }
+                }),
+            },
+            ..ActionContract::view()
+        })
+    }
+
+    /// What showing a folder answers: its resource id, its path and its
+    /// first entries (a folder's name ends in `/`), so a caller acts on
+    /// the folder without querying it again.
+    fn folder_answer(&self) -> serde_json::Value {
+        let entries: Vec<String> = self
+            .entries
+            .iter()
+            .take(MAX_ANSWERED_ENTRIES)
+            .map(|entry| {
+                if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                }
+            })
+            .collect();
+        let mut answer = serde_json::json!({
+            "resource": crate::search_provider::folder_resource_id(&self.current_path),
+            "path": self.current_path.display().to_string(),
+            "entries": entries,
+        });
+        let more = self.entries.len().saturating_sub(MAX_ANSWERED_ENTRIES);
+        if more > 0
+            && let Some(fields) = answer.as_object_mut()
+        {
+            fields.insert("more".into(), more.into());
+        }
+        answer
     }
 
     /// `move`: put several of this folder's entries into another folder in
@@ -8952,6 +9013,7 @@ impl FileExplorerWidget {
                     return Err(format!("{} is not a folder Files can open", path.display()));
                 }
                 self.navigate(path);
+                self.operation_result = Some(self.folder_answer());
             }
             (OperationKind::Effect, "files.move") => {
                 let request: MoveRequest =

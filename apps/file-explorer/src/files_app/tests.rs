@@ -1851,6 +1851,68 @@ mod command_path_tests {
         assert!(downloads.join("notes.txt").exists());
     }
 
+    /// `go-to` and `open` with a path show the folder and answer with its
+    /// new resource id and entries, so the caller needs no query to act.
+    #[test]
+    fn showing_a_folder_answers_with_its_resource_and_entries() {
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        std::fs::create_dir_all(downloads.join("old")).unwrap();
+        for index in 0..70 {
+            std::fs::write(downloads.join(format!("f{index:02}.txt")), "x").unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        let mut doc = automerge::AutoCommit::new();
+        let mut show = |action: &str, path: &Path| {
+            let resources = ui::resources::resources(&files, &doc);
+            let folder = crate::search_provider::folder_resource_id(&files.current_path);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(folder, action),
+                serde_json::json!({"path": path}).as_object().unwrap(),
+            )
+            .unwrap();
+            let started = Widget::start_operation(
+                &mut files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &automerge::ROOT,
+            );
+            match started {
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                other => panic!("{action} completes at once: {other:?}"),
+            }
+        };
+
+        let opened = show("open", &downloads).unwrap();
+        assert_eq!(
+            opened["resource"],
+            crate::search_provider::folder_resource_id(&downloads)
+        );
+        assert_eq!(opened["path"], downloads.display().to_string());
+        let entries = opened["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), MAX_ANSWERED_ENTRIES);
+        assert_eq!(entries[0], "old/");
+        assert_eq!(entries[1], "f00.txt");
+        assert_eq!(opened["more"], 71 - MAX_ANSWERED_ENTRIES);
+
+        let old = downloads.join("old");
+        let went = show("go-to", &old).unwrap();
+        assert_eq!(
+            went["resource"],
+            crate::search_provider::folder_resource_id(&old)
+        );
+        assert_eq!(went["entries"], serde_json::json!([]));
+        assert!(went.get("more").is_none());
+    }
+
     /// `move` takes several entries by name into a folder it creates, answers
     /// with what moved, and moves nothing when one name is wrong.
     #[test]
