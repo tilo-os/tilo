@@ -188,14 +188,6 @@ impl Request {
     pub fn policy_time(&self) -> Option<&PolicyTime> {
         self.policy_time.as_ref()
     }
-    /// The queue-slot permit this request holds until it is dropped.
-    #[expect(
-        clippy::used_underscore_binding,
-        reason = "the public field keeps its drop-only name for existing callers"
-    )]
-    pub(crate) fn permit(&self) -> &Arc<OwnedSemaphorePermit> {
-        &self._permit
-    }
 }
 
 struct ReadinessReset(tokio::sync::watch::Sender<bool>);
@@ -561,8 +553,6 @@ struct ReplyLimitDiagnostics {
 fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let message = &reply.message;
     let message_kind = match message {
-        ActionMessage::AgentReadV1 { .. } => "agent_read_v1",
-        ActionMessage::AgentReadResultV1 { .. } => "agent_read_result_v1",
         ActionMessage::CatalogueRefresh { .. } => "catalogue_refresh",
         ActionMessage::CommittedDesktop { .. } => "committed_desktop",
         ActionMessage::BrokerCatalogue { .. } => "broker_catalogue",

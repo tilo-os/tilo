@@ -35,7 +35,6 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/agent/control-protocol",
     "crates/collab/tilo-action-broker",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",

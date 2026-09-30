@@ -579,7 +579,6 @@ impl Relay {
         let live_trust_policy = handshake_trust.live_policy.clone();
         let handler = RelayProtocol {
             v2: false,
-            agent_reads_v1: false,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -650,7 +649,6 @@ impl Relay {
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
                     v2: true,
-                    agent_reads_v1: true,
                     ..handler.clone()
                 },
             )
@@ -1833,7 +1831,6 @@ fn validate_native_interactive_workspace_identity(
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
     pub(crate) v2: bool,
-    pub(crate) agent_reads_v1: bool,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -2299,7 +2296,6 @@ async fn handle_conn(
         send,
         ctx.peer_context(),
         ctx.v2,
-        ctx.agent_reads_v1,
     ))
     .await;
     if let Err(e) = peer_result {

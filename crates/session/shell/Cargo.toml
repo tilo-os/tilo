@@ -50,7 +50,6 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
