@@ -2644,7 +2644,7 @@ impl ShellNetwork {
         };
         let mut tree = replica.tree.write();
         for room in personal_room_ids(&path) {
-            tree.adopt_continuation_room(room, "enrolled-device");
+            tree.join_enrolled_room(room);
         }
     }
 
@@ -6447,6 +6447,30 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn enrolled_rooms_stay_after_startup_when_continuations_are_off() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let room = "11111111-1111-4111-8111-111111111111";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
+        assert!(net.join_default_workspace());
+        let rooms = net.replica.lock().expect("replica").tree.read().rooms();
+        assert!(
+            rooms.iter().any(|candidate| candidate.to_string() == room),
+            "startup must keep the enrolled room"
+        );
     }
 
     #[test]
