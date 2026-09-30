@@ -783,6 +783,38 @@ mod command_path_tests {
             !updated && !structure && !needs_animation,
             "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
+
+        // Production AboutToWait also drains Nearby Send. An unchanged
+        // snapshot used to set `structure_dirty` and commit at ~0.5 Hz;
+        // together with the 750ms metadata wake that was ~1.8 paint/s.
+        let request_id = widget
+            .take_collab_requests()
+            .iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::NearbyTransferCommand { request_id, .. } => {
+                    Some(*request_id)
+                }
+                _ => None,
+            });
+        if let Some(request_id) = request_id {
+            ui::widget::Collaborative::handle_collab_event(
+                &mut widget,
+                &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
+                        snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
+                    }),
+                },
+            );
+        }
+        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
+        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
+        assert!(
+            !updated && !structure && !needs_animation,
+            "idle Nearby snapshot still dirty: updated={updated} structure={structure} anim={needs_animation}"
+        );
     }
 
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
