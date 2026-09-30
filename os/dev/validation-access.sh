@@ -201,6 +201,7 @@ for phase in early late; do
     journalctl -b -u greetd.service -u tilo-validation-ssh.service \
       -u tilo-firstboot-user.service -u tilo-installer-setup.service \
       --no-pager -n 60 || true
+    echo "TILO_VALIDATION_DIAGNOSTICS_END $phase"
   )"
   for serial in /dev/ttyS0 /dev/ttyAMA0; do
     if [ -c "$serial" ] && grep -q "^${serial##*/} " /proc/consoles; then
