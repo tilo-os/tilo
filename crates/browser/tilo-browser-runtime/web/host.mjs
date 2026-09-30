@@ -379,7 +379,9 @@ export async function mountDesktop(target,options={}) {
       get navigation(){return navigation?.controller;},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
-      semantic:(...args)=>runtime.semantic(id,...args),};
+      semantic:(...args)=>runtime.semantic(id,...args),
+      actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(id,resource??undefined,window)),
+      invokeAction:(resource,action,args={},{confirm=false,window}={})=>JSON.parse(runtime.invoke_component_action(id,resource,action,JSON.stringify(args),confirm,window)),};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
 async function settleBeforeGpu(){

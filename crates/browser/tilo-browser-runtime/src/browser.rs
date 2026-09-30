@@ -1465,6 +1465,122 @@ pub fn semantic(
     })
 }
 
+/// The actions the mount's application publishes, described as
+/// `tilo-control actions list` describes them. `resource` narrows to one
+/// resource and its children, including one the app resolves lazily. On a
+/// desktop, the actions of one window's application: `window` (its tab id),
+/// else the focused window's.
+///
+/// # Errors
+///
+/// Rejects a closed mount, an unknown or absent window, or an unavailable
+/// application.
+#[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
+pub fn component_actions(
+    id: u64,
+    resource: Option<String>,
+    window: Option<String>,
+) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let instance = m.action_window(window.as_deref())?;
+        let resources = m
+            .frame
+            .bound_resources_of(instance, resource.as_deref())
+            .map_err(|e| door_error(&e))?;
+        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+
+/// Invoke one action the mount's application publishes, through the bound
+/// door the palette, agents and assistive technology use: the address must
+/// be published now, the mount's permissions must allow it, its arguments
+/// must bind, and a confirmation policy requires `confirmed`. `window` is
+/// as in [`component_actions`].
+///
+/// # Errors
+///
+/// Rejects a closed mount, malformed arguments, or a refused action (the
+/// message starts with the door's error code).
+#[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
+pub fn invoke_component_action(
+    id: u64,
+    resource: &str,
+    action: &str,
+    arguments: &str,
+    confirmed: bool,
+    window: Option<String>,
+) -> Result<String, JsValue> {
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(arguments).map_err(error)?;
+    with_mount(id, |m| {
+        let instance = m.action_window(window.as_deref())?;
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance
+                .or_else(|| m.frame.component_instance_id())
+                .ok_or_else(|| error("the mount hosts no application"))?,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let started = if confirmed {
+            m.frame.invoke_bound_action_confirmed(&address, &arguments)
+        } else {
+            m.frame.invoke_bound_action(&address, &arguments)
+        }
+        .map_err(|e| door_error(&e))?;
+        // A following call sees the state this one left, not the last frame's.
+        m.frame.relayout();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(match started {
+            ui::widget::ResourceOperationStart::Completed(output) => {
+                serde_json::json!({"state": "completed", "output": output})
+            }
+            ui::widget::ResourceOperationStart::Accepted => {
+                serde_json::json!({"state": "accepted"})
+            }
+        }
+        .to_string())
+    })
+}
+
+fn door_error(e: &tilo_actions::DoorError) -> JsValue {
+    error(format!("{}: {e}", e.code()))
+}
+
+impl Mount {
+    /// The application instance a page's action call addresses: `None` for
+    /// a single-application mount, a desktop's `window` (tab id) or else its
+    /// focused window.
+    fn action_window(&self, window: Option<&str>) -> Result<Option<u64>, JsValue> {
+        let Some(desktop) = &self.desktop else {
+            return match window {
+                None => Ok(None),
+                Some(_) => Err(error("a single-application mount has no windows")),
+            };
+        };
+        let tab = match window {
+            Some(window) => window
+                .parse::<u64>()
+                .ok()
+                .filter(|tab| tab.to_string() == window)
+                .ok_or_else(|| error("invalid window identity"))?,
+            None => desktop
+                .handle
+                .read(tilo_desktop_surface::navigation::active_route)
+                .map(|route| route.tab)
+                .ok_or_else(|| error("no window is focused"))?,
+        };
+        Ok(Some(tab))
+    }
+}
+
 /// The next status carries the complete semantics tree, for example when
 /// assistive technology focus enters the surface.
 ///
