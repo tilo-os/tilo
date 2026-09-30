@@ -957,6 +957,24 @@ fn personal_device_peer_path() -> PathBuf {
     home_peer_registry_path().with_file_name("personal-device-peers.json")
 }
 
+fn personal_room_ids(path: &Path) -> Vec<RoomId> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    if bytes.len() > 64 * 1024 {
+        return Vec::new();
+    }
+    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+        return Vec::new();
+    };
+    if ids.len() > 256 {
+        return Vec::new();
+    }
+    ids.into_iter()
+        .filter_map(|id| RoomId::parse(&id))
+        .collect()
+}
+
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
 /// upper bound on how stale a guest's view of a room can be.
@@ -2604,6 +2622,8 @@ impl ShellNetwork {
     /// the compatibility/control topic. Rooms accepted later are joined by
     /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
+        self.adopt_enrolled_rooms();
+        self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
         if let Ok(replica) = self.replica.lock() {
             topics.extend(replica.tree.read().rooms().into_iter().map(room_topic_id));
@@ -2611,7 +2631,45 @@ impl ShellNetwork {
         if let Some(user_public_key) = self.personal_continuity_user {
             topics.push(personal_continuity_topic_id(&user_public_key));
         }
-        topics.into_iter().all(|topic| self.join_topic(topic))
+        topics.into_iter().all(|topic| self.join_topic(topic)) && {
+            self.publish_sync_requests();
+            true
+        }
+    }
+
+    fn adopt_enrolled_rooms(&self) {
+        let path = personal_device_peer_path().with_file_name("personal-rooms.json");
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let mut tree = replica.tree.write();
+        for room in personal_room_ids(&path) {
+            tree.adopt_continuation_room(room, "enrolled-device");
+        }
+    }
+
+    fn export_personal_rooms(&self) {
+        let Some(path) = tilo_identity_host::provisioning::personal_rooms_export_path() else {
+            return;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let ids = replica
+            .tree
+            .read()
+            .rooms()
+            .into_iter()
+            .map(|room| room.to_string())
+            .filter(|id| RoomId::parse(id).is_some())
+            .collect::<Vec<_>>();
+        drop(replica);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(bytes) = serde_json::to_vec(&ids) {
+            let _ = atomic_file::write(&path, &bytes);
+        }
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
@@ -2726,6 +2784,7 @@ impl ShellNetwork {
                 }
             }
         }
+        self.export_personal_rooms();
         changed
     }
 
@@ -6322,6 +6381,20 @@ mod tests {
         let addrs = personal_device_peer_addrs(&path, Some(own));
         assert_eq!(addrs.len(), 1);
         assert_eq!(*addrs[0].id.as_bytes(), peer);
+    }
+
+    #[test]
+    fn personal_rooms_keep_only_real_room_ids() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("personal-rooms.json");
+        std::fs::write(
+            &path,
+            br#"["11111111-1111-4111-8111-111111111111","not-a-room"]"#,
+        )
+        .unwrap();
+        let rooms = personal_room_ids(&path);
+        assert_eq!(rooms.len(), 1);
+        assert_eq!(rooms[0].to_string(), "11111111-1111-4111-8111-111111111111");
     }
 
     #[test]
