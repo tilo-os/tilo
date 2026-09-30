@@ -3127,17 +3127,29 @@ jobs:
         if: matrix.board == 'orangepi-3b-v2-1'
         run: ./os/dev/build-orangepi-uboot.sh "$BOARD_OUTPUT/rockchip-loader"
 
-      # The aarch64 lane publishes it about when this job's setup is done. It
-      # does not come if that lane fails: the job then fails at the timeout.
+      # The aarch64 lane publishes it about when this job's setup is done. The
+      # wait ends early when that lane has finished without publishing it.
       - name: Wait for this commit's aarch64 dev image
         timeout-minutes: 45
         env:
           SERIES: ${{ steps.series.outputs.series }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
+          jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
           started=$(date +%s)
-          until raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)"; do sleep 20; done
+          until raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)"; do
+            lane="$(curl -fsS -H "Authorization: token $TOKEN" "$jobs" 2>/dev/null \
+              | jq -r '[.[] | select(.name | startswith("build-and-push (aarch64"))] | last | .status // empty' || true)"
+            case "$lane" in
+              failure|cancelled|skipped)
+                # A lane that published and then failed a later step still counts.
+                raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)" && break
+                echo "::error::the aarch64 dev lane ended $lane without publishing $base"; exit 1 ;;
+            esac
+            sleep 20
+          done
           digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
           echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
           echo "::notice::waited $(( $(date +%s) - started ))s for $base ($digest)"
