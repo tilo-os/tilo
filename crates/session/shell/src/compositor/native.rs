@@ -3496,8 +3496,8 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// The agent's strip on screen: its coordinates' origin and its
-    /// screenshots' extent.
+    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
+    /// its screenshots' extent.
     viewport: Rect,
 }
 
@@ -3553,7 +3553,6 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
-    let current = ctx.agents.seat(&agent.id).and_then(|seat| seat.strip);
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3562,7 +3561,19 @@ fn seat_agent(
                 .strip_owner(id)
                 .is_some_and(|owner| owner != agent.id)
         };
-        fb.with_chrome(|chrome| strip = chrome.agent_strip(current, claimed, &label));
+        let mut current = agents.seat(&agent.id).and_then(|seat| seat.strip);
+        // The seated agent moved to another strip nobody else works in: that
+        // strip is its own now, so its next command does not pull it back.
+        if agents.seated() == Some(agent.id.as_str())
+            && let Some(active) = fb.chrome().active_strip_id()
+            && !claimed(active)
+        {
+            current = Some(active);
+        }
+        fb.with_chrome(|chrome| {
+            chrome.set_single_strip(true);
+            strip = chrome.agent_strip(current, claimed, &label);
+        });
     }
     let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
     let peer = {
@@ -3571,8 +3582,8 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb, strip)
-        .ok_or_else(|| agent_refusal("strip_hidden", "the agent's strip is not on screen"))?;
+    let viewport = agent_viewport(fb)
+        .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3593,7 +3604,6 @@ fn seat_agent(
     if let Some(modifiers) = handover.modifiers {
         apply_modifier_mask(ctx, modifiers);
     }
-    let viewport = agent_viewport(fb, strip).unwrap_or(viewport);
     Ok(Some(AgentScope {
         agent: agent.id.clone(),
         peer,
@@ -3602,23 +3612,14 @@ fn seat_agent(
     }))
 }
 
-/// Where an agent working in `strip` sees and acts: the strip's row. A
-/// workspace with no window at all draws its empty-workspace card over the
-/// whole screen instead of rows, and that card is where any agent opens its
-/// first app, so there the viewport is the screen.
-fn agent_viewport(fb: &FrameBuilder, strip: crate::shell::state::StripId) -> Option<Rect> {
-    if let Some(row) = fb.host().strip_row_rect(strip) {
-        return Some(row);
-    }
-    let empty = {
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        tree.desktop
-            .active_workspace()
-            .is_some_and(|ws| ws.strips.iter().all(|s| s.window_groups.is_empty()))
-    };
+/// Where an agent sees and acts: the whole screen. While agents drive the
+/// compositor only the focused strip is presented, filling the work area, and
+/// the seat focuses the agent's own strip on its turn; the launcher, palette,
+/// menus and dialogs its actions open are drawn over the whole screen, so
+/// anything narrower would hide them from it.
+fn agent_viewport(fb: &FrameBuilder) -> Option<Rect> {
     let (w, h) = fb.scene_size();
-    (empty && w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+    (w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
 }
 
 /// Retire `agent`: its window sees the release of everything it still holds,
@@ -3629,19 +3630,26 @@ fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, sta
     };
     run_as_participant(seat.peer, &releases, fb, ctx, state);
     state.remote_seats.drop_peer(seat.peer);
-    if let Some(strip) = seat.strip {
-        let mut removed = false;
-        fb.with_chrome(|chrome| removed = chrome.remove_strip_if_empty(strip));
-        if removed {
-            fb.relayout();
-            client_input::sync_keyboard_focus(state, fb);
+    let last = ctx.agents.is_empty();
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        if let Some(strip) = seat.strip {
+            changed = chrome.remove_strip_if_empty(strip);
         }
+        if last && chrome.single_strip() {
+            chrome.set_single_strip(false);
+            changed = true;
+        }
+    });
+    if changed {
+        fb.relayout();
+        client_input::sync_keyboard_focus(state, fb);
     }
 }
 
 /// Dispatch `command` for the seated agent in `scope`: its coordinates are
-/// relative to its strip, what it lists is what its strip shows, and a pointer
-/// it would move outside the strip is refused.
+/// relative to its viewport, what it lists is what its viewport shows, and a
+/// pointer it would move outside the viewport is refused.
 fn dispatch_for_agent(
     command: test_control::Command,
     scope: &AgentScope,
@@ -3696,10 +3704,7 @@ fn dispatch_for_agent(
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
         return (
-            agent_refusal(
-                "outside_viewport",
-                "the pointer would leave the agent's strip",
-            ),
+            agent_refusal("outside_viewport", "the pointer would leave the screen"),
             Vec::new(),
         );
     }
