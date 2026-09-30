@@ -48,6 +48,19 @@ impl ChannelGate {
         }
         !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
     }
+
+    /// [`Self::accepts`] for history a workspace host replays in its own
+    /// order: content sealed under an older epoch was current when the host
+    /// admitted it (the host admits only the room's members), so only
+    /// plaintext on an encrypted channel and ciphertext bound to another
+    /// channel are refused.
+    pub fn accepts_history(
+        &self,
+        encryption: Option<&EncryptionMetadata>,
+        channel: collab_types::ChannelId,
+    ) -> bool {
+        !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
+    }
 }
 
 /// Outcome of [`GovernanceJournal::append_mirrored`].
@@ -84,7 +97,8 @@ struct JournalState {
 /// durably replaces one file containing the frame, every target, ack state,
 /// and the irreversible plaintext gate.
 pub struct GovernanceJournal {
-    path: PathBuf,
+    /// `None` for a journal kept only in memory.
+    path: Option<PathBuf>,
     state: JournalState,
 }
 
@@ -100,13 +114,8 @@ impl GovernanceJournal {
         let path = path.into();
         if !path.exists() {
             return Ok(Self {
-                path,
-                state: JournalState {
-                    version: JOURNAL_VERSION,
-                    frames: Vec::new(),
-                    deliveries: Vec::new(),
-                    encryption_required: false,
-                },
+                path: Some(path),
+                ..Self::in_memory()
             });
         }
         if fs::metadata(&path)?.len() > MAX_JOURNAL_BYTES {
@@ -144,7 +153,24 @@ impl GovernanceJournal {
                 ));
             }
         }
-        Ok(Self { path, state })
+        Ok(Self {
+            path: Some(path),
+            state,
+        })
+    }
+
+    /// An empty journal that is never written to disk, for a device with
+    /// no private filesystem (a browser page); it starts over each session.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            state: JournalState {
+                version: JOURNAL_VERSION,
+                frames: Vec::new(),
+                deliveries: Vec::new(),
+                encryption_required: false,
+            },
+        }
     }
 
     pub fn head_digest(&self) -> [u8; 32] {
@@ -456,9 +482,12 @@ impl GovernanceJournal {
     }
 
     fn persist(&self, state: &JournalState) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         let bytes = postcard::to_allocvec(state)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600).map_err(Error::Io)
+        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600).map_err(Error::Io)
     }
 }
 
@@ -478,5 +507,30 @@ impl std::fmt::Debug for GovernanceJournal {
             )
             .field("encryption_required", &self.state.encryption_required)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::ChannelGate;
+    use collab_types::{ChannelId, ContentRetention, EncryptionMetadata};
+
+    /// Live content sealed under a key older than the latest membership
+    /// change is refused (a removed member still holds it); the same content
+    /// replayed by the host from its history was current when admitted and
+    /// is accepted. Plaintext and other channels are refused either way.
+    #[test]
+    fn host_history_under_an_older_epoch_is_accepted_live_content_is_not() {
+        let channel = ChannelId::new();
+        let gate = ChannelGate {
+            encryption_required: true,
+            head_epoch: Some(3),
+        };
+        let old = EncryptionMetadata::content_key(1, channel, ContentRetention::Delta);
+        assert!(!gate.accepts(Some(&old), channel));
+        assert!(gate.accepts_history(Some(&old), channel));
+        assert!(!gate.accepts_history(None, channel));
+        let other = EncryptionMetadata::content_key(3, ChannelId::new(), ContentRetention::Delta);
+        assert!(!gate.accepts_history(Some(&other), channel));
     }
 }

@@ -370,7 +370,9 @@ history-action-invalid = Diese Verlaufsanfrage ist ungültig.
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
 palette-results = Ergebnisse
+palette-placeholder = Suchen…
 palette-hint-navigate = Navigieren
+palette-hint-select = Auswählen
 palette-hint-open = Öffnen
 palette-hint-run = Ausführen
 palette-hint-close = Schließen

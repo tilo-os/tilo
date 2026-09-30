@@ -163,7 +163,9 @@ impl QsRefresh {
                     qs::BrightnessService::global().rescan_blocking(),
                     settings_store::hardware::DisplayHardwareSnapshot::load(),
                 ),
-                volume: qs::log_get("get_volume", qs::get_volume()),
+                volume: qs::has_output_device()
+                    .then(|| qs::log_get("get_volume", qs::get_volume()))
+                    .flatten(),
                 wifi: qs::log_get("get_wifi", qs::get_wifi()),
                 bluetooth_available: bluetooth.is_some(),
                 bluetooth,
