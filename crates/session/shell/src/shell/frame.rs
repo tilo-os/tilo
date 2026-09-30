@@ -382,6 +382,7 @@ pub struct FrameBuilder {
     watch_configured_theme: bool,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
+    appearance_generation: u64,
     night_light: bool,
     night_light_temperature: u32,
     /// The day/night schedule an "Automatic" theme or a scheduled night light
@@ -624,6 +625,7 @@ impl FrameBuilder {
             watch_configured_theme: false,
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
+            appearance_generation: 0,
             night_light: false,
             night_light_temperature: 3_700,
             day_phase: None,
@@ -1750,7 +1752,12 @@ impl FrameBuilder {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
-            || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
+        {
+            return;
+        }
+        let appearance_generation = self.chrome.borrow().appearance_generation;
+        let appearance_changed = appearance_generation != self.appearance_generation;
+        if !appearance_changed && self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
         }
@@ -1760,11 +1767,13 @@ impl FrameBuilder {
         let phase_changed = self
             .day_phase
             .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
-        if stamp == self.theme_store_stamp && !phase_changed {
+        if stamp == self.theme_store_stamp && !phase_changed && !appearance_changed {
             return;
         }
         self.theme_store_stamp = stamp;
+        self.appearance_generation = appearance_generation;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
@@ -1776,6 +1785,8 @@ impl FrameBuilder {
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
+        self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
         self.theme_store_stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
@@ -4673,6 +4684,91 @@ mod tests {
         let node = fb.focusable_order().into_iter().next();
         fb.note_keyboard_focus(node);
         assert_eq!(fb.keyboard_focus_rect, None);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_actions_repaint_quick_settings_chrome() {
+        use crate::shell::search::action_api::ActionArgs;
+        use crate::shell::search::providers::ActionsProvider;
+        use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| {
+            let user = {
+                let tree = chrome.tree();
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| chrome.local_user_for_room(&workspace.room))
+            };
+            if let Some(user) = user {
+                let mut tree = chrome.tree_mut();
+                if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                    workspace.set_owner(user);
+                }
+            }
+            chrome.overlays.quick_settings = true;
+        });
+        frame.relayout();
+
+        let chrome = frame.chrome_handle();
+        let provider = ActionsProvider::new();
+        let invoke = |id: &str| {
+            let row = {
+                let document = AutoCommit::new();
+                let state = chrome.borrow();
+                provider
+                    .query(SearchContext {
+                        needle: "",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    })
+                    .into_iter()
+                    .find(|row| row.id == id)
+                    .unwrap_or_else(|| panic!("{id} must be exported"))
+            };
+            let mut document = AutoCommit::new();
+            (row.on_open)(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
+        };
+
+        invoke("appearance.theme.light");
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        invoke("appearance.theme.dark");
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "invoking appearance.theme.light then dark must change the Quick Settings chrome the next paint uses, not only the settings file"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
     }
 }
 
