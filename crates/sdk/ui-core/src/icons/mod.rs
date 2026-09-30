@@ -128,10 +128,6 @@ pub enum Icon {
     EthernetPort,
     Mic,
     MicOff,
-    /// Lucide `moon` — night light, distinct from the brightness sun.
-    Moon,
-    /// Lucide `lock-keyhole` — VPN, distinct from the privacy shield.
-    LockKeyhole,
     SkipForward,
     SkipBack,
     // --- On-screen-keyboard set (action keys) ---
@@ -407,12 +403,6 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M5 17h14"),
             path_from_d("M5 3h14"),
             path_from_d("M6 3v8l-2 6h16l-2-6V3"),
-        ],
-        Icon::Moon => vec![path_from_d("M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z")],
-        Icon::LockKeyhole => vec![
-            circle_path(12.0, 16.0, 1.0),
-            rect_path(3.0, 10.0, 18.0, 12.0, 2.0),
-            path_from_d("M7 10V7a5 5 0 0 1 10 0v3"),
         ],
         Icon::Sun => vec![
             path_from_d("M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"),
@@ -1240,8 +1230,6 @@ mod tests {
         // phase: all_icons_produce_non_empty_subpaths
         {
             for icon in [
-                Icon::Moon,
-                Icon::LockKeyhole,
                 Icon::LayoutGrid,
                 Icon::Settings2,
                 Icon::Mouse,
