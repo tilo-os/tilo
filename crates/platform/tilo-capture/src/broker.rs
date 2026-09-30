@@ -804,7 +804,7 @@ mod tests {
     /// Opt-in, since it turns the camera on and may ask for the TCC
     /// permission: `TILO_CAPTURE_DEVICE_TEST=1 cargo test -p tilo-capture
     /// --features camera,microphone`.
-    #[cfg(all(gst_camera, gst_microphone))]
+    #[cfg(all(native_camera, native_microphone))]
     #[test]
     fn the_default_devices_stream_through_the_broker_when_asked() {
         if std::env::var_os("TILO_CAPTURE_DEVICE_TEST").is_none() {
@@ -828,6 +828,7 @@ mod tests {
                 frame.height,
                 frame.rgba.len()
             ));
+            assert_eq!((frame.width, frame.height), (CAMERA.width, CAMERA.height));
         }
         let mut microphone = host
             .client
