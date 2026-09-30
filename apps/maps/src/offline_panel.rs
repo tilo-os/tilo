@@ -152,6 +152,11 @@ impl OfflinePanel {
         }
     }
 
+    /// When the typed city settles into a live geocode.
+    pub const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
+    }
+
     /// Return the settled query exactly once when live geocoding should begin.
     pub fn take_due_query(&mut self, now: Instant) -> Option<String> {
         let deadline = self.debounce?;
