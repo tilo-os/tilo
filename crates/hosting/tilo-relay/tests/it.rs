@@ -47,6 +47,8 @@ mod federation_three_node_chain;
 mod federation_two_relays;
 #[path = "federation_workspace_shard.rs"]
 mod federation_workspace_shard;
+#[path = "governed_rooms.rs"]
+mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
 #[path = "interactive_workspace_owner.rs"]
