@@ -254,6 +254,8 @@ struct RowGroup {
     authors: Vec<HistoryAuthor>,
     expanded: bool,
     restorable: bool,
+    /// Calendar heading (Today / Yesterday / …), not a collapsible band.
+    is_section: bool,
 }
 
 /// A band header's hover chips, in the order they are laid out.
@@ -349,6 +351,8 @@ pub struct ActivityTimeline {
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
+    /// Calendar Today/Yesterday/This week/Earlier headings above bands.
+    show_day_headings: bool,
     /// `Rect::ZERO` whenever the filtered-to-nothing empty state is not on
     /// screen, so a stale click cannot trip `[Clear filters]`.
     clear_chip_rect: Rect,
@@ -406,6 +410,7 @@ impl ActivityTimeline {
             author_pill_rect: Rect::ZERO,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             show_author_pill: true,
+            show_day_headings: false,
             clear_chip_rect: Rect::ZERO,
             name_selection_rect: Rect::ZERO,
             clear_selection_rect: Rect::ZERO,
@@ -674,6 +679,14 @@ impl ActivityTimeline {
         self.show_author_pill
     }
 
+    /// Insert Today / Yesterday / This week / Earlier headings above bands.
+    pub fn set_show_day_headings(&mut self, show: bool) {
+        if self.show_day_headings != show {
+            self.show_day_headings = show;
+            self.rebuild_rows();
+        }
+    }
+
     // ---------- groups: expansion, naming, selection ----------
 
     pub fn row_count(&self) -> usize {
@@ -688,6 +701,13 @@ impl ActivityTimeline {
                 Some((rg.key.as_str(), rg.expanded))
             }
             VisualRow::Entry(..) => None,
+        }
+    }
+
+    pub fn is_day_heading_at(&self, i: usize) -> bool {
+        match self.rows.get(i) {
+            Some(VisualRow::Group(g)) => self.row_groups.get(*g).is_some_and(|rg| rg.is_section),
+            _ => false,
         }
     }
 
@@ -741,13 +761,16 @@ impl ActivityTimeline {
         let Some(VisualRow::Group(g)) = self.rows.get(i).copied() else {
             return false;
         };
-        let Some((key, expanded)) = self
+        let Some((key, expanded, is_section)) = self
             .row_groups
             .get(g)
-            .map(|rg| (rg.key.clone(), rg.expanded))
+            .map(|rg| (rg.key.clone(), rg.expanded, rg.is_section))
         else {
             return false;
         };
+        if is_section {
+            return false;
+        }
         self.set_group_expanded(&key, !expanded);
         true
     }
@@ -1472,10 +1495,20 @@ impl ActivityTimeline {
         let mut row_groups: Vec<RowGroup> = Vec::new();
         let mut budget = AUTO_EXPAND_BUDGET;
 
+        let now = self.now();
+        let mut last_section = None;
         for gi in self.group_order.clone() {
             let Some(g) = self.groups.get(gi) else {
                 continue;
             };
+            if self.show_day_headings
+                && let Some(section) = self.group_day_section(g, &chip_ops, &needle, now)
+            {
+                if last_section != Some(section) {
+                    Self::emit_day_section(section, &mut rows, &mut row_groups);
+                    last_section = Some(section);
+                }
+            }
             self.emit_group(
                 g,
                 &chip_ops,
@@ -1589,6 +1622,7 @@ impl ActivityTimeline {
             authors: g.authors.clone(),
             expanded,
             restorable,
+            is_section: false,
         });
         rows.push(VisualRow::Group(gi));
         if !expanded {
@@ -1796,7 +1830,111 @@ fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
     }
 }
 
+/// Calendar bucket for a timeline heading. Days are UTC civil days so a
+/// pinned `now` in tests matches production without a timezone table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DaySection {
+    Today,
+    Yesterday,
+    ThisWeek,
+    Earlier,
+}
+
+impl DaySection {
+    fn of(ts: SystemTime, now: SystemTime) -> Self {
+        let today = civil_day(now);
+        let day = civil_day(ts);
+        if day == today {
+            return Self::Today;
+        }
+        if day == today.saturating_sub(1) {
+            return Self::Yesterday;
+        }
+        let week_start = today.saturating_sub(monday_offset(today));
+        if day >= week_start {
+            return Self::ThisWeek;
+        }
+        Self::Earlier
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Today => "day:today",
+            Self::Yesterday => "day:yesterday",
+            Self::ThisWeek => "day:this-week",
+            Self::Earlier => "day:earlier",
+        }
+    }
+
+    fn title(self) -> String {
+        crate::i18n::widget_format(
+            match self {
+                Self::Today => "history-day-today",
+                Self::Yesterday => "history-day-yesterday",
+                Self::ThisWeek => "history-day-this-week",
+                Self::Earlier => "history-day-earlier",
+            },
+            &[],
+        )
+    }
+}
+
+fn civil_day(ts: SystemTime) -> i64 {
+    const DAY: u64 = 86_400;
+    match ts.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(delta) => i64::try_from(delta.as_secs() / DAY).unwrap_or(i64::MAX),
+        Err(err) => -i64::try_from(err.duration().as_secs() / DAY).unwrap_or(i64::MAX),
+    }
+}
+
+/// Days since Monday of the week that contains `day`. `weekday` is
+/// 0 = Sunday … 6 = Saturday.
+fn monday_offset(day: i64) -> i64 {
+    i64::from((crate::date::weekday(day) + 6) % 7)
+}
+
 impl ActivityTimeline {
+    fn group_day_section(
+        &self,
+        g: &HistoryGroup,
+        chip_ops: &[OpClass],
+        needle: &str,
+        now: SystemTime,
+    ) -> Option<DaySection> {
+        (g.start..g.end)
+            .filter_map(|i| self.entries.get(i))
+            .filter(|entry| self.passes(entry, chip_ops, needle))
+            .map(|entry| entry.timestamp)
+            .max()
+            .map(|ts| DaySection::of(ts, now))
+    }
+
+    fn emit_day_section(
+        section: DaySection,
+        rows: &mut Vec<VisualRow>,
+        row_groups: &mut Vec<RowGroup>,
+    ) {
+        let gi = row_groups.len();
+        row_groups.push(RowGroup {
+            key: section.key().to_string(),
+            title: section.title(),
+            subtitle: String::new(),
+            scope_label: None,
+            name: None,
+            record_id: None,
+            open: false,
+            depth: 0,
+            first_entry: HistoryEntryId([0; 16]),
+            last_entry: HistoryEntryId([0; 16]),
+            last_time: SystemTime::UNIX_EPOCH,
+            authors: Vec::new(),
+            expanded: true,
+            restorable: false,
+            is_section: true,
+        });
+        rows.push(VisualRow::Group(gi));
+    }
+
     fn draw_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2183,6 +2321,9 @@ impl ActivityTimeline {
         };
         let chips = self.group_chip_rects_local(row, rg);
         self.draw_group_row_title(ctx, &band, is_hovered, naming);
+        if rg.is_section {
+            return;
+        }
 
         // Line two: who and how much, plus — right-aligned — when. Stacked
         // under the title's *measured* line box (top pad + line + gap; 27 px
@@ -2289,6 +2430,9 @@ impl ActivityTimeline {
                 None,
                 &RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0),
             );
+        }
+        if rg.is_section {
+            return;
         }
         // A named band gets an accent spine: the visual difference between
         // "someone decided this is a thing" and an automatic chunk.
@@ -2496,6 +2640,13 @@ impl ActivityTimeline {
         let name_w = if narrow { 46.0 } else { 54.0 };
         let mut x1 = row.x1 - 6.0;
         let chip = |x1: f64, w: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
+        if rg.is_section {
+            return GroupChips {
+                name: Rect::ZERO,
+                undo: None,
+                restore: None,
+            };
+        }
         let restore = if self.on_revert.is_some() && rg.restorable {
             let r = chip(x1, restore_w);
             x1 -= restore_w + 5.0;
@@ -3601,6 +3752,10 @@ impl ActivityTimeline {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
     ) {
+        if self.row_groups.get(g).is_some_and(|rg| rg.is_section) {
+            *handled = true;
+            return;
+        }
         // Undo hit-tested before restore: a click on Undo
         // must never fall through to the destructive Restore.
         if let Some(u) = self.group_undo_chip_rect(i)
@@ -5667,5 +5822,44 @@ mod group_tests {
         the_selection_bar_takes_its_space_out_of_the_scrollable_list();
         bands_are_ordered_by_their_clock_but_never_broken_apart();
         the_accessible_description_counts_bands_as_well_as_changes();
+    }
+
+    #[test]
+    fn day_headings_bucket_changes_into_today_yesterday_this_week_and_earlier() {
+        // 1970-01-01 was Thursday. Day 8 is Friday 1970-01-09; that week's
+        // Monday is day 4. Today / yesterday / mid-week / previous week.
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(8 * 86_400 + 12 * 3_600))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let secs = |day: u64, hour: u64| day * 86_400 + hour * 3_600;
+        let entries = vec![
+            entry(OpClass::Splice, "Ada", secs(8, 10), 1),
+            entry(OpClass::Splice, "Maren", secs(7, 16), 2),
+            entry(OpClass::Splice, "ada", secs(5, 9), 3),
+            entry(OpClass::Splice, "bob", secs(2, 11), 4),
+        ];
+        let mut t = ActivityTimeline::with_entries(entries);
+        t.set_now_for_test(now);
+        t.set_newest_first(true);
+        t.set_all_expanded(true);
+        t.set_show_day_headings(true);
+        let headings: Vec<String> = (0..t.row_count())
+            .filter_map(|i| t.group_title_at_row(i).map(str::to_string))
+            .filter(|title| {
+                matches!(
+                    title.as_str(),
+                    "Today" | "Yesterday" | "This week" | "Earlier"
+                )
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            vec!["Today", "Yesterday", "This week", "Earlier"],
+            "newest-first calendar headings, not work-band titles"
+        );
+        assert!(
+            (0..t.row_count()).any(|i| t.row_entry(i).is_some_and(|e| e.author.name == "Ada")),
+            "Today still lists today's change"
+        );
     }
 }
