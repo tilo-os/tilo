@@ -40,7 +40,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use crate::graphics::{
     GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
@@ -1680,6 +1680,30 @@ impl TerminalWidget {
     pub fn find_test_target(&self, control: &str) -> String {
         format!("terminal.find:{}:{control}", self.pane_id)
     }
+
+    /// Tee subsequent PTY writes so a compositor-path test can see them.
+    #[cfg(any(test, debug_assertions))]
+    pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        struct ProbeWriter {
+            inner: Box<dyn Write + Send>,
+            tx: std::sync::mpsc::Sender<Vec<u8>>,
+        }
+        impl Write for ProbeWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let _ = self.tx.send(buf.to_vec());
+                self.inner.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.inner.flush()
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(mut guard) = self.pty_write.lock() {
+            let inner = std::mem::replace(&mut *guard, Box::new(std::io::sink()));
+            *guard = Box::new(ProbeWriter { inner, tx });
+        }
+        rx
+    }
     /// The parsed attribute for the mirrored grid cell at `(row, col)`.
     /// Test accessor for SGR-parsing assertions.
     #[cfg(test)]
@@ -2889,6 +2913,7 @@ impl Widget for TerminalWidget {
                 event:
                     KeyEvent {
                         logical_key,
+                        physical_key,
                         text,
                         state: element_state,
                         ..
@@ -2897,6 +2922,7 @@ impl Widget for TerminalWidget {
             } if *element_state == ElementState::Pressed => {
                 self.handle_key_press_event(
                     logical_key,
+                    *physical_key,
                     text.as_deref(),
                     *ctx.modifiers,
                     ctx.handled,
@@ -3670,6 +3696,7 @@ impl TerminalWidget {
     fn handle_key_press_event(
         &mut self,
         logical_key: &Key,
+        physical_key: PhysicalKey,
         text: Option<&str>,
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
@@ -3774,7 +3801,24 @@ impl TerminalWidget {
             }
         }
 
+        self.deliver_mapped_key_bytes(logical_key, physical_key, text, modifiers, handled);
+    }
+
+    /// Map a key press to PTY bytes and write them. Physical Enter/Space
+    /// fill in when the logical key and `text` are empty (control-socket
+    /// and some compositor paths).
+    fn deliver_mapped_key_bytes(
+        &mut self,
+        logical_key: &Key,
+        physical_key: PhysicalKey,
+        text: Option<&str>,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
         let mut bytes = self.map_key(logical_key, modifiers);
+        if bytes.is_none() {
+            bytes = Self::map_physical_key(physical_key);
+        }
         if bytes.is_none()
             && let Some(t) = text
             && !t.chars().any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
@@ -5244,6 +5288,14 @@ impl TerminalWidget {
             out.push_str(trimmed);
         }
         Some(out)
+    }
+
+    fn map_physical_key(physical: PhysicalKey) -> Option<Vec<u8>> {
+        match physical {
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => Some(vec![b'\r']),
+            PhysicalKey::Code(KeyCode::Space) => Some(vec![b' ']),
+            _ => None,
+        }
     }
 
     fn map_key(&self, key: &Key, modifiers: winit::event::Modifiers) -> Option<Vec<u8>> {
