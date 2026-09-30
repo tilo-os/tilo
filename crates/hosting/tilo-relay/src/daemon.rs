@@ -880,6 +880,12 @@ impl Relay {
         self.endpoint.addr()
     }
 
+    /// The local sockets the relay's endpoint is bound to.
+    #[must_use]
+    pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
+        self.endpoint.bound_sockets()
+    }
+
     /// Bind (or re-bind) a workspace's membership set. Called by
     /// the admin CLI after `bind-workspace`.
     ///

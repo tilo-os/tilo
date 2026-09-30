@@ -257,10 +257,16 @@ fn bridge_browser_presence(
                 from_device_public_key: device,
                 frame,
             };
-            workspace
+            let delivered = workspace
                 .lock()
                 .await
                 .relay_bridged_live(&device, &envelope);
+            tracing::debug!(
+                workspace_id,
+                from = %hex::encode(&device[..4]),
+                delivered,
+                "browser presence bridged to iroh live members"
+            );
         }
     })
 }

@@ -109,7 +109,14 @@ export interface LocalDesktop {
 }
 export interface RuntimeStatus {
   /** `resolving`/`linking`/`linked` report an app installed from a side module (`app`). */
-  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed';
+  /**
+   * `crashed`: an application panicked and the runtime stopped. With
+   * `crashedWindow` (its tab id) the window is kept out of the room's next
+   * load, which shows `error` in it; `restarting` says the page reloads.
+   */
+  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed' | 'crashed';
+  crashedWindow?: string | null;
+  restarting?: boolean;
   app?: string;
   error?: string;
   persistence?: 'committed' | 'failed';
@@ -153,6 +160,12 @@ export interface MountOptions {
   mac?: boolean;
   signal?: AbortSignal;
   onStatus?: (status: RuntimeStatus) => void;
+  /**
+   * Reload the page after an application crashed the runtime (default
+   * true), which starts the desktop again without that window; `false`
+   * leaves it to the caller after the `crashed` status.
+   */
+  restartOnCrash?: boolean;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
   /**
    * A file for the app to open, as it would open one the user chose. The
