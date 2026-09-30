@@ -99,13 +99,14 @@ def resize(ctx, res):
     expect(w2 < w1 - 10, f"Super+- narrowed it again ({w1:.0f} -> {w2:.0f} px)")
 
 
-@check("W06", AREA, "Super+Up maximizes and restores the focused window", needs=("two_windows",))
+@check("W06", AREA, "Super+M maximizes and restores the focused window", needs=("two_windows",))
 def maximize(ctx, res):
     _, g2 = ctx.facts["two_windows"]
-    ctx.vm.key("super+Up")
+    # Super+Up/Down move strip focus (docs/architecture/window-management.md).
+    ctx.vm.key("super+m")
     ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is True, 5, "window maximized")
     ctx.shot("W06-maximized")
-    ctx.vm.key("super+Up")
+    ctx.vm.key("super+m")
     ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is False, 5, "window restored")
 
 
@@ -114,9 +115,11 @@ def fullscreen(ctx, res):
     _, g2 = ctx.facts["two_windows"]
     r0 = _group_rect(ctx, g2)
     ctx.vm.key("super+f")
-    st = ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is True
+    st = ctx.wait_state(lambda s: s.get("chrome", {}).get("fullscreen_group") == g2
+                        or s.get("chrome", {}).get("fullscreen") is True
+                        or (core.group_by_id(s, g2) or {}).get("maximized") is True
                         or (core.group_by_id(s, g2) or {}).get("fullscreen") is True,
-                        5, "window full screen (a Tilo app maximizes its group)")
+                        5, "window full screen")
     r1 = _group_rect(ctx, g2)
     disp = core.display_rects(st)[core.display_of_group(st, g2) or 0]
     res.metrics.update(rect_before=r0, rect_full=r1, display=disp)
