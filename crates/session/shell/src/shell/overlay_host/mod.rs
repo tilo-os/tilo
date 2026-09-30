@@ -6342,6 +6342,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Super+F on a Tilo window: cover the output, including the wheel.
+    /// A client `xdg_toplevel` fullscreen still goes through the compositor.
+    pub(crate) fn toggle_focused_group_fullscreen(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let focused = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+            let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+            drop(tree);
+            drop(state);
+            group
+        };
+        let Some(group) = focused else {
+            return false;
+        };
+        let current = chrome.borrow().fullscreen_group();
+        chrome
+            .borrow_mut()
+            .set_fullscreen_group(if current == Some(group) {
+                None
+            } else {
+                Some(group)
+            });
+        true
+    }
+
     fn detach_focused_tab(&mut self) -> bool {
         self.mutate_focused_group_widget(GroupRow::detach_active_tab)
     }
