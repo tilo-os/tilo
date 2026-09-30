@@ -34,7 +34,7 @@ use tilo_actions::{
     ExecutionLocus, ParamType, Resource,
 };
 
-use qdoc_rich_text::BodyOrder;
+use qdoc_rich_text::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
@@ -1494,7 +1494,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
             .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     }
     let snapshot = qdoc::model::materialize(&scratch, &containers);
-    let blocks: Vec<ClipBlock> = snapshot
+    let mut blocks: Vec<ClipBlock> = snapshot
         .blocks
         .into_iter()
         .map(|block| {
@@ -1506,7 +1506,20 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                 Some(qdoc::AttrVal::Bool(value)) => Some(*value),
                 _ => None,
             };
-            let text_kind = matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item");
+            let cell = block.kind == "cell";
+            let mut attrs = std::collections::BTreeMap::default();
+            if cell {
+                if let Some(qdoc::AttrVal::Str(table)) = block.attrs.get("table") {
+                    attrs.insert("table".to_owned(), ClipAttr::Str(table.clone()));
+                }
+                for key in ["row", "col"] {
+                    if let Some(value) = int(key) {
+                        attrs.insert(key.to_owned(), ClipAttr::Int(value));
+                    }
+                }
+            }
+            let text_kind =
+                cell || matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item");
             ClipBlock {
                 kind: if text_kind {
                     block.kind.clone()
@@ -1525,13 +1538,25 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                 level: int("level"),
                 ordered: flag("ordered"),
                 align: None,
-                attrs: std::collections::BTreeMap::default(),
+                attrs,
                 text: block.text,
             }
         })
         .collect();
     if blocks.is_empty() {
         return Err(EditingError::Invalid("nothing to paste".into()));
+    }
+    // What followed the caret continues below the table, not in its last cell.
+    if blocks.last().is_some_and(|block| block.kind == "cell") {
+        blocks.push(ClipBlock {
+            kind: "paragraph".to_owned(),
+            text: String::new(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::default(),
+        });
     }
     Ok(blocks)
 }
@@ -2009,7 +2034,7 @@ pub(super) fn add_operations(
                     }
                 },
             )
-            .with_description("Paste text or Markdown at your caret, replacing your selection"),
+            .with_description("Paste text or Markdown (headings, lists, pipe tables) at your caret, replacing your selection"),
         ),
         "paste.v1",
     );
@@ -3364,6 +3389,65 @@ mod tests {
             refused.type_id,
             tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
+    }
+
+    #[test]
+    fn markdown_table_pastes_as_a_table_of_this_document() {
+        let (mut state, _, ids) = writer(&["intro outro"]);
+        let md = "| Person | Blocked |\n| --- | --- |\n| Maya | no |\n";
+        for _ in 0..2 {
+            let (actions, _) = paste(
+                &at(&ids[0], 6),
+                &state.doc,
+                &PasteContent::Markdown(md.into()),
+            )
+            .unwrap();
+            apply_all(&mut state.doc, &actions);
+        }
+        let c = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let rows: Vec<_> = blocks
+            .iter()
+            .map(|block| {
+                let attr = |key: &str| match block.attrs.get(key) {
+                    Some(qdoc::AttrVal::Int(value)) => value.to_string(),
+                    Some(qdoc::AttrVal::Str(value)) => value.clone(),
+                    _ => String::new(),
+                };
+                (
+                    block.kind.as_str(),
+                    block.text.as_str(),
+                    attr("row"),
+                    attr("col"),
+                )
+            })
+            .collect();
+        let cell = |text, row: &str, col: &str| ("cell", text, row.to_owned(), col.to_owned());
+        let para = |text| ("paragraph", text, String::new(), String::new());
+        assert_eq!(
+            rows,
+            [
+                para("intro "),
+                cell("Person", "0", "0"),
+                cell("Blocked", "0", "1"),
+                cell("Maya", "1", "0"),
+                cell("no", "1", "1"),
+                para(""),
+                cell("Person", "0", "0"),
+                cell("Blocked", "0", "1"),
+                cell("Maya", "1", "0"),
+                cell("no", "1", "1"),
+                para("outro"),
+            ]
+        );
+        let tables: std::collections::BTreeSet<_> = blocks
+            .iter()
+            .filter_map(|block| match block.attrs.get("table") {
+                Some(qdoc::AttrVal::Str(table)) => Some(table.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 2, "each paste is its own table: {tables:?}");
     }
 
     #[test]
