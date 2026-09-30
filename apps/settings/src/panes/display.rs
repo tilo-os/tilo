@@ -54,7 +54,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{
     El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
@@ -909,8 +909,8 @@ impl DisplayPane {
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
         if connected.is_empty() {
             return card(
-                "Displays",
-                rows(vec![caption("No displays detected on this device.")]),
+                &t("display-card-title"),
+                rows(vec![caption(&t("display-none"))]),
             );
         }
         let disconnected = self.outputs.len() - connected.len();
@@ -947,14 +947,14 @@ impl DisplayPane {
             ),
         ];
         // One honest line about the idle ports rather than a row each.
-        out_rows.push(caption(if connected.len() > 1 {
-            "Super+P switches between extend, mirror and single-screen at any time."
+        out_rows.push(caption(&if connected.len() > 1 {
+            t("display-caption-switch")
         } else if disconnected == 0 {
-            "Connect a second display to extend or mirror your screen."
+            t("display-caption-second")
         } else {
-            "Connect a display to a free port to extend or mirror your screen."
+            t("display-caption-port")
         }));
-        card("Displays", rows(out_rows))
+        card(&t("display-card-title"), rows(out_rows))
     }
 
     /// The connected outputs as the arrangement canvas draws them: staged
@@ -1133,7 +1133,7 @@ impl DisplayPane {
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
             output_rows.push(setting_row(
-                "Brightness",
+                &t("display-brightness"),
                 Box::new(
                     Slider::new(
                         &format!("settings.display.{}.brightness", output.connector),
@@ -1202,7 +1202,7 @@ impl DisplayPane {
             );
         vec![
             setting_row(
-                "Use this display",
+                &t("display-use"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.enabled", output.connector),
@@ -1219,7 +1219,7 @@ impl DisplayPane {
                 ),
             ),
             setting_row(
-                "Primary display",
+                &t("display-primary"),
                 Box::new(
                     Toggle::new(&toggle_id, &primary_key)
                         .with_id(&primary_key)
@@ -1233,7 +1233,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Scale",
+                &t("display-scale"),
                 Box::new(
                     Dropdown::new(scale_choices.clone(), &scale_key)
                         .with_id(&scale_key)
@@ -1249,7 +1249,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Position",
+                &t("display-position"),
                 Box::new(
                     Dropdown::new(position_choices.clone(), &position_key)
                         .with_id(&position_key)
@@ -1265,7 +1265,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Mirroring",
+                &t("display-mirroring"),
                 Box::new(
                     Dropdown::new(mirror_choices.clone(), &mirror_key)
                         .with_id(&mirror_key)
@@ -1428,8 +1428,8 @@ impl DisplayPane {
         }
         if output.color_profiles.is_empty() {
             out_rows.push(value_row(
-                "Colour profile",
-                "System default · no valid ICC profiles detected",
+                &t("display-colour-profile"),
+                &t("display-colour-profile-empty"),
             ));
         } else {
             let mut choices = vec!["System default".into()];
@@ -1450,7 +1450,7 @@ impl DisplayPane {
                 })
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
-                "Colour profile",
+                &t("display-colour-profile"),
                 Box::new(
                     Dropdown::new(choices.clone(), &profile_key)
                         .with_id(&profile_key)
@@ -1480,25 +1480,32 @@ impl DisplayPane {
                     .and_then(|transaction| transaction.deadline_unix_ms)
                     .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
+                let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
+                let keep = t("display-keep");
+                let revert = t("display-revert-now");
                 card(
-                    "Keep this display configuration?",
+                    &t("display-keep-title"),
                     rows(vec![
-                        caption(&format!(
-                            "Every display should be visible. Restoring the previous layout in {seconds} seconds unless you keep this one."
+                        caption(&t_args(
+                            "display-keep-caption",
+                            &[("seconds", seconds.into())],
                         )),
                         setting_row(
-                            "Everything looks correct",
+                            &t("display-keep-ok"),
                             Box::new(
-                                Button::new("settings.display.keep", "Keep", None).on_action(
-                                    crate::actions::display_unit_binding("confirm")
-                                        .expect("display confirm action is published"),
-                                ),
+                                Button::new("settings.display.keep", &keep, None)
+                                    .content_sized()
+                                    .on_action(
+                                        crate::actions::display_unit_binding("confirm")
+                                            .expect("display confirm action is published"),
+                                    ),
                             ),
                         ),
                         setting_row(
-                            "Something is wrong",
+                            &t("display-keep-wrong"),
                             Box::new(
-                                Button::new("settings.display.revert", "Revert now", None)
+                                Button::new("settings.display.revert", &revert, None)
+                                    .content_sized()
                                     .on_action(
                                         crate::actions::display_unit_binding("revert")
                                             .expect("display revert action is published"),
@@ -1512,55 +1519,58 @@ impl DisplayPane {
                 DisplayTransactionState::Requested
                 | DisplayTransactionState::ConfirmRequested
                 | DisplayTransactionState::RevertRequested,
-            ) => card(
-                "Applying display configuration",
-                rows(vec![caption(
-                    transaction
-                        .as_ref()
-                        .and_then(|transaction| transaction.message.as_deref())
-                        .unwrap_or("The compositor is validating and applying the output plan…"),
-                )]),
-            ),
+            ) => {
+                let applying = transaction
+                    .as_ref()
+                    .and_then(|transaction| transaction.message.as_deref())
+                    .map_or_else(|| t("display-applying-caption"), str::to_string);
+                card(&t("display-applying-title"), rows(vec![caption(&applying)]))
+            }
             Some(DisplayTransactionState::Rejected) => {
-                let mut content = vec![caption(
-                    transaction
-                        .as_ref()
-                        .and_then(|transaction| transaction.message.as_deref())
-                        .unwrap_or("The compositor rejected this output plan."),
-                )];
+                let rejected = transaction
+                    .as_ref()
+                    .and_then(|transaction| transaction.message.as_deref())
+                    .map_or_else(|| t("display-rejected-caption"), str::to_string);
+                let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
+                    let try_again = t("display-try-again");
                     content.push(setting_row(
-                        "Test the newly edited layout",
+                        &t("display-retry"),
                         Box::new(
-                            Button::new("settings.display.apply", "Try again", None).on_action(
-                                crate::actions::display_unit_binding("apply")
-                                    .expect("display apply action is published"),
-                            ),
+                            Button::new("settings.display.apply", &try_again, None)
+                                .content_sized()
+                                .on_action(
+                                    crate::actions::display_unit_binding("apply")
+                                        .expect("display apply action is published"),
+                                ),
                         ),
                     ));
                 }
-                card("Display change was not applied", rows(content))
+                card(&t("display-rejected-title"), rows(content))
             }
-            _ if self.pending_candidate.is_some() => card(
-                "Apply display changes",
-                rows(vec![
-                    caption(
-                        "The layout is staged, not active. Applying it starts a 15-second safety test; closing Settings cannot cancel the automatic restore.",
-                    ),
-                    setting_row(
-                        "Test staged layout",
-                        Box::new(
-                            Button::new("settings.display.apply", "Apply", None).on_action(
-                                crate::actions::display_unit_binding("apply")
-                                    .expect("display apply action is published"),
+            _ if self.pending_candidate.is_some() => {
+                let apply = t("display-apply");
+                card(
+                    &t("display-apply-title"),
+                    rows(vec![
+                        caption(&t("display-apply-caption")),
+                        setting_row(
+                            &t("display-apply-row"),
+                            Box::new(
+                                Button::new("settings.display.apply", &apply, None)
+                                    .content_sized()
+                                    .on_action(
+                                        crate::actions::display_unit_binding("apply")
+                                            .expect("display apply action is published"),
+                                    ),
                             ),
                         ),
-                    ),
-                ]),
-            ),
+                    ]),
+                )
+            }
             _ => card(
-                "Display configuration",
-                rows(vec![caption("No unapplied display changes.")]),
+                &t("display-config-title"),
+                rows(vec![caption(&t("display-config-empty"))]),
             ),
         }
     }
