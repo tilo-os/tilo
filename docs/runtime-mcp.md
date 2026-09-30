@@ -227,13 +227,28 @@ app through `PublishesResources::document_action_result`.
 
 - **Word Processor.** `read-text` answers Markdown, one block per line ending
   in its `{#block id}`: headings as `#`…`######`, list items as `- ` or `1. `
-  indented by nesting, and a table as a Markdown table tagged
-  `{#table id}`. It pages up to 64 blocks through `nextCursor`;
+  indented two spaces per level, and a table as a Markdown table tagged
+  `{#table id}` whose every cell, empty or not, ends in its own `{#block id}`:
+
+  ```text
+  ## Standup {#b1}
+  - review {#b2}
+    1. screen reader {#b3}
+  | Person {#c1} | Blocked {#c2} | Next {#c3} | {#table t1}
+  | --- | --- | --- |
+  | Maya {#c4} | no {#c5} | {#c6} |
+  ```
+
+  A block id is what `select-block`, `select-range` and `move-caret` take,
+  so filling a cell is `select-block {block: "c6"}` then `type-text`; the
+  table's `word-processor.table:<table id>` resource adds and deletes rows
+  and columns. It pages up to 64 blocks through `nextCursor`;
   `format: "segments"` returns the typed segments with their text offsets.
   `paste` (Markdown, including headings, lists and pipe tables),
-  `set-paragraph-style`, `apply-named-style` and `insert-table` answer with
-  the blocks they changed, rendered the same way (`2 changed:` …, at most 32
-  listed, then `N removed`).
+  `set-paragraph-style`, `apply-named-style`, `insert-table` and a table's
+  `append-row` and `append-column` answer with the blocks they changed,
+  rendered the same way (`2 changed:` …, at most 32 listed, each cut at 160
+  characters with `…`, then `N removed`).
 - **Slides.** The deck's `read` answers the deck as text: each slide's
   number, layout and `{#id}`, its title as a `# ` line, its body and other
   elements each ending in its `{#id}`, then its speaker notes. `add-slide`,
