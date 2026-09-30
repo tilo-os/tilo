@@ -1168,16 +1168,16 @@ fn apply_handoff_stage_to_device(
         ));
     }
     let loop_dev = {
-        let output = std::process::Command::new("losetup")
+        let output = match std::process::Command::new("losetup")
             .args(["-fP", "--show"])
             .arg(device)
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "losetup failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+            .output()
+        {
+            Ok(output) if output.status.success() => output,
+            _ => {
+                return crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
+            }
+        };
         String::from_utf8(output.stdout)
             .map_err(io::Error::other)?
             .trim()
@@ -1189,11 +1189,9 @@ fn apply_handoff_stage_to_device(
             .status();
         result
     };
+    let embed = || crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
     let Some(root_part) = find_tilo_root_partition(&loop_dev) else {
-        let _ = std::process::Command::new("losetup")
-            .args(["-d", &loop_dev])
-            .status();
-        return crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
+        return finish(embed());
     };
     let mnt = tempfile::Builder::new()
         .prefix("tilo-imager-root-")
@@ -1203,15 +1201,18 @@ fn apply_handoff_stage_to_device(
         .status();
     match mount {
         Ok(status) if status.success() => {}
-        Ok(status) => {
-            return finish(Err(io::Error::other(format!("mount exited with {status}"))));
-        }
-        Err(error) => return finish(Err(error)),
+        _ => return finish(embed()),
     }
     let applied = apply_handoff_stage_onto_mounted_root(mnt.path(), staged);
     let _ = std::process::Command::new("umount")
         .arg(mnt.path())
         .status();
+    if applied
+        .as_ref()
+        .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        return finish(embed());
+    }
     finish(applied)
 }
 
