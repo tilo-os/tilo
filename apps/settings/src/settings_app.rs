@@ -1451,35 +1451,23 @@ impl SettingsApp {
                 "scroll speed updated"
             }
             crate::actions::InputOperation::SetAccelerationProfile { profile } => {
-                if !["Adaptive", "Flat"].contains(&profile.as_str()) {
-                    return Err("unsupported acceleration profile".into());
-                }
-                prefs.input.accel_profile = if profile == "Flat" {
-                    "flat".into()
-                } else {
-                    "adaptive".into()
-                };
+                prefs.input.accel_profile =
+                    crate::panes::mouse_keyboard::accel_from_label(&profile)
+                        .ok_or_else(|| "unsupported acceleration profile".to_string())?
+                        .to_string();
                 "pointer acceleration updated"
             }
             crate::actions::InputOperation::SetComposeKey { key } => {
-                prefs.input.compose_key = match key.as_str() {
-                    "Disabled" => None,
-                    "Right Alt" => Some("ralt".into()),
-                    "Menu" => Some("menu".into()),
-                    "Caps Lock" => Some("caps".into()),
-                    "Right Super" => Some("rwin".into()),
-                    "Left Super" => Some("lwin".into()),
-                    _ => return Err("unsupported compose key".into()),
-                };
+                prefs.input.compose_key = crate::panes::mouse_keyboard::compose_from_label(&key)
+                    .ok_or_else(|| "unsupported compose key".to_string())?
+                    .map(str::to_string);
                 "compose key updated"
             }
             crate::actions::InputOperation::SetCapsLock { behavior } => {
-                prefs.input.caps_lock = crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
-                    .iter()
-                    .find(|(label, _)| *label == behavior)
-                    .ok_or("unsupported Caps Lock behavior")?
-                    .1
-                    .map(str::to_string);
+                prefs.input.caps_lock =
+                    crate::panes::mouse_keyboard::caps_lock_from_label(&behavior)
+                        .ok_or_else(|| "unsupported Caps Lock behavior".to_string())?
+                        .map(str::to_string);
                 "Caps Lock behavior updated"
             }
             crate::actions::InputOperation::SetActiveSource { label } => {
