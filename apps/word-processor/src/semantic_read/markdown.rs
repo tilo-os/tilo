@@ -4,14 +4,17 @@
 //! ```text
 //! ## Standup {#b1}
 //! - accessibility review {#b2}
-//! | Person | Blocked | {#table t7}
+//!   1. screen reader pass {#b3}
+//! | Person {#c1} | Blocked {#c2} | {#table t7}
 //! | --- | --- |
-//! | Maya | no |
+//! | Maya {#c3} | {#c4} |
 //! ```
 //!
-//! Headings carry their level, list items their numbering and nesting, and a
-//! run of cells becomes a Markdown table tagged with its table id (the id
-//! `EditTable` takes). A line break inside a block reads as `↵`, one
+//! Headings carry their level, list items their numbering and depth (qdoc's
+//! `level`, the block editor's `nesting`), and a run of cells becomes a
+//! Markdown table tagged with its table id (the id `EditTable` takes), each
+//! cell ending in its own block id, empty or not, so a caller can select
+//! and fill it. A line break inside a block reads as `↵`, one
 //! character as in the document, so a block's character offsets are its
 //! text's. A block the page ends inside closes with `…`; the next page
 //! continues it.
@@ -33,7 +36,15 @@ pub fn render(segments: &[Segment]) -> String {
             index += run;
             continue;
         }
-        let depth = usize::try_from(segment.shape.nesting.unwrap_or(0).clamp(0, 9)).unwrap_or(0);
+        let depth = usize::try_from(
+            segment
+                .shape
+                .level
+                .or(segment.shape.nesting)
+                .unwrap_or(0)
+                .clamp(0, 9),
+        )
+        .unwrap_or(0);
         let prefix = match segment.kind.as_str() {
             "paragraph" => String::new(),
             "heading" => {
@@ -83,8 +94,14 @@ fn table(out: &mut String, cells: &[Segment]) {
         out.push('|');
         for cell in row.iter() {
             out.push(' ');
-            out.push_str(&inline(cell).replace('|', "\\|"));
-            out.push_str(" |");
+            let text = inline(cell).replace('|', "\\|");
+            if !text.is_empty() {
+                out.push_str(&text);
+                out.push(' ');
+            }
+            out.push_str("{#");
+            out.push_str(&cell.block);
+            out.push_str("} |");
         }
         if index == 0 {
             if let Some(table) = cells.first().and_then(|cell| cell.shape.table.as_deref()) {
@@ -149,7 +166,16 @@ mod tests {
                 "ship",
                 Shape {
                     ordered: Some(true),
-                    nesting: Some(1),
+                    level: Some(1),
+                    ..Shape::default()
+                },
+            ),
+            block(
+                "l3",
+                "list_item",
+                "tag",
+                Shape {
+                    nesting: Some(2),
                     ..Shape::default()
                 },
             ),
@@ -157,14 +183,17 @@ mod tests {
             cell("c2", "Blocked", 0, 1),
             cell("c4", "no | maybe", 1, 1),
             cell("c3", "Maya", 1, 0),
+            cell("c5", "", 2, 0),
+            cell("c6", "", 2, 1),
             block("p1", "paragraph", "", Shape::default()),
             cut,
         ];
         assert_eq!(
             render(&page),
             "## Standup {#h1}\n\
-             - review {#l1}\n  1. ship {#l2}\n\
-             | Person | Blocked | {#table t7}\n| --- | --- |\n| Maya | no \\| maybe |\n\
+             - review {#l1}\n  1. ship {#l2}\n    - tag {#l3}\n\
+             | Person {#c1} | Blocked {#c2} | {#table t7}\n| --- | --- |\n\
+             | Maya {#c3} | no \\| maybe {#c4} |\n| {#c5} | {#c6} |\n\
              {#p1}\n\
              first↵second… {#p2}\n"
         );

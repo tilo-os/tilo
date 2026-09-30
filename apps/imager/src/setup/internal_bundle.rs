@@ -203,8 +203,8 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
         if name == "console" {
             require(
                 consoles.insert(*token)
-                    && consoles.len() <= 2
-                    && matches!(value, "tty0" | "ttyS0,115200"),
+                    && consoles.len() <= 3
+                    && matches!(value, "tty0" | "ttyAMA0,115200" | "ttyS0,115200"),
                 "unsupported console",
             )?;
             continue;
@@ -1085,7 +1085,11 @@ pub(crate) mod tests {
                 base.clone(),
                 base.replacen("tilo.generation=7", "tilo.generation=4294967295", 1),
                 base.replacen(" tilo.generation=7", "", 1),
-                base.replacen(" console=tty0 console=ttyS0,115200", "", 1),
+                base.replacen(
+                    " console=tty0 console=ttyAMA0,115200 console=ttyS0,115200",
+                    "",
+                    1,
+                ),
             ] {
                 assert!(with_cmdline(&accepted).is_ok(), "rejected {accepted}");
             }

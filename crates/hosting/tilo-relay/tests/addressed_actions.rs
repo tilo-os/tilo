@@ -15,8 +15,8 @@ use crate::common::{TestUser, client_endpoint, spawn_relay};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_read_new_alpn_is_explicitly_served() {
-    let user = TestUser::fresh("Agent reads");
+async fn v2_alpn_is_explicitly_served() {
+    let user = TestUser::fresh("Relay v2");
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
@@ -30,7 +30,7 @@ async fn agent_read_new_alpn_is_explicitly_served() {
         .await;
     assert!(
         connection.is_ok(),
-        "read extension requires explicit negotiation: {connection:?}"
+        "the v2 carrier requires explicit negotiation: {connection:?}"
     );
     endpoint.close().await;
     let device = user.enrol("negotiated caller", DeviceCapabilities::primary());
@@ -45,231 +45,9 @@ async fn agent_read_new_alpn_is_explicitly_served() {
     )
     .await
     .unwrap();
-    assert!(client.supports_agent_reads_v1());
     client.send(Envelope::Ping).unwrap();
     assert_eq!(next_state(&client).await, Envelope::Pong);
     client.close().await;
-    relay.relay.shutdown().await;
-}
-
-struct AgentReadWire {
-    endpoint: iroh::Endpoint,
-    connection: iroh::endpoint::Connection,
-    send: iroh::endpoint::SendStream,
-    receive: iroh::endpoint::RecvStream,
-}
-impl AgentReadWire {
-    async fn join(relay: &TestRelay, device: &TestDevice, room: Uuid, alpn: &'static [u8]) -> Self {
-        use tilo_relay::{
-            auth,
-            framing::{read_frame, write_frame},
-        };
-        let endpoint = client_endpoint().await;
-        let connection = endpoint
-            .connect(relay.relay.node_addr(), alpn)
-            .await
-            .unwrap();
-        let (mut send, mut receive) = connection.open_bi().await.unwrap();
-        let nonce = [7; 32];
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&auth::Hello {
-                cert: device.cert.clone(),
-                client_nonce: nonce,
-            })
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        let ack: auth::HelloAck = postcard::from_bytes(
-            &read_frame(&mut receive, tilo_relay::transport::MAX_FRAME_BYTES)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        let verified = auth::verify_hello_ack(
-            &ack,
-            &relay.relay.own_user_public_key(),
-            &RevocationList::new(),
-            tilo_delivery_protocol::clock::now_ns(),
-            &nonce,
-        )
-        .unwrap();
-        assert_eq!(
-            verified.device_public_key,
-            relay.relay.handle().mesh_profile().device
-        );
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&auth::build_hello_ack2(&device.sk, &ack.server_nonce)).unwrap(),
-        )
-        .await
-        .unwrap();
-        let mut wire = Self {
-            endpoint,
-            connection,
-            send,
-            receive,
-        };
-        wire.send(EnvelopeV2::State(Envelope::Subscribe {
-            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
-        }))
-        .await;
-        assert!(matches!(
-            wire.next().await,
-            EnvelopeV2::State(Envelope::Ready { .. })
-        ));
-        wire.send(EnvelopeV2::EnableActions { room }).await;
-        assert!(matches!(wire.next().await, EnvelopeV2::ActionsReady { .. }));
-        wire
-    }
-    async fn send(&mut self, frame: EnvelopeV2) {
-        self.send
-            .write_all(&tilo_delivery_protocol::transport_v2::encode(&frame).unwrap())
-            .await
-            .unwrap();
-    }
-    async fn next(&mut self) -> EnvelopeV2 {
-        let bytes = tokio::time::timeout(
-            tilo_test_env::hang_bound(),
-            tilo_relay::framing::read_frame(
-                &mut self.receive,
-                tilo_delivery_protocol::peer_actions::MAX_PRIVATE_BYTES,
-            ),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        tilo_delivery_protocol::transport_v2::decode(&bytes).unwrap()
-    }
-    async fn close(self) {
-        self.connection.close(0u32.into(), b"test complete");
-        self.endpoint.close().await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn agent_read_both_legs_and_registered_host_are_required_on_real_wire() {
-    let user = TestUser::fresh("Agent reads");
-    let browser = user.enrol("browser", DeviceCapabilities::primary());
-    let broker = user.enrol("broker", DeviceCapabilities::primary());
-    let room = Uuid::from_u128(80);
-    let host = Uuid::from_u128(81);
-    let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
-    let relay = Box::pin(spawn_relay(
-        &user,
-        user.enrol("relay", DeviceCapabilities::host()),
-        &[workspace],
-        &[browser.device_pubkey(), broker.device_pubkey()],
-    ))
-    .await;
-    let mut caller = AgentReadWire::join(
-        &relay,
-        &browser,
-        room,
-        tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-    )
-    .await;
-    let mut provider = AgentReadWire::join(
-        &relay,
-        &broker,
-        room,
-        tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
-    )
-    .await;
-    caller.send(EnvelopeV2::EnableBrokerClient { room }).await;
-    // EnableBrokerClient is deliberately unacknowledged; an ordered state
-    // ping confirms it was processed without inventing a protocol reply.
-    caller.send(EnvelopeV2::State(Envelope::Ping)).await;
-    assert_eq!(caller.next().await, EnvelopeV2::State(Envelope::Pong));
-    provider
-        .send(EnvelopeV2::RegisterBroker { room, host })
-        .await;
-    assert!(matches!(
-        provider.next().await,
-        EnvelopeV2::ActionsReady {
-            capability: ActionCapability::DurableBroker { .. },
-            ..
-        }
-    ));
-    let request = DirectedAction {
-        room,
-        request_id: Uuid::from_u128(82),
-        source: browser.device_pubkey(),
-        target: broker.device_pubkey(),
-        message: ActionMessage::AgentReadV1 {
-            host,
-            invocation: Uuid::from_u128(83),
-            request: tilo_agent_control_protocol::AgentRequest::List {
-                version: 1,
-                cursor: None,
-            },
-        },
-    };
-    caller.send(EnvelopeV2::Directed(request.clone())).await;
-    let binding = tilo_delivery_protocol::agent_reads::AgentReadBinding {
-        action_host: host.to_string(),
-        agent: tilo_agent_control_protocol::AgentBinding {
-            machine: "machine".into(),
-            room: room.to_string(),
-            device: hex::encode(browser.device_pubkey()),
-            host: host.to_string(),
-        },
-        spawn: None,
-        message: None,
-    };
-    let result = DirectedAction {
-        source: request.target,
-        target: request.source,
-        message: ActionMessage::AgentReadResultV1 {
-            host,
-            invocation: Uuid::from_u128(83),
-            binding: binding.clone(),
-            response: tilo_agent_control_protocol::AgentResponse::List {
-                version: 1,
-                invocation_id: Uuid::from_u128(83).to_string(),
-                binding: binding.agent,
-                agents: vec![],
-                next_cursor: None,
-                revision: "1".into(),
-            },
-        },
-        ..request.clone()
-    };
-    let EnvelopeV2::CertifiedDelivered {
-        action,
-        source_certificate,
-    } = provider.next().await
-    else {
-        panic!("read did not use certified ingress")
-    };
-    assert_eq!(action, request);
-    let cert: tilo_user_identity::DeviceCert = serde_json::from_slice(&source_certificate).unwrap();
-    assert_eq!(cert, browser.cert);
-    provider.send(EnvelopeV2::Directed(result.clone())).await;
-    assert!(
-        matches!(caller.next().await,EnvelopeV2::Delivered {action,source_user} if action==result && source_user==user.user_pk)
-    );
-    let mut wrong = request.clone();
-    let ActionMessage::AgentReadV1 { host, .. } = &mut wrong.message else {
-        unreachable!()
-    };
-    *host = Uuid::from_u128(84);
-    caller.send(EnvelopeV2::Directed(wrong)).await;
-    assert!(matches!(
-        caller.next().await,
-        EnvelopeV2::Unavailable {
-            reason: UnavailableReason::UnsupportedPeer,
-            ..
-        }
-    ));
-    // A rejected read must not kill ordinary state traffic on either leg.
-    caller.send(EnvelopeV2::State(Envelope::Ping)).await;
-    assert_eq!(caller.next().await, EnvelopeV2::State(Envelope::Pong));
-    provider.send(EnvelopeV2::State(Envelope::Ping)).await;
-    assert_eq!(provider.next().await, EnvelopeV2::State(Envelope::Pong));
-    caller.close().await;
-    provider.close().await;
     relay.relay.shutdown().await;
 }
 

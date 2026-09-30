@@ -183,6 +183,7 @@ const MAX_IMPORTED_SHEETS: usize = 64;
 /// than a normal paste, but still has a strict replay/history budget.
 pub const MAX_IMPORTED_CELLS: usize = 64 * 1024;
 const MAX_IMPORT_RAW_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IMPORT_SOURCE_BYTES: usize = 4 * 1024;
 const MAX_SHEET_NAME_CHARS: usize = 100;
 const TAB_COLOR_COUNT: u32 = 6;
 const MAX_ANNOTATION_BYTES: usize = 4 * 1024;
@@ -235,6 +236,10 @@ pub enum SheetsAction {
         /// second tab.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         replace_blank: bool,
+        /// The file the sheets were read from, recorded on each so opening
+        /// that file again reveals them instead of importing a copy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
     },
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
     /// the cell. When `fmt` is `Some`, the cell's display format is set to it in
@@ -668,11 +673,15 @@ impl Action for SheetsAction {
             SheetsAction::ImportSheets {
                 sheets,
                 replace_blank,
+                source,
             } => {
                 let blank = *replace_blank && workbook_is_blank(doc);
                 for imported in sheets {
                     let sheet =
                         SheetsDoc::add_sheet_with_id(doc, &imported.name, &imported.sheet_id);
+                    if let Some(source) = source {
+                        SheetsDoc::set_sheet_source(doc, sheet, source);
+                    }
                     apply_set_cells(doc, sheet, &imported.cells);
                 }
                 if blank && !sheets.is_empty() {
@@ -1170,7 +1179,15 @@ fn validate_imported_sheets(doc: &Doc, sheets: &[ImportedSheet]) -> Result<(), A
 )]
 fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
     match action {
-        SheetsAction::ImportSheets { sheets, .. } => validate_imported_sheets(doc, sheets),
+        SheetsAction::ImportSheets { sheets, source, .. } => {
+            if source
+                .as_deref()
+                .is_some_and(|source| source.is_empty() || source.len() > MAX_IMPORT_SOURCE_BYTES)
+            {
+                return refuse("an import's source path is empty or too long");
+            }
+            validate_imported_sheets(doc, sheets)
+        }
         SheetsAction::SetStyle {
             sheet_id,
             c0,
@@ -1701,6 +1718,7 @@ pub fn import_sheets_action(
             })
             .collect(),
         replace_blank: false,
+        source: None,
     }
 }
 
@@ -2954,6 +2972,7 @@ mod tests {
                 .collect();
             let mut action = SheetsAction::ImportSheets {
                 replace_blank: false,
+                source: None,
                 sheets: vec![ImportedSheet {
                     name: "At the import limit".into(),
                     sheet_id: Uuid::new_v4().to_string(),
@@ -3014,6 +3033,7 @@ mod tests {
             let before = doc.save();
             let action = SheetsAction::ImportSheets {
                 replace_blank: false,
+                source: None,
                 sheets: vec![
                     ImportedSheet {
                         name: "Would exist".into(),
