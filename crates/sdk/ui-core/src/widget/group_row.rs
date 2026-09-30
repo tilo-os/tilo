@@ -32,7 +32,7 @@ const SNAP_IDLE_MS: u32 = 200;
 const SNAP_ANIM_MS: u32 = 200;
 /// A group this close to its laid-out x, and this slow, has arrived.
 const MOVE_SETTLED_PX: f64 = 0.25;
-const MOVE_SETTLED_PX_PER_S: f64 = 4.0;
+const MOVE_SETTLED_PX_PER_S: f64 = 4.0; // rest velocity in px/s, not a Theme gap
 
 /// A tab dragged over a window body gets a generous before/after target at
 /// each outer edge. The target follows the window size, but stays useful on a
