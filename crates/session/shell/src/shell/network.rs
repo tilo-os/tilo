@@ -6406,6 +6406,26 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
+    fn enrolled_device_from_the_imager_is_an_action_recipient() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let device = [0x22_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xE011);
+        let recipients = net.certified_secret_recipients();
+        let id = crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).unwrap();
+        assert!(recipients.contains(&id));
+    }
+
+    #[test]
     fn personal_rooms_keep_only_real_room_ids() {
         let dir = tempfile::tempdir().expect("temp");
         let path = dir.path().join("personal-rooms.json");
