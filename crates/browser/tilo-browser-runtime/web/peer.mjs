@@ -637,6 +637,7 @@ export async function connectPeer({
     }
     return {
       live: () => { const current = layer(); return current && speaker.view(current); },
+      acted() { speaker.acted(); },
       release() { input.abort(); speaker.release(); },
     };
   }
@@ -700,6 +701,8 @@ export async function connectPeer({
       mount.surfaceId = surfaceId;
       const cleanup = mount.cleanup;
       mount.cleanup = async () => { presence.release(); dropSurface(entry); return cleanup?.(); };
+      const invokeAction = mount.invokeAction;
+      if (invokeAction) mount.invokeAction = (...args) => { presence.acted(); return invokeAction(...args); };
       return mount;
     },
     /** Resolves once the host admitted the room (`phase === 'ready'`);
