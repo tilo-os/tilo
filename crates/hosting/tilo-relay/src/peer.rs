@@ -549,8 +549,12 @@ where
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
+                // Prefer an already-readable inbound frame over the periodic
+                // membership audit. After a live revoke the audit and a refused
+                // delta can become ready together; the delta must win so the
+                // peer still receives NotAuthorised rather than a bare close.
                 tokio::select! {
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    biased;
                     frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
@@ -564,6 +568,7 @@ where
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
+                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
                 }
             };
             match frame {
@@ -4990,6 +4995,13 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        // A live revoke already pushed NotAuthorised and dropped this
+        // subscriber; a follow-up write must close rather than refuse twice.
+        if !current_session(&*ws.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "workspace membership changed".into(),
@@ -5441,6 +5453,11 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        if !current_session(&*workspace.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
             reason: "workspace membership changed".into(),

@@ -568,6 +568,32 @@ impl WorkspaceRuntime {
         self.subscribers.contains_key(device)
     }
 
+    /// Tell live devices that just lost membership they are no longer
+    /// authorised, while their connection is still open. Removals publish
+    /// this before durable IO so a concurrent audit cannot close the session
+    /// without an authenticated refusal. The subscriber is then unregistered
+    /// so a follow-up write closes instead of emitting a second refusal.
+    pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
+        if removed.is_empty() {
+            return;
+        }
+        let workspace_id = self.store.workspace_id();
+        for device in removed {
+            let Some(sub) = self.subscribers.get(device) else {
+                continue;
+            };
+            let _ = sub.tx.try_send(Envelope::NotAuthorised {
+                workspace_id,
+                reason: "workspace membership changed".into(),
+            });
+        }
+        for device in removed {
+            if self.subscribers.contains_key(device) {
+                self.remove_subscriber(device);
+            }
+        }
+    }
+
     /// Route a delta envelope to every subscriber that is NOT the
     /// author, AND enqueue for offline members. Returns how many
     /// live subscribers were fanned out to.
