@@ -32,8 +32,22 @@ const INSTALLER_BOOT: Duration = Duration::from_secs(20 * 60);
 const POWER_OFF: Duration = Duration::from_secs(180);
 /// How long a cold-booted target gets to reach the greeter.
 const TARGET_BOOT: Duration = Duration::from_secs(15 * 60);
-/// Unlock attempts typed at the target's boot prompt at most.
-const UNLOCK_ATTEMPTS: u32 = 8;
+/// Blind unlock attempts stop before the first-use UI can own keyboard focus.
+const UNLOCK_ATTEMPTS: u32 = 2;
+
+enum FirstBootSurface {
+    Greeter(Value),
+    IdentitySetup { screenshot: PathBuf, text: String },
+}
+
+fn is_identity_setup(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("tilo identity setup")
+        && (text.contains("create your local")
+            || text.contains("connect an existing identity")
+            || text.contains("back up your tilo identity")
+            || text.contains("your identity is ready"))
+}
 
 /// Everything one run needs to know, settled before anything boots.
 struct Plan {
@@ -164,7 +178,7 @@ impl Plan {
                     .display(),
             );
             commands.push(format!(
-                "verify the greeter on {}",
+                "verify sign-in or first-use identity setup on {}",
                 self.console().display()
             ));
         }
@@ -839,7 +853,7 @@ impl App {
         let completion = if plan.skip_target_boot {
             "target boot deferred; guest image proof and source GPT checked"
         } else {
-            "first boot reached the greeter on the installed image"
+            "first boot reached Tilo's sign-in or identity setup surface"
         };
         let text = format!(
             "install scenario passed: {} install onto {} ({}), {} {}\nphases: {}\nartifacts: {}",
@@ -1076,19 +1090,15 @@ impl App {
             return Err(failed("boot-target", booted.stderr.trim(), plan));
         }
         say("installed target booting; unlocking at its boot prompt");
-        let greeter = self.unlock_to_greeter(plan, &mut console, credentials.unlock_secret())?;
+        console.timeout = Duration::from_secs(2);
+        let first_boot =
+            self.unlock_to_first_boot(plan, &mut console, credentials.unlock_secret())?;
         let serial = plan.run.join("serial.log");
         if serial.is_file() {
             let _ = std::fs::copy(&serial, plan.out.join("target-serial.log"));
         }
-        write_json(&plan.out, "greeter-state.json", &greeter)?;
         self.receipt
             .record("first-boot", target_boot.elapsed().as_secs_f64());
-
-        let installed_image = greeter
-            .pointer("/image/composefs")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
         #[cfg(windows)]
         let expected_composefs = checked_install_proof
             .as_ref()
@@ -1100,30 +1110,64 @@ impl App {
             .or(installed.composefs.as_deref());
         #[cfg(not(windows))]
         let expected_composefs = installed.composefs.as_deref();
-        let (Some(live), Some(booted_image)) = (expected_composefs, installed_image.as_deref())
-        else {
+        let Some(live) = expected_composefs else {
             return Err(failed(
                 "first-boot",
-                "the installer or the greeter did not report the composefs image it booted, so the installed image cannot be verified",
+                "the installer did not report the composefs image it wrote",
                 plan,
             ));
         };
-        if live != booted_image {
-            return Err(failed(
-                "first-boot",
-                format!(
-                    "first boot runs composefs {booted_image}, not the {live} the installer wrote"
-                ),
-                plan,
-            ));
-        }
-        if greeter.get("phase").and_then(Value::as_str) != Some("sign-in") {
-            return Err(failed(
-                "first-boot",
-                format!("the greeter is not offering sign-in: {greeter}"),
-                plan,
-            ));
-        }
+        let (booted_image, observation) = match first_boot {
+            FirstBootSurface::Greeter(greeter) => {
+                write_json(&plan.out, "greeter-state.json", &greeter)?;
+                let booted_image = greeter
+                    .pointer("/image/composefs")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        failed(
+                            "first-boot",
+                            "the greeter did not report its composefs image",
+                            plan,
+                        )
+                    })?;
+                if live != booted_image {
+                    return Err(failed(
+                        "first-boot",
+                        format!(
+                            "first boot runs composefs {booted_image}, not the {live} the installer wrote"
+                        ),
+                        plan,
+                    ));
+                }
+                if greeter.get("phase").and_then(Value::as_str) != Some("sign-in") {
+                    return Err(failed(
+                        "first-boot",
+                        format!("the greeter is not offering sign-in: {greeter}"),
+                        plan,
+                    ));
+                }
+                (
+                    booted_image.to_owned(),
+                    json!({ "kind": "greeter", "state": greeter }),
+                )
+            }
+            FirstBootSurface::IdentitySetup { screenshot, text } => {
+                write_json(
+                    &plan.out,
+                    "identity-setup-observation.json",
+                    &json!({
+                        "screenshot": screenshot,
+                        "ocr": text,
+                        "image_identity_source": "installer proof; the cold-booted VM has only the installed target disk",
+                    }),
+                )?;
+                (
+                    live.to_owned(),
+                    json!({ "kind": "identity-setup", "screenshot": screenshot,
+                    "image_identity_observed_directly": false }),
+                )
+            }
+        };
         let report = json!({
             "scenario": "install",
             "layout": plan.layout.name(),
@@ -1133,7 +1177,7 @@ impl App {
             "installer_image": live,
             "installed_image": booted_image,
             "first_boot_verified": true,
-            "greeter": greeter,
+            "first_boot": observation,
             "preserved": preserved,
             "artifacts": plan.out,
         });
@@ -1163,25 +1207,46 @@ impl App {
         false
     }
 
-    /// Type the unlock secret at the target's boot prompt until the greeter
-    /// answers its console. The prompt is before userspace, so the keyboard
-    /// is the only door; the greeter answering is what stops the typing, so
-    /// a late attempt cannot land in its username field.
-    fn unlock_to_greeter(
+    /// Recognize either sign-in or first-use identity setup. Limit blind
+    /// unlock attempts to the early boot window so they cannot type into OOBE.
+    fn unlock_to_first_boot(
         &mut self,
         plan: &Plan,
         console: &mut SocketConsole,
         secret: &crate::scenario::Secret,
-    ) -> Result<Value, CliError> {
+    ) -> Result<FirstBootSurface, CliError> {
         let deadline = after(TARGET_BOOT);
-        let first_attempt = after(Duration::from_secs(30));
+        let first_attempt = after(Duration::from_secs(20));
         let mut typed = 0_u32;
         while Instant::now() < deadline {
             if let Ok(state) = console.state()
                 && state.get("app").and_then(Value::as_str) == Some("greeter")
             {
                 self.receipt.set("unlock_attempts", typed);
-                return Ok(state);
+                return Ok(FirstBootSurface::Greeter(state));
+            }
+            if let Ok(shot) = self
+                .runner
+                .output(&plan.vm(&["shot", "first-boot-observe"]))
+                && shot.success
+            {
+                let source = PathBuf::from(shot.stdout.trim());
+                if source.is_file()
+                    && let Ok(ocr) = std::process::Command::new("tesseract")
+                        .arg(&source)
+                        .arg("stdout")
+                        .output()
+                    && ocr.status.success()
+                {
+                    let text = String::from_utf8_lossy(&ocr.stdout).into_owned();
+                    if is_identity_setup(&text) {
+                        let screenshot = plan.out.join("first-boot-identity-setup.png");
+                        std::fs::copy(&source, &screenshot)
+                            .map_err(CliError::io("saving first-boot identity setup screenshot"))?;
+                        self.receipt.set("unlock_attempts", typed);
+                        return Ok(FirstBootSurface::IdentitySetup { screenshot, text });
+                    }
+                }
             }
             let running = self
                 .runner
@@ -1190,7 +1255,7 @@ impl App {
             if !running {
                 return Err(failed(
                     "first-boot",
-                    "the installed target stopped before reaching the greeter",
+                    "the installed target stopped before reaching sign-in or identity setup",
                     plan,
                 ));
             }
@@ -1206,7 +1271,7 @@ impl App {
         Err(failed(
             "first-boot",
             format!(
-                "no greeter answered within {}s after {typed} unlock attempt(s)",
+                "no sign-in or identity setup appeared within {}s after {typed} unlock attempt(s)",
                 TARGET_BOOT.as_secs()
             ),
             plan,
@@ -1296,6 +1361,19 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_boot_ocr_accepts_identity_setup_but_not_a_login_prompt() {
+        assert!(super::is_identity_setup(
+            "Tilo identity setup Step 2 of 5 - Restore\nConnect an existing identity"
+        ));
+        assert!(super::is_identity_setup(
+            "Tilo identity setup\nCreate your local identity"
+        ));
+        assert!(!super::is_identity_setup(
+            "Fedora Linux 44\nscenario-tilo login:"
+        ));
+    }
+
     /// A VM install proof requires one valid guest line and matching source; a v2 proof binds a distinct
     /// medium and signed target.
     #[cfg(windows)]
