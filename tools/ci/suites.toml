@@ -839,6 +839,11 @@ suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
 
 [[unrequired]]
+suite = "os/tests/validation_drive_qemu.sh"
+reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
