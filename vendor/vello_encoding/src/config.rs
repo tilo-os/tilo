@@ -535,6 +535,12 @@ impl BufferSizes {
     }
 }
 
+/// A counter at or above this did not count anything. The largest binding
+/// holds 2^25 words, and a counter bumps once per element it tries to
+/// place, so no frame reaches 2^31; values up there are what a counter
+/// read back from an aborted pass wraps to.
+const CORRUPT_COUNT: u32 = 1 << 31;
+
 /// Words of `ptcl` reserved per tile before any allocation happens, from
 /// `PTCL_INITIAL_ALLOC` in `shader/shared/ptcl.wgsl`. Kept in step by
 /// hand, like the other shader constants in this file.
@@ -781,10 +787,16 @@ impl BumpBudget {
     /// under-provision a growing scene. A failure may prevent later stages
     /// from reporting their final demand, so convergence is not guaranteed
     /// in a single subsequent render.
+    ///
+    /// A counter that has wrapped (see [`CORRUPT_COUNT`]) is ignored rather
+    /// than believed: growing from it would pin a binding's worth of memory
+    /// per buffer for the rest of the process on one bad readback.
     pub fn observe(&mut self, used: &BumpAllocators) -> bool {
         let before = *self;
         let grow = |field: &mut u32, used: u32, ceiling: u32| {
-            *field = (*field).max(used.saturating_mul(2).min(ceiling));
+            if used < CORRUPT_COUNT {
+                *field = (*field).max(used.saturating_mul(2).min(ceiling));
+            }
         };
         grow(&mut self.lines, used.lines, Self::CEILING.lines);
         grow(&mut self.binning, used.binning, Self::CEILING.binning);
@@ -799,6 +811,36 @@ impl BumpBudget {
         grow(&mut self.ptcl, used.ptcl, Self::CEILING.ptcl);
         self.clamp_to_binding();
         *self != before
+    }
+
+    /// Shrink every reservation by the same factor until the whole budget
+    /// fits in `max_bytes`. A browser's GPU process has a hard memory limit
+    /// (Safari's is 600 MB); seven buffers each allowed a full binding reach
+    /// most of a gigabyte, and a GPU process killed there mid-frame took the
+    /// macOS window server down with it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "each field is scaled down from a u32 by a factor below one"
+    )]
+    pub fn fit_total_bytes(&mut self, max_bytes: u64) {
+        let size = self.size_in_bytes();
+        if size <= max_bytes {
+            return;
+        }
+        let scale = max_bytes as f64 / size as f64;
+        for field in [
+            &mut self.lines,
+            &mut self.binning,
+            &mut self.tiles,
+            &mut self.seg_counts,
+            &mut self.segments,
+            &mut self.blend_spill,
+            &mut self.ptcl,
+        ] {
+            *field = (f64::from(*field) * scale) as u32;
+        }
     }
 
     /// Bytes this budget reserves, not counting the viewport floors.
@@ -825,7 +867,9 @@ const fn align_up(len: u32, alignment: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferSizes, BumpAllocators, BumpBudget, PTCL_INITIAL_ALLOC, RenderConfig};
+    use super::{
+        BufferSizes, BumpAllocators, BumpBudget, CORRUPT_COUNT, PTCL_INITIAL_ALLOC, RenderConfig,
+    };
     use crate::{Layout, LineSoup, WorkgroupCounts};
 
     /// A layout with nothing in it. The bump-allocated sizes do not
@@ -1078,15 +1122,17 @@ mod tests {
     #[test]
     fn growth_stops_at_the_ceiling() {
         let mut budget = BumpBudget::INITIAL;
+        // The largest count still believed; above it is a wrapped readback.
+        let most = CORRUPT_COUNT - 1;
         let huge = BumpAllocators {
             failed: 0x1f,
-            binning: u32::MAX,
-            ptcl: u32::MAX,
-            tile: u32::MAX,
-            seg_counts: u32::MAX,
-            segments: u32::MAX,
-            blend: u32::MAX,
-            lines: u32::MAX,
+            binning: most,
+            ptcl: most,
+            tile: most,
+            seg_counts: most,
+            segments: most,
+            blend: most,
+            lines: most,
         };
         budget.observe(&huge);
         assert_eq!(budget.tiles, BumpBudget::CEILING.tiles);
@@ -1115,6 +1161,49 @@ mod tests {
         ] {
             assert!(bytes <= limit, "{name} is {bytes} bytes, past {limit}");
         }
+    }
+
+    /// Opening Search at 5K overflowed blend spill; the readback from the
+    /// aborted pass reported 2.4e9 segments and 4.3e9 blend words against
+    /// a real 1e5. Believing it pinned a binding per buffer for the session.
+    #[test]
+    fn a_wrapped_counter_does_not_grow_the_budget() {
+        let mut budget = BumpBudget::INITIAL.with_max_binding_bytes(WEBGPU_DEFAULT_BINDING);
+        let wrapped = BumpAllocators {
+            failed: 0x10,
+            segments: 2_373_742_623,
+            blend: 4_293_529_600,
+            lines: 38_037,
+            ..BumpAllocators::default()
+        };
+        assert!(wrapped.segments >= CORRUPT_COUNT && wrapped.blend >= CORRUPT_COUNT);
+        assert!(budget.observe(&wrapped), "the plausible lines count still grows");
+        assert_eq!(budget.lines, 2 * 38_037);
+        assert_eq!(budget.segments, BumpBudget::INITIAL.segments);
+        assert_eq!(budget.blend_spill, BumpBudget::INITIAL.blend_spill);
+    }
+
+    #[test]
+    fn growth_never_passes_a_total_memory_limit() {
+        let mut budget = BumpBudget::INITIAL.with_max_binding_bytes(WEBGPU_DEFAULT_BINDING);
+        let huge = BumpAllocators {
+            lines: u32::MAX / 2,
+            binning: u32::MAX / 2,
+            tile: u32::MAX / 2,
+            seg_counts: u32::MAX / 2,
+            segments: u32::MAX / 2,
+            blend: u32::MAX / 2,
+            ptcl: u32::MAX / 2,
+            ..Default::default()
+        };
+        budget.observe(&huge);
+        assert!(budget.size_in_bytes() > 512 << 20, "{}", budget.size_in_bytes());
+        budget.fit_total_bytes(128 << 20);
+        assert!(budget.size_in_bytes() <= 128 << 20, "{}", budget.size_in_bytes());
+        assert!(budget.ptcl > 0 && budget.lines > 0);
+        let fitted = budget;
+        budget.fit_total_bytes(128 << 20);
+        assert_eq!(budget, fitted, "a budget within the limit is left alone");
     }
 
     #[test]

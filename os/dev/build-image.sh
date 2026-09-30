@@ -740,10 +740,10 @@ fi
 # value. disk-image.sh recognises that failure and prints the digest to seal, so
 # the recovery is to rebuild the UKI with it and install again.
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  want="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
   [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
   seal; see the message above and $INSTALL_LOG"
-  had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  had="$(sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
   msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
   msg "pass 2: rewriting that digest into the UKI the image already carries"
   # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
@@ -761,7 +761,7 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
     printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"
   fi
   if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-    want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    want2="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
   even though the only thing that changed was the UKI under /boot. That means the

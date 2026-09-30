@@ -36,7 +36,10 @@ struct ConsumedEnrollment {
 }
 
 impl DeviceFleet {
-    fn new(identity_id: String) -> Self {
+    /// An empty fleet of `identity_id`: no certificates, revocations or
+    /// consumed enrollments.
+    #[must_use]
+    pub fn new(identity_id: String) -> Self {
         Self {
             schema_version: FLEET_SCHEMA_VERSION,
             identity_id,

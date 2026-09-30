@@ -851,7 +851,7 @@ pub struct UpgradeArgs {
 pub enum SlotCommand {
     /// Create a slot (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
+        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create apps --headful --identity\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
         /// The slot (default: your slot).
@@ -874,6 +874,11 @@ pub enum SlotCommand {
             num_args = 1
         )]
         outputs: Vec<tilo_vm_protocol::OutputSpec>,
+        /// Give the slot's user a throwaway test identity, so apps open
+        /// without the first-login flow, and start the session with fresh
+        /// desktop state. Needs a dev image's shell.
+        #[arg(long)]
+        identity: bool,
     },
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
@@ -987,6 +992,25 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn slot_create_takes_an_opt_in_identity() {
+        let identity = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Slot(SlotCommand::Create { identity, .. })) = cli.command else {
+                panic!("slot create did not parse");
+            };
+            identity
+        };
+        assert!(identity(&[
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--identity"
+        ]));
+        assert!(!identity(&["tilo-vm", "slot", "create", "--headful"]));
+    }
 
     #[test]
     fn outputs_need_a_headful_slot_and_parse_left_to_right() {

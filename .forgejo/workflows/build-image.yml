@@ -2064,6 +2064,7 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.base.name=$base" \
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+            --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
             --metadata-file "$metadata" \
             --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
@@ -2311,7 +2312,7 @@ jobs:
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
               TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
-              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label org.opencontainers.image.base.child.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
               ./os/dev/build-dev-image.sh
             test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
             # Gate a throwaway overlay so the disk published below is never
@@ -2916,6 +2917,118 @@ jobs:
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
   # installation; it intentionally has no mutable upgrade channel yet.
+  # A board's dev image, the board layer on this commit's aarch64 dev image:
+  # a job of its own, so a broken board layer is visible without holding back
+  # the generic dev images, which the build-and-push lanes publish first. It
+  # keeps the dev image's labels (revision, base, trust), so dev-disk.yml
+  # takes its digest as dev_image and installs it to a flashable disk.
+  board-lenovo-83ed:
+    name: "board: lenovo-83ed"
+    needs: [plan, build-and-push]
+    if: ${{ always() && github.event_name == 'workflow_call' && needs.plan.outputs.skip != 'true' && contains(inputs.arches, 'aarch64') && vars.TILO_LENOVO_FIRMWARE_REF != '' }}
+    runs-on: runner-large-arm64
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Name this commit's dev images
+        id: series
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            series="main-${GITHUB_SHA:0:7}"
+          elif [[ $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
+            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+          else
+            branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
+            series="${branch:0:100}-${GITHUB_SHA:0:7}"
+          fi
+          echo "series=$series" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require this commit's aarch64 dev image
+        env:
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
+          raw="$(skopeo inspect --raw "docker://$base")" || {
+            echo "::error::$base is missing: the aarch64 dev lane did not publish it"; exit 1; }
+          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
+
+      - name: Resolve RPMS_REF (frozen package snapshot)
+        run: echo "RPMS_REF=$(./os/dev/resolve-rpm-snapshot.sh)" >> "$GITHUB_ENV"
+
+      - name: Import the pinned Lenovo firmware
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
+          FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          command -v podman >/dev/null || {
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get -o Acquire::Retries=3 update
+              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman jq
+            else
+              sudo -n dnf --setopt=retries=3 install -y podman jq
+            fi
+          }
+          authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
+          store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
+          trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
+          printf '{}\n' > "$authfile"
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+            --root "$store/graph" --runroot "$store/run" login code.tilo.so \
+            --authfile "$authfile" --username "${{ github.actor }}" --password-stdin
+          sudo -n env REGISTRY_AUTH_FILE="$authfile" \
+            python3 os/dev/hardware-firmware-artifact.py import \
+            --reference "$FIRMWARE_REF" --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
+            --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
+          sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
+
+      - name: Set up buildx
+        id: buildx
+        uses: ./.forgejo/actions/setup-buildx
+        with:
+          driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      - name: Build and publish the Lenovo 83ED dev image
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          image="registry.tilo.so/tilo/tilo-vm:$SERIES-lenovo-83ed"
+          # Main also moves tilo-vm:lenovo-83ed-ci, which a laptop installed
+          # from a dev-disk.yml disk of that tag follows with `bootc upgrade`.
+          names="$image"
+          [[ $GITHUB_REF != refs/heads/main ]] || names="$names,registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci"
+          metadata="$(mktemp "${RUNNER_TEMP:?}/tilo-board-build.XXXXXX")"
+          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+            -f os/Containerfile.board \
+            --build-arg "BASE_IMAGE=$BOARD_BASE" \
+            --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg TILO_HARDWARE_PROFILE=lenovo-83ed \
+            --build-arg TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:lenovo-83ed-dev \
+            --label "org.opencontainers.image.version=$SERIES-lenovo-83ed" \
+            --metadata-file "$metadata" \
+            --output "type=image,\"name=$names\",push=true,compression=zstd,compression-level=1" \
+            .
+          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          echo "::notice::Lenovo 83ED dev image in $(( $(date +%s) - started ))s: $image ($digest)"
+          base="$(skopeo inspect "docker://$BOARD_BASE" | jq -er '.Labels["org.opencontainers.image.base.name"]')"
+          echo "::notice::flashable disk: dispatch dev-disk.yml with source_revision=$GITHUB_SHA base_image=$base dev_image=registry.tilo.so/tilo/tilo-vm@$digest tag=lenovo-83ed-ci architectures=aarch64 validate_boot=false"
+
   promote-lenovo:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'lenovo-83ed'
