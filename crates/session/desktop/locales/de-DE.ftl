@@ -740,10 +740,7 @@ workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeine
 workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
 workspace-settings-what-it-allows = Was es erlaubt
 workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
-workspace-settings-saved-roles = { $count ->
-    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
-   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
-}
+workspace-settings-saved-roles = Rollen verwalten ({ $count })
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
 workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen

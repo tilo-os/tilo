@@ -65,6 +65,10 @@ pub trait Apply {
         outputs: &[OutputSpec],
     ) -> Result<String, DaemonError>;
     fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError>;
+    /// Remove `user`'s desktop layout (`~/.config/tilo/state.json` and the
+    /// document, meta and invocation records beside it). The session must
+    /// be stopped, or it writes the layout back.
+    fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError>;
     /// The last `lines` journal entries matching any of `matches`
     /// (journalctl `FIELD=value` terms, `OR`ed).
     fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError>;
@@ -428,6 +432,9 @@ pub struct RecordingApply {
     pub sysext: Vec<PathBuf>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
+    /// Answers for the next `control` calls, in order; an echo of the
+    /// arguments once they run out.
+    pub control_replies: std::collections::VecDeque<ControlResult>,
 }
 
 impl RecordingApply {
@@ -527,6 +534,10 @@ impl Apply for RecordingApply {
         self.call(format!("release_seat {slot} {seat}"));
         Ok(())
     }
+    fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError> {
+        self.call(format!("reset_desktop_state {user}"));
+        Ok(())
+    }
     fn journal(&mut self, matches: &[String], lines: u32) -> Result<String, DaemonError> {
         self.call(format!("journal {lines}"));
         Ok(format!("(recorded) journal of {}\n", matches.join(" + ")))
@@ -538,6 +549,9 @@ impl Apply for RecordingApply {
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
         self.call(format!("control {slot} {}", args.join(" ")));
+        if let Some(reply) = self.control_replies.pop_front() {
+            return Ok(reply);
+        }
         Ok(ControlResult {
             exit_code: 0,
             stdout: format!("{}\n", args.join(" ")),
