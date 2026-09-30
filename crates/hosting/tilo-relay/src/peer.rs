@@ -6177,9 +6177,7 @@ async fn route_private(
     {
         return Ok(Some(U::NotAuthorised));
     }
-    // A target that was removed from the current membership is refused, not
-    // reported as merely offline. This keeps membership revocations visible to
-    // a still-authorised sender after the live target is unregistered.
+    // Membership revocations are NotAuthorised, not merely Offline.
     if !wr.membership.contains(&action.target) {
         return Ok(Some(U::NotAuthorised));
     }
