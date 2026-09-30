@@ -57,7 +57,7 @@ impl QsActionAvailability {
                     availability.airplane_mode = false;
                 }
             }
-            availability.bluetooth = os_actions::bluez::adapter_path().is_ok();
+            availability.bluetooth = os_actions::bluez::has_adapter();
             availability
         }
         #[cfg(not(target_os = "linux"))]
@@ -202,6 +202,6 @@ mod availability_tests {
             .ok()
             .is_some_and(|radios| radios.wifi_available);
         assert_eq!(found.wifi, wifi);
-        assert_eq!(found.bluetooth, os_actions::bluez::adapter_path().is_ok());
+        assert_eq!(found.bluetooth, os_actions::bluez::has_adapter());
     }
 }

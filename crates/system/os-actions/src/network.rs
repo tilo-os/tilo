@@ -1866,13 +1866,13 @@ mod tests {
                 wifi_enabled: true,
                 ..RadioState::default()
             };
-            assert_eq!(wifi_from_radios(&on).unwrap(), true);
+            assert!(wifi_from_radios(&on).unwrap());
             let off = RadioState {
                 wifi_available: true,
                 wifi_enabled: false,
                 ..RadioState::default()
             };
-            assert_eq!(wifi_from_radios(&off).unwrap(), false);
+            assert!(!wifi_from_radios(&off).unwrap());
         }
     }
 

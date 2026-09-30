@@ -2522,6 +2522,7 @@ mod tests {
         fn semantic_targets_cover_every_visible_root_control_and_edit_action() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
+            state.brightness_available = true;
             state.radios.wifi_available = true;
             state.bluetooth_available = true;
             root.panel = PANEL;
@@ -3157,6 +3158,7 @@ mod tests {
         fn accessibility_nodes_carry_the_rects_paint_and_hit_testing_use() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
+            state.brightness_available = true;
             state.radios.wifi_available = true;
             root.panel = PANEL;
             let snapshot = root.accessibility_snapshot(&state);
