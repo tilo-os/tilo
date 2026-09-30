@@ -11906,7 +11906,12 @@ impl ShellOverlayHost {
                     let mut st = chrome.borrow_mut();
                     let next = match st.wheel_summon() {
                         Some(_) => None,
-                        None => self.last_cursor,
+                        // A session with no pointer yet (headless, first
+                        // frame, a VM that has not moved the cursor) still
+                        // has to put the wheel somewhere a shot and
+                        // state-dump can see. The host rect is the
+                        // display; its centre is on screen.
+                        None => Some(self.last_cursor.unwrap_or_else(|| self.rect.center())),
                     };
                     st.set_wheel_summon(next);
                     *handled = true;
