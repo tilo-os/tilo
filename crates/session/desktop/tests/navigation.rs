@@ -233,6 +233,62 @@ fn navigation_animation_frames_settle_without_restarting_and_allow_manual_naviga
 }
 
 #[test]
+fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
+    fn frames_until_idle(test: &mut NavigationFrame) -> usize {
+        (0..400)
+            .find(|_| {
+                if !test.frame.frame_output().needs_animation_frame {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                test.frame.poll_frame().unwrap();
+                false
+            })
+            .expect("the desktop goes quiet")
+    }
+    let mut tree = navigation_tree();
+    let template = tree.workspaces[0].strips[0].window_groups[1].clone();
+    for id in [5_u64, 6] {
+        let mut group = template.clone();
+        group.id = id;
+        group.tabs[0].id = id + 100;
+        group.active_tab = id + 100;
+        tree.workspaces[0].strips[0].window_groups.push(group);
+    }
+    tree.active_group.insert(StripId(2), 6);
+    let mut test = NavigationFrame::new(tree, 1200);
+    frames_until_idle(&mut test);
+    test.assert_visible(StripId(2), 6);
+    let revealed = test.surface().row(StripId(2)).unwrap().scroll_x();
+
+    test.tree.active_group.insert(StripId(2), 5);
+    test.reconcile();
+    test.tree.active_group.insert(StripId(2), 4);
+    test.reconcile();
+    // Widths are read off pan-shifted rects. When they wobble, each layout
+    // asks for the same group again. Reproduce that ask on every frame.
+    let frames = (0..400)
+        .find(|_| {
+            if !test.frame.frame_output().needs_animation_frame {
+                return true;
+            }
+            test.surface_mut()
+                .row_mut(StripId(2))
+                .unwrap()
+                .scroll_group_into_view_animated(4, ui::clock::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            test.frame.poll_frame().unwrap();
+            false
+        })
+        .expect("the desktop goes quiet");
+    // One 200 ms ease is about a dozen 16 ms frames. A pan that restarts
+    // itself every frame toward the same place runs for seconds.
+    assert!(frames <= 30, "{frames} frames to settle two steps back");
+    test.assert_visible(StripId(2), 4);
+    assert!(test.surface().row(StripId(2)).unwrap().scroll_x() < revealed);
+}
+
+#[test]
 fn navigation_focus_retries_new_layout_and_tracks_resize_reorder_removal() {
     let mut test = NavigationFrame::new(navigation_tree(), 740);
     let mut group = test.tree.workspaces[0].strips[0].window_groups[1].clone();

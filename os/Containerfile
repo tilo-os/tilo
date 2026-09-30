@@ -1389,7 +1389,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
     && ! printf '%s\n' "$installed" | grep -Eq '^systemd-(coredump|networkd|resolved)$' \
-    && dnf clean all && ${FINALIZE_RPMDB}
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && rm -rf /var/cache/swcatalog
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
