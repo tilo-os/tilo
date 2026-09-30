@@ -36,8 +36,9 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 /// of the machine.
 ///
 /// The compositor gives each agent named on a command its own seat and strip:
-/// its coordinates and screenshots are that strip's, and the keys and buttons
-/// it holds never reach another agent's window. What this side remembers per
+/// on its turn that strip fills the screen its coordinates and screenshots
+/// cover, and the keys and buttons it holds never reach another agent's
+/// window. What this side remembers per
 /// agent (pointer, last frame's geometry) is kept per agent for the same
 /// reason.
 pub struct Computer {
