@@ -800,7 +800,51 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// Start one invocation of `target` and answer with its update once it
     /// is terminal or `wait` has passed. An omitted revision is the
     /// directory as it is now.
+    ///
+    /// A number the action refused as outside its range is recoverable: the
+    /// call runs once more with the bound it named, and the answer says so
+    /// in `adjusted`.
     async fn run(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+        revision: Option<String>,
+        wait: std::time::Duration,
+    ) -> Result<Value, String> {
+        let value = self
+            .run_once(
+                target.clone(),
+                arguments.clone(),
+                invocation,
+                revision.clone(),
+                wait,
+            )
+            .await?;
+        let Some((name, bound)) = out_of_range(&value, &arguments) else {
+            return Ok(value);
+        };
+        let given = arguments.get(&name).cloned().unwrap_or_default();
+        let mut arguments = arguments;
+        arguments.insert(name.clone(), bound.clone());
+        let mut value = self
+            .run_once(
+                target,
+                arguments,
+                tilo_actions::InvocationId::new(),
+                revision,
+                wait,
+            )
+            .await?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert(
+                "adjusted".into(),
+                format!("{name} {given} is out of range; used {bound}").into(),
+            );
+        }
+        Ok(value)
+    }
+    async fn run_once(
         &self,
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, Value>,
@@ -1007,8 +1051,23 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 .host()
                 .observe(&self.caller(), &id)
                 .is_some_and(|state| state.update.is_terminal());
-            if terminal || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+            if terminal {
                 return self.status(id);
+            }
+            if deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
+                let mut value = self.status(id)?;
+                if let Some(fields) = value.as_object_mut() {
+                    fields.insert(
+                        "pending".into(),
+                        format!(
+                            "not finished within {} ms; tilo_status with this invocation_id answers \
+                             how it went, or pass a longer wait_ms",
+                            wait.as_millis()
+                        )
+                        .into(),
+                    );
+                }
+                return Ok(value);
             }
             tokio::time::sleep(SETTLE_POLL).await;
         }
@@ -1170,6 +1229,33 @@ const MAX_WAIT_MS: u64 = 30_000;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
+/// The numeric argument a failed update refused as outside its range, with
+/// the bound the refusal named (`argument `pageSize` must be at most 64`).
+fn out_of_range(
+    value: &Value,
+    arguments: &serde_json::Map<String, Value>,
+) -> Option<(String, Value)> {
+    let error = value.pointer("/update/error")?;
+    if error.get("code")?.as_str()? != "invalid_arguments" {
+        return None;
+    }
+    let (name, rest) = error
+        .get("message")?
+        .as_str()?
+        .strip_prefix("argument `")?
+        .split_once("` must be at ")?;
+    let bound = rest
+        .strip_prefix("most ")
+        .or_else(|| rest.strip_prefix("least "))?;
+    let bound = bound
+        .parse::<i64>()
+        .map(Value::from)
+        .or_else(|_| bound.parse::<f64>().map(Value::from))
+        .ok()?;
+    arguments.get(name)?.as_f64()?;
+    Some((name.to_owned(), bound))
+}
+
 fn empty_object() -> Value {
     json!({})
 }
