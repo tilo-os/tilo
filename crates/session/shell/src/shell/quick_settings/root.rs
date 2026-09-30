@@ -2521,10 +2521,15 @@ mod tests {
     fn root_controls_reflect_present_hardware_and_migrated_config() {
         fn semantic_targets_cover_every_visible_root_control_and_edit_action() {
             let mut root = QuickSettingsRoot::default();
-            let mut state = QuickSettingsState::default();
-            state.brightness_available = true;
-            state.radios.wifi_available = true;
-            state.bluetooth_available = true;
+            let mut state = QuickSettingsState {
+                brightness_available: true,
+                bluetooth_available: true,
+                radios: os_actions::RadioState {
+                    wifi_available: true,
+                    ..os_actions::RadioState::default()
+                },
+                ..QuickSettingsState::default()
+            };
             root.panel = PANEL;
 
             let targets = root.semantic_rects(&state);
@@ -3157,9 +3162,14 @@ mod tests {
 
         fn accessibility_nodes_carry_the_rects_paint_and_hit_testing_use() {
             let mut root = QuickSettingsRoot::default();
-            let mut state = QuickSettingsState::default();
-            state.brightness_available = true;
-            state.radios.wifi_available = true;
+            let mut state = QuickSettingsState {
+                brightness_available: true,
+                radios: os_actions::RadioState {
+                    wifi_available: true,
+                    ..os_actions::RadioState::default()
+                },
+                ..QuickSettingsState::default()
+            };
             root.panel = PANEL;
             let snapshot = root.accessibility_snapshot(&state);
             assert_eq!(snapshot.bounds.map(ui::AccessBounds::to_rect), Some(PANEL));

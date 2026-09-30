@@ -47,15 +47,12 @@ impl QsActionAvailability {
             // actions must then be unavailable rather than a working-looking
             // toggle that fails or no-ops.
             availability.brightness = os_actions::display::has_backlight();
-            match os_actions::get_radio_state() {
-                Ok(radios) => {
-                    availability.wifi = radios.wifi_available;
-                    availability.airplane_mode = radios.wifi_available || radios.wwan_available;
-                }
-                Err(_) => {
-                    availability.wifi = false;
-                    availability.airplane_mode = false;
-                }
+            if let Ok(radios) = os_actions::get_radio_state() {
+                availability.wifi = radios.wifi_available;
+                availability.airplane_mode = radios.wifi_available || radios.wwan_available;
+            } else {
+                availability.wifi = false;
+                availability.airplane_mode = false;
             }
             availability.bluetooth = os_actions::bluez::has_adapter();
             availability
