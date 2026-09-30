@@ -67,6 +67,5 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 tilo-test-env = { path = "../../dev/test-env" }
 hyper = { version = "1.8.1", features = ["client"] }
 rcgen.workspace = true
-tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 # The native device's media control, driven against the actual grant service.
 tilo-native-media-control = { path = "../../session/tilo-native-media-control" }

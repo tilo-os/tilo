@@ -58,6 +58,7 @@ run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
 run 'Apps declare the capabilities their code uses' \
   python3 tools/policy/check_app_capabilities.py
+run 'Browser desktop registry matches app manifests' python3 tools/web/generate_web_desktop.py --check
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py

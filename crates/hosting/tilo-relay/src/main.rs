@@ -392,7 +392,7 @@ mod tests {
         // These paths model the firstboot-generated handoff while keeping the
         // test hermetic instead of writing under /etc or /var/lib.
         config.home_peer_bundle = bundle_path;
-        config.full_replica_status = status_path;
+        config.full_replica_status = status_path.clone();
         config.state_root = temp.path().join("relay-state");
         config.identity_root = temp.path().join("identity");
         config.services = ServiceCapabilities::home_peer();
