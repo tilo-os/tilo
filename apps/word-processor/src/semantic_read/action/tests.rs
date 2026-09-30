@@ -89,6 +89,10 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
     assert_eq!(wire["permission"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
     assert_eq!(wire["result"]["type"], "json");
+    assert_eq!(
+        wire["tags"],
+        serde_json::json!([tilo_actions::DOCUMENT_READ_TAG])
+    );
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();
     let value = serde_json::json!({"version":1,"record":{"roomId":"77777777-7777-4777-8777-777777777777","appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":{"segments":[{"block":"p1","kind":"paragraph","text":"hello","complete":true}]},"nextCursor":null});
     decoded
