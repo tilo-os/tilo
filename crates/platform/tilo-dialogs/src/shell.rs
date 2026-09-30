@@ -180,13 +180,13 @@ impl Connection {
                     .map_err(|_| std::io::Error::other("chooser writer poisoned"))?;
                 writer.write_all(&frame).and_then(|()| writer.flush())
             });
-        if let Err(error) = sent {
-            if let Some(answer) = self.take(id) {
-                answer(Reply::Failed {
-                    id,
-                    reason: format!("could not reach the session's file chooser: {error}"),
-                });
-            }
+        if let Err(error) = sent
+            && let Some(answer) = self.take(id)
+        {
+            answer(Reply::Failed {
+                id,
+                reason: format!("could not reach the session's file chooser: {error}"),
+            });
         }
     }
 
@@ -221,7 +221,7 @@ fn read_replies(connection: &Connection, stream: UnixStream) {
     loop {
         frame.clear();
         match (&mut reader)
-            .take(MAX_FRAME_BYTES as u64 + 1)
+            .take((MAX_FRAME_BYTES as u64).saturating_add(1))
             .read_until(b'\n', &mut frame)
         {
             Ok(0) | Err(_) => break,
@@ -494,6 +494,7 @@ impl FilePicker for ShellChooser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::Duration;
 
     const ANSWER: Duration = Duration::from_secs(10);
@@ -651,7 +652,7 @@ mod tests {
     fn opening_a_file_asks_the_shell_and_reports_its_answer() {
         let chooser = picker(
             shell(|request| match request {
-                Request::Open { id, path } if path == PathBuf::from("/data/in/a.docx") => {
+                Request::Open { id, path } if path == Path::new("/data/in/a.docx") => {
                     Reply::Opened { id }
                 }
                 other => Reply::Failed {

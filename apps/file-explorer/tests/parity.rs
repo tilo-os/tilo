@@ -421,8 +421,8 @@ fn open_terminal_button_spawns_quick_terminal_subprocess() {
             self.calls.push((program.to_string(), cwd.to_path_buf()));
             Ok(())
         }
-        fn open_default(&mut self, _path: &std::path::Path) -> std::io::Result<()> {
-            Ok(())
+        fn open_default(&mut self, _path: &std::path::Path) -> ui::portal::LaunchChannel {
+            std::sync::mpsc::channel().1
         }
     }
 
