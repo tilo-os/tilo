@@ -629,13 +629,11 @@ fn invoke_checked(
                 AdmissionProvenance {
                     durable: None,
                     revision: Some(&revision),
-                    private_owner: None,
                     origin: Some(InvocationCaller::Local {
                         route,
                         admitted: Box::new(current),
                     }),
                     retained_time: Some(&time),
-                    enrolled_durable: None,
                 },
             )
             .map_err(capnp::Error::failed)?;

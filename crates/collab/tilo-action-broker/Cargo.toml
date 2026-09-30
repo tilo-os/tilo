@@ -13,7 +13,6 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
