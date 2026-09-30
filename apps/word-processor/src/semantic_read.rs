@@ -1,5 +1,6 @@
 //! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
 pub mod action;
+pub mod changes;
 pub mod markdown;
 use automerge::AutoCommit;
 use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
@@ -39,6 +40,29 @@ pub struct Shape {
     pub row: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub col: Option<i64>,
+}
+impl Shape {
+    /// The shape `attrs`, a materialized block's attributes, give it.
+    pub fn of_attrs(attrs: &std::collections::BTreeMap<String, qdoc::AttrVal>) -> Self {
+        let int = |key: &str| match attrs.get(key) {
+            Some(qdoc::AttrVal::Int(value)) => Some(*value),
+            _ => None,
+        };
+        Self {
+            level: int("level"),
+            ordered: match attrs.get("ordered") {
+                Some(qdoc::AttrVal::Bool(flag)) => Some(*flag),
+                _ => None,
+            },
+            nesting: int("nesting"),
+            table: match attrs.get("table") {
+                Some(qdoc::AttrVal::Str(table)) => Some(table.clone()),
+                _ => None,
+            },
+            row: int("row"),
+            col: int("col"),
+        }
+    }
 }
 fn shape(source: &Source<'_>, block: &ObjId) -> Result<Shape, ReadError> {
     let mut shape = Shape::default();

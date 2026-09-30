@@ -1399,7 +1399,26 @@ fn provide_resources_from(
     add_metadata_resources(&mut root, listed);
     add_style_resources(&mut root, listed);
     add_structural_resources(&mut root, listed);
-    vec![root]
+    vec![returning_changes(root)]
+}
+
+/// Every document edit answers with the blocks it changed
+/// ([`crate::semantic_read::changes`]), so its caller sees the result without
+/// reading the document again.
+fn returning_changes(mut resource: Resource) -> Resource {
+    for action in &mut resource.actions {
+        if action.kind == OperationKind::Document && action.contract.result == ResultSpec::None {
+            action.contract.result = ResultSpec::Json {
+                schema: serde_json::json!({"type": ["string", "null"]}),
+            };
+        }
+    }
+    resource.children = resource
+        .children
+        .into_iter()
+        .map(returning_changes)
+        .collect();
+    resource
 }
 
 /// The resource tree from the incrementally kept document state: its

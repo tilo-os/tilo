@@ -1706,6 +1706,9 @@ pub(crate) fn execute_resource_operation(
             tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
             tilo_actions::Dispatched::SubmittedToHost(_) => None,
         };
+        let before = applied
+            .as_ref()
+            .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
@@ -1717,7 +1720,21 @@ pub(crate) fn execute_resource_operation(
                 path,
             );
         }
-        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        let value =
+            matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
+                // Submitted to another host, nothing here shows its effect.
+                before
+                    .and_then(|before| {
+                        let after = doc.get_heads();
+                        let changes = doc.diff(&before, &after);
+                        crate::resources::document_action_result(&*widget, doc, address, &changes)
+                    })
+                    .unwrap_or(serde_json::Value::Null)
+            });
+        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+            value,
+            ..tilo_actions::ActionOutput::default()
+        })
     } else if let Some(readers) =
         crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
     {
