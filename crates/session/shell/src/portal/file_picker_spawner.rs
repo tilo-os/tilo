@@ -108,6 +108,10 @@ pub struct FilePickerRequest {
     pub current_name: Option<String>,
     /// File-type filters the app offered. Empty means "any file".
     pub filters: Vec<PickerFilter>,
+    /// Where the dialog starts and how far it may roam, when the compositor
+    /// decided it ahead of time (the shell's own chooser service keeps it to
+    /// the caller's grants). `None` is the user's own directories.
+    pub scope: Option<super::PickerScope>,
     /// One-shot reply channel; the spawner fulfils this with the user's selection.
     pub reply: oneshot::Sender<Option<Vec<PathBuf>>>,
 }
@@ -169,6 +173,7 @@ impl FilePickerSpawnerHandle {
             accept_label: opts.accept_label,
             current_name: opts.current_name,
             filters: opts.filters,
+            scope: None,
             reply: tx,
         };
         self.inner.spawn(req);
@@ -400,6 +405,7 @@ mod tests {
                 accept_label: None,
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Choose folder");
@@ -416,6 +422,7 @@ mod tests {
                 accept_label: Some("Import".into()),
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Import");
@@ -432,6 +439,7 @@ mod tests {
                 accept_label: Some("   ".into()),
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply: tx,
             };
             assert_eq!(req.confirm_label(), "Save");

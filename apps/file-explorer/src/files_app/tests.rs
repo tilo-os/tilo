@@ -11,6 +11,8 @@ mod open_with_tests {
         calls: Vec<(String, Option<PathBuf>)>,
         /// Paths handed to the system default handler (non-document opens).
         opened: Vec<PathBuf>,
+        /// How the desktop answers them; `None` opens.
+        refusal: Option<String>,
     }
     impl CommandRunner for RecRunner {
         fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
@@ -22,9 +24,14 @@ mod open_with_tests {
                 .push((program.to_string(), Some(arg.to_path_buf())));
             Ok(())
         }
-        fn open_default(&mut self, path: &Path) -> std::io::Result<()> {
+        fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
             self.opened.push(path.to_path_buf());
-            Ok(())
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(match self.refusal.clone() {
+                Some(reason) => ui::portal::LaunchOutcome::Failed(reason),
+                None => ui::portal::LaunchOutcome::Opened,
+            });
+            rx
         }
     }
 
@@ -158,7 +165,25 @@ mod open_with_tests {
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
             assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
+            assert_eq!(
+                w.status, None,
+                "{f}: an open the desktop took reports nothing"
+            );
         }
+
+        // A desktop that refuses (the shell has no app for it, or the file
+        // was never granted) is shown, not swallowed.
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("thing.zzz")];
+        let mut runner = RecRunner {
+            refusal: Some("No installed app opens .zzz files".into()),
+            ..RecRunner::default()
+        };
+        assert!(w.open_entry(0, &mut runner).unwrap());
+        assert_eq!(
+            w.status.as_deref(),
+            Some("No installed app opens .zzz files")
+        );
     }
 
     pub(super) fn context_menu_opens_with_selection_aware_items() {
@@ -1674,6 +1699,19 @@ mod command_path_tests {
         ] {
             assert!(handlers.contains(&handler), "missing handler {handler}");
         }
+        // One published operation without a handler refuses the app's whole
+        // surface, and a directory search then finds none of its actions.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().to_path_buf());
+        let resources = ui::resources::resources(&files, &automerge::AutoCommit::new());
+        let violations = ui::tilo_actions::validate_surface(
+            &resources,
+            &ui::tilo_actions::ActionRegistry::new(),
+            &Widget::resource_operation_handlers(&files),
+        );
+        assert!(violations.is_empty(), "{violations:?}");
     }
 
     /// An agent sorts a downloads folder with typed actions only: `go-to` an

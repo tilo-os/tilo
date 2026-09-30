@@ -183,6 +183,51 @@ WantedBy=multi-user.target
 EOF
 ln -s "../$UNIT" "$etc/systemd/system/multi-user.target.wants/$UNIT"
 
+# A boot can reach the serial login while greetd and validation SSH are both
+# unavailable. Record bounded service state on the VM serial line in that case.
+# This exists only in the gate's disk overlay, never in the release image.
+cat > "$etc/tilo-validation-diagnostics.sh" <<'EOF'
+#!/usr/bin/bash
+sleep 45
+for phase in early late; do
+  report="$(
+    echo "TILO_VALIDATION_DIAGNOSTICS $phase"
+    systemctl is-system-running --no-pager || true
+    systemctl list-jobs --no-pager || true
+    systemctl --failed --no-pager || true
+    systemctl status greetd.service tilo-validation-ssh.service \
+      tilo-firstboot-user.service tilo-installer-setup.service \
+      tilo-device-key-init.service --no-pager --lines=8 || true
+    journalctl -b -u greetd.service -u tilo-validation-ssh.service \
+      -u tilo-firstboot-user.service -u tilo-installer-setup.service \
+      --no-pager -n 60 || true
+    echo "TILO_VALIDATION_DIAGNOSTICS_END $phase"
+  )"
+  for serial in /dev/ttyS0 /dev/ttyAMA0; do
+    if [ -c "$serial" ] && grep -q "^${serial##*/} " /proc/consoles; then
+      printf '%s\n' "$report" | tail -n 160 > "$serial" || true
+    fi
+  done
+  [ "$phase" = late ] || sleep 135
+done
+EOF
+chmod 0644 "$etc/tilo-validation-diagnostics.sh"
+cat > "$etc/systemd/system/tilo-validation-diagnostics.service" <<'EOF'
+# Serial diagnostics for this gate's private installed disk copy only.
+[Unit]
+Description=Release boot gate diagnostics on the VM serial line
+After=basic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bash /etc/tilo-validation-diagnostics.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ln -s ../tilo-validation-diagnostics.service \
+  "$etc/systemd/system/multi-user.target.wants/tilo-validation-diagnostics.service"
+
 (cd "$etc" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort | while read -r f; do
   if [ -L "$f" ]; then
     printf 'etc/%s -> %s\n' "$f" "$(readlink "$f")"

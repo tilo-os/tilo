@@ -193,11 +193,16 @@ if [ -z "$rpms_ref" ]; then
   rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
 fi
 
+# The Fedora bootc base the dev binaries compile on, as the production builder's.
+dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
+[ -n "$dev_compile_base" ] || die "os/base-snapshot.env pins no BASE_REF"
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
   --build-arg "RPMS_REF=$rpms_ref" \
+  --build-arg "BASE_REF=$dev_compile_base" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \

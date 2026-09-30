@@ -25,6 +25,7 @@
 //! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime ([`confined`]) | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
 //! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
+//! | Tilo session without a portal ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the target's |
 //!
 //! [`availability`] says which [`Feature`]s the target has.
 
@@ -33,6 +34,8 @@ use std::sync::{Arc, OnceLock};
 mod caps;
 pub mod conformance;
 pub mod portal;
+#[cfg(unix)]
+pub mod shell;
 #[cfg(not(target_arch = "wasm32"))]
 mod unattended;
 pub mod web_policy;
@@ -128,6 +131,22 @@ pub fn unattended_picker(
 ) -> Option<Arc<dyn FilePicker>> {
     unattended::SaveDirectoryPicker::new(directory, system)
         .map(|picker| Arc::new(picker) as Arc<dyn FilePicker>)
+}
+
+/// The session shell's own choosers ([`shell`]) when the launcher handed this
+/// process a connection to them, with `unattended` answering the ones nobody
+/// is at the computer for; `None` otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn inherited_shell_picker(
+    unattended: Option<Arc<dyn FilePicker>>,
+) -> Option<Arc<dyn FilePicker>> {
+    #[cfg(unix)]
+    return shell::inherited_picker(unattended);
+    #[cfg(not(unix))]
+    {
+        drop(unattended);
+        None
+    }
 }
 
 /// This target's file choosers.
