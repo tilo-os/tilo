@@ -14949,6 +14949,8 @@ dependencies = [
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
+ "automerge",
+ "blake3",
  "bytes",
  "channel-crypto",
  "collab-types",
@@ -14971,6 +14973,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "thiserror 2.0.18",
+ "tilo-automerge",
  "tilo-clock",
  "tilo-moq",
  "tilo-net",
