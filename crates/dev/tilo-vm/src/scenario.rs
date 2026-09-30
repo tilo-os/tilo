@@ -395,7 +395,7 @@ mod tests {
                 .unwrap()
                 .set_len(64 * 1024 * 1024 + 1)
                 .unwrap();
-            assert_eq!(scrub(dir.path(), &[]).unwrap(), [path.clone()]);
+            assert_eq!(scrub(dir.path(), &[]).unwrap(), std::slice::from_ref(&path));
             assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
         }
     }
