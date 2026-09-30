@@ -4479,9 +4479,35 @@ mod tests {
             );
         }
 
+        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
+        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        fn super_f_on_a_tilo_group_covers_the_wheel() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+            let during = fb.widget_registry();
+            let row = rect_named(&during, "GroupRow");
+            assert!(
+                row.width() >= fb.viewport().0 - 1.0,
+                "Super+F must cover the wheel; row width {} vs output {}",
+                row.width(),
+                fb.viewport().0,
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() <= 0.5,
+                "Super+F hides the top bar"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
+        super_f_on_a_tilo_group_covers_the_wheel();
     }
 
     /// Look up a widget's rect by its *last* path segment
