@@ -4671,17 +4671,12 @@ mod tests {
         };
         let groups_before = {
             let chrome = fb.chrome();
-            chrome
-                .tree()
-                .desktop
-                .active_workspace()
-                .map(|ws| {
-                    ws.strips
-                        .iter()
-                        .map(|s| s.window_groups.len())
-                        .sum::<usize>()
-                })
-                .unwrap_or(0)
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
         };
         let tabs_before = {
             let chrome = fb.chrome();
@@ -4695,8 +4690,7 @@ mod tests {
                         .flat_map(|s| s.window_groups.iter())
                         .find(|candidate| candidate.id == group)
                 })
-                .map(|g| g.tabs.len())
-                .unwrap_or(0)
+                .map_or(0, |g| g.tabs.len())
         };
         let mut doc = AutoCommit::new();
         let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
@@ -4722,17 +4716,12 @@ mod tests {
         );
         let groups_after = {
             let chrome = fb.chrome();
-            chrome
-                .tree()
-                .desktop
-                .active_workspace()
-                .map(|ws| {
-                    ws.strips
-                        .iter()
-                        .map(|s| s.window_groups.len())
-                        .sum::<usize>()
-                })
-                .unwrap_or(0)
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
         };
         let tabs_after = {
             let chrome = fb.chrome();
@@ -4746,8 +4735,7 @@ mod tests {
                         .flat_map(|s| s.window_groups.iter())
                         .find(|candidate| candidate.id == group)
                 })
-                .map(|g| g.tabs.len())
-                .unwrap_or(0)
+                .map_or(0, |g| g.tabs.len())
         };
         assert_eq!(
             groups_after,
