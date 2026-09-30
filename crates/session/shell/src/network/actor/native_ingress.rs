@@ -228,16 +228,19 @@ impl ActorState {
             continuity,
         ));
         let session = Arc::new(session);
+        let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let pump = spawn_host_pump(
             ws,
             host,
             session.clone(),
+            Arc::clone(&replaying),
             self.internal_tx.clone(),
             Some(scope.clone()),
         );
         self.host_sessions.insert(
             (ws, host),
             HostRuntime {
+                replaying,
                 actions: None,
                 governor: None,
                 session,

@@ -2306,6 +2306,9 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Synthetic touchpad gestures go through the tracker the DRM runtime
+    /// feeds from libinput, so they mean exactly what the fingers would.
+    gestures: crate::compositor::backend::drm::gestures::GestureTracker,
     /// Attached input devices and the last kind of input used, from the
     /// backend or from injected test-control input alike. The shell chrome's
     /// shortcut help follows it.
@@ -2328,6 +2331,7 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
             agents: crate::compositor::agent_seats::AgentSeats::new(),
@@ -2361,7 +2365,8 @@ impl TestControlCtx {
             PlannedAction::CursorMoved { .. }
             | PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
-            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            | PlannedAction::MouseWheel { .. }
+            | PlannedAction::Touchpad(_) => self.input.note_used(ui::InputModality::Pointer),
             _ => false,
         };
         if changed {
@@ -3026,6 +3031,11 @@ fn execute_planned_action(
             x,
             y,
         } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
+        PlannedAction::Touchpad(edge) => {
+            if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
+                apply_shell_gesture(fb, gesture);
+            }
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -3136,6 +3146,7 @@ fn execute_locked_action(
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
         | PlannedAction::Touch { .. }
+        | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -3705,6 +3716,9 @@ fn dispatch_control_command(
                 })),
                 Vec::new(),
             )
+        }
+        test_control::Command::ProvisionTestIdentity => {
+            (crate::compositor::dev_test_identity::respond(), Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
@@ -12424,6 +12438,55 @@ mod tests {
                  {initial_count}"
             );
         }
+        // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
+        // The same tracker as libinput's path decides what the fingers meant.
+        {
+            use crate::shell::test_control::TouchpadEdge;
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let mut run = |fb: &mut FrameBuilder, edges: &[TouchpadEdge]| {
+                for edge in edges {
+                    execute_planned_action(&PlannedAction::Touchpad(*edge), fb, &mut ctx);
+                }
+            };
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 0.7 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "pinching in opens the overview"
+            );
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 1.4 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(!fb.chrome().overlays.overview, "pinching out closes it");
+
+            let first = fb.chrome().tree().desktop.active;
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::SwipeBegin { fingers: 4 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeEnd { cancelled: false },
+                ],
+            );
+            assert_ne!(
+                fb.chrome().tree().desktop.active,
+                first,
+                "a four-finger downward swipe switches workspace"
+            );
+        }
         // Phase `set_modifiers_action_updates_ctx_mask`.
         // `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
         // snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
@@ -13334,6 +13397,32 @@ fn reconcile_surface_output_memberships(
     send_surface_output_changes(state, output_globals, changes);
 }
 
+/// What one synthetic touchpad edge means to `tracker`, as the DRM
+/// runtime asks it of every libinput gesture event.
+fn feed_touchpad_edge(
+    tracker: &mut crate::compositor::backend::drm::gestures::GestureTracker,
+    edge: crate::shell::test_control::TouchpadEdge,
+) -> Option<crate::compositor::backend::drm::gestures::GestureAction> {
+    use crate::shell::test_control::TouchpadEdge;
+    match edge {
+        TouchpadEdge::SwipeBegin { fingers } => {
+            tracker.swipe_begin(fingers);
+            None
+        }
+        TouchpadEdge::SwipeUpdate { dx, dy } => tracker.swipe_update(dx, dy),
+        TouchpadEdge::SwipeEnd { cancelled } => tracker.swipe_end_with_cancel(cancelled),
+        TouchpadEdge::PinchBegin { fingers } => {
+            tracker.pinch_begin(fingers);
+            None
+        }
+        TouchpadEdge::PinchUpdate { scale } => tracker.pinch_update(scale),
+        TouchpadEdge::PinchEnd => {
+            tracker.pinch_end();
+            None
+        }
+    }
+}
+
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
 /// way to ask for something the shell already does, not a parallel model.
 fn apply_shell_gesture(
@@ -13357,6 +13446,9 @@ fn apply_shell_gesture(
         _ => {}
     }
     frame_builder.with_chrome(|st| match action {
+        GestureAction::SwitchStrip(dir) => {
+            st.switch_strip(dir);
+        }
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
@@ -13772,15 +13864,42 @@ mod gesture_wireup_tests {
                 st.add_workspace("second");
             });
             let before = fb.chrome().tree().desktop.active;
-            // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
+            // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
             apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
-                "a three-finger swipe must move the active workspace, not just resolve to an intent"
+                "a four-finger swipe must move the active workspace, not just resolve to an intent"
             );
         }
-        // Phase `a_four_finger_swipe_opens_and_closes_the_overview`.
+        // Phase `a_three_finger_vertical_swipe_focuses_the_neighbouring_strip`.
+        {
+            let mut fb = builder();
+            fb.with_chrome(|st| {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                ws.strips.push(crate::shell::state::Strip::new(
+                    crate::shell::state::StripId(9_000),
+                    "Below".to_owned(),
+                ));
+                drop(tree);
+                st.bump();
+            });
+            let workspace = fb.chrome().tree().desktop.active;
+            let (_, focused) = fb.chrome().strip_focus();
+            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            assert_eq!(
+                fb.chrome().strip_focus().1,
+                focused + 1,
+                "a three-finger swipe down must focus the strip below, as Super+↓ does"
+            );
+            assert_eq!(
+                fb.chrome().tree().desktop.active,
+                workspace,
+                "a strip switch stays on the workspace"
+            );
+        }
+        // Phase `a_pinch_opens_and_closes_the_overview`.
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);

@@ -936,11 +936,27 @@ impl ButtonLabel<'_> {
                 );
             }
             (icon, _) => {
-                let (text_width, text_height) =
-                    ctx.text
-                        .measure_style(self.text, self.wrap_width, &self.style);
                 let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
                 let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                // A single-line label wider than its face is elided, never
+                // painted across the edge; the inset keeps it off the edge.
+                // A face too small for any text keeps the ellipsis, so a
+                // labelled control never reads as icon-only.
+                let elided;
+                let label = if self.wrap_width.is_none() {
+                    let inset = f64::from(ctx.theme.tokens.spacing.s2);
+                    let room = rect.width() - 2.0 * inset - icon_w - gap;
+                    elided = ctx.text.elide_to_width_style(
+                        self.text,
+                        px_f32(room.max(1.0)),
+                        &self.style,
+                    );
+                    elided.as_str()
+                } else {
+                    self.text
+                };
+                let (text_width, text_height) =
+                    ctx.text.measure_style(label, self.wrap_width, &self.style);
                 let cluster_w = icon_w + gap + f64::from(text_width);
                 let start_x = rect.center().x - cluster_w / 2.0;
                 if let Some(icon) = icon {
@@ -957,7 +973,7 @@ impl ButtonLabel<'_> {
                 let text_x = start_x + icon_w + gap;
                 let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
                 ctx.text(
-                    self.text,
+                    label,
                     &self.style,
                     fg,
                     Point::new(text_x, text_y),
@@ -3095,9 +3111,42 @@ mod tests {
             );
         }
 
+        /// A fixed face narrower than its label (a long German label in a
+        /// half-width footer button) elides inside the face instead of
+        /// painting across both edges.
+        fn a_label_wider_than_its_face_stays_inside_it() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let rect = Rect::new(100.0, 0.0, 220.0, 40.0);
+            let label = "Standard wiederherstellen";
+            let (natural, _) = text.measure(label, 14.0, None);
+            assert!(
+                f64::from(natural) > rect.width(),
+                "the fixture must overflow"
+            );
+            let mut scene = Scene::new();
+            Button::paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ButtonFace::new(rect, label).text_size(14.0),
+            );
+            let origins = glyph_origins(&scene);
+            assert!(!origins.is_empty(), "the elided label still paints");
+            let inset = f64::from(theme.tokens.spacing.s2);
+            for [x, _] in origins {
+                assert!(
+                    f64::from(x) >= rect.x0 + inset,
+                    "label starts inside the face: {x}"
+                );
+            }
+        }
+
         button_face_builder_sets_style_and_state();
         icon_only_face_spoken_name_falls_back_to_accessible_name();
         paint_emits_fill_and_label_geometry();
+        a_label_wider_than_its_face_stays_inside_it();
         icon_only_face_paints_no_label_under_the_pseudo_locale();
         icon_only_button_speaks_its_tooltip_under_the_pseudo_locale();
     }

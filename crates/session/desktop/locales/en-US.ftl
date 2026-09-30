@@ -691,6 +691,8 @@ workspace-settings-apps-intro-detail = The workspace supplies a baseline; each p
 workspace-settings-apps-header = DEFAULT APPLICATIONS
 workspace-settings-workspace-choice = Workspace choice
 workspace-settings-your-choice = Your choice
+workspace-settings-resource-extension = .{ $ext } files
+workspace-settings-resource-scheme = { $scheme }: links
 workspace-settings-follow-personal = Follow personal defaults
 workspace-settings-use-workspace-choice = Use workspace choice
 workspace-settings-use-personal-default = Use my personal default
@@ -716,10 +718,7 @@ workspace-settings-who-agent = Who · AGENT (only this surface; no ambient works
 workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
 workspace-settings-what-it-allows = What it allows
 workspace-settings-grant-header = GRANT A PERMISSION
-workspace-settings-saved-roles = { $count ->
-    [one] 1 SAVED ROLE · MANAGE
-   *[other] { $count } SAVED ROLES · MANAGE
-}
+workspace-settings-saved-roles = Manage roles ({ $count })
 workspace-settings-expiry-caption = Until
 workspace-settings-grant = Grant
 workspace-settings-role-sheet-title = Choose workspace access

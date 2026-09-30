@@ -434,6 +434,53 @@ fn capture_preserves_lineage_checkpoint_tail_and_filename_order() {
     assert_eq!(stamps, vec![10, 11, 12, 20, 21, 22, 30, 31, 40]);
 }
 
+/// A shell drops what a device published until it holds that device's
+/// certificate, so the lineage of a device's identity channel replays first,
+/// whatever its hash orders it among the other channels.
+#[test]
+fn capture_replays_certificate_lineages_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let edits = raw_generation(&store, 0, 0x0a);
+    fs::write(edits.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
+    fs::write(edits.join("1.delta"), frame(1, 8, 11)).unwrap();
+    let author = [0xff; 32];
+    let mut route = b"identity-hello\0".to_vec();
+    route.extend_from_slice(&author);
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode(author),
+        blake3::hash(&route).to_hex()
+    ));
+    let name = "00000000000000000000000000000000";
+    fs::create_dir_all(lineage.join(name)).unwrap();
+    fs::write(lineage.join("CURRENT"), name).unwrap();
+    fs::write(lineage.join(name).join("checkpoint.delta"), frame(2, 8, 50)).unwrap();
+    assert_eq!(
+        lineage_rank(&format!("{}-{}", hex::encode(author), hex::encode([9; 32]))),
+        "1"
+    );
+
+    let mut snapshot = snapshot(&store);
+    assert_eq!(prepare(&store, &mut snapshot).total_frames, 3);
+    let budget = ReplayBudget::new(DEFAULT_OUTPUT_BYTES);
+    let mut stamps = Vec::new();
+    loop {
+        let batch = store
+            .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+            .unwrap();
+        for frame in &batch.frames {
+            if let Envelope::Delta { authored_at_ns, .. } = frame {
+                stamps.push(*authored_at_ns);
+            }
+        }
+        if batch.eof {
+            break;
+        }
+    }
+    assert_eq!(stamps, vec![50, 10, 11]);
+}
+
 #[test]
 fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries() {
     let tmp = tempfile::tempdir().unwrap();

@@ -179,7 +179,6 @@ word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
@@ -198,10 +197,6 @@ path = "tests/held_memory.rs"
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.
-[[example]]
-name = "browser-peer-harness"
-test = true
-
 [[example]]
 name = "inspect-peer-archive"
 test = true

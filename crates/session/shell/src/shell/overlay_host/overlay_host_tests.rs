@@ -1008,7 +1008,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 }
 
 fn build_activity_harness() -> Harness {
-    let tree = WorkspaceTree::bootstrap_demo();
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    crate::shell::test_support::collaborator_renames_active_workspace(&mut tree);
     let workspace = tree.desktop.active.raw();
     let chrome = ChromeState::new(tree);
     chrome.borrow_mut().open_room_activity(None);

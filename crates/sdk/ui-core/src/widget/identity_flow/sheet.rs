@@ -803,7 +803,7 @@ pub(super) fn paint_qr(
         let inset = f64::from(theme.tokens.spacing.s3);
         paint_text(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            rect.inset(inset),
+            rect.inset(-inset),
             &format!("QR error: {err}"),
             Role::Error,
             Align::Center,

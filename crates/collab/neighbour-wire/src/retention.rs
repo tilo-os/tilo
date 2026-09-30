@@ -99,6 +99,16 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(ack.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // A device's certificate, sent through a host by a member no gossip
+        // neighbour can vouch for (a browser, a shell reachable only through
+        // the host). Receivers bind it to the host-authenticated author, and
+        // a device that joins later needs it before that member's edits, so
+        // the host keeps each device's latest one.
+        NeighbourMsg::IdentityHello { cert, .. } => {
+            let mut route = b"identity-hello\0".to_vec();
+            route.extend_from_slice(&cert.device_public_key);
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } => {
