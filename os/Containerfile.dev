@@ -306,25 +306,22 @@ ARG TILO_TARGET_IMGREF=
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-board-inputs,source=/tilo,target=/run/tilo-board \
-    set -eu; \
-    if [ "$TILO_HARDWARE_PROFILE" = generic ]; then exit 0; fi; \
-    set -- /usr/lib/modules/*/; \
-    [ "$#" = 1 ] || { echo "expected one kernel in the dev image, found $#" >&2; exit 1; }; \
-    kver="$(basename "$1")"; \
-    if [ "$TILO_HARDWARE_PROFILE" = lenovo-83ed ]; then \
-      dnf install -y --setopt=reposdir=/repo qcom-firmware; \
-    fi; \
-    python3 -B /run/tilo-board/os/dev/prepare-hardware-profile.py \
+    if [ "$TILO_HARDWARE_PROFILE" = generic ]; then exit 0; fi \
+    && set -- /usr/lib/modules/*/ \
+    && { [ "$#" = 1 ] || { echo "expected one kernel in the dev image, found $#" >&2; exit 1; }; } \
+    && kver="$(basename "$1")" \
+    && { [ "$TILO_HARDWARE_PROFILE" != lenovo-83ed ] || dnf install -y --setopt=reposdir=/repo qcom-firmware; } \
+    && python3 -B /run/tilo-board/os/dev/prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-board/os/hardware/profiles \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
-        --target-update-ref "$TILO_TARGET_IMGREF"; \
-    bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver"; \
-    dtb="$(python3 -c 'import json; print(json.load(open("/usr/lib/tilo/hardware-profile.json"))["devicetree"] or "")')"; \
-    if [ -n "$dtb" ]; then install -m 0644 "$dtb" "/usr/lib/modules/$kver/devicetree"; fi; \
-    rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
-    dnf clean all; \
-    rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf
+        --target-update-ref "$TILO_TARGET_IMGREF" \
+    && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
+    && dtb="$(python3 -c 'import json; print(json.load(open("/usr/lib/tilo/hardware-profile.json"))["devicetree"] or "")')" \
+    && { [ -z "$dtb" ] || install -m 0644 "$dtb" "/usr/lib/modules/$kver/devicetree"; } \
+    && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
+    && dnf clean all \
+    && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf
 
 # base.json for tilo-vmd's layer checks, the dev-only update policy and the
 # flavour marker; then proof that every piece above is really in place.
