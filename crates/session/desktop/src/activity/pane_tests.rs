@@ -169,6 +169,49 @@ mod tests {
         assert!(!entry.is_revertible());
     }
 
+    #[test]
+    fn one_person_is_one_colour_across_device_edits_and_receipts() {
+        let local = crate::activity::testing::LOCAL_USER;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let invocation = tilo_actions::InvocationId::new();
+        assert!(tree.append_workspace_effect_receipt(
+            tree.desktop.active,
+            invocation,
+            local,
+            tilo_actions::ActionContext::for_resource(
+                "Export",
+                "document:brief",
+                "document",
+                "Release brief",
+            ),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        if let Some(workspace) = tree.desktop.active_workspace_mut() {
+            workspace.name = "Board review".to_string();
+        }
+        tree.seed_doc_from_cache();
+
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let receipt_id = HistoryEntryId::from_bytes(*invocation.0.as_bytes());
+        let receipt = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.id == receipt_id)
+            .expect("the receipt is a row");
+        let edit = pane
+            .entries()
+            .iter()
+            .find(|entry| entry.id != receipt_id)
+            .expect("the device's own edit is a row");
+        assert!(
+            (receipt.author.avatar_hue - edit.author.avatar_hue).abs() < f32::EPSILON,
+            "{local}'s edit ({}) and receipt ({}) are drawn in one colour",
+            edit.author.avatar_hue,
+            receipt.author.avatar_hue,
+        );
+    }
+
     fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {
         let mut pane = native_pane();
         // Legacy timeline tests exercise the granular surface explicitly;
