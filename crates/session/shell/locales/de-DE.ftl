@@ -260,7 +260,6 @@ qs-volume = Lautstärke
 qs-brightness = Helligkeit
 qs-brightness-display = Helligkeit, { $display }
 qs-slider-a11y-description = Mit Pfeil links und rechts anpassen
-qs-network = Netzwerk
 qs-wired-network = Kabelnetzwerk
 qs-cable-unplugged = Kabel nicht angeschlossen
 qs-bluetooth = Bluetooth

@@ -333,7 +333,7 @@ impl QuickSettingsVpnPane {
                 scene,
                 transform,
                 glyph,
-                ui::icons::Icon::Shield,
+                ui::icons::Icon::LockKeyhole,
                 colors.text_dim,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
