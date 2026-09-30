@@ -8646,24 +8646,7 @@ pub fn run() {
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = {
-                    let mut tree = state.workspace_tree.write();
-                    crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                        &mut tree, surface_id,
-                    )
-                };
-                if let Some(toplevel) = state
-                    .xdg_shell_state
-                    .toplevel_surfaces()
-                    .iter()
-                    .find(|toplevel| {
-                        crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
-                    })
-                    .cloned()
-                {
-                    toplevel.send_close();
-                }
-                state.close_sheets_over(surface_id);
+                state.close_surface_on_request(surface_id);
             }
             let mut fullscreen_toggle = false;
             frame_builder.with_chrome(|chrome| {
