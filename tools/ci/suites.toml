@@ -389,10 +389,8 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
 
@@ -704,12 +702,6 @@ readers = [
   "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
   "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",
 ]
-
-[[cargo]]
-package = "tilo-moq"
-# The voice test checks the browser's voice profile against the native one.
-inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
-readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
 
 [[cargo]]
 package = "tilo-device-host"
@@ -1164,10 +1156,6 @@ reason = "manual smoke test across two hosts on a LAN"
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"
