@@ -24,7 +24,11 @@ done
   || die 'package base must be a public HTTPS generic-package URL'
 test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
 
-version="${SOURCE_REVISION:0:12}-${DISK_TOOLING_REVISION:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}"
+# DISK_VARIANT (optional) tells apart disks one run publishes for the same
+# architecture, such as one per board.
+variant="${DISK_VARIANT:-}"
+[[ -z $variant || $variant =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die 'DISK_VARIANT must be lowercase letters, digits and dashes'
+version="${SOURCE_REVISION:0:12}-${DISK_TOOLING_REVISION:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARCH}${variant:+-$variant}"
 package="${TILO_PACKAGE_PUBLIC_BASE_URL%/}/tilo-vm-disk-candidate/$version"
 out=$(mktemp -d "${RUNNER_TEMP:-/var/tmp}/tilo-vm-disk-candidate.XXXXXX")
 trap 'rm -rf -- "$out"' EXIT
