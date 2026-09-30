@@ -698,30 +698,10 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
-package = "tilo-cloud-host"
-# Owner-commit fixtures are a shared contract with tilo-peer-state.
-inputs = ["crates/collab/tilo-peer-state/src/owner_commit/fixtures/"]
-readers = [
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",
-]
-
-[[cargo]]
 package = "tilo-moq"
 # The voice test checks the browser's voice profile against the native one.
 inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
 readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
-
-[[cargo]]
-package = "tilo-device-host"
-# The ignored regeneration test rewrites tilo-relay's checked-in fixture.
-inputs = ["crates/hosting/tilo-relay/tests/fixtures/shell-selection/"]
-readers = ["crates/hosting/tilo-device-host/tests/publication.rs"]
-
-[[cargo]]
-package = "tilo-workspace-host"
-inputs = ["apps/settings/shots/settings.png"]
-readers = ["crates/hosting/tilo-workspace-host/src/action_host/scoped_fixture/notes.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"

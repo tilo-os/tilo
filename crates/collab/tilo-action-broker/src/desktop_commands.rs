@@ -1,7 +1,7 @@
 //! Native semantic service consuming the ordinary durable invocation stream.
 use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
-    PublishedSurface, enrolled_invocation,
+    PublishedSurface,
 };
 use tilo_peer_state::desktop_command::{
     self as command, DesktopCommandError, DesktopCommandId, DesktopCommandIdOf as _,
@@ -105,10 +105,6 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered admission, owner commit and receipt path for a desktop command"
-    )]
     async fn execute_desktop_command(
         &self,
         peer_id: u64,
@@ -128,49 +124,20 @@ impl CapnpBrokerState {
             .cloned()
             .ok_or_else(|| Rejected("desktop invocation is no longer admitted".into()))?;
         // Only authority retained by ordinary admission counts: the opaque
-        // certified evidence of a network caller, or the live enrolled task
-        // dispatch of an agent. Actor strings or certificates in arguments are
-        // never read. The owner rechecks the caller's current rights.
+        // certified evidence of a network caller. Actor strings or
+        // certificates in arguments are never read. The owner rechecks the
+        // caller's current rights.
         let key = staged
             .journal_key
             .as_ref()
             .ok_or_else(|| Rejected("desktop invocation has no durable admission".into()))?;
-        let (caller, owner, opener) = match (
-            staged.network_evidence.as_ref(),
-            staged
-                .original
-                .as_ref()
-                .and_then(|original| original.enrolled_dispatch()),
-        ) {
-            (Some(evidence), _) => {
-                let current = self
-                    .verify_network_action_caller_with_policy_time(
-                        evidence,
-                        staged.policy_time.as_ref(),
-                    )
-                    .map_err(Rejected)?;
-                (evidence.certificate().clone(), current.owner(), None)
-            }
-            (None, Some(dispatch)) => {
-                let facts = dispatch.revalidate().map_err(Rejected)?;
-                (
-                    dispatch.caller().clone(),
-                    enrolled_invocation::enrolled_tool_owner(
-                        dispatch.caller(),
-                        dispatch.envelope(),
-                    ),
-                    Some(crate::services::DesktopOpener {
-                        agent: facts.binding.agent,
-                        task: dispatch.envelope().task_id.clone(),
-                    }),
-                )
-            }
-            (None, None) => {
-                return Err(Rejected(
-                    "desktop commands require certified or enrolled durable caller evidence".into(),
-                ));
-            }
-        };
+        let evidence = staged.network_evidence.as_ref().ok_or_else(|| {
+            Rejected("desktop commands require certified durable caller evidence".into())
+        })?;
+        let current = self
+            .verify_network_action_caller_with_policy_time(evidence, staged.policy_time.as_ref())
+            .map_err(Rejected)?;
+        let (caller, owner) = (evidence.certificate().clone(), current.owner());
         // The command id: the authenticated caller device and the durable
         // invocation. It identifies the result; it authorizes nothing.
         *id = Some(DesktopCommandId {
@@ -185,13 +152,6 @@ impl CapnpBrokerState {
                 || open_app.is_some() && envelope.action == OPEN_APP_ACTION)
         {
             return Err(Rejected("desktop invocation binding changed".into()));
-        }
-        // An agent task may only open applications, never rearrange the
-        // desktop through the raw layout command.
-        if opener.is_some() && open_app.is_none() {
-            return Err(Rejected(
-                "agent tasks may only open applications on the desktop".into(),
-            ));
         }
         let (command, direct_delivery) = if let Some(app) = open_app {
             if !open_app_argument_is_empty(envelope.argument.as_deref()) {
@@ -246,10 +206,7 @@ impl CapnpBrokerState {
                 command,
             },
         };
-        let receipt = match opener {
-            Some(opener) => service.execute_for_agent(request.clone(), opener).await?,
-            None => service.execute(request.clone(), direct_delivery).await?,
-        };
+        let receipt = service.execute(request.clone(), direct_delivery).await?;
         receipt.validate_for(&request).map_err(Uncertain)?;
         let id = DesktopCommandId::of(&request)
             .ok_or_else(|| Uncertain("desktop request lost its command id".into()))?;
@@ -290,8 +247,8 @@ fn open_app_argument_is_empty(argument: Option<&str>) -> bool {
 }
 
 /// Action id of the per-application open action.
-pub(crate) const OPEN_APP_ACTION: &str = tilo_agent_control_protocol::OPEN_APP_ACTION;
-const OPEN_APP_PREFIX: &str = tilo_agent_control_protocol::OPEN_APP_RESOURCE_PREFIX;
+pub(crate) const OPEN_APP_ACTION: &str = command::OPEN_APP_ACTION;
+const OPEN_APP_PREFIX: &str = command::OPEN_APP_RESOURCE_PREFIX;
 
 /// The application a `desktop:app:<id>` resource opens.
 pub(crate) fn open_app_resource(resource: &str) -> Option<&str> {
@@ -347,7 +304,7 @@ fn open_app_action(app: &str, title: &str) -> PublishedAction {
     PublishedAction {
         resource: format!("{OPEN_APP_PREFIX}{app}"),
         action: OPEN_APP_ACTION.into(),
-        resource_kind: tilo_agent_control_protocol::OPEN_APP_RESOURCE_KIND.into(),
+        resource_kind: command::OPEN_APP_RESOURCE_KIND.into(),
         resource_label: title.into(),
         action_label: format!("Open {title}"),
         description: Some(format!("Open {title} in a new window with a new document")),
