@@ -1238,6 +1238,25 @@ fn apply_handoff_stage_to_device(
 
 #[cfg(target_os = "linux")]
 fn find_tilo_root_partition(loop_dev: &str) -> Option<String> {
+    // `losetup -P` creates the partition nodes before udev has identified
+    // their filesystems. Giving up on the first empty probe embeds the
+    // handoff in slack the installed system never reads.
+    let _ = std::process::Command::new("blockdev")
+        .args(["--rereadpt", loop_dev])
+        .status();
+    for attempt in 0..8 {
+        if let Some(part) = linux_root_from_lsblk(loop_dev) {
+            return Some(part);
+        }
+        if attempt + 1 < 8 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_root_from_lsblk(loop_dev: &str) -> Option<String> {
     let output = std::process::Command::new("lsblk")
         .args(["-ln", "-o", "PATH,FSTYPE"])
         .arg(loop_dev)
