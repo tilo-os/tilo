@@ -3247,7 +3247,21 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -5474,6 +5488,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
@@ -9549,7 +9564,10 @@ pub fn run() {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animation_demand = frame_builder.animation_demand();
-        let animating = animation_demand.any();
+        // Host demand clears when the crossfade settles (e2e). Keep
+        // painting until this many compositor frames have actually run (W16).
+        let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
+        let animating = animation_demand.any() || transition_run;
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -9754,6 +9772,9 @@ pub fn run() {
         }
 
         if should_paint {
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
