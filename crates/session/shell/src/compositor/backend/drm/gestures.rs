@@ -7,18 +7,23 @@
 //! is a bug either way. [`claims`] is the single place that decides: 1–2 fingers are the app's,
 //! 3+ are the shell's, matching the convention every desktop trains users on.
 //!
-//! Each shell gesture maps onto an existing spatial-model interaction, with the same direction convention as its keyboard chord:
+//! Each shell gesture maps onto an existing spatial-model interaction, with the same direction
+//! convention as its keyboard chord. Three fingers work the plane you see and four go one level
+//! out to workspaces, the split Super and Ctrl+Super make on the keyboard
+//! (`docs/architecture/window-management.md`):
 //!
-//! | Gesture                  | Same as                    |
-//! |--------------------------|----------------------------|
-//! | 3-finger swipe up / down | Super+Page Up / Page Down — switch workspace |
-//! | 3-finger swipe left/right| Directly pan the active strip |
-//! | 4-finger swipe up / down | Super+Tab — open / close the overview |
-//! | 3+-finger pinch in / out | open / close the overview |
+//! | Gesture                   | Same as                                                   |
+//! |---------------------------|-----------------------------------------------------------|
+//! | 3-finger swipe left/right | directly pan the active strip                             |
+//! | 3-finger swipe up / down  | Super+↑ / ↓ — the strip above / below                     |
+//! | 4-finger swipe up / down  | Super+Page Up / Page Down — the previous / next workspace |
+//! | 4-finger swipe left/right | nothing, deliberately                                     |
+//! | 3+-finger pinch in / out  | Super+Tab — open / close the overview                     |
 //!
-//! Workspaces are the vertical axis, windows along a strip the horizontal one; inventing a
-//! third axis (a free 2-D pan) is exactly what the design rules out. `natural_scroll` inverts
-//! both, since it's the same finger-follows-content preference as regular scrolling.
+//! Windows along a strip are the horizontal axis; strips and, one level out, workspaces the
+//! vertical one. Inventing a third axis (a free 2-D pan) is exactly what the design rules out.
+//! `natural_scroll` inverts both, since it's the same finger-follows-content preference as
+//! regular scrolling.
 
 /// The finger count at which a gesture stops belonging to the focused client and becomes shell navigation.
 pub const SHELL_FINGER_THRESHOLD: u32 = 3;
@@ -37,6 +42,8 @@ pub const PINCH_OUT_SCALE: f64 = 1.25;
 /// What the shell should do about a gesture. Every variant maps onto an existing chrome operation; none is a new interaction.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GestureAction {
+    /// `chrome_state::switch_strip` — `-1` is the strip above, `+1` below.
+    SwitchStrip(i32),
     /// `chrome_state::switch_workspace` — `-1` is up the wheel, `+1` down.
     SwitchWorkspace(i32),
     /// Total signed direct-pan travel since gesture begin. Positive travel
@@ -209,19 +216,13 @@ pub fn swipe_action(
     };
     let (ax, ay) = (dx.abs(), dy.abs());
     let t = config.swipe_threshold;
-    // Vertical: workspaces (3 fingers) or the overview (4).
+    // Vertical: strips (3 fingers) or, one level out, workspaces (4).
     if ay >= t && ay >= ax * AXIS_DOMINANCE {
-        // Swiping up moves *up* the wheel, the same direction Super+Page Up goes (dy is negative when fingers move up).
+        // Swiping up goes to the strip above and up the wheel, as Super+↑ and Super+Page Up do (dy is negative when fingers move up).
         let dir = if dy < 0.0 { -1 } else { 1 };
         return Some(match fingers {
-            3 => GestureAction::SwitchWorkspace(dir),
-            _ => {
-                if dir < 0 {
-                    GestureAction::ShowOverview
-                } else {
-                    GestureAction::HideOverview
-                }
-            }
+            3 => GestureAction::SwitchStrip(dir),
+            _ => GestureAction::SwitchWorkspace(dir),
         });
     }
     None
@@ -299,27 +300,28 @@ mod tests {
 
     #[test]
     fn swipes_resolve_by_axis_threshold_and_finger_count() {
-        // Phase `a_three_finger_swipe_up_switches_workspace_the_same_way_the_chord_does`.
-        // Super+Page Up is `switch_workspace(-1)`. Swiping up must agree, or the two ways of doing the same thing disagree about which way is up.
+        // Phase `a_three_finger_swipe_up_focuses_the_strip_above_as_the_chord_does`.
+        // Super+↑ is `switch_strip(-1)`. Swiping up must agree, or the two ways of doing the same thing disagree about which way is up.
         assert_eq!(
             swipe_action(3, (0.0, -150.0), &cfg()),
-            Some(GestureAction::SwitchWorkspace(-1))
+            Some(GestureAction::SwitchStrip(-1))
         );
         assert_eq!(
             swipe_action(3, (0.0, 150.0), &cfg()),
-            Some(GestureAction::SwitchWorkspace(1))
+            Some(GestureAction::SwitchStrip(1))
         );
         // Phase `threshold_resolver_leaves_horizontal_motion_to_the_streaming_tracker`.
         assert_eq!(swipe_action(3, (-150.0, 0.0), &cfg()), None);
         assert_eq!(swipe_action(3, (150.0, 0.0), &cfg()), None);
-        // Phase `a_four_finger_swipe_opens_and_closes_the_overview`.
+        // Phase `a_four_finger_swipe_switches_workspace_the_same_way_the_chord_does`.
+        // Four fingers are one level out, as Ctrl+Super is: Super+Page Up is `switch_workspace(-1)`.
         assert_eq!(
             swipe_action(4, (0.0, -150.0), &cfg()),
-            Some(GestureAction::ShowOverview)
+            Some(GestureAction::SwitchWorkspace(-1))
         );
         assert_eq!(
             swipe_action(4, (0.0, 150.0), &cfg()),
-            Some(GestureAction::HideOverview)
+            Some(GestureAction::SwitchWorkspace(1))
         );
         // Phase `a_four_finger_horizontal_swipe_does_nothing`.
         // Deliberately unassigned: there's no third navigable axis in the spatial model, and inventing one is what the design rules out.
@@ -334,7 +336,7 @@ mod tests {
         // Clearly vertical now.
         assert_eq!(
             swipe_action(3, (60.0, -150.0), &cfg()),
-            Some(GestureAction::SwitchWorkspace(-1))
+            Some(GestureAction::SwitchStrip(-1))
         );
     }
 
@@ -390,11 +392,11 @@ mod tests {
         // Phase `natural_scroll_inverts_both_axes`.
         assert_eq!(
             swipe_action(3, (0.0, -150.0), &natural()),
-            Some(GestureAction::SwitchWorkspace(1))
+            Some(GestureAction::SwitchStrip(1))
         );
         assert_eq!(
             swipe_action(4, (0.0, 150.0), &natural()),
-            Some(GestureAction::ShowOverview)
+            Some(GestureAction::SwitchWorkspace(-1))
         );
         // Phase `changing_the_direction_preference_takes_effect_on_the_next_gesture`.
         {
@@ -402,14 +404,14 @@ mod tests {
             t.swipe_begin(3);
             assert_eq!(
                 t.swipe_update(0.0, -150.0),
-                Some(GestureAction::SwitchWorkspace(-1))
+                Some(GestureAction::SwitchStrip(-1))
             );
             t.swipe_end();
             t.set_config(natural());
             t.swipe_begin(3);
             assert_eq!(
                 t.swipe_update(0.0, -150.0),
-                Some(GestureAction::SwitchWorkspace(1))
+                Some(GestureAction::SwitchStrip(1))
             );
         }
     }
@@ -450,7 +452,7 @@ mod tests {
         {
             // The bug this guards: firing per update would switch a workspace for every millimetre of a long swipe.
             let mut t = GestureTracker::new(cfg());
-            t.swipe_begin(3);
+            t.swipe_begin(4);
             let mut fired = Vec::new();
             for _ in 0..20 {
                 if let Some(a) = t.swipe_update(0.0, -20.0) {
@@ -463,7 +465,7 @@ mod tests {
         {
             // Waiting for `end` makes the desktop feel a gesture behind.
             let mut t = GestureTracker::new(cfg());
-            t.swipe_begin(3);
+            t.swipe_begin(4);
             assert_eq!(t.swipe_update(0.0, -40.0), None, "still below threshold");
             assert_eq!(
                 t.swipe_update(0.0, -70.0),
@@ -474,10 +476,10 @@ mod tests {
         // Phase `a_second_gesture_after_the_first_fires_again`.
         {
             let mut t = GestureTracker::new(cfg());
-            t.swipe_begin(3);
+            t.swipe_begin(4);
             assert!(t.swipe_update(0.0, -150.0).is_some());
             t.swipe_end();
-            t.swipe_begin(3);
+            t.swipe_begin(4);
             assert_eq!(
                 t.swipe_update(0.0, -150.0),
                 Some(GestureAction::SwitchWorkspace(-1)),
