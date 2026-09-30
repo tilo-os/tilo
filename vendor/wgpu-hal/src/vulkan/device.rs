@@ -394,6 +394,26 @@ struct CompiledStage {
 }
 
 impl super::Device {
+    /// Tilo: from now on, answer every fence wait on this device with `DeviceError::Lost`, as
+    /// the driver does when the GPU is reset while work is in flight. Lets a caller exercise
+    /// its recovery through wgpu-core's own handling of a reset; nothing else sets the flag.
+    pub fn simulate_device_loss(&self) {
+        self.shared
+            .simulated_loss
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    fn check_simulated_loss(&self) -> Result<(), crate::DeviceError> {
+        if self
+            .shared
+            .simulated_loss
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(crate::DeviceError::Lost);
+        }
+        Ok(())
+    }
+
     /// # Safety
     ///
     /// - `vk_image` must be created respecting `desc`
@@ -2269,6 +2289,7 @@ impl crate::Device for super::Device {
         wait_value: crate::FenceValue,
         timeout: Option<Duration>,
     ) -> Result<bool, crate::DeviceError> {
+        self.check_simulated_loss()?;
         let timeout_ns = timeout
             .unwrap_or(Duration::MAX)
             .as_nanos()
