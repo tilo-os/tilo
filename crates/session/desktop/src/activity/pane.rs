@@ -2477,7 +2477,12 @@ impl RoomActivityPane {
             &self.named,
         );
         if self.history_index.entries().is_empty() {
-            let unseen = self.unseen_tree_rows(&digest_rows);
+            let theirs: HashSet<HistoryEntryId> = digest_rows.iter().map(|row| row.id).collect();
+            let unseen: Vec<HistoryEntry> = self
+                .unseen_tree_rows(&rows)
+                .into_iter()
+                .filter(|row| theirs.contains(&row.id))
+                .collect();
             self.passive_unread = unseen.len();
             self.passive_digest = ActivityDigest::from_entries_with_ranges(
                 &unseen,

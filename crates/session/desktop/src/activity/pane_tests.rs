@@ -377,6 +377,8 @@ mod tests {
             "the history a device arrives to is not news"
         );
 
+        let reader = tree.doc.get_actor().clone();
+        tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
         tree.grant_in_workspace(
             workspace,
             &user,
@@ -388,6 +390,7 @@ mod tests {
         )
         .expect("the owner may grant in their own room");
         tree.seed_doc_from_cache();
+        tree.doc.set_actor(reader);
         pane.refresh(&mut tree);
         let after_change = pane.glance_signal(workspace.raw()).1;
         assert!(after_change > 0, "a change after arriving is");
