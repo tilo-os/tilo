@@ -102,10 +102,12 @@ need "$model" 'ReadOnlyPaths=/var/lib/tilo/system-extensions /var/lib/tilo/local
 [ "$fail" -ne 0 ] || ok 'future local-model service is unprivileged and condition-gated'
 
 need "$user_model" 'ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo/services/models.sock' 'per-user model service does not publish the launcher service socket'
-need "$user_model" 'ProtectControlGroups=yes' 'per-user model manager is unconfined at the cgroup'
-need "$user_model" 'PrivateTmp=yes' 'per-user model manager shares the session tmp'
-if grep -Fqx 'ProtectSystem=strict' "$user_model"; then
-    bad 'per-user model manager still uses a mount namespace that exits 226/NAMESPACE'
+need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the immutable root'
+need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
+need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
+need "$repo/os/dev-image/usr/lib/systemd/user/tilo-models.service.d/10-nested-user-namespace.conf" 'ProtectSystem=' 'nested-session drop-in does not unset ProtectSystem for the model manager'
+if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/usr" >/dev/null; then
+    bad 'nested-session drop-in leaked into the production image'
 fi
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
 need "$user_model" 'StateDirectory=tilo containers' 'model manager does not provision its persistent roots without a helper process'

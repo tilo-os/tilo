@@ -16,11 +16,16 @@ RestartSec=1s
 TimeoutStopSec=15s
 
 # Recipient mounts require `fusermount3`'s privilege transition in supervised
-# children, so NoNewPrivileges must remain off. A nested user session cannot
-# remount /dev/mqueue; ProtectSystem/ProtectHome/ProtectKernel* exit 226
-# before the binary starts, which is why #1927's idle wrap never ran.
+# children, so NoNewPrivileges must remain off. Other kernel-facing surfaces
+# stay restricted.
 PrivateTmp=yes
 PrivateIPC=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
