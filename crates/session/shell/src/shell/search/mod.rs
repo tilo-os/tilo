@@ -1123,7 +1123,7 @@ impl SearchRegistry {
             && args.wanted_kinds.is_empty()
             && args.scope != SearchScope::ActiveApp
         {
-            return jump_back_in(self.query(args));
+            return jump_back_in(&self.query(args));
         }
         system::group(self.query(args), row_budget)
     }
@@ -1140,7 +1140,7 @@ const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
 /// few ways in. It is never the full inventory, and never offers a row that
 /// changes something: close, move and revoke need their verb typed. Agents
 /// still enumerate everything through [`SearchRegistry::query_exhaustive`].
-fn jump_back_in(rows: Vec<SearchResult>) -> Vec<KindGroup> {
+fn jump_back_in(rows: &[SearchResult]) -> Vec<KindGroup> {
     let windows = rows
         .iter()
         .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))

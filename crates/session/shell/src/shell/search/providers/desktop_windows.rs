@@ -661,10 +661,10 @@ mod tests {
     struct LinuxApps;
 
     impl crate::shell::search::SearchProvider for LinuxApps {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "host-apps"
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Linux apps"
         }
         fn resource_kinds(&self) -> &[ResourceKind] {
