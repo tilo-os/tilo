@@ -3121,12 +3121,6 @@ jobs:
             --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
           sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
 
-      - name: Set up buildx
-        id: buildx
-        uses: ./.forgejo/actions/setup-buildx
-        with:
-          driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
-
       # Built while the aarch64 lane still runs; the disk install below finds
       # it matching its pinned sources and reuses it.
       - name: Build the Rockchip loader
@@ -3148,36 +3142,25 @@ jobs:
           echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
           echo "::notice::waited $(( $(date +%s) - started ))s for $base ($digest)"
 
-      # The first build seals an all-zero placeholder digest. It goes to an
-      # immutable candidate tag only so the disk install below can pull it
-      # with the dev image's layers it shares.
+      # Built with Podman straight into the store the disk install reads, so
+      # the image crosses the network once. The first build seals an all-zero
+      # placeholder digest; the install below closes the seal.
       - name: Build the board dev image
         env:
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           SERIES: ${{ steps.series.outputs.series }}
         run: |
           set -euo pipefail
           started=$(date +%s)
-          candidate="registry.tilo.so/tilo/tilo-vm:build-candidate-${GITHUB_SHA:0:12}-$BOARD-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          metadata="$(mktemp "${RUNNER_TEMP:?}/tilo-board-build.XXXXXX")"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+          podman build --security-opt label=disable --pull=missing \
             -f os/Containerfile.board \
             --build-arg "BASE_IMAGE=$BOARD_BASE" \
             --build-arg "RPMS_REF=$RPMS_REF" \
             --build-arg "TILO_HARDWARE_PROFILE=$BOARD" \
             --build-arg "TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:$BOARD-dev" \
             --label "org.opencontainers.image.version=$SERIES-$BOARD" \
-            --metadata-file "$metadata" \
-            --output "type=image,name=$candidate,push=true,compression=zstd,compression-level=1" \
-            .
-          digest="$(jq -er '."containerimage.digest"' "$metadata")"
-          podman pull "registry.tilo.so/tilo/tilo-vm@$digest"
-          podman tag "registry.tilo.so/tilo/tilo-vm@$digest" "$BOARD_IMAGE"
-          # The disk install below needs the scratch space this builder holds
-          # (run 53356 ran out of it with the Lenovo image).
-          docker buildx prune --builder "$BUILDER_NAME" --all --force >/dev/null
+            -t "$BOARD_IMAGE" .
           df -h "${RUNNER_TEMP:?}" /var/tmp
-          echo "::notice::$BOARD dev image built in $(( $(date +%s) - started ))s: $candidate ($digest)"
+          echo "::notice::$BOARD dev image built in $(( $(date +%s) - started ))s"
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
       # does; its install refuses the placeholder with the digest it wants, and
