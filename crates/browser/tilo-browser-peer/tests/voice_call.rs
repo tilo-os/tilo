@@ -22,6 +22,9 @@
 
 mod support;
 
+// This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
+tilo_automerge_isolate::test_worker!();
+
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
