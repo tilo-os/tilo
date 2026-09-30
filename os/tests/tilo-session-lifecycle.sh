@@ -69,6 +69,24 @@ for policy in \
   'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
   grep -Fqx "$policy" "$recipient_unit"
 done
+# Host units keep the mount-namespace sandbox. A tilo-vm slot cannot remount
+# /dev/mqueue; that path is a drop-in shipped only in os/dev-image.
+dropin_root="$repo/os/dev-image/usr/lib/systemd/user"
+for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+  grep -Fqx 'ProtectSystem=strict' "$repo/os/usr/lib/systemd/user/$unit"
+  dropin="$dropin_root/$unit.d/10-nested-user-namespace.conf"
+  test -f "$dropin" || {
+    echo "missing nested-session drop-in for $unit" >&2
+    exit 1
+  }
+  for unset in ProtectSystem= ProtectHome= ProtectKernelTunables= ProtectKernelModules= ProtectKernelLogs=; do
+    grep -Fqx "$unset" "$dropin"
+  done
+done
+if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/Containerfile" "$repo/os/usr" >/dev/null; then
+  echo 'nested-session drop-in leaked into the production image' >&2
+  exit 1
+fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
