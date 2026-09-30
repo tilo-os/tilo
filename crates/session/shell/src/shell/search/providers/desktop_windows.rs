@@ -825,5 +825,6 @@ mod tests {
             window_row_tile(&tree.desktop, "no-such-row").is_none(),
             "an unknown address has no face"
         );
+        drop(tree);
     }
 }
