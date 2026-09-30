@@ -442,6 +442,29 @@ fn live_unconfined_launch_pids(package_id: &str) -> Vec<u32> {
         .collect()
 }
 
+/// Desktop ids of unconfined launches that still have a live supervisor.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn live_unconfined_package_ids() -> Vec<String> {
+    let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+        return Vec::new();
+    };
+    map.retain(|pid, launch| proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time));
+    let mut ids: Vec<String> = map
+        .iter()
+        .filter(|(_, launch)| !launch.confined)
+        .map(|(_, launch)| launch.package_id.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Whether `package_id` is a live unconfined launch, not merely a window class.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn unconfined_launch_is_live(package_id: &str) -> bool {
+    !live_unconfined_launch_pids(package_id).is_empty()
+}
+
 /// Same unit name `tilo-launcher` uses for `app-tilo-<id>-<pid>.scope`.
 #[cfg(any(test, target_os = "linux"))]
 fn host_scope_unit(desktop_id: &str, pid: u32) -> Option<String> {
@@ -5218,6 +5241,28 @@ mod tests {
             .expect("close the last Wine File window");
         tilo_test_env::wait_until(
             "Wine File's host process tree exits after its last window closes",
+            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn closing_a_wineboot_window_stops_the_winefile_launch() {
+        // A07's VM close is group.close. Wine File's tab announces
+        // wineboot.exe, not the desktop id the launch table uses.
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
+            1,
+            "wineboot.exe",
+            501,
+        )]));
+        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
+            .expect("close the last Wine File window");
+        tilo_test_env::wait_until(
+            "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
     }

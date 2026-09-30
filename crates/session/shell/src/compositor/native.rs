@@ -9614,7 +9614,7 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due,
+            apps: apps_changed || widget_deadline_due || foreign::frame_callbacks_waiting(&state),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
