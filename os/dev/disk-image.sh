@@ -24,8 +24,11 @@
 #                            install without first importing IMAGE locally
 #     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
 #                            create the account on first boot, never in this step
-#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
-#                            instead of the image's /usr/bin/bootc
+#     --bootc-helper FILE     execute this bootc (an ELF for this host's
+#                            architecture) instead of the image's /usr/bin/bootc
+#     --reseal-uki            with a helper built from Containerfile.bootc-helper:
+#                            let install rewrite a stale composefs= seal to
+#                            its own digest and print it (bootc#2334)
 #     --offline-target-dir DIR
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
@@ -115,6 +118,7 @@ RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
+RESEAL_UKI=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
@@ -141,6 +145,7 @@ while [ $# -gt 0 ]; do
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
+    --reseal-uki) RESEAL_UKI=1 ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
@@ -228,20 +233,24 @@ if [ -n "$BOOTC_HELPER" ]; then
   [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
     || die "--bootc-helper must name an executable regular, non-symlink file"
   python3 - "$BOOTC_HELPER" <<'PY' \
-    || die "--bootc-helper must be an ARM64 ELF executable"
+    || die "--bootc-helper must be an ELF executable for $(uname -m)"
+import platform
 import struct
 import sys
+
+MACHINES = {"aarch64": 183, "x86_64": 62}
 
 with open(sys.argv[1], "rb") as source:
     header = source.read(20)
 if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
     raise SystemExit(1)
 byteorder = "<" if header[5] == 1 else ">"
-if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+if struct.unpack_from(byteorder + "H", header, 18)[0] != MACHINES.get(platform.machine()):
     raise SystemExit(1)
 PY
   BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
 fi
+[ "$RESEAL_UKI" = 0 ] || [ -n "$BOOTC_HELPER" ] || die "--reseal-uki needs --bootc-helper"
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
   podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
@@ -718,7 +727,10 @@ if [ -n "$BOOTC_HELPER" ]; then
   run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
     --entrypoint /run/tilo-installer-bootc)
   bootc_argv=()
-  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+  msg "using explicit bootc helper $BOOTC_HELPER"
+  if [ "$RESEAL_UKI" = 1 ]; then
+    run_args+=(-e BOOTC_INSTALL_RESEAL_UKI=1)
+  fi
 fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
