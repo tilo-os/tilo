@@ -257,6 +257,7 @@ qs-volume = Volume
 qs-brightness = Brightness
 qs-brightness-display = Brightness, { $display }
 qs-slider-a11y-description = Use Left and Right Arrow to adjust
+qs-network = Network
 qs-wired-network = Wired network
 qs-cable-unplugged = Cable unplugged
 qs-bluetooth = Bluetooth
