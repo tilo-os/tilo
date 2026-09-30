@@ -6,8 +6,8 @@ use crate::agent_runtime_owner::{
     launch_stage_test_intent,
 };
 use crate::https_owner::{CloudStoreSource, Current};
-use atomic_file::test_support::Checkpoint;
 use std::io::Read;
+use tilo_files::native::atomic::test_support::Checkpoint;
 use tilo_peer_state::owner_commit::RetainedRuntimeFacts;
 
 struct Fixture {

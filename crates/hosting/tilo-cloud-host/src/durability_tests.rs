@@ -1,5 +1,5 @@
 use super::*;
-use atomic_file::test_support::{
+use tilo_files::native::atomic::test_support::{
     Checkpoint, ExistingCheckpoint, with_existing_hooks, with_failure,
 };
 
@@ -342,7 +342,7 @@ fn durability_crash_child() {
     let mut store = Store::open(Path::new(&path), "durability").unwrap();
     let request = insert(&store, "crash");
     let device = SigningKey::from_bytes(&[8; 32]);
-    atomic_file::test_support::with_observer(
+    tilo_files::native::atomic::test_support::with_observer(
         move |event| {
             if format!("{:?}", event.checkpoint) == phase {
                 std::process::exit(73);

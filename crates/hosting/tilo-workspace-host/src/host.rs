@@ -620,7 +620,11 @@ impl LocalHost {
             .context("packet relay HTTP listener unavailable")?
             .port();
         if bound != retained {
-            atomic_file::write_with_mode(&port_file, bound.to_string().as_bytes(), 0o600)?;
+            tilo_files::native::atomic::write_with_mode(
+                &port_file,
+                bound.to_string().as_bytes(),
+                0o600,
+            )?;
             crate::store::sync_dir(owner.root())?;
         }
         let packet_url: RelayUrl = format!(
@@ -2025,7 +2029,7 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             && ((owner.permits_publication() && session.as_ref().is_some_and(|current| current.is_ready()))
                 || std::time::Instant::now() >= ready_deadline)
         {
-            atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
+            tilo_files::native::atomic::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
             crate::store::sync_dir(ready_path.parent().context("ready file requires parent directory")?)?;
             ready_published = true;
         }
@@ -2145,7 +2149,7 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     if refreshed {
                         metadata["delivery_hint"] = serde_json::to_value(installed.discovery_hint(&owner)?)?;
                         if ready_published {
-                            atomic_file::write_with_mode(ready_path,&serde_json::to_vec_pretty(&metadata)?,0o600)?;
+                            tilo_files::native::atomic::write_with_mode(ready_path,&serde_json::to_vec_pretty(&metadata)?,0o600)?;
                             crate::store::sync_dir(ready_path.parent().context("ready file requires parent directory")?)?;
                         }
                         if let Some(runtime)=action_runtime.current_actions()

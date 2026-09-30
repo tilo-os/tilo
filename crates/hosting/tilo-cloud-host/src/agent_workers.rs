@@ -309,10 +309,10 @@ impl AgentWorkers {
             // this worker uses a canonical path. Compare the actual directory to
             // the already-admitted held Store descriptor, not those spellings.
             let worker_directory = std::fs::File::open(&root).map_err(|e| e.to_string())?;
-            let worker_identity =
-                atomic_file::FileIdentity::of(&worker_directory).map_err(|e| e.to_string())?;
-            let owner_identity =
-                atomic_file::FileIdentity::of(&store.directory).map_err(|e| e.to_string())?;
+            let worker_identity = tilo_files::native::atomic::FileIdentity::of(&worker_directory)
+                .map_err(|e| e.to_string())?;
+            let owner_identity = tilo_files::native::atomic::FileIdentity::of(&store.directory)
+                .map_err(|e| e.to_string())?;
             if worker_identity != owner_identity {
                 return Err("worker root differs from Store owner".into());
             }
@@ -1326,7 +1326,7 @@ impl AgentWorkers {
                 } if workspace == &self.room => {
                     let directory = self.root.join("actions/views");
                     private_directory(&directory)?;
-                    atomic_file::write_with_mode(
+                    tilo_files::native::atomic::write_with_mode(
                         &directory.join(format!("{instance}.bin")),
                         &write.value.bytes,
                         0o600,
@@ -1686,8 +1686,12 @@ impl AgentWorkers {
         if bytes.len() > 64 * 1024 * 1024 {
             return Err("recovery artifact exceeds bounded capacity".into());
         }
-        atomic_file::write_with_mode(&self.root.join("actions/recovery.json"), &bytes, 0o600)
-            .map_err(|e| e.to_string())
+        tilo_files::native::atomic::write_with_mode(
+            &self.root.join("actions/recovery.json"),
+            &bytes,
+            0o600,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 /// The default scopes offered for the live host worker surfaces, as v2
@@ -2093,9 +2097,12 @@ fn storage_key(app: &str, room: &str, record: &str) -> StorageKey {
     }
 }
 fn private_directory(path: &Path) -> Result<(), String> {
-    atomic_file::provision_directory(path, atomic_file::Privacy::OwnerOnly)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    tilo_files::native::atomic::provision_directory(
+        path,
+        tilo_files::native::atomic::Privacy::OwnerOnly,
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

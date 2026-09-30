@@ -470,7 +470,7 @@ impl Viewer {
     fn store(&self, ledger: &Ledger) -> Result<(), ViewerError> {
         let bytes = serde_json::to_vec(ledger)
             .map_err(|error| ViewerError::unavailable(format!("viewer ledger: {error}")))?;
-        atomic_file::write_with_mode(&self.ledger_path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(&self.ledger_path, &bytes, 0o600)
             .map_err(|error| ViewerError::unavailable(format!("viewer ledger: {error}")))
     }
 }

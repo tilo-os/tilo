@@ -100,11 +100,11 @@ pub(crate) fn io_summary() -> String {
 /// hold that produced the bytes.
 #[derive(Clone)]
 pub(crate) struct Base {
-    checkpoint_identity: atomic_file::FileIdentity,
+    checkpoint_identity: tilo_files::native::atomic::FileIdentity,
     checkpoint_len: u64,
     checkpoint_digest: [u8; 32],
     /// Identity and actual file length of `state.journal`, when it exists.
-    journal: Option<(atomic_file::FileIdentity, u64)>,
+    journal: Option<(tilo_files::native::atomic::FileIdentity, u64)>,
     /// Header plus complete valid records; bytes beyond it are a torn or
     /// stale tail that the next append cuts first.
     valid_len: u64,
@@ -139,9 +139,9 @@ impl Persisted {
 #[cfg(unix)]
 pub(crate) struct Aggregate {
     checkpoint: std::fs::File,
-    checkpoint_identity: atomic_file::FileIdentity,
+    checkpoint_identity: tilo_files::native::atomic::FileIdentity,
     checkpoint_len: u64,
-    journal: Option<(std::fs::File, atomic_file::FileIdentity, u64)>,
+    journal: Option<(std::fs::File, tilo_files::native::atomic::FileIdentity, u64)>,
     /// Set by a read whose journal had no bytes beyond its valid prefix. Only
     /// such an observation may be compared later: a journal only grows
     /// between checkpoints except for a torn-tail cut, and a new checkpoint
@@ -151,9 +151,11 @@ pub(crate) struct Aggregate {
 #[cfg(unix)]
 impl Aggregate {
     /// Under the caller's Store lock. A missing checkpoint is `NotFound`.
-    pub(crate) fn open(directory: &atomic_file::StorageDirectory) -> std::io::Result<Self> {
-        use atomic_file::{FileIdentity, Privacy};
+    pub(crate) fn open(
+        directory: &tilo_files::native::atomic::StorageDirectory,
+    ) -> std::io::Result<Self> {
         use std::ffi::OsStr;
+        use tilo_files::native::atomic::{FileIdentity, Privacy};
         let checkpoint = directory.open_read(OsStr::new(CHECKPOINT), Privacy::OwnerOnly)?;
         let checkpoint_identity = FileIdentity::of(&checkpoint)?;
         let checkpoint_len = checkpoint.metadata()?.len();
@@ -187,7 +189,7 @@ impl Aggregate {
     /// pinned inodes cannot be reused while held.
     #[cfg(test)]
     pub(crate) fn same(&self, current: &Aggregate) -> bool {
-        use atomic_file::FileIdentity;
+        use tilo_files::native::atomic::FileIdentity;
         self.clean
             && self.checkpoint_identity == current.checkpoint_identity
             && self.checkpoint_len == current.checkpoint_len
@@ -235,7 +237,7 @@ impl Aggregate {
     /// journal's name. A failed barrier never yields usable state.
     pub(crate) fn read_reconciled(
         &mut self,
-        directory: &atomic_file::StorageDirectory,
+        directory: &tilo_files::native::atomic::StorageDirectory,
     ) -> Result<Persisted> {
         // Exactly the files this process last wrote and barriered (or last
         // reconciled): their state is known without reading, hashing or
@@ -303,9 +305,12 @@ impl Aggregate {
     }
     /// The durability barriers of `read_reconciled`, for callers that read
     /// the bytes through their own paid buffers.
-    pub(crate) fn reconcile(&self, directory: &atomic_file::StorageDirectory) -> Result<()> {
-        use atomic_file::{FileIdentity, Privacy};
+    pub(crate) fn reconcile(
+        &self,
+        directory: &tilo_files::native::atomic::StorageDirectory,
+    ) -> Result<()> {
         use std::ffi::OsStr;
+        use tilo_files::native::atomic::{FileIdentity, Privacy};
         if let Some((_, identity, len)) = &self.journal
             && *len > 0
         {
@@ -322,9 +327,12 @@ impl Aggregate {
         self.reconcile_checkpoint(directory)
     }
     /// The original reconciliation of the observed `state.json` file/name.
-    fn reconcile_checkpoint(&self, directory: &atomic_file::StorageDirectory) -> Result<()> {
-        use atomic_file::Privacy;
+    fn reconcile_checkpoint(
+        &self,
+        directory: &tilo_files::native::atomic::StorageDirectory,
+    ) -> Result<()> {
         use std::ffi::OsStr;
+        use tilo_files::native::atomic::Privacy;
         #[cfg(test)]
         RECONCILES.with(|count| count.set(count.get() + 1));
         directory
@@ -391,8 +399,8 @@ pub(crate) fn persisted_len_hint(directory: &std::fs::File) -> Option<u64> {
 #[cfg(unix)]
 mod durable {
     use super::{Aggregate, Base, JOURNAL};
-    use atomic_file::{FileIdentity, Privacy, StorageDirectory};
     use std::{ffi::OsStr, fs::File, sync::Mutex};
+    use tilo_files::native::atomic::{FileIdentity, Privacy, StorageDirectory};
     struct Entry {
         directory: FileIdentity,
         checkpoint: File,
@@ -510,7 +518,7 @@ pub(crate) fn write_barriers_for_test() -> u64 {
 pub(crate) fn forget_durable_directory_for_test(directory: &std::fs::File) {
     if let Ok(directory) = directory
         .try_clone()
-        .and_then(atomic_file::StorageDirectory::from_file)
+        .and_then(tilo_files::native::atomic::StorageDirectory::from_file)
     {
         durable::forget(&directory);
     }
@@ -524,7 +532,7 @@ pub(crate) fn forget_durable_for_test() {
 /// No replacement is performed; a failed barrier never yields usable state.
 #[cfg(unix)]
 pub(crate) fn read_reconciled(
-    directory: &atomic_file::StorageDirectory,
+    directory: &tilo_files::native::atomic::StorageDirectory,
     root: &Path,
 ) -> Result<Option<Persisted>> {
     let mut aggregate = match Aggregate::open(directory) {
@@ -545,13 +553,13 @@ pub(crate) fn read_reconciled(
 /// Missing or invalid entries are errors; this does not provision any namespace.
 #[cfg(unix)]
 pub(crate) fn read_reconciled_existing(
-    directory: &atomic_file::StorageDirectory,
+    directory: &tilo_files::native::atomic::StorageDirectory,
 ) -> Result<Persisted> {
     Aggregate::open(directory)?.read_reconciled(directory)
 }
 #[cfg(not(unix))]
 pub(crate) fn read_reconciled(
-    _: &atomic_file::StorageDirectory,
+    _: &tilo_files::native::atomic::StorageDirectory,
     _: &Path,
 ) -> Result<Option<Persisted>> {
     anyhow::bail!("cloud Store durability requires qualified Unix storage")
@@ -621,19 +629,22 @@ impl<'de> Visitor<'de> for UniqueVisitor {
 /// A failed Store write and what is known about the aggregate on disk.
 #[derive(Debug)]
 pub(crate) struct WriteError {
-    pub(crate) state: atomic_file::PublicationState,
+    pub(crate) state: tilo_files::native::atomic::PublicationState,
     pub(crate) error: std::io::Error,
 }
 impl WriteError {
-    fn new(state: atomic_file::PublicationState, error: std::io::Error) -> Self {
+    fn new(state: tilo_files::native::atomic::PublicationState, error: std::io::Error) -> Self {
         Self { state, error }
     }
-    fn publication(error: atomic_file::PublicationError) -> Self {
+    fn publication(error: tilo_files::native::atomic::PublicationError) -> Self {
         Self::new(error.state(), error.into_io_error())
     }
     /// A failure before this write changed any file.
     fn before(error: impl Into<std::io::Error>) -> Self {
-        Self::new(atomic_file::PublicationState::NotPublished, error.into())
+        Self::new(
+            tilo_files::native::atomic::PublicationState::NotPublished,
+            error.into(),
+        )
     }
 }
 
@@ -654,7 +665,7 @@ pub(crate) fn write(
     let result = write_inner(directory, tip, bytes, None, root);
     #[cfg(test)]
     let result = match test_support::take_failure(root) {
-        Some(point) => atomic_file::test_support::with_failure(point, || {
+        Some(point) => tilo_files::native::atomic::test_support::with_failure(point, || {
             write_inner(directory, tip, bytes, Some(point), root)
         }),
         None => write_inner(directory, tip, bytes, None, root),
@@ -674,7 +685,7 @@ pub(crate) fn write(
 #[cfg(not(test))]
 type FailurePoint = ();
 #[cfg(test)]
-type FailurePoint = atomic_file::test_support::Checkpoint;
+type FailurePoint = tilo_files::native::atomic::test_support::Checkpoint;
 
 fn write_inner(
     directory: &std::fs::File,
@@ -684,13 +695,18 @@ fn write_inner(
     root: &Path,
 ) -> std::result::Result<(), WriteError> {
     // As before the journal: an admission failure is not classified further.
-    let unclassified =
-        |error| WriteError::new(atomic_file::PublicationState::PublicationUnknown, error);
-    let admitted =
-        atomic_file::StorageDirectory::from_file(directory.try_clone().map_err(unclassified)?)
-            .map_err(unclassified)?;
+    let unclassified = |error| {
+        WriteError::new(
+            tilo_files::native::atomic::PublicationState::PublicationUnknown,
+            error,
+        )
+    };
+    let admitted = tilo_files::native::atomic::StorageDirectory::from_file(
+        directory.try_clone().map_err(unclassified)?,
+    )
+    .map_err(unclassified)?;
     admitted
-        .validate_privacy(atomic_file::Privacy::OwnerOnly)
+        .validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)
         .map_err(unclassified)?;
     let started = std::time::Instant::now();
     // The whole-file baseline writer keeps no diff base and needs no digest.
@@ -739,14 +755,14 @@ fn write_inner(
 /// Append one record and barrier the journal file only.
 #[cfg(unix)]
 fn append(
-    directory: &atomic_file::StorageDirectory,
+    directory: &tilo_files::native::atomic::StorageDirectory,
     tip: &mut Tip,
     record: &[u8],
     failure: Option<FailurePoint>,
     root: &Path,
 ) -> std::result::Result<(), WriteError> {
-    use atomic_file::{FileIdentity, Privacy, PublicationState, PublishMode};
     use std::{ffi::OsStr, io::Write};
+    use tilo_files::native::atomic::{FileIdentity, Privacy, PublicationState, PublishMode};
     let _ = (&failure, root);
     let base = &mut tip.base;
     // Records against a replaced checkpoint would be acknowledged yet
@@ -835,15 +851,15 @@ fn append(
 /// replacing it with a new empty file. Returns the new base.
 #[cfg(unix)]
 fn checkpoint(
-    directory: &atomic_file::StorageDirectory,
+    directory: &tilo_files::native::atomic::StorageDirectory,
     tip: Option<&Tip>,
     bytes: &[u8],
     digest: [u8; 32],
     failure: Option<FailurePoint>,
     root: &Path,
 ) -> std::result::Result<Base, WriteError> {
-    use atomic_file::{FileIdentity, Privacy, PublicationState, PublishMode};
     use std::ffi::OsStr;
+    use tilo_files::native::atomic::{FileIdentity, Privacy, PublicationState, PublishMode};
     let _ = (&failure, root);
     // If the checkpoint on disk already holds exactly these bytes, the journal
     // records after it are the only difference: retiring the journal alone
@@ -936,7 +952,7 @@ fn checkpoint(
 }
 #[cfg(not(unix))]
 fn append(
-    _: &atomic_file::StorageDirectory,
+    _: &tilo_files::native::atomic::StorageDirectory,
     _: &mut Tip,
     _: &[u8],
     _: Option<FailurePoint>,
@@ -948,7 +964,7 @@ fn append(
 }
 #[cfg(not(unix))]
 fn checkpoint(
-    _: &atomic_file::StorageDirectory,
+    _: &tilo_files::native::atomic::StorageDirectory,
     _: Option<&Tip>,
     bytes: &[u8],
     _: [u8; 32],
@@ -980,7 +996,7 @@ pub(crate) fn compact(_: &Path) -> Result<bool> {
 /// checkpoint alone is complete (orderly shutdown).
 #[cfg(unix)]
 pub(crate) fn compact_locked(directory: &std::fs::File, root: &Path) -> Result<bool> {
-    let admitted = atomic_file::StorageDirectory::from_file(directory.try_clone()?)?;
+    let admitted = tilo_files::native::atomic::StorageDirectory::from_file(directory.try_clone()?)?;
     let mut aggregate = Aggregate::open(&admitted)?;
     if aggregate
         .journal
@@ -1002,11 +1018,11 @@ pub(crate) fn compact_locked(directory: &std::fs::File, root: &Path) -> Result<b
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use atomic_file::test_support::Checkpoint;
     use std::{
         cell::RefCell,
         path::{Path, PathBuf},
     };
+    use tilo_files::native::atomic::test_support::Checkpoint;
     thread_local! { static FAILURE: RefCell<Option<(PathBuf, Checkpoint)>> = const { RefCell::new(None) }; }
     struct Restore(Option<(PathBuf, Checkpoint)>);
     impl Drop for Restore {
@@ -1076,7 +1092,7 @@ pub(crate) mod test_journal {
         operation()
     }
     /// Journal-specific failure points (atomic publications keep using
-    /// `atomic_file::test_support` through `test_support::with_save_failure`).
+    /// `tilo_files::native::atomic::test_support` through `test_support::with_save_failure`).
     #[expect(
         clippy::enum_variant_names,
         reason = "the names spell the protocol phases; renaming them would obscure the call sites"
@@ -1102,8 +1118,8 @@ pub(crate) mod test_journal {
         operation()
     }
     /// A `with_save_failure` checkpoint maps onto the equivalent append phase.
-    fn mapped(save: Option<atomic_file::test_support::Checkpoint>) -> Option<Point> {
-        use atomic_file::test_support::Checkpoint::*;
+    fn mapped(save: Option<tilo_files::native::atomic::test_support::Checkpoint>) -> Option<Point> {
+        use tilo_files::native::atomic::test_support::Checkpoint::*;
         match save? {
             StageCreated | BeforeDataFlush | BeforePublish => Some(Point::BeforeWrite),
             PublishSubmitted | AfterPublish | BeforeCommit => Some(Point::BeforeBarrier),
@@ -1113,7 +1129,7 @@ pub(crate) mod test_journal {
     pub(super) fn fault(
         root: &Path,
         point: Point,
-        save: Option<atomic_file::test_support::Checkpoint>,
+        save: Option<tilo_files::native::atomic::test_support::Checkpoint>,
     ) -> std::io::Result<()> {
         let armed = FAULT.with(|fault| {
             let mut fault = fault.borrow_mut();

@@ -1633,7 +1633,11 @@ impl SessionOwner {
     pub fn export(&mut self, path: &Path) -> Result<()> {
         self.require_owner_resource_scope()?;
         self.flush()?;
-        atomic_file::write_with_mode(path, &encode(&self.aggregate, &self.identity)?, 0o600)?;
+        tilo_files::native::atomic::write_with_mode(
+            path,
+            &encode(&self.aggregate, &self.identity)?,
+            0o600,
+        )?;
         crate::store::sync_dir(path.parent().context("export needs a parent directory")?)
     }
     /// Full identity import requires custody of the ORIGINAL native and root identities.

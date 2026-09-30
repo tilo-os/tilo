@@ -257,7 +257,7 @@ impl AccountStore {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
-        atomic_file::write(&path, json.as_bytes())
+        tilo_files::native::atomic::write(&path, json.as_bytes())
     }
 
     /// Every account in the store, in insertion order.

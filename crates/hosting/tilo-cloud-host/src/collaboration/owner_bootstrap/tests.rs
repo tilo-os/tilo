@@ -210,8 +210,8 @@ fn cloud_owner_bootstrap_cached_receipt_never_overrides_current_revocation() {
 #[test]
 fn cloud_owner_bootstrap_original_store_failure_barrier_never_exposes_success() {
     for checkpoint in [
-        atomic_file::test_support::Checkpoint::BeforePublish,
-        atomic_file::test_support::Checkpoint::BeforeCommit,
+        tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
+        tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
     ] {
         let mut f = Fixture::new();
         let request = f.request(43);

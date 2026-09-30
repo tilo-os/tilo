@@ -250,10 +250,18 @@ fn run(cli: &Cli) -> Result<(), String> {
     let mut trust_bytes = serde_json::to_vec_pretty(&trust)
         .map_err(|error| format!("could not encode trust: {error}"))?;
     trust_bytes.push(b'\n');
-    atomic_file::write_creating_parent_with_mode(&cli.catalog_out, &catalog_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
-    atomic_file::write_creating_parent_with_mode(&cli.trust_out, &trust_bytes, 0o644)
-        .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.catalog_out,
+        &catalog_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.catalog_out.display()))?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &cli.trust_out,
+        &trust_bytes,
+        0o644,
+    )
+    .map_err(|error| format!("could not write {}: {error}", cli.trust_out.display()))?;
     Ok(())
 }
 

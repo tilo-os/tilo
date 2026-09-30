@@ -36,7 +36,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }
 web-time = { version = "1", features = ["serde"] }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-automerge.workspace = true
@@ -62,7 +62,7 @@ web-transport-quinn = { version = "0.12.1", default-features = false, features =
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
 moq-net.workspace = true
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
 hyper = { version = "1.8.1", features = ["client"] }

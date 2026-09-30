@@ -130,7 +130,7 @@ mod tests {
         let before = store.state.generation;
         let failed = crate::storage::test_support::with_save_failure(
             dir.path(),
-            atomic_file::test_support::Checkpoint::BeforePublish,
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             || {
                 scoped(Some(&sink), || {
                     store.admit_delivery_item(device, [7; 16], &canonical, 1024 * 1024)

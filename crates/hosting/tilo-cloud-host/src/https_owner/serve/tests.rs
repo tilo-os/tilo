@@ -76,7 +76,7 @@ async fn cloud_https_startup_prepares_original_transport_without_owner_or_ready(
     assert_eq!(prepared.ready_name, "ready.json");
     prepared
         .ready_directory
-        .validate_privacy(atomic_file::Privacy::OwnerOnly)
+        .validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)
         .unwrap();
     assert!(!root.path().join("state.json").exists());
     assert!(!root.path().join("state.lock").exists());

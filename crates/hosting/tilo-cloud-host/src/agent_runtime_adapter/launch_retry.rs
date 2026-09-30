@@ -349,7 +349,7 @@ fn test_claim(
     owner: &RuntimeOwner,
     operation: impl FnOnce() -> RuntimeLaunchClaim,
 ) -> RuntimeLaunchClaim {
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     for (name, checkpoint) in [
         ("before-publish", Checkpoint::BeforePublish),
         ("publish-submitted", Checkpoint::PublishSubmitted),

@@ -270,7 +270,9 @@ fn schedule_refresh() {
                             if fresh
                                 && let Some(path) = listing_cache_path()
                                 && let Ok(encoded) = serde_json::to_vec(&listing)
-                                && let Err(e) = atomic_file::write_creating_parent(&path, &encoded)
+                                && let Err(e) = tilo_files::native::atomic::write_creating_parent(
+                                    &path, &encoded,
+                                )
                             {
                                 eprintln!("[catalogue] could not save search cache: {e}");
                             }

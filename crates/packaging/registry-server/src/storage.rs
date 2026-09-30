@@ -1281,7 +1281,7 @@ fn delete_if_exists(path: &Path) -> Result<bool, StorageError> {
         return Ok(false);
     }
     std::fs::remove_file(path).map_err(|e| StorageError::Io(e.to_string()))?;
-    // Match `atomic-file`'s durability property for the transition's delete
+    // Match `tilo_files::native::atomic`'s durability property for the transition's delete
     // side: a successful return should not resurrect this state after power
     // loss because the containing directory entry was never flushed.
     if let Some(parent) = path.parent()
@@ -1417,7 +1417,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| StorageError::Io(e.to_string()))?;
     }
-    atomic_file::write(path, bytes).map_err(|e| StorageError::Io(e.to_string()))?;
+    tilo_files::native::atomic::write(path, bytes).map_err(|e| StorageError::Io(e.to_string()))?;
     Ok(())
 }
 

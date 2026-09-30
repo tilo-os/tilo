@@ -281,7 +281,7 @@ fn persist_checkpoint(
     };
     let bytes = serde_json::to_vec(&checkpoint)
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
-    atomic_file::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))
 }
 

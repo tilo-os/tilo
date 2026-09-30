@@ -64,7 +64,7 @@ fn open_existing_file(
     wait: bool,
 ) -> Result<Store, AccessError> {
     use crate::storage::transaction::{ExistingStoreLock, LockFailure};
-    use atomic_file::StorageDirectory;
+    use tilo_files::native::atomic::StorageDirectory;
     let deny = |error| AccessError::Denied(anyhow::Error::from(error));
     let locked =
         ExistingStoreLock::acquire(root, directory_file, wait).map_err(|error| match error {

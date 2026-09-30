@@ -24,7 +24,7 @@ bounded-command = { path = "../../system/bounded-command" }
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 
 anyhow.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }

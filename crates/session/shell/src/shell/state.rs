@@ -2443,7 +2443,7 @@ impl WorkspaceTree {
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
-        if let Err(e) = atomic_file::write_creating_parent(path, &json) {
+        if let Err(e) = tilo_files::native::atomic::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }

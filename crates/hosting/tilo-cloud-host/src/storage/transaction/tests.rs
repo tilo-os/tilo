@@ -1,7 +1,7 @@
 use super::*;
 use crate::{StoreSaveOutcome, UncertainStoreCommit};
-use atomic_file::{FileIdentity, test_support::Checkpoint};
 use tilo_action_broker::peer_actions::OwnerPolicyClock;
+use tilo_files::native::atomic::{FileIdentity, test_support::Checkpoint};
 
 fn selected() -> (tempfile::TempDir, crate::Store) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();

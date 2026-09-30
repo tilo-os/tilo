@@ -68,8 +68,8 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         let before = std::fs::read(&path).unwrap();
         let result = if fail {
             // The adapter's future has no await; poll it inside the real storage failure scope.
-            atomic_file::test_support::with_failure(
-                atomic_file::test_support::Checkpoint::BeforePublish,
+            tilo_files::native::atomic::test_support::with_failure(
+                tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
                 || {
                     let mut future = std::pin::pin!(service.commit(request.clone()));
                     match future

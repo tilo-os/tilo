@@ -256,7 +256,7 @@ impl PolicyStore {
 fn persist(path: &Path, policy: &LockdownPolicy) -> std::io::Result<()> {
     let encoded = serde_json::to_vec(policy)
         .map_err(|e| failed(&format!("cannot encode lockdown policy: {e}")))?;
-    atomic_file::write_private(path, &encoded)
+    tilo_files::native::atomic::write_private(path, &encoded)
         .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))
 }
 fn failed(message: &str) -> std::io::Error {

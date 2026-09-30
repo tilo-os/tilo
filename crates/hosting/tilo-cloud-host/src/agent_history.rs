@@ -211,7 +211,7 @@ pub(crate) fn note(root: &Path, agent: &str, mut note: StepNote) {
                 .filter_map(|n| serde_json::to_string(n).ok())
                 .map(|line| line + "\n")
                 .collect();
-            return atomic_file::write(&path, text.as_bytes());
+            return tilo_files::native::atomic::write(&path, text.as_bytes());
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)

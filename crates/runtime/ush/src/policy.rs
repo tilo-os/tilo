@@ -87,7 +87,10 @@ impl Policy {
                 .cloned()
                 .collect(),
         };
-        atomic_file::write_creating_parent(path, &serde_json::to_vec_pretty(&durable)?)
+        tilo_files::native::atomic::write_creating_parent(
+            path,
+            &serde_json::to_vec_pretty(&durable)?,
+        )
     }
 
     /// The actor every question is asked about. `role: None` is load-bearing:

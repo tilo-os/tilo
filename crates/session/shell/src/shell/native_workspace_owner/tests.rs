@@ -166,7 +166,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
 
 #[test]
 fn native_pending_not_published_failure_returns_no_send_authority() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
@@ -187,7 +187,7 @@ fn native_pending_not_published_failure_returns_no_send_authority() {
 
 #[test]
 fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
@@ -232,8 +232,8 @@ fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
 
 #[test]
 fn native_uncertain_publication_fences_owner_ui_and_live_listener_until_reopen() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for checkpoint in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
@@ -743,7 +743,7 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
 }
 #[test]
 fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, previous) = fresh_slot(&path);
@@ -811,7 +811,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
 
 #[test]
 fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, _) = fresh_slot(&path);
@@ -870,8 +870,8 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
 #[serial_test::serial(process_env)]
 fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
-    use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     use std::os::unix::fs::PermissionsExt;
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     /// Lets background fs-authority publication settle before the wrapped
     /// scope restores the environment it reads.
     struct RestoreEnv {

@@ -4024,10 +4024,10 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
     let written = {
         let mode = std::fs::metadata(path)
             .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
-        atomic_file::write_with_mode(path, source, mode)
+        tilo_files::native::atomic::write_with_mode(path, source, mode)
     };
     #[cfg(not(unix))]
-    let written = atomic_file::write(path, source);
+    let written = tilo_files::native::atomic::write(path, source);
     written.with_context(|| format!("publishing {description} {}", path.display()))
 }
 

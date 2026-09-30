@@ -351,7 +351,7 @@ pub(crate) fn write_composer_authority(path: &Path, authorities: &[PathBuf]) -> 
                 .map_err(|error| format!("reading {}: {error}", authority.display()))?,
         );
     }
-    atomic_file::write_with_mode(path, &contents, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, &contents, 0o600)
         .map_err(|error| format!("installing {}: {error}", path.display()))
 }
 

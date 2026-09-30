@@ -159,7 +159,7 @@ fn agent_owner_capacity_is_explicit_and_keeps_retained_status() {
 }
 #[test]
 fn agent_owner_uncertain_admission_reopens_as_existing_never_fresh() {
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     let (dir, mut store, device) = enrolled();
     let caller = store.agent_caller(device).unwrap();
     let input = intent(&store, &caller);

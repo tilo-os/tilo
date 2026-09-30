@@ -358,7 +358,7 @@ fn create_broker_identity(identity_path: &Path) -> io::Result<StoredBrokerIdenti
             .mode(0o600)
             .open(temporary)
     };
-    if atomic_file::create_with_temp_opener(identity_path, &bytes, owner_only)? {
+    if tilo_files::native::atomic::create_with_temp_opener(identity_path, &bytes, owner_only)? {
         return Ok(identity);
     }
     let stored = read_private_file(identity_path, MAX_BROKER_IDENTITY_BYTES)?

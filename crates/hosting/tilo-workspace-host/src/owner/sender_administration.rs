@@ -7,10 +7,12 @@
 )]
 use super::{Identity, SessionOwner, SignedAggregate, schema};
 use anyhow::Result;
-use atomic_file::{ExistingCommitError, PublicationError, bounded::BoundedOwnerDirectory};
 use ed25519_dalek::Signer;
 use serde::Serialize;
 use std::{ffi::OsStr, path::Path};
+use tilo_files::native::atomic::{
+    ExistingCommitError, PublicationError, bounded::BoundedOwnerDirectory,
+};
 use ui::host_worker::private_actions::{
     SenderScope, SenderStorageCode,
     administration::{AdministrativeExpectation, AdministrativeFailure, AdministrativeFile},
@@ -47,8 +49,8 @@ enum Cause {
     Refused(&'static str),
     Code(SenderStorageCode),
     Io(std::io::Error),
-    Admission(atomic_file::bounded::AdmissionError),
-    Child(atomic_file::bounded::ChildOpenError),
+    Admission(tilo_files::native::atomic::bounded::AdmissionError),
+    Child(tilo_files::native::atomic::bounded::ChildOpenError),
     Encoding(postcard::Error),
     Allocation(std::collections::TryReserveError),
 }
@@ -62,8 +64,11 @@ macro_rules! inline_cause {
     };
 }
 inline_cause!(std::io::Error, Io);
-inline_cause!(atomic_file::bounded::AdmissionError, Admission);
-inline_cause!(atomic_file::bounded::ChildOpenError, Child);
+inline_cause!(
+    tilo_files::native::atomic::bounded::AdmissionError,
+    Admission
+);
+inline_cause!(tilo_files::native::atomic::bounded::ChildOpenError, Child);
 inline_cause!(postcard::Error, Encoding);
 inline_cause!(std::collections::TryReserveError, Allocation);
 

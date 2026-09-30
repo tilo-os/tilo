@@ -1,7 +1,7 @@
 use super::*;
-use atomic_file::StorageDirectory;
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
+use tilo_files::native::atomic::StorageDirectory;
 use ui::host_worker::private_actions::{
     SenderScope,
     administration::{AdministrativeExpectation, AdministrativeFile},
@@ -183,8 +183,8 @@ fn sender_admin_managed_init_commits_active_real_file() {
     assert_eq!(facts.file_digest(), blake3::hash(&physical).as_bytes());
 }
 
-use atomic_file::test_support::{self, Checkpoint};
 use std::cell::RefCell;
+use tilo_files::native::atomic::test_support::{self, Checkpoint};
 type BoundaryAction = (Boundary, Box<dyn FnOnce(&crate::store::SessionStore)>);
 thread_local! {
     static ACTION: RefCell<Option<BoundaryAction>> = const { RefCell::new(None) };
@@ -355,13 +355,13 @@ fn sender_admin_actual_active_barrier_failure_keeps_physical_lease_until_drop() 
     assert!(held.store.is_poisoned());
     let bounded = BoundedOwnerDirectory::admit(StorageDirectory::open(&root).unwrap()).unwrap();
     assert!(matches!(
-        atomic_file::lease::FileLease::try_acquire(
+        tilo_files::native::atomic::lease::FileLease::try_acquire(
             bounded
                 .open_lease_existing(OsStr::new("private-actions-v1.writer.lock"))
                 .unwrap(),
-            atomic_file::lease::LeaseMode::Exclusive
+            tilo_files::native::atomic::lease::LeaseMode::Exclusive
         ),
-        Err(atomic_file::lease::AcquireError::Busy)
+        Err(tilo_files::native::atomic::lease::AcquireError::Busy)
     ));
     drop(failure);
     assert_eq!(resume(&root).unwrap().instance, instance);
@@ -792,7 +792,7 @@ fn replace_payload(root: &Path, payload: &[u8]) -> Vec<u8> {
         .publish(
             OsStr::new("private-actions-v1.bin"),
             &bytes,
-            atomic_file::PublishMode::Replace,
+            tilo_files::native::atomic::PublishMode::Replace,
         )
         .unwrap();
     bytes
@@ -929,7 +929,7 @@ fn sender_admin_owned_final_check_keeps_actual_child_error() {
     assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(error.operation.as_ref().unwrap().physical_failure.is_some());
     let bounded = BoundedOwnerDirectory::admit(StorageDirectory::open(&root).unwrap()).unwrap();
-    use atomic_file::lease::{AcquireError, FileLease, LeaseMode};
+    use tilo_files::native::atomic::lease::{AcquireError, FileLease, LeaseMode};
     assert!(matches!(
         FileLease::try_acquire(
             bounded

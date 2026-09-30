@@ -8,13 +8,15 @@
 //! the state of an unacknowledged commit whose record did reach the disk).
 use crate::action_timing::Timing;
 use anyhow::{Context, Result, bail};
-use atomic_file::{FileIdentity, Privacy, PublicationState, PublishMode, StorageDirectory};
 use std::{
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+};
+use tilo_files::native::atomic::{
+    FileIdentity, Privacy, PublicationState, PublishMode, StorageDirectory,
 };
 
 #[path = "store/journal.rs"]

@@ -362,7 +362,7 @@ pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     for a in approvals {
         let p = dir.join(a.file_name());
         let json = serde_json::to_string_pretty(a)?;
-        atomic_file::write_with_mode(&p, json.as_bytes(), 0o644)
+        tilo_files::native::atomic::write_with_mode(&p, json.as_bytes(), 0o644)
             .with_context(|| format!("atomically writing {}", p.display()))?;
         paths.push(p);
     }

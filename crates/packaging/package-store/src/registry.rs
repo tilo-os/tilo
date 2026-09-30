@@ -184,7 +184,8 @@ impl Registry {
             entry: self.entries.clone(),
         };
         let text = toml::to_string(&file).map_err(|error| write_error(error.to_string()))?;
-        atomic_file::write(path, text.as_bytes()).map_err(|error| write_error(error.to_string()))
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|error| write_error(error.to_string()))
     }
 
     pub fn entries(&self) -> &[InstalledPackage] {

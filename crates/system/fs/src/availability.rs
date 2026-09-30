@@ -691,7 +691,7 @@ impl AvailabilityRegistry {
             records: self.records.values().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
 }
@@ -861,7 +861,7 @@ mod tests {
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
-            atomic_file::write_creating_parent(
+            tilo_files::native::atomic::write_creating_parent(
                 &path,
                 &serde_json::to_vec(&serde_json::json!({
                     "schema_version": AVAILABILITY_SCHEMA_VERSION - 1,
@@ -889,7 +889,7 @@ mod tests {
             let mut value: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             value["records"][0]["replica_observations"][0]["byte_len"] = serde_json::json!(11);
-            atomic_file::write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+            tilo_files::native::atomic::write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(matches!(
                 AvailabilityRegistry::open(path),
                 Err(AvailabilityError::StaleReplicaObservation)

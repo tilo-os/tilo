@@ -150,9 +150,9 @@ fn private_actions_storage_envelope_exact_bounded_scope_and_corruption() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(in crate::host_worker::private_actions) mod consuming {
     use super::*;
-    use atomic_file::{Privacy, PublishMode, StorageDirectory};
     use std::os::unix::fs::PermissionsExt;
     use std::{ffi::OsStr, fs};
+    use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
     const CHILD: &str = "private-actions-v1";
     const ROOM: &str = "01010101-0101-0101-0101-010101010101";
     fn directory(path: &std::path::Path) -> StorageDirectory {
@@ -405,7 +405,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
     }
     #[test]
     fn private_actions_storage_consuming_actual_publication_failure_and_original_retry() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         for point in [
             Checkpoint::BeforeDataFlush,
             Checkpoint::BeforePublish,
@@ -453,7 +453,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
     }
     #[test]
     fn private_actions_storage_consuming_existing_retry_refuses_replaced_identity() {
-        use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+        use tilo_files::native::atomic::test_support::{ExistingCheckpoint, with_existing_hooks};
         let root = fixture();
         let cache = PortableStorage::new("profile", "device").unwrap();
         let file = opened(root.path(), &cache);
@@ -554,7 +554,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
     }
     #[test]
     fn private_actions_storage_consuming_exclusive_and_existing_only() {
-        use atomic_file::lease::{FileLease, LeaseMode};
+        use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
         let root = fixture();
         let cache = PortableStorage::new("profile", "device").unwrap();
         let lease = FileLease::try_acquire(

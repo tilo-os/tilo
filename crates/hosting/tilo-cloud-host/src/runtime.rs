@@ -1438,7 +1438,7 @@ mod durability_runtime_tests {
         });
         let result = crate::storage::test_support::with_save_failure(
             dir.path(),
-            atomic_file::test_support::Checkpoint::BeforeCommit,
+            tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
             || {
                 runtime.block_on(async {
                     publish(&browser, &StoredPublication::mutation(message).unwrap()).unwrap();

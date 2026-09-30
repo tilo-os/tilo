@@ -39,8 +39,8 @@ impl ExistingStoreLock {
         directory: File,
         wait: bool,
     ) -> std::result::Result<Self, TypedLockFailure> {
-        use atomic_file::{Privacy, StorageDirectory};
         use std::{ffi::OsStr, fs::TryLockError};
+        use tilo_files::native::atomic::{Privacy, StorageDirectory};
         let deny = TypedLockFailure::Io;
         let admitted =
             StorageDirectory::from_file(directory.try_clone().map_err(deny)?).map_err(deny)?;
@@ -155,11 +155,13 @@ pub(crate) fn publish_bytes_with_tip(
     }
     if let Err(super::WriteError { state, error }) = super::write(directory, root, tip, bytes) {
         let outcome = match state {
-            atomic_file::PublicationState::NotPublished => crate::StoreSaveOutcome::NotPublished,
-            atomic_file::PublicationState::PublishedDurabilityUnknown => {
+            tilo_files::native::atomic::PublicationState::NotPublished => {
+                crate::StoreSaveOutcome::NotPublished
+            }
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown => {
                 crate::StoreSaveOutcome::PublishedDurabilityUnknown
             }
-            atomic_file::PublicationState::PublicationUnknown => {
+            tilo_files::native::atomic::PublicationState::PublicationUnknown => {
                 crate::StoreSaveOutcome::PublicationUnknown
             }
         };

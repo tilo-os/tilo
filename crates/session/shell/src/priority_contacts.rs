@@ -247,7 +247,7 @@ fn write_record(path: &Path, record: &DiskRecord) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    atomic_file::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
 }
 
 #[cfg(test)]

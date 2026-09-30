@@ -203,7 +203,7 @@ async fn cloud_media_governance_all_operations_preserve_counters_and_semantic_er
 
 #[test]
 fn cloud_media_governance_failed_barrier_never_returns_success_or_replays_effect() {
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     let (dir, mut store, caller) = voice_store();
     let admin::CollaborationAdminOperation::MediaCreate(input) = create() else {
         unreachable!()

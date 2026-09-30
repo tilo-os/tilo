@@ -510,7 +510,7 @@ fn hosted_attempt_owner_response_scope_substitution_is_refused() {
 
 #[test]
 fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     for point in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let mut f = Fixture::new();
         let (attempt, saved, request) = f.pending_membership();

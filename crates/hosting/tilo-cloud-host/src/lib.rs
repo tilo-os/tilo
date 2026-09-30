@@ -581,8 +581,8 @@ mod provisioned {
     struct Entry {
         root: std::path::PathBuf,
         /// Held so the root inode cannot be reused while remembered.
-        _directory: atomic_file::StorageDirectory,
-        identity: atomic_file::FileIdentity,
+        _directory: tilo_files::native::atomic::StorageDirectory,
+        identity: tilo_files::native::atomic::FileIdentity,
         /// `(dev, ino)` of the root and every ancestor, root first.
         chain: Vec<(u64, u64)>,
     }
@@ -603,8 +603,8 @@ mod provisioned {
             })
             .collect()
     }
-    fn named_identity(root: &Path) -> Option<atomic_file::FileIdentity> {
-        atomic_file::FileIdentity::of(&std::fs::File::open(root).ok()?).ok()
+    fn named_identity(root: &Path) -> Option<tilo_files::native::atomic::FileIdentity> {
+        tilo_files::native::atomic::FileIdentity::of(&std::fs::File::open(root).ok()?).ok()
     }
     /// Whether `root` still names exactly a chain this process barriered.
     pub(super) fn current(root: &Path) -> bool {
@@ -619,7 +619,7 @@ mod provisioned {
             .any(|entry| entry.root == root && entry.chain == observed && entry.identity == named)
     }
     /// After `provision_directory(root)` returned `directory`, fully barriered.
-    pub(super) fn remember(root: &Path, directory: atomic_file::StorageDirectory) {
+    pub(super) fn remember(root: &Path, directory: tilo_files::native::atomic::StorageDirectory) {
         let (Some(chain), Some(named), Ok(identity)) =
             (chain(root), named_identity(root), directory.identity())
         else {
@@ -690,8 +690,10 @@ impl Store {
             // whole chain; directory creation alone is not a durability barrier.
             std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
             if !provisioned::current(root) {
-                let directory =
-                    atomic_file::provision_directory(root, atomic_file::Privacy::OwnerOnly)?;
+                let directory = tilo_files::native::atomic::provision_directory(
+                    root,
+                    tilo_files::native::atomic::Privacy::OwnerOnly,
+                )?;
                 provisioned::remember(root, directory);
             }
         }
@@ -705,7 +707,8 @@ impl Store {
             .open(root.join("state.lock"))?;
         let lock = advisory_lock::FileLock::exclusive(lock)?;
         let directory = File::open(root)?;
-        let storage_directory = atomic_file::StorageDirectory::from_file(directory.try_clone()?)?;
+        let storage_directory =
+            tilo_files::native::atomic::StorageDirectory::from_file(directory.try_clone()?)?;
         let persisted = storage::read_reconciled(&storage_directory, root)?;
         Self::load_locked(
             root,

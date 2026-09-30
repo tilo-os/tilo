@@ -296,7 +296,7 @@ async fn cloud_snapshot_renew_uncertain_barrier_keeps_old_anchor_until_actual_re
         https_owner::{Current, data::tests::authenticate_with_capabilities},
         storage::test_support::with_save_failure,
     };
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     for point in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let mut f = snapshot_fixture().await;
         register(&f);

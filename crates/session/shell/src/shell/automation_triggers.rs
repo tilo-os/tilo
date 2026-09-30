@@ -658,7 +658,7 @@ impl ScheduleTriggers {
         };
         let written = serde_json::to_vec_pretty(&self.ledger)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| atomic_file::write_creating_parent(path, &bytes));
+            .and_then(|bytes| tilo_files::native::atomic::write_creating_parent(path, &bytes));
         if let Err(error) = written {
             tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
         }

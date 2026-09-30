@@ -90,8 +90,8 @@ fn store_fd_open_binds_lock_to_the_original_opened_directory() {
     .unwrap();
     let original_lock = File::open(retained.join("owner.lock")).unwrap();
     assert_eq!(
-        atomic_file::FileIdentity::of(&store._lock.file).unwrap(),
-        atomic_file::FileIdentity::of(&original_lock).unwrap(),
+        tilo_files::native::atomic::FileIdentity::of(&store._lock.file).unwrap(),
+        tilo_files::native::atomic::FileIdentity::of(&original_lock).unwrap(),
         "held directory must not be paired with a replacement-root sentinel"
     );
     assert!(!root.join("owner.lock").exists());
@@ -209,21 +209,21 @@ fn store_fd_actual_faults_preserve_poison_and_acknowledgement_boundary() {
     }
 }
 
-fn actual_publication_error(error: anyhow::Error) -> atomic_file::PublicationError {
-    match error.downcast::<atomic_file::PublicationError>() {
+fn actual_publication_error(error: anyhow::Error) -> tilo_files::native::atomic::PublicationError {
+    match error.downcast::<tilo_files::native::atomic::PublicationError>() {
         Ok(error) => error,
         Err(error) => *error
             .downcast::<std::io::Error>()
             .expect("actual native IO error")
             .into_inner()
             .expect("retained typed publication error")
-            .downcast::<atomic_file::PublicationError>()
+            .downcast::<tilo_files::native::atomic::PublicationError>()
             .expect("original native publication custody"),
     }
 }
 #[test]
 fn store_fd_actual_atomic_failures_retain_original_commit_custody() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let (temporary, root, mut store) = seed();
         let original_digest = store.acknowledged_digest().unwrap();
@@ -233,9 +233,9 @@ fn store_fd_actual_atomic_failures_retain_original_commit_custody() {
         assert_eq!(
             publication.state(),
             if point == Checkpoint::BeforePublish {
-                atomic_file::PublicationState::NotPublished
+                tilo_files::native::atomic::PublicationState::NotPublished
             } else {
-                atomic_file::PublicationState::PublishedDurabilityUnknown
+                tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown
             }
         );
         assert!(store.is_poisoned());
@@ -268,7 +268,7 @@ fn store_fd_actual_atomic_failures_retain_original_commit_custody() {
 }
 #[test]
 fn store_fd_lock_replacement_during_publication_cannot_be_acknowledged() {
-    use atomic_file::test_support::{Checkpoint, with_observer};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
     let (_temporary, root, mut store) = seed();
     let changed = root.clone();
     let original_digest = store.acknowledged_digest().unwrap();
@@ -305,7 +305,7 @@ fn store_fd_validation_handles_cannot_release_original_exclusive_custody() {
 
 #[test]
 fn store_fd_sentinel_creation_preserves_real_publication_failures() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("owner");
@@ -318,9 +318,9 @@ fn store_fd_sentinel_creation_preserves_real_publication_failures() {
         assert_eq!(
             publication.state(),
             if point == Checkpoint::BeforePublish {
-                atomic_file::PublicationState::NotPublished
+                tilo_files::native::atomic::PublicationState::NotPublished
             } else {
-                atomic_file::PublicationState::PublishedDurabilityUnknown
+                tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown
             }
         );
         if point == Checkpoint::BeforeCommit {
@@ -337,7 +337,7 @@ fn store_fd_sentinel_creation_preserves_real_publication_failures() {
 
 #[test]
 fn store_fd_sentinel_if_absent_race_reopens_only_actual_winner() {
-    use atomic_file::test_support::{Checkpoint, with_observer};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("owner");
     private_dir(&root).unwrap();
@@ -353,8 +353,8 @@ fn store_fd_sentinel_if_absent_race_reopens_only_actual_winner() {
     .unwrap();
     let winner = File::open(root.join("owner.lock")).unwrap();
     assert_eq!(
-        atomic_file::FileIdentity::of(&winner).unwrap(),
-        atomic_file::FileIdentity::of(&store._lock.file).unwrap()
+        tilo_files::native::atomic::FileIdentity::of(&winner).unwrap(),
+        tilo_files::native::atomic::FileIdentity::of(&store._lock.file).unwrap()
     );
     assert_eq!(
         fs::read(root.join("owner.lock")).unwrap(),
