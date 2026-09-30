@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Type-check what the browser builds for wasm32-unknown-unknown, each with the
-# packages and features of the script that builds it (WEB_RUNTIME.md). A check
-# of each crate with its default features never compiles the web core as a
-# dynamic-linking main module with its app collection, nor the Cloud frontend.
+# packages and features of the script that builds it
+# (crates/browser/tilo-browser-runtime/scripts/build.sh). A check of each crate
+# alone never compiles the page runtime with every web app linked into it.
 #
 #   tools/ci/check-wasm.sh
 #
@@ -23,15 +23,9 @@ check() {
     cargo check --locked --target "$target" --lib "$@"
 }
 
-# build-web-core.sh and build-web-app.sh: the core with its app collection.
-check "web core" -p tilo-browser-runtime -p ebook -p word-processor -p chat --features tilo-browser-runtime/dylink
-# build-web-core.sh --features cloud: the same core with the certified peer.
-check "web core with peer" -p tilo-browser-runtime -p ebook -p word-processor -p chat \
-  --features tilo-browser-runtime/dylink,tilo-browser-runtime/cloud
-# build-web-core.sh --features relay: the same core with the relay peer.
-check "web core with relay peer" -p tilo-browser-runtime -p ebook -p word-processor -p chat \
-  --features tilo-browser-runtime/dylink,tilo-browser-runtime/relay
-# scripts/build.sh: the Cloud frontend's monolithic module.
-check "cloud frontend" -p tilo-browser-runtime --features cloud,static-apps
+# scripts/build.sh desktop: the page runtime with every web app registered.
+check "web desktop" -p tilo-web-desktop
+# scripts/build.sh runtime: the page runtime an app bundle links.
+check "page runtime" -p tilo-browser-runtime
 # web-registry-client/build-verifier.sh.
 check "registry verifier" -p registry-web-bindgen

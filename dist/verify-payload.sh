@@ -53,6 +53,8 @@ grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
     "$(path /usr/lib/systemd/user/tilo-graphical-session.target)"
 grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.target' \
     "$(path /usr/lib/systemd/user/tilo-graphical-session.target)"
+grep -Fqx 'Wants=tilo-app-host.socket tilo-models.socket tilo-model-gateway.socket' \
+    "$(path /usr/lib/systemd/user/tilo-graphical-session.target)"
 # The compositor owns the portal bus name in-process. A D-Bus activator or
 # separate user unit would race it and serve an empty workspace.
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service) ]]

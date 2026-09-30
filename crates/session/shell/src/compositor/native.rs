@@ -322,6 +322,32 @@ fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Opti
     deadline.filter(|deadline| *deadline > now)
 }
 
+/// How long after the last input a visible lock backdrop keeps moving. It
+/// then holds still until someone touches the machine: a locked laptop left
+/// on the desk must not repaint at the backdrop's cadence until it blanks.
+const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
+
+/// The lock backdrop animates only while it can be seen and someone is
+/// there. Behind a blanked panel the backend drops every frame, so building
+/// them would keep an unattended, locked machine awake at the backdrop's
+/// cadence.
+fn lock_animation_deadline(
+    theme: &ui::theme::Theme,
+    session: &SessionManager,
+    has_wallpaper: bool,
+    last_frame: Instant,
+    now: Instant,
+) -> Option<Instant> {
+    lock_screen::animation_deadline(
+        theme,
+        session.is_locked()
+            && !session.is_blanked()
+            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
+        has_wallpaper,
+        last_frame,
+    )
+}
+
 /// How often a locked session re-reads its players, so the lock card follows
 /// a track change or a pause made elsewhere.
 const LOCK_MEDIA_REFRESH: Duration = Duration::from_secs(1);
@@ -2280,6 +2306,9 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Synthetic touchpad gestures go through the tracker the DRM runtime
+    /// feeds from libinput, so they mean exactly what the fingers would.
+    gestures: crate::compositor::backend::drm::gestures::GestureTracker,
     /// Attached input devices and the last kind of input used, from the
     /// backend or from injected test-control input alike. The shell chrome's
     /// shortcut help follows it.
@@ -2302,6 +2331,7 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
             agents: crate::compositor::agent_seats::AgentSeats::new(),
@@ -2335,7 +2365,8 @@ impl TestControlCtx {
             PlannedAction::CursorMoved { .. }
             | PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
-            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            | PlannedAction::MouseWheel { .. }
+            | PlannedAction::Touchpad(_) => self.input.note_used(ui::InputModality::Pointer),
             _ => false,
         };
         if changed {
@@ -3000,6 +3031,11 @@ fn execute_planned_action(
             x,
             y,
         } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
+        PlannedAction::Touchpad(edge) => {
+            if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
+                apply_shell_gesture(fb, gesture);
+            }
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -3110,6 +3146,7 @@ fn execute_locked_action(
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
         | PlannedAction::Touch { .. }
+        | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -4757,6 +4794,19 @@ fn load_session_tree(
             "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
+    }
+    if let Some(account) = std::env::var("USER")
+        .ok()
+        .filter(|account| !account.is_empty())
+    {
+        let rebound = tree
+            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
+        if !rebound.is_empty() {
+            tracing::info!(
+                "capabilities: {} workspace(s) created before this device's identity now belong to it",
+                rebound.len()
+            );
+        }
     }
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
@@ -6885,9 +6935,23 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
-    frame_builder
-        .host_mut()
-        .set_power_bridge(power_bridge.clone());
+    // Only a DRM session owns the seat. A headless or nested session runs
+    // beside another desktop on the same machine and logind, so it must never
+    // suspend, lock-on-lid or power off that machine, nor take its lid and
+    // power-key delegation.
+    let owns_host_power = matches!(backend_kind, BackendKind::Drm);
+    if owns_host_power {
+        frame_builder
+            .host_mut()
+            .set_power_bridge(power_bridge.clone());
+    } else {
+        frame_builder.host_mut().detach_from_host();
+        tracing::info!(
+            target: "tilo::power",
+            ?backend_kind,
+            "session does not own the seat: host power actions and logind power service disabled"
+        );
+    }
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -7028,7 +7092,7 @@ pub fn run() {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if owns_host_power && let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -7249,6 +7313,7 @@ pub fn run() {
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+    let mut animating_content_leaves: Vec<String> = Vec::new();
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -9411,11 +9476,12 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_screen::animation_deadline(
+            lock_animation: lock_animation_deadline(
                 frame_builder.theme(),
-                session.is_locked(),
+                &session,
                 lock_has_wallpaper,
                 last_lock_animation_frame,
+                iter_t0,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
@@ -9468,6 +9534,10 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
+                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    {
+                        animating_content_leaves = frame_builder.content_animating_leaves();
+                    }
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -9484,10 +9554,14 @@ pub fn run() {
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
-                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
+                     locked={} blanked={} | \
+                     anim_sources host=0x{:04x} host_labels={:?} content={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    session.is_locked(),
+                    session.is_blanked(),
                     animation_sources_seen.host,
                     animation_host_labels,
+                    animating_content_leaves.join(","),
                     animation_sources_seen.floating,
                     animation_sources_seen.transient,
                     animation_sources_seen.osk,
@@ -9507,6 +9581,7 @@ pub fn run() {
                 cause_session = 0;
                 cause_keepalive = 0;
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+                animating_content_leaves.clear();
                 stats_since = Instant::now();
             }
         }
@@ -10247,11 +10322,12 @@ pub fn run() {
                 widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
                 lock_animation_park_deadline(
                     park_now,
-                    lock_screen::animation_deadline(
+                    lock_animation_deadline(
                         frame_builder.theme(),
-                        session.is_locked(),
+                        &session,
                         lock_has_wallpaper,
                         last_lock_animation_frame,
+                        park_now,
                     ),
                 ),
                 lock_clock_deadline,
@@ -10985,6 +11061,58 @@ mod tests {
                     [lock_animation_park_deadline(now, future)]
                 ),
                 Some(Duration::from_millis(42))
+            );
+        }
+        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: Some(Duration::from_secs(10)),
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
+                "a visible lock animates its backdrop"
+            );
+            session.tick(at(11));
+            assert!(session.is_locked() && session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
+                "a blanked panel must not keep the loop building lock frames"
+            );
+            session.note_activity(at(12));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
+        }
+        // Phase `an_untouched_visible_lock_stops_animating`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: None,
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
+            session.tick(at(21));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
+                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
+            );
+            session.note_activity(at(30));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
+                "input moves it again"
             );
         }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
@@ -12310,6 +12438,55 @@ mod tests {
                  {initial_count}"
             );
         }
+        // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
+        // The same tracker as libinput's path decides what the fingers meant.
+        {
+            use crate::shell::test_control::TouchpadEdge;
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let mut run = |fb: &mut FrameBuilder, edges: &[TouchpadEdge]| {
+                for edge in edges {
+                    execute_planned_action(&PlannedAction::Touchpad(*edge), fb, &mut ctx);
+                }
+            };
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 0.7 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "pinching in opens the overview"
+            );
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 1.4 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(!fb.chrome().overlays.overview, "pinching out closes it");
+
+            let first = fb.chrome().tree().desktop.active;
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::SwipeBegin { fingers: 3 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeEnd { cancelled: false },
+                ],
+            );
+            assert_ne!(
+                fb.chrome().tree().desktop.active,
+                first,
+                "a three-finger downward swipe switches workspace"
+            );
+        }
         // Phase `set_modifiers_action_updates_ctx_mask`.
         // `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
         // snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
@@ -13218,6 +13395,32 @@ fn reconcile_surface_output_memberships(
     }
     let changes = memberships.reconcile(&advertised_outputs, &visible_surface_rects(frame_builder));
     send_surface_output_changes(state, output_globals, changes);
+}
+
+/// What one synthetic touchpad edge means to `tracker`, as the DRM
+/// runtime asks it of every libinput gesture event.
+fn feed_touchpad_edge(
+    tracker: &mut crate::compositor::backend::drm::gestures::GestureTracker,
+    edge: crate::shell::test_control::TouchpadEdge,
+) -> Option<crate::compositor::backend::drm::gestures::GestureAction> {
+    use crate::shell::test_control::TouchpadEdge;
+    match edge {
+        TouchpadEdge::SwipeBegin { fingers } => {
+            tracker.swipe_begin(fingers);
+            None
+        }
+        TouchpadEdge::SwipeUpdate { dx, dy } => tracker.swipe_update(dx, dy),
+        TouchpadEdge::SwipeEnd { cancelled } => tracker.swipe_end_with_cancel(cancelled),
+        TouchpadEdge::PinchBegin { fingers } => {
+            tracker.pinch_begin(fingers);
+            None
+        }
+        TouchpadEdge::PinchUpdate { scale } => tracker.pinch_update(scale),
+        TouchpadEdge::PinchEnd => {
+            tracker.pinch_end();
+            None
+        }
+    }
 }
 
 /// Perform the navigation a claimed touchpad gesture resolved to — a second

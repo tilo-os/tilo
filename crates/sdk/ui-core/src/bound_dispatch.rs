@@ -1598,6 +1598,13 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    // An agent principal names one writer; a person may write from several
+    // devices at once.
+    let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
+        actor.as_bytes().to_vec()
+    } else {
+        crate::history_source::authors::device_actor(actor, doc.get_actor())
+    };
     let dispatched =
         if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
             tilo_actions::Dispatched::AppliedLocal(
@@ -1605,7 +1612,7 @@ fn execute_document(
                     doc,
                     action,
                     encoded,
-                    Some(actor.as_bytes()),
+                    Some(writer.as_slice()),
                     context,
                 )
                 .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?,
@@ -1616,7 +1623,7 @@ fn execute_document(
                 action,
                 encoded,
                 transport,
-                Some(actor.as_bytes()),
+                Some(writer.as_slice()),
                 context,
             )
             .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
@@ -3840,3 +3847,7 @@ mod semantic_authority_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]
 mod author_writer_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/device_actor_tests.rs"]
+mod device_actor_tests;

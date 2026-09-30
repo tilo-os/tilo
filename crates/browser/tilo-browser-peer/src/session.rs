@@ -17,6 +17,7 @@
 //!   instead of retrying forever; only [`PeerHandle::reconnect`] retries.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -36,6 +37,10 @@ use crate::document::{
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// How often overdue channel access requests are sent again.
+const CHANNEL_TICK: Duration = Duration::from_secs(1);
+/// Sealed documents held per route while this device waits for its keys.
+const MAX_HELD_DOCUMENTS: usize = 4096;
 /// Consecutive refused handshakes after which the host is taken to have
 /// rejected this device (revoked or unknown) rather than to be unreachable.
 const REFUSALS_BEFORE_FAILING: u32 = 3;
@@ -193,6 +198,9 @@ pub struct PeerStatus {
     pub device: [u8; 32],
     /// Bumped on every change.
     pub generation: u64,
+    /// This page's channel state, one line per room, certificate and
+    /// route, for diagnostics.
+    pub channels: String,
 }
 
 /// Something the session produced for its consumers.
@@ -259,6 +267,8 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    OpenRoute(DocumentRoute),
+    PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
     RemoteAction(u64, [u8; 32], Vec<u8>),
@@ -370,6 +380,7 @@ impl PeerHandle {
                 outgoing_pending: 0,
                 device: config.cert.device_public_key,
                 generation: 0,
+                channels: String::new(),
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -377,6 +388,15 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
+        let mut channels = crate::channels::Channels::new(
+            config.cert.device_public_key,
+            config.cert.user_public_key,
+        );
+        let saved = store
+            .load_channels()
+            .and_then(|bytes| postcard::from_bytes::<SavedPeerChannels>(&bytes).ok())
+            .unwrap_or_default();
+        channels.restore(saved.channels);
         let task = Task {
             config,
             signer,
@@ -387,6 +407,12 @@ impl PeerHandle {
             outbox: record.outbox.iter().cloned().collect(),
             record,
             ciphers: Ciphers::new(),
+            channels,
+            channel_changes: crate::channels::Changes::default(),
+            opened: BTreeMap::new(),
+            refused: (0, String::new()),
+            held_inbound: BTreeMap::new(),
+            held_outbound: saved.held.into_iter().collect(),
             doc_seq: 0,
             barriers: Vec::new(),
             admission_since: None,
@@ -450,6 +476,28 @@ impl PeerHandle {
         cipher: Box<dyn ContentCipher>,
     ) -> Result<(), String> {
         self.send(Command::InstallCipher(route, cipher))
+    }
+
+    /// Take part in `route`'s encrypted channel: when a steward governs it,
+    /// ask for access so documents on it can be opened and sealed. Routes
+    /// are also opened by publishing on them or receiving their documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
+        self.send(Command::OpenRoute(route))
+    }
+
+    /// Name the device that governs `room` (a room id), as the room itself
+    /// says: its channels are stewarded by that device only, whatever a
+    /// genesis frame claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn pin_governor(&self, room: &str, governor: [u8; 32]) -> Result<(), String> {
+        self.send(Command::PinGovernor(room.to_owned(), governor))
     }
 
     /// Join a room's live plane (after [`Self::join`]).
@@ -710,6 +758,9 @@ enum Exit {
     Lost(String),
 }
 
+/// A sealed frame held for its keys, with its authenticated author.
+type HeldFrame = (Vec<u8>, [u8; 32]);
+
 struct Task {
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
@@ -720,6 +771,20 @@ struct Task {
     outbox: VecDeque<OutboxEntry>,
     record: PeerRecord,
     ciphers: Ciphers,
+    /// This device's membership of the rooms' encrypted channels.
+    channels: crate::channels::Channels,
+    /// What channel state changed since the session last acted on it.
+    channel_changes: crate::channels::Changes,
+    /// Documents opened per route, and those refused with the last reason,
+    /// for the diagnostics.
+    opened: BTreeMap<(DocumentRoute, [u8; 4]), u64>,
+    refused: (u64, String),
+    /// Sealed documents that arrived before this device held their keys,
+    /// with their authenticated authors.
+    held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
+    /// Frames published on an encrypted route before this device held its
+    /// keys; they are sealed and committed once the keys arrive.
+    held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
@@ -993,7 +1058,11 @@ impl Task {
         });
         self.admission_since = Some(crate::clock::now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
+        let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         loop {
+            if !self.settle_channels(Some(&client)).await {
+                return Exit::Lost("host session saturated".into());
+            }
             tokio::select! {
                 biased;
                 command = commands.recv() => match command {
@@ -1021,6 +1090,12 @@ impl Task {
                 envelope = client.recv() => match envelope {
                     Some(envelope) => {
                         let admitted = matches!(envelope, Envelope::Ready { .. });
+                        if let Envelope::Ready { workspace_id, .. } = &envelope
+                            && let Some(hello) = identity_hello(*workspace_id, &self.config.cert)
+                            && client.send(hello).is_err()
+                        {
+                            return Exit::Lost("host session saturated".into());
+                        }
                         self.inbound(envelope);
                         if admitted {
                             self.check_admission();
@@ -1033,6 +1108,10 @@ impl Task {
                         return Exit::Lost("host session saturated".into());
                     }
                     self.check_admission();
+                }
+                _ = channel_tick.tick() => {
+                    let changes = self.channels.tick(crate::clock::now_ms());
+                    self.absorb(changes);
                 }
             }
         }
@@ -1091,6 +1170,18 @@ impl Task {
                 self.ciphers.insert(route, cipher);
                 true
             }
+            Command::OpenRoute(route) => {
+                let changes = self.channels.open(&route, crate::clock::now_ms());
+                self.absorb(changes);
+                true
+            }
+            Command::PinGovernor(room, governor) => {
+                let changes = self
+                    .channels
+                    .pin_governor(&room, governor, crate::clock::now_ms());
+                self.absorb(changes);
+                true
+            }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
             Command::Barrier(done) => {
                 match self.outbox.back() {
@@ -1105,25 +1196,8 @@ impl Task {
                         let http = link.client().clone();
                         let session = link.session().to_owned();
                         n0_future::task::spawn(async move {
-                            let grant = match agent {
-                                None => {
-                                    crate::carrier::live_grant(
-                                        http.as_ref(),
-                                        &session,
-                                        workspace_id,
-                                    )
-                                    .await
-                                }
-                                Some(agent) => {
-                                    crate::carrier::agent_live_grant(
-                                        http.as_ref(),
-                                        &session,
-                                        workspace_id,
-                                        agent,
-                                    )
-                                    .await
-                                }
-                            };
+                            let grant =
+                                live_grant(http.as_ref(), &session, workspace_id, agent).await;
                             done(grant.map_err(|error| error.to_string()));
                         });
                     }
@@ -1148,6 +1222,16 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
+        let changes = self.channels.open(&route, crate::clock::now_ms());
+        self.absorb(changes);
+        if !self.ciphers.contains_key(&route) && self.channels.gated(&route) {
+            // Never in the clear on an encrypted channel, nor before the
+            // page knows whether it is one: the frames wait for this
+            // device's keys or for the room's replay to name no governor.
+            self.held_outbound.entry(route).or_default().extend(frames);
+            self.persist_channels(true);
+            return true;
+        }
         let mut delivered = true;
         for frame in frames {
             let now = crate::clock::now_ns();
@@ -1202,6 +1286,8 @@ impl Task {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
+                let changes = self.channels.replayed(workspace_id);
+                self.absorb(changes);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
             Envelope::NotAuthorised { reason, .. } => {
@@ -1219,11 +1305,7 @@ impl Task {
                 else {
                     return;
                 };
-                match open_frame(&body, author_device_public_key, &mut self.ciphers) {
-                    Ok(Some(document)) => self.emit(&PeerEvent::Document(Box::new(document))),
-                    Ok(None) => {}
-                    Err(error) => self.emit(&PeerEvent::DocumentRejected(error.to_string())),
-                }
+                self.inbound_body(body, author_device_public_key);
             }
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Some(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
@@ -1271,6 +1353,239 @@ impl Task {
         }
     }
 
+    /// One retained message from the host: channel governance, a member's
+    /// certificate, or a document.
+    fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
+        let now = crate::clock::now_ms();
+        match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
+            Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
+                let changes = self.channels.note_cert(author, *cert, now);
+                self.absorb(changes);
+            }
+            Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
+                let changes = self.channels.receive_frame(author, &room, *frame, now);
+                self.absorb(changes);
+            }
+            Ok(neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                cluster_id,
+                record_id,
+                envelope,
+                ..
+            }) => {
+                let route = DocumentRoute {
+                    app_id,
+                    cluster_id,
+                    record: record_id,
+                };
+                let changes = self.channels.open(&route, now);
+                self.absorb(changes);
+                if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
+                    let held = self.held_inbound.entry(route).or_default();
+                    if held.len() >= MAX_HELD_DOCUMENTS {
+                        held.pop_front();
+                    }
+                    held.push_back((body, author));
+                    return;
+                }
+                self.open_document(&body, author);
+            }
+            _ => {}
+        }
+    }
+
+    fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
+        match open_frame(body, author, &mut self.ciphers) {
+            Ok(Some(document)) => {
+                let from: [u8; 4] = author
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .unwrap_or_default();
+                let opened = self
+                    .opened
+                    .entry((document.route.clone(), from))
+                    .or_default();
+                *opened = opened.saturating_add(1);
+                self.emit(&PeerEvent::Document(Box::new(document)));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.refused = (self.refused.0.saturating_add(1), error.to_string());
+                self.emit(&PeerEvent::DocumentRejected(error.to_string()));
+            }
+        }
+    }
+
+    fn absorb(&mut self, changes: crate::channels::Changes) {
+        self.channel_changes.extend(changes);
+    }
+
+    /// Store channel state and held edits when either changed, so a
+    /// reloaded page keeps its access and what it wrote before the keys.
+    fn persist_channels(&mut self, held_changed: bool) {
+        let Some(channels) = self.channels.export_if_changed().or_else(|| {
+            held_changed.then(|| {
+                self.channels.mark_changed();
+                self.channels.export_if_changed().unwrap_or_default()
+            })
+        }) else {
+            return;
+        };
+        let saved = SavedPeerChannels {
+            channels,
+            held: self
+                .held_outbound
+                .iter()
+                .map(|(route, frames)| (route.clone(), frames.clone()))
+                .collect(),
+        };
+        let result = postcard::to_stdvec(&saved)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| self.store.save_channels(&bytes));
+        if let Err(error) = result {
+            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+        }
+    }
+
+    /// Act on channel changes: install new keys, open what waited for them,
+    /// seal and commit what was held, and sign and send governance. Returns
+    /// `false` when the session could not take an envelope.
+    async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
+        let mut delivered = true;
+        loop {
+            let changes = std::mem::take(&mut self.channel_changes);
+            if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
+            {
+                self.persist_channels(false);
+                let mut channels = self.channels.describe();
+                for ((route, from), count) in &self.opened {
+                    let _ = write!(
+                        channels,
+                        "\nopened {}/{} from {}: {count}",
+                        route.app_id,
+                        route.record,
+                        hex::encode(from)
+                    );
+                }
+                for (route, held) in &self.held_inbound {
+                    let _ = write!(
+                        channels,
+                        "\nheld for keys {}/{}: {}",
+                        route.app_id,
+                        route.record,
+                        held.len()
+                    );
+                }
+                if self.refused.0 > 0 {
+                    let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
+                }
+                if lock(&self.shared).status.channels != channels {
+                    self.update(|status| status.channels = channels);
+                }
+                return delivered;
+            }
+            let held_before = self.held_outbound.len();
+            for route in changes.released {
+                if let Some(frames) = self.held_outbound.remove(&route) {
+                    delivered &= self.publish(route, frames, client).await;
+                }
+            }
+            for (route, keys) in changes.keys {
+                self.ciphers
+                    .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
+                for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
+                    self.open_document(&body, author);
+                }
+                if let Some(frames) = self.held_outbound.remove(&route) {
+                    delivered &= self.publish(route, frames, client).await;
+                }
+            }
+            if self.held_outbound.len() != held_before {
+                self.persist_channels(true);
+            }
+            for outgoing in changes.outgoing {
+                let Some(client) = client else {
+                    // Offline: overdue requests are sent again after the
+                    // reconnect; acknowledgements go with the next frame.
+                    continue;
+                };
+                let signer = Arc::clone(&self.signer);
+                let device = self.config.cert.device_public_key;
+                if let Some(envelope) = sign_governance(signer.as_ref(), device, outgoing).await {
+                    delivered &= client.send(envelope).is_ok();
+                }
+            }
+        }
+    }
+}
+
+/// A page's channel state and the edits it holds for the durable store,
+/// beside its [`PeerRecord`].
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct SavedPeerChannels {
+    channels: crate::channels::SavedChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Sign a governance message with the device key and wrap it for the host,
+/// which retains it for the steward.
+async fn sign_governance(
+    signer: &dyn DeviceSigner,
+    device: [u8; 32],
+    outgoing: crate::channels::Outgoing,
+) -> Option<Envelope> {
+    {
+        let (workspace_id, message) = match outgoing {
+            crate::channels::Outgoing::Request {
+                workspace_id,
+                room,
+                mut request,
+            } => {
+                let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
+                request.signature = collab_types::Signature::from_bytes(signature);
+                (
+                    workspace_id,
+                    neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                        room,
+                        request: Box::new(request),
+                        delivery: rand::random(),
+                    },
+                )
+            }
+            crate::channels::Outgoing::Ack {
+                workspace_id,
+                room,
+                mut ack,
+            } => {
+                let signature = signer.sign(ack.signing_bytes().ok()?).await.ok()?;
+                ack.signature = collab_types::Signature::from_bytes(signature);
+                (
+                    workspace_id,
+                    neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+                        room,
+                        ack: Box::new(ack),
+                        delivery: rand::random(),
+                    },
+                )
+            }
+        };
+        let (channel, _) = neighbour_wire::retention(&message, false)?;
+        Some(Envelope::Delta {
+            workspace_id,
+            author_device_public_key: device,
+            authored_at_ns: crate::clock::now_ns(),
+            delta: CoeditPayload::Checkpoint {
+                channel,
+                body: postcard::to_allocvec(&message).ok()?,
+            }
+            .encode()
+            .ok()?,
+            signature: [0; 64],
+        })
+    }
+}
+
+impl Task {
     /// Retire outbox entry `op`: acknowledged at host order `seq`, or refused
     /// (`None`, it can never become durable).
     fn acknowledge(&mut self, op: [u8; 16], seq: Option<u64>) {
@@ -1310,6 +1625,26 @@ impl Task {
             complete(if target == op { result.clone() } else { Ok(()) });
         }
     }
+}
+
+/// This device's certificate for a room's other members. A native shell
+/// accepts a member's edits only from a device whose certificate it holds,
+/// and a browser has no gossip neighbours to hand it over, so it goes through
+/// the host, which authenticates the author and keeps it for later joiners.
+fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
+    let hello = neighbour_wire::NeighbourMsg::IdentityHello {
+        cert: Box::new(cert.clone()),
+        revocations: Vec::new(),
+    };
+    let (channel, _) = neighbour_wire::retention(&hello, false)?;
+    let body = postcard::to_allocvec(&hello).ok()?;
+    Some(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: cert.device_public_key,
+        authored_at_ns: crate::clock::now_ns(),
+        delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
+        signature: [0; 64],
+    })
 }
 
 fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
@@ -1420,6 +1755,19 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
     }
 }
 
+/// A live grant for this device, or for agent `agent` it runs.
+async fn live_grant(
+    http: &dyn crate::HttpClient,
+    session: &str,
+    workspace_id: u64,
+    agent: Option<String>,
+) -> Result<tilo_relay_protocol::web::LiveGrant, crate::carrier::LinkError> {
+    match agent {
+        None => crate::carrier::live_grant(http, session, workspace_id).await,
+        Some(agent) => crate::carrier::agent_live_grant(http, session, workspace_id, agent).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1437,6 +1785,7 @@ mod tests {
             outgoing_pending: 0,
             device: [0; 32],
             generation: 0,
+            channels: String::new(),
         }
     }
 

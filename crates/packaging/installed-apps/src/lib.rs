@@ -28,6 +28,9 @@ pub struct InstalledApp {
     /// Human-facing name — the manifest's `[package].name`, or derived
     /// from the package id's trailing component when unset.
     pub display_name: String,
+    /// The manifest's `[package.names]`: the name in other languages, by
+    /// BCP 47 tag. Search matches these alongside `display_name`.
+    pub localized_names: std::collections::BTreeMap<String, String>,
     /// The manifest's `[package].category`, when declared; matched by
     /// the Applications search provider.
     pub category: Option<String>,
@@ -65,6 +68,7 @@ impl InstalledApp {
                 .clone()
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
+            localized_names: manifest.localized_names.clone(),
             category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
             package_id,
             version: manifest.version.clone(),
@@ -79,6 +83,21 @@ impl InstalledApp {
             opens_mime_types: manifest.opens_mime.clone(),
             opens_uri_schemes: manifest.opens_schemes,
         })
+    }
+
+    /// The name to show in `locale` (BCP 47): its exact tag, else its
+    /// language, else `display_name`.
+    pub fn name_for(&self, locale: &str) -> &str {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        self.localized_names
+            .iter()
+            .find(|(tag, _)| tag.eq_ignore_ascii_case(locale))
+            .or_else(|| {
+                self.localized_names
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(language))
+            })
+            .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
     }
 
     /// Whether this package declares it opens `ext` (case-insensitive,
@@ -167,6 +186,7 @@ pub fn read_from_env() -> Result<Vec<InstalledApp>, CatalogError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
     use super::*;
@@ -257,6 +277,7 @@ mod tests {
             InstalledApp {
                 package_id: "so.tilo.notes".into(),
                 display_name: "Notes".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "1.0.0".into(),
                 manifest_path: path,
