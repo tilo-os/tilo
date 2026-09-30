@@ -47,6 +47,8 @@ tilo-automerge-isolate.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true
 
 [lints]
