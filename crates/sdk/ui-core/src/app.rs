@@ -1101,6 +1101,8 @@ impl App {
 
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         if *handled
+            || self.input.modifiers.state().super_key()
+            || self.input.modifiers.state().shift_key()
             || !matches!(
                 event,
                 WindowEvent::KeyboardInput {
