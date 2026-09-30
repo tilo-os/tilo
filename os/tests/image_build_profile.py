@@ -236,6 +236,17 @@ esac
             self.assertIn("require TILO_PUBLIC_TRUST_MODE", result.stderr)
             self.assertFalse(self.log.exists())
 
+    def test_disk_only_skips_build_asset_downloads(self):
+        marker = self.root / "asset-cache-invoked"
+        self.write("os/dev/cache-github-assets.sh", f"#!/bin/sh\ntouch '{marker}'\n", executable=True)
+        result = self.run_builder(TILO_SKIP_BUILD="1")
+        self.assertFalse(marker.exists(), result.stderr)
+        self.assertIn("TILO_SKIP_BUILD=1", result.stderr)
+
+        result = self.run_builder()
+        self.assertEqual(result.returncode, BUILD_INTERCEPTED, result.stderr)
+        self.assertTrue(marker.exists(), "a fresh build still needs its pinned assets")
+
     def development_pipeline_inputs(self):
         inputs = self.development_inputs()
         self.write("bin/podman", '''#!/bin/sh

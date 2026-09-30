@@ -178,7 +178,9 @@ if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ];
   [ "$TILO_WITH_WINDOWS" = 1 ] \
     || warn "no FEX_PAYLOAD_REF/WINDOWS_GUEST_REF: this $TILO_WINDOWS_ARCH image is built without Windows apps"
 fi
-if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+# Disk-only installation uses an image with its external assets already baked
+# in, so it does not need the build-context downloads.
+if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
   [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
   _tilo_sccache_version=$(sed -nE 's/^ARG SCCACHE_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
@@ -192,7 +194,7 @@ if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   [[ "$_tilo_mold_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned mold version"
   _tilo_native_assets+=("mold-${_tilo_mold_version}-${TILO_WINDOWS_ARCH}-linux.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
-else
+elif [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
 fi
 # The digest-pinned base the build starts FROM — the mirror of the Fedora
