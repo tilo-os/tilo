@@ -33,7 +33,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::panes::appearance::{text_size_label, text_size_options, text_size_scale};
+use crate::i18n::t;
+use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
@@ -183,27 +184,26 @@ impl AccessibilityPane {
 
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> Box<dyn Widget> {
-        let size_opts = text_size_options();
-        let size_current = text_size_label(self.appearance.text_scale);
+        let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
         let size = Self::choice(size_opts, TEXT_SIZE_KEY, "text-size")
             .with_id("a11y.text_size")
-            .with_placeholder(&size_current);
+            .with_placeholder(text_size_label(self.appearance.text_scale));
         card(
-            "Vision",
+            &t("a11y-vision-title"),
             rows(vec![
                 setting_row_described(
-                    "High contrast",
-                    "Maximise contrast for low-vision comfort",
+                    &t("a11y-high-contrast"),
+                    &t("a11y-high-contrast-desc"),
                     Self::toggle("a11y.high_contrast", HIGH_CONTRAST_KEY, "high-contrast"),
                 ),
                 setting_row_described(
-                    "Reduce motion",
-                    "Skip animations and transitions",
+                    &t("a11y-reduce-motion"),
+                    &t("a11y-reduce-motion-desc"),
                     Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY, "reduce-motion"),
                 ),
-                choice_row("Text size", Box::new(size)),
+                choice_row(&t("a11y-text-size"), Box::new(size)),
                 choice_row(
-                    "Colour filter",
+                    &t("a11y-colour-filter"),
                     Box::new(
                         Self::choice(
                             ColorFilter::OPTIONS
@@ -218,7 +218,7 @@ impl AccessibilityPane {
                     ),
                 ),
                 choice_row(
-                    "Magnifier",
+                    &t("a11y-magnifier"),
                     Box::new(
                         Self::choice(
                             magnifier::ZOOM_LABELS
@@ -233,7 +233,7 @@ impl AccessibilityPane {
                     ),
                 ),
                 choice_row(
-                    "Magnifier view",
+                    &t("a11y-magnifier-view"),
                     Box::new(
                         Self::choice(
                             magnifier::MagnifierView::ALL
@@ -263,25 +263,23 @@ impl AccessibilityPane {
                 self.access.cursor_size,
             ));
         card(
-            "Pointer",
+            &t("a11y-pointer-title"),
             rows(vec![
                 setting_row_described(
-                    "Mouse keys",
-                    "Move the pointer with the numeric keypad",
+                    &t("a11y-mouse-keys"),
+                    &t("a11y-mouse-keys-desc"),
                     Self::toggle("a11y.mouse_keys", MOUSE_KEYS_KEY, "mouse-keys"),
                 ),
-                caption(
-                    "Keypad 1–9 move the pointer and speed up while held; 5 clicks, + double-clicks, 0 holds the button down and . releases it. / * − choose the left, middle or right button. Shift+Alt+Num Lock turns mouse keys on or off.",
-                ),
+                caption(&t("a11y-mouse-keys-caption")),
                 setting_row_described(
-                    "Large cursor",
-                    "Enlarge the mouse pointer so it is easy to find",
+                    &t("a11y-large-cursor"),
+                    &t("a11y-large-cursor-desc"),
                     Self::toggle("a11y.large_cursor", LARGE_CURSOR_KEY, "large-cursor"),
                 ),
-                choice_row("Cursor size", Box::new(cursor)),
+                choice_row(&t("a11y-cursor-size"), Box::new(cursor)),
                 setting_row_described(
-                    "Pointer crosshair",
-                    "Draw high-contrast guide lines through the pointer",
+                    &t("a11y-pointer-crosshair"),
+                    &t("a11y-pointer-crosshair-desc"),
                     Self::toggle(
                         "a11y.cursor_crosshair",
                         CURSOR_CROSSHAIR_KEY,
@@ -289,8 +287,8 @@ impl AccessibilityPane {
                     ),
                 ),
                 setting_row_described(
-                    "Thicker text cursor",
-                    "Use a wider insertion caret in Tilo applications",
+                    &t("a11y-thick-caret"),
+                    &t("a11y-thick-caret-desc"),
                     Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY, "thick-text-caret"),
                 ),
             ]),
@@ -305,8 +303,8 @@ impl AccessibilityPane {
     fn build_typing_card(&self) -> Box<dyn Widget> {
         let osk_row = if osk_service_available() {
             setting_row_described(
-                "On-screen keyboard",
-                "Automatic shows it for text fields while you use touch without typing on a keyboard",
+                &t("a11y-osk"),
+                &t("a11y-osk-desc"),
                 Box::new(
                     Self::choice(
                         OnScreenKeyboard::OPTIONS
@@ -321,31 +319,28 @@ impl AccessibilityPane {
                 ),
             )
         } else {
-            value_row(
-                "On-screen keyboard",
-                "Not installed — add the signed so.tilo.osk system package",
-            )
+            value_row(&t("a11y-osk"), &t("a11y-osk-missing"))
         };
         card(
-            "Typing",
+            &t("a11y-typing-title"),
             rows(vec![
                 setting_row_described(
-                    "Sticky keys",
-                    "Type shortcuts one key at a time instead of holding a chord",
+                    &t("a11y-sticky-keys"),
+                    &t("a11y-sticky-keys-desc"),
                     Self::toggle("a11y.sticky_keys", STICKY_KEYS_KEY, "sticky-keys"),
                 ),
                 setting_row_described(
-                    "Slow keys",
-                    "Ignore brief, accidental key presses",
+                    &t("a11y-slow-keys"),
+                    &t("a11y-slow-keys-desc"),
                     Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY, "slow-keys"),
                 ),
                 setting_row_described(
-                    "Bounce keys",
-                    "Ignore a key pressed again right after it was released",
+                    &t("a11y-bounce-keys"),
+                    &t("a11y-bounce-keys-desc"),
                     Self::toggle("a11y.bounce_keys", BOUNCE_KEYS_KEY, "bounce-keys"),
                 ),
                 choice_row(
-                    "Bounce keys delay",
+                    &t("a11y-bounce-delay"),
                     Box::new(
                         Self::choice(
                             AccessibilityPrefs::BOUNCE_DELAYS
@@ -364,8 +359,8 @@ impl AccessibilityPane {
                     ),
                 ),
                 setting_row_described(
-                    "Flash when a key is ignored",
-                    "Show the visual alert each time bounce keys drops a press",
+                    &t("a11y-bounce-alert"),
+                    &t("a11y-bounce-alert-desc"),
                     Self::toggle(
                         "a11y.bounce_keys_alert",
                         BOUNCE_ALERT_KEY,
@@ -374,12 +369,12 @@ impl AccessibilityPane {
                 ),
                 osk_row,
                 setting_row_described(
-                    "Switch control",
-                    "Translate a hardware switch pair into standard Tab and Enter actions",
+                    &t("a11y-switch-control"),
+                    &t("a11y-switch-control-desc"),
                     Self::toggle("a11y.switch_control", SWITCH_CONTROL_KEY, "switch-control"),
                 ),
                 choice_row(
-                    "Switch keys (next / activate)",
+                    &t("a11y-switch-keys"),
                     Box::new(
                         Self::choice(
                             SwitchKeyPair::OPTIONS
@@ -394,7 +389,7 @@ impl AccessibilityPane {
                     ),
                 ),
                 choice_row(
-                    "Automatic scan",
+                    &t("a11y-switch-scan"),
                     Box::new(
                         Self::choice(
                             vec![
@@ -428,13 +423,13 @@ impl AccessibilityPane {
         let reader_rows = if let Some(backend) = tts_capability() {
             vec![
                 setting_row_described(
-                    "Screen reader",
-                    "Read focused controls and live announcements aloud",
+                    &t("a11y-screen-reader"),
+                    &t("a11y-screen-reader-desc"),
                     Self::toggle("a11y.screen_reader", SCREEN_READER_KEY, "screen-reader"),
                 ),
-                value_row("Speech engine", backend),
+                value_row(&t("a11y-speech-engine"), backend),
                 choice_row(
-                    "Speech rate",
+                    &t("a11y-speech-rate"),
                     Box::new(
                         Self::choice(
                             vec![
@@ -458,7 +453,7 @@ impl AccessibilityPane {
                     ),
                 ),
                 choice_row(
-                    "Voice",
+                    &t("a11y-voice"),
                     Box::new(
                         Self::choice(
                             ScreenReaderVoice::OPTIONS
@@ -475,29 +470,26 @@ impl AccessibilityPane {
             ]
         } else {
             vec![value_row(
-                "Screen reader",
-                "Unavailable — install Speech Dispatcher or eSpeak NG",
+                &t("a11y-screen-reader"),
+                &t("a11y-screen-reader-missing"),
             )]
         };
         card(
-            "More assistive technology",
+            &t("a11y-advanced-title"),
             rows(
                 reader_rows
                     .into_iter()
                     .chain([
                         setting_row_described(
-                            "Visual alerts",
-                            "Flash a clear screen-edge alert when a notification arrives",
+                            &t("a11y-visual-alerts"),
+                            &t("a11y-visual-alerts-desc"),
                             Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY, "visual-alerts"),
                         ),
                         value_row(
-                            "Application focus highlight",
-                            "Not yet available for non-Tilo applications",
+                            &t("a11y-focus-highlight"),
+                            &t("a11y-focus-highlight-status"),
                         ),
-                        value_row(
-                            "Live captions",
-                            "Unavailable — no local speech-to-text engine is installed",
-                        ),
+                        value_row(&t("a11y-live-captions"), &t("a11y-live-captions-status")),
                     ])
                     .collect(),
             ),
@@ -506,21 +498,8 @@ impl AccessibilityPane {
 
     fn build_explainer_card() -> Box<dyn Widget> {
         card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Vision comforts are the same settings the Appearance pane \
-                 offers — changing them here or there updates one shared value. \
-                 Pointer sizing, mouse keys, and the sticky, slow and bounce key \
-                 filters are applied by the compositor's input layer. Colour filters, the magnifier and \
-                 pointer guides are final-scene compositor effects. Text-caret \
-                 width is owned by the shared toolkit. The screen reader reloads in every \
-                 Tilo app and visual alerts are rendered by shell chrome. The \
-                 on-screen keyboard is a sandboxed system service: the \
-                 compositor starts it on a private input-method socket and \
-                 keeps its surface out of workspace tiles. \
-                 Unsupported capabilities are identified explicitly instead \
-                 of being stored as inert toggles.",
-            )]),
+            &t("a11y-shared-title"),
+            rows(vec![caption(&t("a11y-shared-caption"))]),
         )
     }
 
@@ -562,9 +541,8 @@ impl AccessibilityPane {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(value));
             }
         }
-        let text_size = text_size_label(self.appearance.text_scale);
         for (key, value) in [
-            (TEXT_SIZE_KEY, text_size.as_str()),
+            (TEXT_SIZE_KEY, text_size_label(self.appearance.text_scale)),
             (
                 CURSOR_SIZE_KEY,
                 AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
