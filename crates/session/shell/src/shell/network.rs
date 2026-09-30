@@ -2753,8 +2753,17 @@ impl ShellNetwork {
     }
 
     fn shared_enrolled_room(&self) -> Result<RoomId, String> {
-        let enrolled =
+        let mut enrolled =
             personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
+        // The setup session publishes its rooms under the user state
+        // directory. The copy on the target lives beside the peer list.
+        if let Some(exported) = tilo_identity_host::provisioning::personal_rooms_export_path() {
+            for room in personal_room_ids(&exported) {
+                if !enrolled.contains(&room) {
+                    enrolled.push(room);
+                }
+            }
+        }
         let replica = self
             .replica
             .lock()
@@ -6766,6 +6775,32 @@ mod tests {
             panic!("expected an invocation");
         };
         assert_eq!(request.target.address, address);
+        std::fs::remove_file(dir.path().join("personal-rooms.json")).unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir_all(state.join("tilo")).unwrap();
+        std::fs::write(
+            state.join("tilo").join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        env.set("XDG_STATE_HOME", &state);
+        net.invoke_enrolled_device(
+            &hex::encode(device),
+            tilo_actions::remote::RemoteActionTarget {
+                provider: format!("workspace:{room}"),
+                address: address.clone(),
+            },
+            tilo_actions::remote::InvokeArgument::None,
+        )
+        .expect("exported room list");
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok()).any(|command| {
+                matches!(
+                    command,
+                    NetCmd::PublishRemoteAction { target, .. } if *target.as_bytes() == device
+                )
+            })
+        );
         let stranger = net.invoke_enrolled_device(
             &hex::encode([0x33; 32]),
             request.target,
