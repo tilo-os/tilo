@@ -21,6 +21,10 @@ path = "src/lib.rs"
 
 [features]
 test-support = []
+# Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
+# (tilo-agent-participant, which links every web app) as the app-serving
+# plane. Needs the browser listener for steering from pages.
+agents = ["web", "dep:tilo-agent-participant"]
 web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
@@ -140,6 +144,7 @@ http-body-util = { version = "0.1", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
