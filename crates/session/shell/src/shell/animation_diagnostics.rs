@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 15] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 16] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -18,6 +18,7 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 15] = [
     "capture-mirror",
     "screenshot-markup",
     "notification",
+    "workspace-switch",
 ];
 
 #[allow(
@@ -45,6 +46,7 @@ pub(crate) struct HostDemandInputs {
     pub capture_mirror: bool,
     pub screenshot_markup: bool,
     pub notification: bool,
+    pub workspace_switch: bool,
 }
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
@@ -66,6 +68,7 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.capture_mirror) << 12)
         | (u32::from(inputs.screenshot_markup) << 13)
         | (u32::from(inputs.notification) << 14)
+        | (u32::from(inputs.workspace_switch) << 15)
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -178,6 +181,7 @@ mod tests {
             capture_mirror: false,
             screenshot_markup: false,
             notification: false,
+            workspace_switch: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
         assert_eq!(host_bits(&inputs(true, false)), 1);

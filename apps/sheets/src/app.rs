@@ -6536,6 +6536,15 @@ impl ui::resources::PublishesResources for SheetsApp {
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
+        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
+    }
 }
 
 impl ui::widget::controls::ActionControls for SheetsApp {

@@ -13732,11 +13732,16 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// The full-screen chord: the focused Wayland client enters or leaves
-/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
-/// protocol fullscreen, so its window group maximizes instead.
+/// Super+F on a Tilo window covers the output, including the wheel.
+/// Hosted Tilo apps are xdg clients too; sending them a protocol
+/// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
+/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;
+    if frame.host_mut().toggle_focused_group_fullscreen() {
+        return;
+    }
     let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
         state
             .xdg_shell_state
@@ -13749,7 +13754,6 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_fullscreen();
         return;
     };
     if state
