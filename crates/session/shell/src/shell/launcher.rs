@@ -600,7 +600,9 @@ impl LaunchEvent {
             LaunchEventKind::SpawnFailed { .. } => {
                 crate::shell::i18n::t("launch-failed-launcher-unavailable")
             }
-            LaunchEventKind::Failed { .. } => crate::shell::i18n::t("launch-failed-stopped"),
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
         Some(LaunchFailureNotice {
@@ -635,6 +637,24 @@ impl LaunchEvent {
             }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
         }
+    }
+}
+
+/// Why a launch stopped, as one of a few fixed sentences. The process's own
+/// words never reach the banner, since they carry paths and environment;
+/// they are only recognised here and logged in full by
+/// [`LaunchEvent::log_failure`].
+fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
+    if stderr_tail.contains("error while loading shared libraries")
+        || stderr_tail.contains("cannot open shared object file")
+    {
+        "launch-failed-missing-library"
+    } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
+        "launch-failed-sandbox"
+    } else if code.is_none() {
+        "launch-failed-crashed"
+    } else {
+        "launch-failed-stopped"
     }
 }
 
@@ -2184,7 +2204,7 @@ fn execute_installed_inner(
     ));
     command.env.push((
         "TILO_STARTUP_METRICS_PATH".to_string(),
-        format!("/run/tilo/app/startup-{continuity_instance}.json"),
+        format!("/run/tilo/app/.local/state/startup-{continuity_instance}.json"),
     ));
     // An unattended session's apps save where it was told to.
     if let Some(directory) = std::env::var_os(ui::portal::SAVE_DIRECTORY_ENV) {
@@ -3218,6 +3238,8 @@ use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
@@ -3531,6 +3553,39 @@ mod tests {
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();
+    }
+
+    #[test]
+    fn a_recognised_cause_is_named_without_quoting_the_process() {
+        let cases = [
+            (
+                Some(127),
+                "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
+                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(1),
+                "bwrap: Can't make overlay mount on /newroot/usr with options \
+                 upperdir=/proc/self/fd/13,userxattr: Invalid argument",
+                "The app's sandbox could not be set up, so it stopped before opening.",
+            ),
+            (
+                None,
+                "",
+                "The app crashed before opening. Open Applications and try again.",
+            ),
+        ];
+        for (code, stderr, body) in cases {
+            let notice = launch_event(LaunchEventKind::Failed {
+                code,
+                stderr_tail: stderr.into(),
+            })
+            .failure_notice()
+            .expect("failure has a notice");
+            assert_eq!(notice.body, body);
+            assert!(!notice.body.contains('/'), "no path reaches the banner");
+        }
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry
@@ -4094,6 +4149,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4141,6 +4197,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4242,6 +4299,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
@@ -4530,6 +4588,7 @@ mod tests {
             remember_launch(&InstalledApp {
                 package_id: "so.tilo.matchfixture".into(),
                 display_name: "Match Fixture".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::new(),
@@ -4567,6 +4626,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
+            localized_names: BTreeMap::default(),
             category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),

@@ -15,6 +15,9 @@ runtime  = "tilo-runtime/2026.07"
 platforms = ["linux", "macos"]
 platform-reason = "Backs up the local file system (real paths, modes, symlinks)."
 
+[package.names]
+de = "Datensicherung"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"

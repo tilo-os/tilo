@@ -475,10 +475,9 @@ pub struct ShellOverlayHost {
     /// palette's entries, so `take_structure_dirty` rebuilds the taffy
     /// node with the new row count — without this only ~1 result shows.
     palette_layout_dirty: bool,
-    /// Host width the palette's taffy style was last computed against.
-    /// See the sizing comment in `build_layout`.
-    palette_layout_host_w: f64,
-    palette_layout_host_h: f64,
+    /// Host rect and display area the palette's taffy style was last
+    /// computed against. See the sizing comment in `build_layout`.
+    palette_layout_host: Option<(Rect, Rect)>,
     content_node: Option<NodeId>,
     palette_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
@@ -1776,6 +1775,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
+        ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
         search_registry.register(std::rc::Rc::new(
@@ -1969,8 +1971,7 @@ impl ShellOverlayHost {
             search_filter_inputs: None,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
-            palette_layout_host_w: f64::NAN,
-            palette_layout_host_h: f64::NAN,
+            palette_layout_host: None,
             content_node: None,
             palette_node: None,
             sidebar_node: None,
@@ -3043,6 +3044,14 @@ impl ShellOverlayHost {
 
     pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
         self.power_bridge = Some(bridge);
+    }
+
+    /// For a session that does not own the seat: another desktop owns the
+    /// machine, so this one never suspends, restarts, shuts down or switches
+    /// its user, from any entry point.
+    pub fn detach_from_host(&mut self) {
+        self.session_action_policy.detach_from_host();
+        self.layers.power_menu.detach_from_host();
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -6169,6 +6178,9 @@ impl ShellOverlayHost {
                 drop(tree);
                 (strip_id, group_id, current, destination)
             };
+        if destination == current && self.is_partitioned() {
+            return self.carry_focused_group_across_seam(direction);
+        }
         let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup {
             strip: strip_id,
             group: group_id,
@@ -8400,20 +8412,22 @@ impl ShellOverlayHost {
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = if self.rect.width() >= 1200.0 {
+        // Under the tray, on the display whose full top bar holds it.
+        let area = self.tray_area();
+        let popover_w = if area.width() >= 1200.0 {
             400.0
-        } else if self.rect.width() >= 720.0 {
+        } else if area.width() >= 720.0 {
             360.0
         } else {
             320.0
         };
-        let x1 = self.rect.x1 - 16.0;
-        let y0 = self.rect.y0 + 48.0;
+        let x1 = area.x1 - 16.0;
+        let y0 = area.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
             let state = chrome.borrow();
             self.quick_settings_preferred_height(&state)
         });
-        let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
+        let popover_h = desired_h.min((area.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -9128,6 +9142,11 @@ impl ShellOverlayHost {
         self.quick_settings_rect()
     }
 
+    /// The command palette's laid-out card, for integration tests.
+    pub fn palette_rect_for_tests(&self) -> Rect {
+        self.palette.get_rect()
+    }
+
     pub fn quick_settings_semantic_rects(&self) -> Vec<(String, Rect)> {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
@@ -9595,7 +9614,7 @@ impl ShellOverlayHost {
     /// across the content width, each a 16:10 well over a title line.
     fn overview_window_tile_size(&self) -> (f64, f64) {
         let m = self.overview_metrics;
-        let panel_w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - m.margin * 2.0);
+        let panel_w = OVERVIEW_PANEL_WIDTH_PX.min(self.overlay_area().width() - m.margin * 2.0);
         let content_w = (panel_w - m.pad * 2.0).max(0.0);
         let columns = usize_to_f64_lossy(OVERVIEW_WINDOWS_MAX);
         let tile_w = ((content_w - (columns - 1.0) * m.window_gap) / columns).max(0.0);
@@ -9744,16 +9763,17 @@ impl ShellOverlayHost {
     /// centring as the workspace-settings modal — the same kind of object.
     fn overview_panel_rect(&self) -> Rect {
         let m = self.overview_metrics;
-        let w = OVERVIEW_PANEL_WIDTH_PX.min(self.rect.width() - m.margin * 2.0);
+        let area = self.overlay_area();
+        let w = OVERVIEW_PANEL_WIDTH_PX.min(area.width() - m.margin * 2.0);
         let natural = m.pad * 2.0
             + self.overview_here_block_height()
             + m.section_gap
             + m.caption_h
             + self.overview_content_height();
-        let max_h = self.rect.height() - m.margin * 2.0;
+        let max_h = area.height() - m.margin * 2.0;
         let h = natural.min(max_h).max(0.0);
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
+        let cx = f64::midpoint(area.x0, area.x1);
+        let cy = f64::midpoint(area.y0, area.y1);
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     }
 
@@ -11198,94 +11218,7 @@ impl ShellOverlayHost {
             .into_iter()
             .find(|action| shortcut_pressed(*action))
         {
-            match action {
-                ShortcutAction::PreviousTab => {
-                    let _ = self.cycle_focused_tab(-1);
-                }
-                ShortcutAction::NextTab => {
-                    let _ = self.cycle_focused_tab(1);
-                }
-                ShortcutAction::ToggleMaximize => {
-                    if !repeat {
-                        let _ = self.toggle_focused_group_maximized();
-                    }
-                }
-                ShortcutAction::DetachTab => {
-                    if !repeat {
-                        let _ = self.detach_focused_tab();
-                    }
-                }
-                ShortcutAction::AttachTabLeft => {
-                    if !repeat {
-                        let _ = self.attach_focused_tab(-1);
-                    }
-                }
-                ShortcutAction::AttachTabRight => {
-                    if !repeat {
-                        let _ = self.attach_focused_tab(1);
-                    }
-                }
-                ShortcutAction::ReopenClosedTab => {
-                    if !repeat && let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().reopen_closed_tab();
-                    }
-                }
-                ShortcutAction::ResizeNarrower => {
-                    let _ = self.resize_focused_group(-50);
-                }
-                ShortcutAction::ResizeWider => {
-                    let _ = self.resize_focused_group(50);
-                }
-                ShortcutAction::MoveGroupLeft => {
-                    let _ = self.reorder_focused_group(-1);
-                }
-                ShortcutAction::MoveGroupRight => {
-                    let _ = self.reorder_focused_group(1);
-                }
-                ShortcutAction::MoveGroupToPreviousStrip => {
-                    let _ = self.move_focused_group_to_strip(-1);
-                }
-                ShortcutAction::MoveGroupToNextStrip => {
-                    let _ = self.move_focused_group_to_strip(1);
-                }
-                ShortcutAction::MoveGroupToPreviousDisplay => {
-                    if !repeat {
-                        let _ = self.move_focused_group_to_display(-1);
-                    }
-                }
-                ShortcutAction::MoveGroupToNextDisplay => {
-                    if !repeat {
-                        let _ = self.move_focused_group_to_display(1);
-                    }
-                }
-                ShortcutAction::FocusPreviousWindow => {
-                    let _ = self.step_focus_along_strip(-1);
-                }
-                ShortcutAction::FocusNextWindow => {
-                    let _ = self.step_focus_along_strip(1);
-                }
-                ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
-                    let direction = if action == ShortcutAction::PreviousStrip {
-                        -1
-                    } else {
-                        1
-                    };
-                    if let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().switch_strip(direction);
-                    }
-                }
-                ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
-                    let direction = if action == ShortcutAction::PreviousWorkspace {
-                        -1
-                    } else {
-                        1
-                    };
-                    if let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().switch_workspace(direction);
-                    }
-                }
-                _ => {}
-            }
+            self.run_navigation_shortcut(action, repeat);
             *handled = true;
             return true;
         }
@@ -11322,6 +11255,133 @@ impl ShellOverlayHost {
             return true;
         }
         false
+    }
+
+    /// Run one editable navigation or window shortcut. `false` when
+    /// `action` is not one of them.
+    fn run_navigation_shortcut(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        repeat: bool,
+    ) -> bool {
+        use settings_store::hardware::ShortcutAction;
+        match action {
+            ShortcutAction::PreviousTab => {
+                let _ = self.cycle_focused_tab(-1);
+            }
+            ShortcutAction::NextTab => {
+                let _ = self.cycle_focused_tab(1);
+            }
+            ShortcutAction::ToggleMaximize => {
+                if !repeat {
+                    let _ = self.toggle_focused_group_maximized();
+                }
+            }
+            ShortcutAction::DetachTab => {
+                if !repeat {
+                    let _ = self.detach_focused_tab();
+                }
+            }
+            ShortcutAction::AttachTabLeft => {
+                if !repeat {
+                    let _ = self.attach_focused_tab(-1);
+                }
+            }
+            ShortcutAction::AttachTabRight => {
+                if !repeat {
+                    let _ = self.attach_focused_tab(1);
+                }
+            }
+            ShortcutAction::ReopenClosedTab => {
+                if !repeat && let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().reopen_closed_tab();
+                }
+            }
+            ShortcutAction::ResizeNarrower => {
+                let _ = self.resize_focused_group(-50);
+            }
+            ShortcutAction::ResizeWider => {
+                let _ = self.resize_focused_group(50);
+            }
+            ShortcutAction::MoveGroupLeft => {
+                let _ = self.reorder_focused_group(-1);
+            }
+            ShortcutAction::MoveGroupRight => {
+                let _ = self.reorder_focused_group(1);
+            }
+            ShortcutAction::MoveGroupToPreviousStrip => {
+                let _ = self.move_focused_group_to_strip(-1);
+            }
+            ShortcutAction::MoveGroupToNextStrip => {
+                let _ = self.move_focused_group_to_strip(1);
+            }
+            ShortcutAction::MoveGroupToPreviousDisplay => {
+                if !repeat {
+                    let _ = self.move_focused_group_to_display(-1);
+                }
+            }
+            ShortcutAction::MoveGroupToNextDisplay => {
+                if !repeat {
+                    let _ = self.move_focused_group_to_display(1);
+                }
+            }
+            ShortcutAction::FocusPreviousWindow => {
+                let _ = self.step_focus_along_strip(-1);
+            }
+            ShortcutAction::FocusNextWindow => {
+                let _ = self.step_focus_along_strip(1);
+            }
+            ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                let direction = if action == ShortcutAction::PreviousStrip {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().switch_strip(direction);
+                }
+            }
+            ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
+                let direction = if action == ShortcutAction::PreviousWorkspace {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Run every window operation the action door queued on the chrome
+    /// ([`ChromeState::request_shortcut_action`]), in order. The shell
+    /// runs this each update, before splicing tree changes into the rows.
+    ///
+    /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
+    pub fn run_requested_shortcut_actions(&mut self) {
+        let requested = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow_mut().take_shortcut_action_requests())
+            .unwrap_or_default();
+        for action in requested {
+            if !self.run_shortcut_action(action) {
+                tracing::warn!(?action, "requested shortcut action has no desktop handler");
+            }
+        }
+    }
+
+    /// Run `action` once, as its chord does; for the action door, which
+    /// has no key event. `false` when it is not a desktop shortcut the
+    /// host runs.
+    pub(crate) fn run_shortcut_action(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+    ) -> bool {
+        self.run_navigation_shortcut(action, false) || self.handle_desktop_chord(action, false)
     }
 
     /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
@@ -12362,6 +12422,14 @@ impl ShellOverlayHost {
     /// came through: the power flyout's rows and the typed `session.*`
     /// actions both land here, so they share admission and failure reporting.
     fn execute_session_action(&self, action: os_actions::SessionAction) {
+        if let Err(reason) = self.session_action_policy.admit(action) {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome
+                    .borrow_mut()
+                    .push_notification(t("host-session-action-blocked"), reason);
+            }
+            return;
+        }
         match action {
             os_actions::SessionAction::Lock => {
                 // Do not delegate this to logind: its lock-session request
@@ -12388,14 +12456,6 @@ impl ShellOverlayHost {
                 }
             }
             _ => {
-                if let Err(reason) = self.session_action_policy.admit(action) {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome
-                            .borrow_mut()
-                            .push_notification(t("host-session-action-blocked"), reason);
-                    }
-                    return;
-                }
                 // Logout is a tiny, private file write plus an in-process
                 // edge. Do it on this input tick so the native loop observes
                 // the edge before it parks. The other actions may block on
@@ -14431,7 +14491,7 @@ impl ShellOverlayHost {
     /// mutations stay on their original authenticated paths here; the
     /// component owns only presentation and hit resolution.
     fn handle_shell_ws_settings_click(&mut self, p: Point, handled: &mut bool) {
-        self.workspace_settings_overlay.layout(self.rect);
+        self.workspace_settings_overlay.layout(self.overlay_area());
         let active_tab = self
             .chrome
             .as_ref()
@@ -15636,6 +15696,8 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        // Before the resync, so what an action moved is spliced this frame.
+        self.run_requested_shortcut_actions();
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -15862,31 +15924,35 @@ impl Widget for ShellOverlayHost {
         // inserted above — but the override is skippable, so a failure
         // here degrades to the widget's own default layout instead of
         // panicking.
+        // Centred on the focused display: across two, the host's own
+        // centre is the seam between them.
+        let area = self.overlay_area();
         if let Ok(style) = taffy.style(palette_node) {
             let mut palette_style = style.clone();
             palette_style.position = Position::Absolute;
             // 70% of viewport clamped to [560, 640]; 560 is the minimum
             // that still fits the filter strip's eight pills without the
             // last one bleeding into the close glyph.
-            let palette_target_w = ((self.rect.width() * 0.7).clamp(560.0, 640.0)
+            let palette_target_w = ((area.width() * 0.7).clamp(560.0, 640.0)
                 * f64::from(theme.text_scale))
-            .min((self.rect.width() - 32.0).max(320.0));
+            .min((area.width() - 32.0).max(320.0));
             palette_style.max_size.height =
-                Dimension::length(f64_to_f32_lossy((self.rect.height() - 112.0).max(200.0)));
+                Dimension::length(f64_to_f32_lossy((area.height() - 112.0).max(200.0)));
             palette_style.size = Size {
                 width: Dimension::length(f64_to_f32_lossy(palette_target_w)),
                 height: palette_style.size.height,
             };
             palette_style.margin = TaffyRect {
-                left: LengthPercentageAuto::auto(),
+                left: LengthPercentageAuto::length(0.0),
                 right: LengthPercentageAuto::auto(),
                 top: LengthPercentageAuto::length(0.0),
                 bottom: LengthPercentageAuto::auto(),
             };
+            let left = (area.x0 - self.rect.x0) + (area.width() - palette_target_w) / 2.0;
             palette_style.inset = TaffyRect {
-                left: LengthPercentageAuto::auto(),
+                left: LengthPercentageAuto::length(f64_to_f32_lossy(left.max(0.0))),
                 right: LengthPercentageAuto::auto(),
-                top: LengthPercentageAuto::length(96.0),
+                top: LengthPercentageAuto::length(f64_to_f32_lossy(area.y0 - self.rect.y0 + 96.0)),
                 bottom: LengthPercentageAuto::auto(),
             };
             let _ = taffy.set_style(palette_node, palette_style);
@@ -15894,8 +15960,7 @@ impl Widget for ShellOverlayHost {
         // `self.rect` is last frame's, so frame 1 sizes off a zero-width
         // host and lands on the 560 floor; remembering what it sized
         // against lets `apply_layout` re-dirty and converge.
-        self.palette_layout_host_w = self.rect.width();
-        self.palette_layout_host_h = self.rect.height();
+        self.palette_layout_host = Some((self.rect, area));
 
         self.content_node = Some(content_node);
         self.palette_node = Some(palette_node);
@@ -16016,7 +16081,7 @@ impl Widget for ShellOverlayHost {
         if let Some((_, display)) = self.personal_display.as_mut() {
             display.set_shell_viewport(self.rect);
         }
-        self.workspace_settings_overlay.layout(self.rect);
+        self.workspace_settings_overlay.layout(self.overlay_area());
         let contextual_tour = self
             .onboarding
             .as_ref()
@@ -16038,11 +16103,9 @@ impl Widget for ShellOverlayHost {
             }
             return;
         }
-        // One more pass if the card sized against stale host dimensions;
-        // settles in a single extra frame.
-        if (self.palette_layout_host_w - self.rect.width()).abs() > f64::EPSILON
-            || (self.palette_layout_host_h - self.rect.height()).abs() > f64::EPSILON
-        {
+        // One more pass if the card sized against stale host dimensions or
+        // focus moved to another display; settles in a single extra frame.
+        if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
             self.palette_layout_dirty = true;
         }
         // Wheel-disc slot width plus a gap, reserved so the strip leaves
@@ -16194,7 +16257,7 @@ impl Widget for ShellOverlayHost {
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
             let state = chrome.borrow();
-            let available_height = (self.rect.height() - 64.0).max(1.0);
+            let available_height = (self.tray_area().height() - 64.0).max(1.0);
             self.qs_root
                 .fit_root_layout_to_height(&state.quick_settings, available_height);
         }
@@ -18541,10 +18604,11 @@ impl ShellOverlayHost {
         self.draw_follow_chip(scene, transform, text_renderer, theme);
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
+        let area = self.overlay_area();
         if let Some(prompt) = self.permission_prompt.as_mut() {
-            let bar_top = self.rect.y0 + f64::from(self.sidebar_top_y);
-            let bar_left = self.rect.x0 + f64::from(self.sidebar_top_y);
-            let bar_right = self.rect.x1 - f64::from(self.sidebar_top_y);
+            let bar_top = area.y0 + f64::from(self.sidebar_top_y);
+            let bar_left = area.x0 + f64::from(self.sidebar_top_y);
+            let bar_right = area.x1 - f64::from(self.sidebar_top_y);
             prompt.set_rect(Rect::new(
                 bar_left,
                 bar_top,
@@ -18559,10 +18623,10 @@ impl ShellOverlayHost {
         // off the clock/tray.
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
-                self.rect.x0,
-                self.rect.y0 + f64::from(self.sidebar_top_y),
-                self.rect.x1,
-                self.rect.y1,
+                area.x0,
+                area.y0 + f64::from(self.sidebar_top_y),
+                area.x1,
+                area.y1,
             );
             self.notification_stack.set_viewport(viewport);
             self.notification_stack.draw(
@@ -18677,8 +18741,9 @@ impl ShellOverlayHost {
 
         // Scale pivot is the scene centre, so the zoom anchors to the
         // viewport rather than the origin.
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let pivot_y = f64::midpoint(self.rect.y0, self.rect.y1);
+        let area = self.overlay_area();
+        let cx = f64::midpoint(area.x0, area.x1);
+        let pivot_y = f64::midpoint(area.y0, area.y1);
         let scaled = |s: f64| -> Affine {
             Affine::translate((cx, pivot_y))
                 .pre_scale(s)
@@ -18740,7 +18805,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         ws_settings_open: bool,
     ) {
-        self.workspace_settings_overlay.layout(self.rect);
+        self.workspace_settings_overlay.layout(self.overlay_area());
         let anchor = self
             .chrome
             .as_ref()
@@ -19325,13 +19390,14 @@ impl ShellOverlayHost {
         // reference, not a replacement screen. The additional desktop height
         // gives the two sections room to breathe, while compact height still
         // contains every documented action.
-        let width = (self.rect.width() - 64.0).clamp(0.0, 960.0);
-        let height = (self.rect.height() - 64.0).clamp(0.0, 600.0);
+        let area = self.overlay_area();
+        let width = (area.width() - 64.0).clamp(0.0, 960.0);
+        let height = (area.height() - 64.0).clamp(0.0, 600.0);
         Rect::new(
-            self.rect.center().x - width / 2.0,
-            self.rect.center().y - height / 2.0,
-            self.rect.center().x + width / 2.0,
-            self.rect.center().y + height / 2.0,
+            area.center().x - width / 2.0,
+            area.center().y - height / 2.0,
+            area.center().x + width / 2.0,
+            area.center().y + height / 2.0,
         )
     }
 

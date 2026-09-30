@@ -46,7 +46,7 @@
 use std::rc::Rc;
 
 #[cfg(feature = "client")]
-use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::NotAvailable;
 
 // Checked-in bindings let app developers build `tilo-app` without installing
 // the Cap'n Proto compiler. build.rs keeps the schema and generated source in
@@ -64,9 +64,6 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
-
-#[cfg(feature = "client")]
-use capnp_rpc::rpc_twoparty_capnp;
 
 pub mod committed_document;
 pub mod native_media;
@@ -311,9 +308,7 @@ impl CertifiedJoinIdentity {
 /// if the connection fails to establish.
 #[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
-    let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
-    let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    let client: CollabServiceClient = unix.bootstrap();
+    let client: CollabServiceClient = runtime_portal::connect_service("collab")?.bootstrap();
     Ok(CollabClient::from_raw(client))
 }
 
@@ -4032,14 +4027,14 @@ mod resolved_invocation_tests {
                 let network = twoparty::VatNetwork::new(
                     read.compat(),
                     write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
                     capnp::message::ReaderOptions::default(),
                 );
                 let task =
                     tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
-                    rpc_twoparty_capnp::Side::Client,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
                 );
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
@@ -4786,14 +4781,14 @@ mod reliable_invocation_tests {
                 let network = twoparty::VatNetwork::new(
                     read.compat(),
                     write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
                     capnp::message::ReaderOptions::default(),
                 );
                 let task =
                     tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
-                    rpc_twoparty_capnp::Side::Client,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
                 );
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),

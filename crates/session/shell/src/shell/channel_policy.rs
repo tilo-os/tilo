@@ -28,6 +28,10 @@ use super::state::{CapRole, RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeH
 /// certifies them: `(certificate, revoked)`.
 pub type OwnDevices = Box<dyn Fn(RoomId) -> Vec<(tilo_user_identity::DeviceCert, bool)> + Send>;
 
+/// The certificates of a user's devices the session authenticated.
+pub type AuthenticatedDevices =
+    Box<dyn Fn(&[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> + Send>;
+
 /// [`ChannelDirectory`] over the live workspace tree.
 pub struct WorkspaceChannelDirectory {
     tree: WorkspaceTreeHandle,
@@ -42,7 +46,17 @@ impl WorkspaceChannelDirectory {
     /// Production source of this machine's own devices: the fleet of the
     /// identity selected for the room.
     pub fn session_fleet() -> OwnDevices {
-        Box::new(|room: RoomId| {
+        Self::session_fleet_with(Box::new(|_| Vec::new()))
+    }
+
+    /// [`Self::session_fleet`] plus the identity's devices the session
+    /// authenticated: `authenticated(user)` returns the root-signed
+    /// certificates of `user`'s devices a transport or workspace host
+    /// verified (a browser the user certified through the host is in no
+    /// local fleet file). The root signature is what makes a device the
+    /// user's; the fleet's revocations still take any of them out.
+    pub fn session_fleet_with(authenticated: AuthenticatedDevices) -> OwnDevices {
+        Box::new(move |room: RoomId| {
             let Ok(Some(profile)) =
                 crate::identity_registry::selected_identity_profile(&room.to_string())
             else {
@@ -53,13 +67,40 @@ impl WorkspaceChannelDirectory {
             else {
                 return Vec::new();
             };
-            fleet
-                .certificates
-                .iter()
-                .map(|cert| (cert.clone(), fleet.is_revoked(&cert.device_public_key)))
-                .collect()
+            fleet_devices(&fleet, &authenticated)
         })
     }
+}
+
+/// A fleet's devices plus the same user's devices the session authenticated,
+/// each with whether the fleet revoked it.
+pub fn fleet_devices(
+    fleet: &crate::device_fleet::DeviceFleet,
+    authenticated: &dyn Fn(&[u8; 32]) -> Vec<tilo_user_identity::DeviceCert>,
+) -> Vec<(tilo_user_identity::DeviceCert, bool)> {
+    let mut devices: Vec<_> = fleet
+        .certificates
+        .iter()
+        .map(|cert| (cert.clone(), fleet.is_revoked(&cert.device_public_key)))
+        .collect();
+    let users: BTreeSet<[u8; 32]> = fleet
+        .certificates
+        .iter()
+        .map(|cert| cert.user_public_key)
+        .collect();
+    for user in users {
+        for cert in authenticated(&user) {
+            if cert.user_public_key == user
+                && !devices
+                    .iter()
+                    .any(|(known, _)| known.device_public_key == cert.device_public_key)
+            {
+                let revoked = fleet.is_revoked(&cert.device_public_key);
+                devices.push((cert, revoked));
+            }
+        }
+    }
+    devices
 }
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
@@ -168,6 +209,39 @@ mod tests {
         };
         tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
         cert
+    }
+
+    /// A device of this machine's own identity that the host authenticated
+    /// (a browser the user certified through the host) reads the room's
+    /// channels like a device in the local fleet file; another user's
+    /// device the session authenticated does not become one of ours.
+    #[test]
+    fn authenticated_devices_of_the_fleets_user_join_its_devices() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let mut fleet = crate::device_fleet::DeviceFleet::new("identity".into());
+        fleet.certificates.push(cert(&root, 1, false));
+        let browser = cert(&root, 2, false);
+        let foreign = cert(&stranger, 3, false);
+        let authenticated = {
+            let (browser, foreign) = (browser.clone(), foreign.clone());
+            move |user: &[u8; 32]| {
+                [browser.clone(), foreign.clone()]
+                    .into_iter()
+                    .filter(|cert| cert.user_public_key == *user)
+                    .collect()
+            }
+        };
+        let devices = fleet_devices(&fleet, &authenticated);
+        let keys: Vec<_> = devices
+            .iter()
+            .map(|(cert, revoked)| (cert.device_public_key, *revoked))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![(device_key(1).0, false), (browser.device_public_key, false)]
+        );
+        assert_eq!(fleet_devices(&fleet, &|_| vec![foreign.clone()]).len(), 1);
     }
 
     fn device_key(seed: u8) -> Ed25519PublicKey {
