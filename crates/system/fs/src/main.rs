@@ -2560,7 +2560,16 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = match load_certified_mount_identity(&paths, unix_now_ns()) {
+        Ok(certified) => certified,
+        Err(error) => {
+            // Unconfigured session: keep the activation socket and wait for
+            // stop. Exiting with an error crash-loops under Restart=on-failure.
+            eprintln!("recipient-service idle: no certified mount identity ({error})");
+            std::future::pending::<()>().await;
+            return Ok(());
+        }
+    };
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let local_person = collab_types::Ed25519PublicKey::from_bytes(credentials.user_public_key());
