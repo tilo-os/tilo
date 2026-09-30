@@ -51,6 +51,8 @@ pub enum FilterAction {
     AllKinds,
     ToggleKind(ResourceKind),
     Scope(SearchScope),
+    /// Open or close the overflow list of kinds that did not fit the row.
+    More,
 }
 /// One kind chip: the kind it toggles, its label and its accessible name,
 /// in whatever language the host shows.
@@ -87,6 +89,8 @@ impl ScopeSegment {
 pub struct FilterText {
     pub all_label: String,
     pub all_name: String,
+    pub more_label: String,
+    pub more_name: String,
     pub filters_name: String,
     pub kinds_name: String,
     pub scopes_name: String,
@@ -96,6 +100,8 @@ impl Default for FilterText {
         Self {
             all_label: "All".into(),
             all_name: "Filter: All".into(),
+            more_label: "More".into(),
+            more_name: "Filter: More".into(),
             filters_name: "Search filters".into(),
             kinds_name: "Result kinds".into(),
             scopes_name: "Search scope".into(),
@@ -115,6 +121,8 @@ pub struct FilterStripSlot {
 pub struct SearchFilters {
     pub search_chip_rects: Vec<Rect>,
     pub search_all_chip_rect: Rect,
+    pub search_more_rect: Rect,
+    pub more_open: bool,
     pub search_chip_rows: usize,
     pub search_filter_control_h: f64,
     pub search_scope_segment_w: f64,
@@ -137,6 +145,8 @@ impl Default for SearchFilters {
         Self {
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
+            search_more_rect: Rect::ZERO,
+            more_open: false,
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
             search_scope_segment_w: 0.0,
@@ -165,6 +175,9 @@ impl SearchFilters {
         active_scope: SearchScope,
         text: FilterText,
     ) {
+        if !self.kinds.is_empty() && self.kinds != kinds {
+            self.more_open = false;
+        }
         self.kinds = kinds;
         self.active_kind_filter = selected;
         self.scopes = scopes;
@@ -211,6 +224,7 @@ impl SearchFilters {
     pub fn action_for_path(&self, path: &[usize]) -> Option<FilterAction> {
         match path {
             [0, 0] => Some(FilterAction::AllKinds),
+            [0, i] if *i == self.kinds.len().saturating_add(1) => Some(FilterAction::More),
             [0, i] => self
                 .kinds
                 .get(i.checked_sub(1)?)
@@ -230,6 +244,9 @@ impl SearchFilters {
         }
         if self.search_all_chip_hit_rect().contains(point) {
             return Some(FilterAction::AllKinds);
+        }
+        if self.search_more_hit_rect().contains(point) {
+            return Some(FilterAction::More);
         }
         for i in 0..self.kinds.len() {
             if self.search_chip_hit_rect(i).contains(point) {
@@ -310,6 +327,17 @@ impl SearchFilters {
                 self.active_kind_filter.contains(kind),
             ));
         }
+        if self.search_more_rect.area() > 0.0 {
+            chips.push(bounded(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(self.text.more_name.clone())
+                    .with_semantic_key("palette:filter:more")
+                    .with_action_target("palette:filter:more")
+                    .with_key(u64::try_from(kinds.len().saturating_add(1)).unwrap_or(u64::MAX)),
+                self.search_more_hit_rect(),
+                self.more_open,
+            ));
+        }
 
         let active_scope = self.active_scope;
         let scopes = self
@@ -347,6 +375,7 @@ impl SearchFilters {
     pub fn search_filter_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         let rect = match path {
             [0, 0] => self.search_all_chip_hit_rect(),
+            [0, i] if *i == self.kinds.len().saturating_add(1) => self.search_more_hit_rect(),
             [0, i] => self.search_chip_hit_rect(i.checked_sub(1)?),
             [1, i] => self.search_scope_segment_hit_rect(*i),
             _ => return None,
@@ -394,8 +423,10 @@ impl SearchFilters {
         let grown = Rect::new(painted.x0, cy - h / 2.0, painted.x1, cy + h / 2.0);
         // Clipped to the band the pill was laid out in (frozen at draw),
         // never to a band a pending row request has already moved.
+        // Overflow chips under More sit below that band — keep their
+        // own target rather than clipping them to a sliver or away.
         let band = self.search_band_for_targets();
-        if band.area() <= 0.0 {
+        if band.area() <= 0.0 || painted.intersect(band).area() <= 0.0 {
             return grown;
         }
         let clipped = grown.intersect(band);
@@ -412,6 +443,10 @@ impl SearchFilters {
 
     pub fn search_chip_hit_rect(&self, i: usize) -> Rect {
         self.selector_hit_rect(self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO))
+    }
+
+    pub fn search_more_hit_rect(&self) -> Rect {
+        self.selector_hit_rect(self.search_more_rect)
     }
 
     pub fn search_scope_measured_track_w(&self) -> f64 {
@@ -575,7 +610,7 @@ impl SearchFilters {
         let own_row = self.scope_switch_has_own_row();
         let wants_own_row = self.scope_switch_wants_own_row();
         let reserved_rows = self.reserved_rows;
-        let (chip_band, first_row_x1, rows_for_chips) = if own_row {
+        let (chip_band, first_row_x1, _rows_for_chips) = if own_row {
             (
                 Rect::new(band.x0, band.y0 + row_h, band.x1, band.y1),
                 band.x1,
@@ -584,19 +619,43 @@ impl SearchFilters {
         } else {
             (band, track.x0 - chip_pad, reserved_rows)
         };
-        let strip = lay_out_chip_strip(
+        let more_w = f64::from(
+            text_renderer
+                .measure_weighted(
+                    &self.text.more_label,
+                    chip_text_size,
+                    None,
+                    TextWeight::Medium,
+                )
+                .0,
+        ) + 2.0 * chip_pad;
+        let row = lay_out_chip_row_with_more(
             &natural,
+            more_w,
             chip_band,
             first_row_x1,
-            rows_for_chips,
             row_h,
             control_h,
             chip_gap,
         );
+        let mut rects = row.rects;
+        if self.more_open && !row.overflow.is_empty() {
+            let menu_origin = row
+                .more
+                .map(|more| Point::new(more.x0, chip_band.y1 + chip_gap))
+                .unwrap_or(Point::new(chip_band.x0, chip_band.y1 + chip_gap));
+            for (idx, rect) in
+                lay_out_more_menu(&natural, &row.overflow, menu_origin, control_h, chip_gap)
+            {
+                if let Some(slot) = rects.get_mut(idx) {
+                    *slot = rect;
+                }
+            }
+        }
 
         let mut chip_rects: Vec<Rect> = Vec::with_capacity(self.kinds.len());
         for (i, label) in labels.iter().enumerate() {
-            let rect = strip.rects.get(i).copied().unwrap_or(Rect::ZERO);
+            let rect = rects.get(i).copied().unwrap_or(Rect::ZERO);
             let is_active = match i {
                 0 => self.active_kind_filter.is_empty(),
                 _ => i
@@ -604,42 +663,53 @@ impl SearchFilters {
                     .and_then(|k| self.kinds.get(k))
                     .is_some_and(|chip| self.active_kind_filter.contains(&chip.kind)),
             };
-            // Hover is judged on the pointer target, not the pill, so the
-            // 2 px of floor above and below a chip light it too.
             let hover = self
                 .last_cursor
                 .is_some_and(|p| self.selector_hit_rect(rect).contains(p));
-            // Only a chip that had to be squeezed loses any of its label;
-            // it keeps one side's padding before it elides.
-            let label = text_renderer.elide_to_width_weighted(
-                label,
-                chip_text_size,
-                f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
-                TextWeight::Medium,
-            );
-            draw_filter_chip(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                &label,
-                chip_text_size,
-                crate::chrome::SelectionState::new(is_active, hover, false),
-            );
+            if rect.area() > 0.0 {
+                let label = text_renderer.elide_to_width_weighted(
+                    label,
+                    chip_text_size,
+                    f64_to_f32_lossy((rect.width() - chip_pad).max(1.0)),
+                    TextWeight::Medium,
+                );
+                draw_filter_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    rect,
+                    &label,
+                    chip_text_size,
+                    crate::chrome::SelectionState::new(is_active, hover, false),
+                );
+            }
             match i {
                 0 => self.search_all_chip_rect = rect,
                 _ => chip_rects.push(rect),
             }
         }
         self.search_chip_rects = chip_rects;
+        self.search_more_rect = row.more.unwrap_or(Rect::ZERO);
+        if let Some(more) = row.more {
+            let hover = self
+                .last_cursor
+                .is_some_and(|p| self.selector_hit_rect(more).contains(p));
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                more,
+                &self.text.more_label,
+                chip_text_size,
+                crate::chrome::SelectionState::new(self.more_open, hover, false),
+            );
+        }
 
-        // The next layout grows the band and moves result rows down;
-        // until it runs, the chips stay squeezed into the band there is
-        // but remain clickable. A switch that wants its own row is one
-        // more row — asked for now, taken once granted.
-        let rows_needed = strip.rows_needed.saturating_add(usize::from(wants_own_row));
-        self.search_chip_rows = rows_needed;
+        // One chip row; the scope switch may still take a row of its own.
+        // Overflow kinds live under More, so the band does not grow.
+        self.search_chip_rows = 1 + usize::from(wants_own_row);
     }
 
     pub fn draw_search_banner_scope_switch(
@@ -784,6 +854,108 @@ pub struct ChipStrip {
     /// Rows the chips want at their natural width; the host reserves
     /// this many from the palette.
     pub rows_needed: usize,
+}
+
+/// One row of filter chips, with kinds that did not fit sitting behind More.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChipRow {
+    /// One rect per chip. Overflowed chips are [`Rect::ZERO`] until More opens.
+    pub rects: Vec<Rect>,
+    /// The More chip, present only when at least one kind did not fit.
+    pub more: Option<Rect>,
+    /// Indices into `rects` / the caller's labels that sit behind More.
+    pub overflow: Vec<usize>,
+}
+
+/// Lays chips on a single row at their natural width. Leftovers stay
+/// reachable through a More chip rather than wrapping to a second row.
+pub fn lay_out_chip_row_with_more(
+    natural: &[f64],
+    more_w: f64,
+    band: Rect,
+    first_row_x1: f64,
+    row_h: f64,
+    control_h: f64,
+    gap: f64,
+) -> ChipRow {
+    if natural.is_empty() || band.width() <= 0.0 {
+        return ChipRow {
+            rects: Vec::new(),
+            more: None,
+            overflow: Vec::new(),
+        };
+    }
+    let x1 = first_row_x1.min(band.x1);
+    let available = (x1 - band.x0).max(0.0);
+    let more_w = more_w.max(CHIP_MIN_W_PX);
+    let widths: Vec<f64> = natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
+    let all_w = widths.iter().copied().sum::<f64>()
+        + gap * usize_to_f64_lossy(widths.len().saturating_sub(1));
+    let cy = band.y0 + row_h / 2.0;
+    let place = |x: f64, w: f64| Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+    if all_w <= available + 0.001 {
+        let mut rects = Vec::with_capacity(widths.len());
+        let mut x = band.x0;
+        for w in widths {
+            rects.push(place(x, w));
+            x += w + gap;
+        }
+        return ChipRow {
+            rects,
+            more: None,
+            overflow: Vec::new(),
+        };
+    }
+    let reserved = more_w + gap;
+    let fit_budget = (available - reserved).max(0.0);
+    let mut used = 0.0;
+    let mut visible = 0usize;
+    for (i, w) in widths.iter().enumerate() {
+        let next = if visible == 0 { *w } else { used + gap + *w };
+        if next > fit_budget + 0.001 && visible > 0 {
+            break;
+        }
+        used = next;
+        visible = i + 1;
+    }
+    visible = visible.max(1).min(widths.len());
+    let mut rects = vec![Rect::ZERO; widths.len()];
+    let mut x = band.x0;
+    for (i, w) in widths.iter().enumerate().take(visible) {
+        if let Some(rect) = rects.get_mut(i) {
+            *rect = place(x, *w);
+        }
+        x += *w + gap;
+    }
+    let more = place(x, more_w);
+    let overflow = (visible..widths.len()).collect();
+    ChipRow {
+        rects,
+        more: Some(more),
+        overflow,
+    }
+}
+
+/// Stacks overflow chips under `origin` so every leftover kind stays a target.
+pub fn lay_out_more_menu(
+    natural: &[f64],
+    overflow: &[usize],
+    origin: Point,
+    control_h: f64,
+    gap: f64,
+) -> Vec<(usize, Rect)> {
+    let mut y = origin.y;
+    let mut out = Vec::with_capacity(overflow.len());
+    for &idx in overflow {
+        let w = natural
+            .get(idx)
+            .copied()
+            .unwrap_or(CHIP_MIN_W_PX)
+            .max(CHIP_MIN_W_PX);
+        out.push((idx, Rect::new(origin.x, y, origin.x + w, y + control_h)));
+        y += control_h + gap;
+    }
+    out
 }
 
 /// Lays the filter chips out across a band that may be too narrow.

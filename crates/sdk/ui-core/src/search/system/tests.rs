@@ -291,3 +291,47 @@ fn the_chip_strip_places_every_chip_however_narrow_the_band() {
         );
     }
 }
+
+#[test]
+fn a_narrow_band_keeps_one_row_and_a_more_chip() {
+    use super::filters::{lay_out_chip_row_with_more, lay_out_more_menu};
+    use vello::kurbo::{Point, Rect};
+    let band = Rect::new(0.0, 0.0, 240.0, 36.0);
+    let natural = [40.0, 80.0, 90.0, 70.0, 60.0, 80.0, 70.0];
+    let row = lay_out_chip_row_with_more(&natural, 56.0, band, band.x1, 36.0, 24.0, 8.0);
+    assert!(row.more.is_some(), "a crowded row must grow a More chip");
+    assert!(
+        !row.overflow.is_empty(),
+        "at least one kind sits behind More"
+    );
+    assert_eq!(row.rects.len(), natural.len());
+    let visible = row.rects.iter().filter(|rect| rect.area() > 0.0).count();
+    assert_eq!(
+        visible + row.overflow.len(),
+        natural.len(),
+        "every kind is on the row or behind More"
+    );
+    for rect in row.rects.iter().filter(|rect| rect.area() > 0.0) {
+        assert!(
+            (rect.center().y - band.center().y).abs() < 1.0,
+            "visible chips stay on one row: {rect:?}"
+        );
+    }
+    let more = row.more.expect("more");
+    assert!((more.center().y - band.center().y).abs() < 1.0);
+    let menu = lay_out_more_menu(
+        &natural,
+        &row.overflow,
+        Point::new(more.x0, band.y1 + 8.0),
+        24.0,
+        8.0,
+    );
+    assert_eq!(menu.len(), row.overflow.len());
+    for (idx, rect) in &menu {
+        assert!(
+            row.overflow.contains(idx),
+            "menu entry {idx} was not overflow"
+        );
+        assert!(rect.area() > 0.0, "overflow kind {idx} is clickable");
+    }
+}
