@@ -5001,14 +5001,14 @@ mod tests {
         frame.relayout();
 
         write("light");
-        frame.with_chrome(|chrome| chrome.note_appearance_change());
+        frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
         let light_bg = frame.theme.bg_app;
         let light_y = relative_luminance(light);
 
         write("dark");
-        frame.with_chrome(|chrome| chrome.note_appearance_change());
+        frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
         let dark_bg = frame.theme.bg_app;

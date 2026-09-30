@@ -8394,7 +8394,8 @@ pub fn run() {
             // Input/display reload above does not re-theme. An appearance
             // write must rebuild chrome on this tick and wake tiled apps so
             // they paint the new Theme instead of keeping the last buffer.
-            frame_builder.with_chrome(|chrome| chrome.note_appearance_change());
+            frame_builder
+                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
             for toplevel in state.xdg_shell_state.toplevel_surfaces() {
                 if toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
