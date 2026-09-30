@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 use std::hash::BuildHasher;
 
 use crate::model::{
-    Addr, CellFormat, CellValue, FormatCategory, FormulaError, a1_to_addr, addr_to_a1,
+    Addr, CellFormat, CellValue, FormatCategory, FormulaError, GridEdit, a1_to_addr, addr_to_a1,
 };
 
 // ---------------------------------------------------------------------------
@@ -357,13 +357,16 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// Unlike [`offset_refs`], this is not a copy/fill operation: `$` anchors
 /// affect copying, but inserting or deleting a row/column moves *all*
 /// references, including absolute ones. A target that was deleted becomes the
-/// canonical `#REF!` token. String literals, function names, and numeric
-/// exponents use the same scanner as copy/fill and are left verbatim.
+/// canonical `#REF!` token. A range `A1:B3` moves as a unit through
+/// [`GridEdit::map_range`], so deleting its first or last line shrinks it and
+/// only deleting all of it yields `#REF!`. String literals, function names,
+/// and numeric exponents use the same scanner as copy/fill and are left
+/// verbatim.
 ///
 /// Keeping this beside [`offset_refs`] is important: row/column actions must
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
-pub fn remap_refs(raw: &str, map: impl Fn(Addr) -> Option<Addr>) -> String {
+pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
     };
@@ -394,14 +397,33 @@ pub fn remap_refs(raw: &str, map: impl Fn(Addr) -> Option<Addr>) -> String {
         let mut ahead = scan;
         ahead.skip_while(char::is_whitespace);
         let is_call = ahead.peek() == Some('(');
-        if !prev_numish
-            && !is_call
-            && let Some(mapped) = remap_ref_token(&token, &map)
-        {
-            out.push_str(&mapped);
+        let Some(first) = RefToken::parse(&token).filter(|_| !prev_numish && !is_call) else {
+            out.push_str(&token);
             continue;
+        };
+        if ahead.peek() == Some(':') {
+            ahead.bump();
+            ahead.skip_while(char::is_whitespace);
+            let sep = ahead.text_from(scan.pos());
+            let end_start = ahead.pos();
+            ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+            if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
+                scan = ahead;
+                match edit.map_range(first.addr, second.addr) {
+                    Some((a, b)) => {
+                        out.push_str(&first.render(a));
+                        out.push_str(&sep);
+                        out.push_str(&second.render(b));
+                    }
+                    None => out.push_str("#REF!"),
+                }
+                continue;
+            }
         }
-        out.push_str(&token);
+        match edit.map_addr(first.addr) {
+            Some(addr) => out.push_str(&first.render(addr)),
+            None => out.push_str("#REF!"),
+        }
     }
     out
 }
@@ -460,52 +482,67 @@ fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
     Some(s)
 }
 
-/// Map one A1 token through a structural change while retaining its `$`
-/// spelling. `None` is a valid mapping result and deliberately renders as
-/// `#REF!`; an outer `Option` distinguishes that from a non-reference token.
-fn remap_ref_token(tok: &str, map: &impl Fn(Addr) -> Option<Addr>) -> Option<String> {
-    let bytes = tok.as_bytes();
-    let mut at = 0usize;
-    let col_abs = bytes.first() == Some(&b'$');
-    if col_abs {
-        at = 1;
+/// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
+/// structural remap can write the moved address back the same way.
+#[derive(Clone, Copy)]
+struct RefToken {
+    addr: Addr,
+    col_abs: bool,
+    row_abs: bool,
+}
+
+impl RefToken {
+    /// `None` when the token is not a well-formed reference.
+    fn parse(tok: &str) -> Option<Self> {
+        let bytes = tok.as_bytes();
+        let mut at = 0usize;
+        let col_abs = bytes.first() == Some(&b'$');
+        if col_abs {
+            at = 1;
+        }
+        let letters_start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
+            at = at.saturating_add(1);
+        }
+        let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
+        let row_abs = bytes.get(at) == Some(&b'$');
+        if row_abs {
+            at = at.saturating_add(1);
+        }
+        let digits_start = at;
+        while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+            at = at.saturating_add(1);
+        }
+        if at != bytes.len() {
+            return None;
+        }
+        let addr = (
+            crate::model::letters_to_col(letters)?,
+            tok.get(digits_start..at)?
+                .parse::<u32>()
+                .ok()?
+                .checked_sub(1)?,
+        );
+        Some(Self {
+            addr,
+            col_abs,
+            row_abs,
+        })
     }
-    let letters_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) {
-        at = at.saturating_add(1);
+
+    /// `addr` spelled with this token's `$` anchors.
+    fn render(self, (col, row): Addr) -> String {
+        let mut result = String::new();
+        if self.col_abs {
+            result.push('$');
+        }
+        result.push_str(&crate::model::col_to_letters(col));
+        if self.row_abs {
+            result.push('$');
+        }
+        result.push_str(&row.saturating_add(1).to_string());
+        result
     }
-    let letters = tok.get(letters_start..at).filter(|s| !s.is_empty())?;
-    let row_abs = bytes.get(at) == Some(&b'$');
-    if row_abs {
-        at = at.saturating_add(1);
-    }
-    let digits_start = at;
-    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
-        at = at.saturating_add(1);
-    }
-    if at != bytes.len() {
-        return None;
-    }
-    let old = (
-        crate::model::letters_to_col(letters)?,
-        tok.get(digits_start..at)?
-            .parse::<u32>()
-            .ok()?
-            .checked_sub(1)?,
-    );
-    let Some((col, row)) = map(old) else {
-        return Some("#REF!".into());
-    };
-    let mut result = String::new();
-    if col_abs {
-        result.push('$');
-    }
-    result.push_str(&crate::model::col_to_letters(col));
-    if row_abs {
-        result.push('$');
-    }
-    result.push_str(&row.saturating_add(1).to_string());
-    Some(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -3136,17 +3173,52 @@ mod tests {
 
         // Case `remap_refs_tracks_structural_moves_including_absolute_references`.
         {
-            let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", |(col, row)| {
-                Some((col, row.saturating_add(1)))
-            });
+            let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
             assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
 
-            let deleted = remap_refs("=SUM(A1:A3)+B2", |(col, row)| match row {
-                1 => None,
-                row if row > 1 => Some((col, row - 1)),
-                _ => Some((col, row)),
-            });
+            let deleted = remap_refs("=SUM(A1:A3)+B2", GridEdit::DeleteRow(1));
             assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
+        }
+
+        // Case `remap_refs_shrinks_a_range_whose_edge_line_is_deleted`.
+        {
+            // Rows (zero-based `DeleteRow(1)` is row 2): first, last, middle,
+            // outside, and the whole range.
+            let row = |raw| remap_refs(raw, GridEdit::DeleteRow(1));
+            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B2)");
+            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B1)");
+            assert_eq!(row("=SUM(B1:B3)"), "=SUM(B1:B2)");
+            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B2:B3)");
+            assert_eq!(row("=SUM(B1:C1)"), "=SUM(B1:C1)");
+            assert_eq!(row("=SUM(B2:D2)"), "=SUM(#REF!)");
+            // `$` anchors are spelled back as written; reversed corners keep
+            // their roles.
+            assert_eq!(row("=SUM($B$2:$B$3)"), "=SUM($B$2:$B$2)");
+            assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
+            assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
+            assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
+            // A lone reference to the deleted row still breaks.
+            assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
+
+            // Columns (`DeleteColumn(1)` is column B).
+            let col = |raw| remap_refs(raw, GridEdit::DeleteColumn(1));
+            assert_eq!(col("=SUM(B1:C1)"), "=SUM(B1:B1)");
+            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:A1)");
+            assert_eq!(col("=SUM($A$1:$C$9)"), "=SUM($A$1:$B$9)");
+            assert_eq!(col("=SUM(C1:D1)"), "=SUM(B1:C1)");
+            assert_eq!(col("=SUM(B1:B9)"), "=SUM(#REF!)");
+            assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
+        }
+
+        // Case `remap_refs_grows_a_range_around_an_inserted_line`.
+        {
+            let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
+            assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
+            assert_eq!(row("=SUM(B3:B4)"), "=SUM(B4:B5)");
+            assert_eq!(row("=SUM(B1:B2)"), "=SUM(B1:B2)");
+            let col = |raw| remap_refs(raw, GridEdit::InsertColumn(1));
+            assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
+            assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
         }
     }
 }
