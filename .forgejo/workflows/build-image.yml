@@ -2337,7 +2337,7 @@ jobs:
 
           if [[ $HARDWARE_PROFILE == generic ]]; then
           trap './os/dev/vm.sh stop || true' EXIT
-          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+          if [[ $PUBLISH == true ]]; then
             ./os/tests/validation_drive_qemu.sh
           fi
           # The installed Files AT-SPI gate needs the running Tilo compositor.
