@@ -21,8 +21,8 @@ pub use state::{
     GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
     PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome,
-    SeedDocument, SeedState, StatePeer, TransportOrigin, VerifiedSecurityMetadataOnly, peer_handle,
-    seed_room,
+    SealCheckpoint, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    VerifiedSecurityMetadataOnly, peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;

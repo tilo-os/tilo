@@ -16262,6 +16262,7 @@ dependencies = [
  "channel-crypto",
  "chrono",
  "collab-types",
+ "console-control",
  "ed25519-dalek 3.0.0",
  "fs",
  "fuser",

@@ -46,6 +46,8 @@ pub struct MinimalManifest {
     /// `[package].name` — the publisher's human-facing name. `None` falls
     /// back to deriving one from the package id.
     pub name: Option<String>,
+    /// `[package.names]` — the name in other languages, by BCP 47 tag.
+    pub localized_names: std::collections::BTreeMap<String, String>,
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
     /// `[package].icon` — payload-relative icon path, resolved to the
@@ -139,6 +141,8 @@ struct PackageBlock {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    names: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     category: Option<String>,
     #[serde(default)]
     icon: Option<String>,
@@ -198,6 +202,17 @@ impl From<RawManifest> for MinimalManifest {
             .collect();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
+        let localized_names = raw
+            .package
+            .as_ref()
+            .map(|p| {
+                p.names
+                    .iter()
+                    .map(|(tag, name)| (tag.trim().to_string(), name.trim().to_string()))
+                    .filter(|(tag, name)| !tag.is_empty() && !name.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         let category = raw.package.as_ref().and_then(|p| p.category.clone());
         let icon = raw
             .package
@@ -208,6 +223,7 @@ impl From<RawManifest> for MinimalManifest {
         MinimalManifest {
             package_id,
             name,
+            localized_names,
             category,
             icon,
             version,
@@ -576,6 +592,27 @@ pub enum ManifestError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shipped_system_apps_carry_their_german_names() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        for (app, german) in [
+            ("file-explorer", "Dateien"),
+            ("settings", "Persönliche Einstellungen"),
+            ("notes", "Notizen"),
+        ] {
+            let manifest = read_manifest(&repo.join("apps").join(app).join("tilo-app.toml"))
+                .unwrap_or_else(|e| panic!("{app}: {e}"));
+            assert_eq!(
+                manifest.localized_names.get("de").map(String::as_str),
+                Some(german),
+                "{app}"
+            );
+        }
+    }
 
     #[test]
     fn opener_claims_are_read_and_normalised() {
