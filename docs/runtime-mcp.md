@@ -185,11 +185,16 @@ needle naming several actions ("open paragraph style heading") still finds
 optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
 against the directory as it is now; named, a target that changed since is
 refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
-update and answers with it; an invocation still running then is followed with
-`tilo_status`. Pass content resource references returned by one successful
-action as typed arguments to a freshly discovered action in another app. The
-runtime contains no Photos/Writer workflow branch and never treats `Accepted`
-as `Succeeded` or replays a mutation automatically.
+update and answers with it; an invocation still running then says so in
+`pending` and is followed with `tilo_status`. A number outside the range its
+action declares (`pageSize: 200` where the signature says `1..64`) fails
+validation before the action runs; the bridge then runs the call once more
+with the bound the refusal named and adds `adjusted` to the answer
+(`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
+Pass content resource references returned by one successful action as typed
+arguments to a freshly discovered action in another app. The runtime contains
+no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
+replays a mutation automatically.
 
 ### Opening an app
 
