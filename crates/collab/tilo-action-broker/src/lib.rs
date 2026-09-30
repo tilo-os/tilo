@@ -20,6 +20,8 @@ pub mod peer_actions;
 pub mod policy;
 pub mod route;
 pub mod services;
+#[cfg(test)]
+mod test_owner;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 // Room admission decodes peer bytes in automerge worker processes started
