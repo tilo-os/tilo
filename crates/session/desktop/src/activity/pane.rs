@@ -1113,6 +1113,55 @@ impl RoomActivityPane {
         }
     }
 
+    /// What "new" is counted from in `workspace`. One this device has never
+    /// read starts from the history it holds now: a fresh install's own
+    /// setup or a joined workspace's past stays browsable, but is not news.
+    fn passive_frontier(&mut self, workspace: u64) -> WorkspaceSeenFrontier {
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !self.history_index.entries().is_empty()
+        {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            self.seen_frontiers.insert(workspace, frontier);
+            self.persist_frontiers();
+        }
+        self.seen_frontiers
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The tree-only feed's rows the active workspace's frontier has not
+    /// acknowledged, with the same first-sight baseline as
+    /// [`Self::passive_frontier`].
+    fn unseen_tree_rows(&mut self, rows: &[HistoryEntry]) -> Vec<HistoryEntry> {
+        let Some(workspace) = self.last_active else {
+            return rows.to_vec();
+        };
+        let id = |entry: &HistoryEntry| WorkspaceHistoryId {
+            origin: super::index::HistoryOrigin::DesktopTree,
+            change: entry.id,
+        };
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !rows.is_empty()
+        {
+            let frontier = self.seen_frontiers.entry(workspace).or_default();
+            for row in rows {
+                frontier.acknowledge(&id(row));
+            }
+            self.persist_frontiers();
+        }
+        let Some(frontier) = self.seen_frontiers.get(&workspace) else {
+            return rows.to_vec();
+        };
+        rows.iter()
+            .filter(|row| !frontier.acknowledged(&id(row)))
+            .cloned()
+            .collect()
+    }
+
     fn persist_frontiers(&self) {
         self.host.save_frontiers(&self.seen_frontiers);
         self.host.save_departures(&self.departures);
@@ -2177,11 +2226,7 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        let passive = self
-            .seen_frontiers
-            .get(&tree.active.raw())
-            .cloned()
-            .unwrap_or_default();
+        let passive = self.passive_frontier(tree.active.raw());
         let local = self.local_user();
         let rows = others_work(
             self.history_index
@@ -2302,11 +2347,7 @@ impl RoomActivityPane {
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
-        let passive_frontier = self
-            .seen_frontiers
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default();
+        let passive_frontier = self.passive_frontier(workspace);
         let unseen = |frontier: &WorkspaceSeenFrontier, tree: &mut T| {
             if let Some(local) = local {
                 self.history_index
@@ -2435,8 +2476,19 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
-        self.passive_unread = digest_rows.len();
-        self.passive_digest = self.digest.clone();
+        if self.history_index.entries().is_empty() {
+            let unseen = self.unseen_tree_rows(&digest_rows);
+            self.passive_unread = unseen.len();
+            self.passive_digest = ActivityDigest::from_entries_with_ranges(
+                &unseen,
+                SystemTime::UNIX_EPOCH,
+                5,
+                &self.named,
+            );
+        } else {
+            self.passive_unread = digest_rows.len();
+            self.passive_digest = self.digest.clone();
+        }
         self.reset_narrative();
 
         // Filters and counts name the people history resolved; a change it

@@ -156,6 +156,22 @@ impl BrokerChannels {
                 .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
+    /// [`Self::document_encryption_allowed`] for history a workspace host
+    /// replayed in its own order (see `ChannelGate::accepts_history`).
+    pub fn document_history_allowed(
+        &self,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> bool {
+        self.governance
+            .get(&channel)
+            .is_none_or(|journal| journal.gate().accepts_history(encryption, channel))
+            && self
+                .gates
+                .get(&channel)
+                .is_none_or(|gate| gate.accepts_history(encryption, channel))
+    }
+
     /// Append a validated op to durable history when it belongs there.
     /// Failure is logged, never fatal: the op is still delivered live.
     pub fn record_history(&mut self, op: &SignedOp) {

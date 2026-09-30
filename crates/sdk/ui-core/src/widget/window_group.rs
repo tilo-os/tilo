@@ -269,7 +269,13 @@ impl WindowGroup {
         width: WindowWidth,
     ) -> Self {
         let descs = tabs.iter().map(|(d, _)| d.clone()).collect();
-        let hosts = tabs.into_iter().map(|(d, h)| (d.id, h)).collect();
+        let hosts = tabs
+            .into_iter()
+            .map(|(d, h)| {
+                h.set_panic_scope(d.id);
+                (d.id, h)
+            })
+            .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -628,6 +634,7 @@ impl WindowGroup {
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
         host.start_spawn_animation();
+        host.set_panic_scope(id);
         self.hosts.insert(clamped, (id, host));
     }
 
@@ -653,6 +660,7 @@ impl WindowGroup {
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
+        host.set_panic_scope(tab_id);
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -894,7 +902,7 @@ impl WindowGroup {
         self.bar.close_rect_for_tests(tab_id)
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
@@ -1793,7 +1801,10 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&self.bar);
         }
-        if let Some(host) = self.active_host() {
+        let active = self.bar.active_id();
+        if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
+            // A host swapped in through `host_for_tab_mut` is named here.
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1804,7 +1815,8 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&mut self.bar);
         }
-        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1812,7 +1824,8 @@ impl Widget for WindowGroup {
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for (_, host) in &self.hosts {
+        for (id, host) in &self.hosts {
+            host.set_panic_scope(*id);
             visitor(host);
         }
     }

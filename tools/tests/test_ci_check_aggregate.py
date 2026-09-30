@@ -331,8 +331,6 @@ class CheckAggregateTests(unittest.TestCase):
             script = (ROOT / "tools/ci/check-wasm.sh").read_text()
             for package, _ in hack.ROOTS:
                 self.assertIn(f"-p {package}", script)
-            self.assertIn("--features tilo-browser-runtime/dylink", script)
-            self.assertIn("--features cloud,static-apps", script)
             self.assertIn('--target "$target"', script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)

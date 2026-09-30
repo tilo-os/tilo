@@ -245,6 +245,71 @@ mod asynchronous {
             assert!(reader.read_frame_async().await.unwrap().is_none());
         }
     }
+
+    /// Hands out one byte per poll and is pending in between, like a stream
+    /// whose frames arrive across several packets.
+    struct Trickle {
+        bytes: std::collections::VecDeque<u8>,
+        ready: bool,
+    }
+
+    impl tokio::io::AsyncRead for Trickle {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            if !std::mem::replace(&mut self.ready, false) {
+                self.ready = true;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            if let Some(byte) = self.bytes.pop_front() {
+                buf.put_slice(&[byte]);
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A receive loop `select!`s the next frame against other work, so the
+    /// read is dropped whenever that work is ready first. The frame read so
+    /// far must survive; before, its start was lost and the rest of the
+    /// stream decoded as garbage prefixes.
+    #[tokio::test]
+    async fn a_frame_read_dropped_mid_frame_resumes_where_it_stopped() {
+        let framing = Framing::little_endian(64);
+        let mut wire = Vec::new();
+        for payload in [&b"first frame"[..], b"", b"a second, longer frame"] {
+            framing.write_async(&mut wire, payload).await.unwrap();
+        }
+        let mut reader = FrameReader::new(
+            Trickle {
+                bytes: wire.into(),
+                ready: false,
+            },
+            framing,
+        );
+        let mut frames = Vec::new();
+        let mut interrupted = 0_u32;
+        while frames.len() < 3 {
+            tokio::select! {
+                biased;
+                frame = reader.read_frame_async() => {
+                    frames.push(frame.unwrap().unwrap().to_vec());
+                }
+                () = std::future::ready(()) => interrupted = interrupted.saturating_add(1),
+            }
+        }
+        assert!(interrupted > 20, "the read was dropped mid-frame");
+        assert_eq!(
+            frames,
+            vec![
+                b"first frame".to_vec(),
+                Vec::new(),
+                b"a second, longer frame".to_vec()
+            ]
+        );
+    }
 }
 
 #[cfg(feature = "postcard")]
