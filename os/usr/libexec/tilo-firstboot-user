@@ -88,8 +88,20 @@ if [ "$valid_user" -ne 1 ] || [ "$valid_hash" -ne 1 ]; then
   exit 1
 fi
 
+# The installer copies the enrolled device key before this machine's
+# `tilo-identity` group exists, so the stored group id can be wrong. The
+# session reads that key as a member of this machine's group.
+repair_enrolled_device_key() {
+  key=/var/lib/tilo/device-private/keypair.bin
+  if [ -f "$key" ] && [ ! -L "$key" ]; then
+    chgrp tilo-identity "$key"
+    chmod 0640 "$key"
+  fi
+}
+
 if id "$user" >/dev/null 2>&1; then
   echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
+  repair_enrolled_device_key
   shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
   exit 1
 else
@@ -130,14 +142,7 @@ else
   fi
 fi
 
-# The installer copies the enrolled device key before this machine's
-# `tilo-identity` group exists, so the stored group id can be wrong. The
-# session reads that key as a member of this machine's group.
-key=/var/lib/tilo/device-private/keypair.bin
-if [ -f "$key" ] && [ ! -L "$key" ]; then
-  chgrp tilo-identity "$key"
-  chmod 0640 "$key"
-fi
+repair_enrolled_device_key
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
