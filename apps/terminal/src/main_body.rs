@@ -6158,10 +6158,19 @@ impl TerminalPerformer<'_> {
             return;
         }
         let screen_top = len.saturating_sub(self.height);
+        let cursor_y = self.absolute_y().min(len - 1);
+        // The cursor's own row is erased only up to or from the cursor, as
+        // `EL` would; blanking it whole wipes a prompt drawn before the cursor.
         let range: Vec<usize> = match mode {
-            0 => (self.absolute_y()..len).collect(), // cursor → end
-            1 => (screen_top..=self.absolute_y().min(len - 1)).collect(), // start → cursor
-            2 | 3 => (screen_top..len).collect(),    // whole screen
+            0 => {
+                self.erase_line(0);
+                (cursor_y + 1..len).collect()
+            }
+            1 => {
+                self.erase_line(1);
+                (screen_top..cursor_y).collect()
+            }
+            2 | 3 => (screen_top..len).collect(), // whole screen
             _ => return,
         };
         for abs_y in range {

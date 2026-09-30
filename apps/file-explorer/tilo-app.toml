@@ -20,6 +20,9 @@ runtime  = "tilo-runtime/2026.07"
 platforms = ["linux", "macos"]
 platform-reason = "Browses the local file system by path."
 
+[package.names]
+de = "Dateien"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"

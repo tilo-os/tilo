@@ -177,6 +177,7 @@ impl RelayCollabTransport {
         self.peer
             .join(workspace)
             .and_then(|()| self.peer.live_join(workspace))
+            .and_then(|()| self.peer.open_route(document_route(route)))
             .map_err(|_| TransportError::Closed)?;
         Ok(workspace)
     }

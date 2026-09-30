@@ -201,6 +201,23 @@ pub fn start_peer(
     host_cert: DeviceCert,
     key: SigningKey,
 ) -> PeerHandle {
+    start_peer_with_store(
+        host,
+        cert,
+        host_cert,
+        key,
+        Arc::new(MemoryPeerStore::default()),
+    )
+}
+
+/// [`start_peer`] over `store`, as a page reloaded from its profile.
+pub fn start_peer_with_store(
+    host: Host,
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    key: SigningKey,
+    store: Arc<MemoryPeerStore>,
+) -> PeerHandle {
     PeerHandle::start(
         PeerConfig {
             host,
@@ -209,7 +226,7 @@ pub fn start_peer(
             revocations: RevocationList::new(),
         },
         Arc::new(key),
-        Arc::new(MemoryPeerStore::default()),
+        store,
     )
 }
 

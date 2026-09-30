@@ -185,7 +185,9 @@ impl CapnpClient {
     }
 
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
-    /// ownership, so the caller must not close it afterwards. `side` is which
+    /// ownership, so the caller must not close it afterwards. A descriptor
+    /// named by `TILO_SVC_<NAME>_FD` is shared by the whole process and is
+    /// never owned by one client: open those with [`connect_service`]. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
     ///
     /// # Errors
@@ -244,21 +246,58 @@ impl CapnpClient {
 }
 
 #[cfg(feature = "rpc")]
-/// Helper for service crates: probe an fd, lift it to capnp, and pull out
-/// the bootstrap. [`NotAvailable::ServiceFdMissing`] if the env var isn't there.
+/// A client connection of its own to the launcher-inherited service `name`.
+///
+/// The process inherits one socket per service, which never belongs to a
+/// single client: every call returns a private connection whose calls are
+/// forwarded over that socket, so any number of clients (one per record,
+/// say) may be open and dropped in any order.
 ///
 /// # Errors
 ///
 /// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
-/// or [`NotAvailable::ConnectionFailed`] if the fd can't be lifted to an RPC
-/// connection.
+/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up
+/// or the inherited one has ended.
+pub fn connect_service(name: &str) -> Result<CapnpClient, NotAvailable> {
+    #[cfg(unix)]
+    {
+        CapnpClient::from_connected_fd(
+            std::os::fd::IntoRawFd::into_raw_fd(connect_service_fd(name)?),
+            rpc_twoparty_capnp::Side::Client,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        Err(NotAvailable::ServiceFdMissing)
+    }
+}
+
+#[cfg(all(unix, feature = "rpc"))]
+/// [`connect_service`] for a client that drives its own RPC system: the
+/// connected socket of its own, speaking Cap'n Proto two-party as the client.
+///
+/// # Errors
+///
+/// As [`connect_service`].
+pub fn connect_service_fd(name: &str) -> Result<OwnedFd, NotAvailable> {
+    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
+    shared::connect(name, fd)
+}
+
+#[cfg(feature = "rpc")]
+/// Helper for service crates: open a connection to an inherited service
+/// ([`connect_service`]) and pull out the bootstrap.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
+/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up.
 pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,
 {
-    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
-    let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    Ok(client.bootstrap::<C>())
+    Ok(connect_service(name)?.bootstrap::<C>())
 }
 
 #[cfg(feature = "rpc")]
@@ -350,5 +389,8 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+#[cfg(all(unix, feature = "rpc"))]
+mod shared;
 
 pub mod native;

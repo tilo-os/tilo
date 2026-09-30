@@ -348,10 +348,8 @@ impl Widget for Popover {
         // the first draw. Preserve the active theme and text scale so the hit
         // target matches the first painted frame under large text.
         if self.open {
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(self.layout_theme.text_scale);
             let theme = self.layout_theme.clone();
-            self.place(&mut tr, &theme);
+            crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.place(tr, &theme));
         }
     }
 
