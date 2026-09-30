@@ -26,6 +26,7 @@ use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply,
 use crate::portal::{
     FilePickerRequest, FilePickerSpawner, GrantStoreHandle, PickerFilter, PickerScope, PortalCaller,
 };
+use crate::shell::i18n::{t, t_args};
 
 /// Whether someone is at the computer to answer a chooser.
 pub type Presence = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -223,7 +224,7 @@ fn answer(
             ) else {
                 return Reply::Failed {
                     id,
-                    reason: "this app has been given no files to choose from".into(),
+                    reason: t("portal-chooser-nothing-granted"),
                 };
             };
             let (reply, chosen) = tokio::sync::oneshot::channel();
@@ -262,16 +263,14 @@ fn answer(
             }
         }
         Request::Open { id, path } => {
-            let Ok(paths) = permitted(&context.grants, caller, &[path], PickMode::Open) else {
-                return Reply::Failed {
-                    id,
-                    reason: "this app has not been given that file".into(),
-                };
+            let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
+                Ok(paths) => paths,
+                Err(reason) => return Reply::Failed { id, reason },
             };
             let Some(path) = paths.into_iter().next() else {
                 return Reply::Failed {
                     id,
-                    reason: "no file to open".into(),
+                    reason: t("portal-chooser-no-file"),
                 };
             };
             let (reply, outcome) = mpsc::channel();
@@ -285,7 +284,7 @@ fn answer(
             {
                 return Reply::Failed {
                     id,
-                    reason: "the session is closing".into(),
+                    reason: t("portal-chooser-session-closing"),
                 };
             }
             (context.wake)();
@@ -294,7 +293,7 @@ fn answer(
                 Ok(Err(reason)) => Reply::Failed { id, reason },
                 Err(_) => Reply::Failed {
                     id,
-                    reason: "the session is closing".into(),
+                    reason: t("portal-chooser-session-closing"),
                 },
             }
         }
@@ -358,7 +357,12 @@ fn permitted(
             };
             resolved
                 .filter(|resolved| grants.filesystem_path_allows(caller, resolved, verb))
-                .ok_or_else(|| format!("{} is not a file this app has been given", path.display()))
+                .ok_or_else(|| {
+                    t_args(
+                        "portal-chooser-file-not-granted",
+                        &[("path", path.display().to_string().into())],
+                    )
+                })
         })
         .collect()
 }
