@@ -5,11 +5,19 @@
 //! Enrollment certifies a new device key; the root secret stays on the machine
 //! that already holds it. The privileged writer only copies a prepared tree.
 
-use std::fs;
-use std::io::{self, Write};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::model::InstallProfile;
+use crate::profile::PROFILE_BLOCK_SIZE;
+
+/// Fixed header immediately before the secret-free profile block. The payload
+/// sits directly before this header, in the slack after the image bytes.
+pub const SETUP_HANDOFF_HEADER_SIZE: u64 = 4096;
+pub const SETUP_HANDOFF_MAGIC: &str = "TILO_SETUP_HANDOFF_V1";
 
 /// Where this machine's identity lives while it sets up another system.
 pub struct LocalIdentity<'a> {
@@ -143,6 +151,103 @@ pub fn install_staged_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result
     let staged_var = staged.join("var");
     if staged_var.is_dir() {
         copy_tree(&staged_var, &var)?;
+    }
+    Ok(())
+}
+
+/// Write the staged tree into the slack between the image and the profile block.
+///
+/// A live installer medium has no installed root yet. The installer extracts
+/// this payload and copies it onto the disk it installs.
+///
+/// # Errors
+///
+/// Returns an error when the payload would overlap the image or the profile
+/// block, or when the device cannot be written.
+pub fn embed_setup_handoff(
+    device: &Path,
+    image_len: u64,
+    device_len: u64,
+    staged: &Path,
+) -> io::Result<()> {
+    let payload = pack_setup_handoff(staged)?;
+    let header_at = device_len
+        .checked_sub(PROFILE_BLOCK_SIZE as u64)
+        .and_then(|offset| offset.checked_sub(SETUP_HANDOFF_HEADER_SIZE))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "drive is too small for a setup handoff",
+            )
+        })?;
+    let payload_at = header_at
+        .checked_sub(u64::try_from(payload.len()).unwrap_or(u64::MAX))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "setup handoff does not fit on the drive",
+            )
+        })?;
+    if payload_at < image_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "installer medium has no room between the image and the setup profile",
+        ));
+    }
+    let digest = hex::encode(Sha256::digest(&payload));
+    let text = format!("{SETUP_HANDOFF_MAGIC}\n{digest}\n{}\n", payload.len());
+    if text.len() > SETUP_HANDOFF_HEADER_SIZE as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "setup handoff header does not fit",
+        ));
+    }
+    let mut header = vec![0_u8; SETUP_HANDOFF_HEADER_SIZE as usize];
+    header[..text.len()].copy_from_slice(text.as_bytes());
+    let mut file = OpenOptions::new().write(true).open(device)?;
+    file.seek(SeekFrom::Start(payload_at))?;
+    file.write_all(&payload)?;
+    file.seek(SeekFrom::Start(header_at))?;
+    file.write_all(&header)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn pack_setup_handoff(staged: &Path) -> io::Result<Vec<u8>> {
+    let mut files = Vec::new();
+    collect_files(staged, staged, &mut files)?;
+    files.sort();
+    let mut payload = Vec::new();
+    for path in files {
+        let relative = path.strip_prefix(staged).unwrap_or(&path);
+        let relative = relative.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "setup handoff path is not UTF-8",
+            )
+        })?;
+        let bytes = fs::read(&path)?;
+        payload.extend_from_slice(relative.as_bytes());
+        payload.push(b'\n');
+        payload.extend_from_slice(bytes.len().to_string().as_bytes());
+        payload.push(b'\n');
+        payload.extend_from_slice(&bytes);
+    }
+    Ok(payload)
+}
+
+fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(root, &path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
     }
     Ok(())
 }
@@ -436,5 +541,28 @@ mod tests {
                 .is_file()
         );
         assert_eq!(fs::read(var.join("lib/tilo/marker")).unwrap(), b"ok");
+    }
+
+    #[test]
+    fn setup_handoff_embeds_in_the_slack_before_the_profile_block() {
+        let staged = tempfile::tempdir().unwrap();
+        fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+        let image_len = 1000_u64;
+        let device_len = image_len + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;
+        let device = tempfile::NamedTempFile::new().unwrap();
+        device.as_file().set_len(device_len).unwrap();
+        {
+            use std::io::Write;
+            let mut file = device.reopen().unwrap();
+            file.write_all(&vec![0xAB; image_len as usize]).unwrap();
+        }
+        embed_setup_handoff(device.path(), image_len, device_len, staged.path()).unwrap();
+        let bytes = fs::read(device.path()).unwrap();
+        assert!(bytes[..image_len as usize].iter().all(|byte| *byte == 0xAB));
+        let header_at =
+            (device_len - PROFILE_BLOCK_SIZE as u64 - SETUP_HANDOFF_HEADER_SIZE) as usize;
+        let header = String::from_utf8_lossy(&bytes[header_at..header_at + 80]);
+        assert!(header.starts_with(SETUP_HANDOFF_MAGIC));
+        assert!(bytes.windows(11).any(|window| window == b"wifi-secret"));
     }
 }
