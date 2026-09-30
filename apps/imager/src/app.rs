@@ -3624,8 +3624,13 @@ impl ImagerApp {
         self.draw_confirm_danger_banner(scene, tr, theme, t, content);
         if self.offers_write_setup() {
             let top = self.write_setup_top(content);
-            self.write_setup
-                .draw(scene, t, tr, theme, presence, content, top, &self.profile);
+            self.write_setup.draw(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                presence,
+                content,
+                top,
+                &self.profile,
+            );
         }
         self.draw_confirm_field(scene, tr, theme, t, content);
     }
@@ -4489,7 +4494,7 @@ impl ImagerApp {
                     }
                 }
                 crate::actions::ImagerOperation::SetWifiPsk { value } => {
-                    self.wifi_psk = value.clone();
+                    self.wifi_psk.clone_from(value);
                     Ok(())
                 }
                 crate::actions::ImagerOperation::Write { .. } => {
@@ -5281,7 +5286,7 @@ impl Widget for ImagerApp {
                     true
                 }
                 ("wifi-psk", AccessAction::SetValue(value)) => {
-                    self.wifi_psk = value.clone();
+                    self.wifi_psk.clone_from(value);
                     true
                 }
                 _ => false,

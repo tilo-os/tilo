@@ -12,6 +12,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -277,20 +278,17 @@ impl WriteSetupPanel {
     /// Draw the panel starting at `top` inside `content`.
     pub fn draw(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         content: Rect,
         top: f64,
         profile: &InstallProfile,
     ) {
         let g = self.geom(content, top);
-        let c = &theme.tokens.colors;
+        let c = &ctx.theme.tokens.colors;
         Self::txt(
-            tr,
-            scene,
+            ctx.text,
+            ctx.scene,
             "ON THIS WRITE",
             11.0,
             c.text_dim,
@@ -303,9 +301,24 @@ impl WriteSetupPanel {
             SetupField::WifiPsk,
             SetupField::DeviceLabel,
         ] {
-            self.draw_text_field(scene, tr, theme, t, presence, field, g.field(field));
+            self.draw_text_field(
+                ctx.scene,
+                ctx.text,
+                ctx.theme,
+                ctx.transform,
+                presence,
+                field,
+                g.field(field),
+            );
         }
-        self.draw_enroll(scene, tr, theme, t, &g, profile.enroll_local_identity);
+        self.draw_enroll(
+            ctx.scene,
+            ctx.text,
+            ctx.theme,
+            ctx.transform,
+            &g,
+            profile.enroll_local_identity,
+        );
     }
 
     fn draw_text_field(
