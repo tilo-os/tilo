@@ -150,7 +150,7 @@ mod tests {
             titles,
             Category::ALL
                 .iter()
-                .map(|category| category.label().to_string())
+                .map(|category| category.label())
                 .collect::<Vec<_>>(),
             "a continuation reaches late categories instead of truncating browse discovery"
         );
