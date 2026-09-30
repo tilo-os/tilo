@@ -3184,6 +3184,7 @@ jobs:
           SOURCE_REVISION: ${{ github.sha }}
           DISK_TOOLING_REVISION: ${{ github.sha }}
           DEV_TAG: ${{ matrix.board }}-ci
+          DISK_VARIANT: ${{ matrix.board }}
           BASE_TRUST: integration
           SOURCE_DISK: ${{ env.BOARD_OUTPUT }}/qcow2/disk.qcow2
           SOURCE_BOOT: ${{ env.BOARD_OUTPUT }}/direct-boot
