@@ -310,12 +310,8 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
                 gate.index('"containers-storage:$first_tag"'),
             )
             self.assertNotIn("podman pull", gate)
-            # One install per lane: the generic dev image is one branch, and
-            # the production disk install is the other. A board profile takes
-            # the production branch.
-            dev = gate.index(
-                "if [[ $DEV_GATE == true && $HARDWARE_PROFILE == generic ]]; then"
-            )
+            # One install per lane: the prod install only in the other branch.
+            dev = gate.index("if [[ $DEV_GATE == true ]]; then")
             prod = gate.index("./os/dev/build-image.sh", dev)
             self.assertLess(gate.index("          else\n", dev), prod)
             # Same desktop gate, then tilo-vmd.

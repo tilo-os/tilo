@@ -15,7 +15,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # Generic publication triggers share the generation-series lock. A protected
 # Lenovo dispatch uses its own source-specific group because it never allocates
 # a generic genN; validation builds remain per-ref.
-grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (github.event_name == 'workflow_dispatch' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-3b-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
   && ok 'generic generation publication is serialized separately from Lenovo' \
   || bad 'release jobs can race and reuse one generation'
@@ -299,27 +299,6 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
   ok 'Lenovo release provenance binds reviewed firmware and generic releases reject it'
 else
   bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
-fi
-
-if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
-   BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
-   TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 TILO_RELEASE_ARCHITECTURE=aarch64 \
-   "$provenance" "$tmp/orangepi-provenance.json" \
-   && jq -e '
-     .buildDefinition.externalParameters.hardwareProfile == "orangepi-3b-v2-1"
-     and .buildDefinition.externalParameters.architecture == "aarch64"
-     and .buildDefinition.externalParameters.firmwareManifestSha256 == ""
-   ' "$tmp/orangepi-provenance.json" >/dev/null \
-   && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
-         BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
-         TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 TILO_RELEASE_ARCHITECTURE=aarch64 \
-         TILO_FIRMWARE_CANDIDATE="$firmware" TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
-         "$provenance" "$tmp/bad-orangepi-firmware.json" >/dev/null 2>&1); then
-  ok 'Orange Pi provenance records the board and rejects private firmware'
-else
-  bad 'Orange Pi provenance is missing or accepts a private firmware artifact'
 fi
 
 fex="registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:$hex"
