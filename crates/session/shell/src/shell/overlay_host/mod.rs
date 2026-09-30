@@ -3621,10 +3621,6 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
-        // Both update and structure-dirty enter here before canonical
-        // reconciliation. Commit pending widget gestures first, before a
-        // rebuild drops the rows holding them.
-        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -4253,10 +4249,15 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let (fs_group, maximize) = {
+        let (fs_group, maximize, single) = {
             let st = chrome.borrow();
             let client = st.fullscreen_group();
-            (client.or_else(|| st.maximized_group()), client.is_none())
+            let single = st.single_strip().then(|| st.active_strip_id()).flatten();
+            (
+                client.or_else(|| st.maximized_group()),
+                client.is_none(),
+                single,
+            )
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4273,7 +4274,7 @@ impl ShellOverlayHost {
         // rebuilding while this still says `true` leaves the sidebar node at
         // `display:none`, with no later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
-        for &row_ptr in self.group_row_ptrs.values() {
+        for (&strip, &row_ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
             // tree, the host outlives the content, and `&mut self` gives us
@@ -4287,7 +4288,7 @@ impl ShellOverlayHost {
                     row.set_fullscreen(Some(gid), false);
                 }
                 Some(_) if owned => row.set_fullscreen(None, true),
-                _ => row.set_fullscreen(None, false),
+                _ => row.set_fullscreen(None, single.is_some_and(|single| single != strip)),
             }
         }
     }
@@ -4445,8 +4446,9 @@ impl ShellOverlayHost {
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
     /// tree's `group.active_tab`/`active_group`/`active_strip` — without
     /// it, a tab click flips visible content but leaves search-scope
-    /// helpers pointing at the group's initial tab. Runs every frame; the
-    /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
+    /// helpers pointing at the group's initial tab. Runs after input
+    /// (`flush_active_tab_writeback`) and before a search or palette
+    /// scope is resolved, not every frame.
     fn harvest_active_tab_writeback(&self) {
         // Widgets and chrome can't be borrowed at once, so collect the
         // tuples first and apply under one chrome borrow.
@@ -5729,8 +5731,8 @@ impl ShellOverlayHost {
     }
 
     /// Selects `tab` inside `group` on the live widget tree (the
-    /// authoritative side — `harvest_active_tab_writeback` mirrors it into
-    /// the persisted tree each frame). Used by the compositor's Alt+Shift
+    /// authoritative side — `flush_active_tab_writeback` mirrors it into
+    /// the persisted tree after input). Used by the compositor's Alt+Shift
     /// wheel jump.
     pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
         let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
@@ -6342,6 +6344,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Super+F on a Tilo window: cover the output, including the wheel.
+    /// A client `xdg_toplevel` fullscreen still goes through the compositor.
+    pub(crate) fn toggle_focused_group_fullscreen(&self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let focused = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+            let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+            drop(tree);
+            drop(state);
+            group
+        };
+        let Some(group) = focused else {
+            return false;
+        };
+        let current = chrome.borrow().fullscreen_group();
+        chrome
+            .borrow_mut()
+            .set_fullscreen_group(if current == Some(group) {
+                None
+            } else {
+                Some(group)
+            });
+        true
+    }
+
     fn detach_focused_tab(&mut self) -> bool {
         self.mutate_focused_group_widget(GroupRow::detach_active_tab)
     }
@@ -6832,6 +6863,10 @@ impl ShellOverlayHost {
     fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
+        if tilo_desktop::launchpad::take_open_app(doc, root) {
+            self.open_app_launcher(doc, root);
+            return true;
+        }
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
@@ -6852,6 +6887,22 @@ impl ShellOverlayHost {
             | LaunchpadAction::Meet => {}
         }
         true
+    }
+
+    /// The app launcher Super+N and the empty workspace's "Open an app"
+    /// open: the palette over everything, opening beside the focus.
+    fn open_app_launcher(&mut self, doc: &AutoCommit, root: &ObjId) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
     }
 
     fn open_launchpad_app(
@@ -11841,21 +11892,9 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
-                if repeat {
-                    *handled = true;
-                    return true;
+                if !repeat {
+                    self.open_app_launcher(state, path);
                 }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
-                    st.bump();
-                }
-                self.palette_visible = true;
-                self.palette.set_focus(true);
-                self.palette.set_query("");
-                self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-                self.refresh_search_results(state, path);
                 *handled = true;
                 true
             }
@@ -15782,13 +15821,12 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
-        self.harvest_active_tab_writeback();
         let presence_dirty = self.pump_presence_requests();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
-        // Both edge-triggered on `active_group`, so they run after the
-        // writeback above reflects this frame's focus change.
+        // Edge-triggered on `active_group`. Input already flushed the
+        // widget-side tab into the tree before this update.
         self.scroll_active_group_into_view();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
