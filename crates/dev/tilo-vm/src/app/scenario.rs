@@ -22,7 +22,7 @@ use crate::hypervisor::{CommandLine, Runner};
 use crate::scenario::console::{Console, SocketConsole};
 use crate::scenario::drive::{self, Choices, RealPace};
 use crate::scenario::fixture::{self, Preserved, Tools};
-use crate::scenario::{Credentials, Layout, Unlock, scrub};
+use crate::scenario::{Credentials, Layout, Unlock, scrub, scrub_with};
 
 /// Where `os/dev/build-custom-installer.sh` writes the medium.
 pub const DEFAULT_MEDIUM: &str = "os/output/installer/qcow2/disk.qcow2";
@@ -1231,7 +1231,17 @@ fn valid_username(name: &str) -> bool {
 /// installer deliberately withholds from scenario artifacts. Scrub it before
 /// retention or cleanup, even when the install failed.
 fn scrub_scenario_logs(out: &Path, run: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
-    scrub_scenario_logs_with(out, run, secrets, scrub)
+    scrub_scenario_logs_with(out, run, secrets, |path, secrets| {
+        if path == out {
+            // VM disk images live here and can be tens of GiB. They are never
+            // text logs; reading them can exhaust host memory, and a false
+            // positive must never truncate an installed target.
+            let storage = out.join("storage");
+            scrub_with(path, secrets, |directory| directory != storage)
+        } else {
+            scrub(path, secrets)
+        }
+    })
 }
 
 fn scrub_scenario_logs_with(
@@ -1449,7 +1459,10 @@ mod tests {
             let run = dir.path().join("runtime");
             std::fs::create_dir(&out).unwrap();
             std::fs::create_dir(&run).unwrap();
+            std::fs::create_dir(out.join("storage")).unwrap();
             std::fs::write(out.join("state.json"), "ready").unwrap();
+            let disk = out.join("storage/target.qcow2");
+            std::fs::write(&disk, "typed accountsecret123 in VM disk bytes").unwrap();
             std::fs::write(run.join("serial.log"), "typed accountsecret123").unwrap();
             std::fs::write(run.join("uart.log"), "typed disksecret456").unwrap();
             let withheld =
@@ -1458,6 +1471,7 @@ mod tests {
             assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
             assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
             assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
+            assert!(!std::fs::read(disk).unwrap().is_empty());
         }
 
         // Phase: scrub_failure_still_checks_runtime_and_preserves_pid_for_stop.

@@ -916,9 +916,20 @@ promote_target_uki() {
     --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
   TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
-  TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
-    /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
-    || die "target boot bundle failed authority/prediction verification"
+  # The on-demand unsigned development medium has no PCR prediction. Permit
+  # its passphrase-only self-install solely inside the disposable scenario VM
+  # with the named proof port. A physical install and every offline signed
+  # target still require the exact authority/prediction preflight.
+  if [ -f /usr/share/tilo/unverified-vm-install ] \
+     && [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] \
+     && [ -c /dev/virtio-ports/org.tilo.vm-install-proof ] \
+     && systemd-detect-virt --vm --quiet; then
+    log "development VM: unverified target boot bundle permitted for passphrase install"
+  else
+    TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
+      /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
+      || die "target boot bundle failed authority/prediction verification"
+  fi
   mapfile -t target_digests < <(/usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" |
     tr ' ' '\n' | sed -n 's/^composefs=//p')
   [ "${#target_digests[@]}" -eq 1 ] && [[ "${target_digests[0]}" =~ ^[0-9a-f]{128}$ ]] \
