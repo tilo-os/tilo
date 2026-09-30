@@ -2517,10 +2517,14 @@ impl App {
                 self.vm_facts(vm, endpoint, "vm upgrade")?;
                 // WHPX on Windows needs no host-side image tools. Main dev
                 // tags are deterministic, and bootc pulls inside the VM.
-                if cfg!(windows) && tag.starts_with("main-") {
-                    return Ok(UpgradeSource::Published(
-                        imageup::ci_candidates(&tag, std::env::consts::ARCH).dev_images[0].clone(),
-                    ));
+                if cfg!(windows)
+                    && tag.starts_with("main-")
+                    && let Some(image) = imageup::ci_candidates(&tag, std::env::consts::ARCH)
+                        .dev_images
+                        .into_iter()
+                        .next()
+                {
+                    return Ok(UpgradeSource::Published(image));
                 }
                 Ok(match self.resolve_ci_upgrade(&tag)? {
                     CiUpgrade::Published(image) => UpgradeSource::Published(image),
@@ -2754,6 +2758,10 @@ impl App {
 
     /// Stage an image with bootc under the VM lock, reboot into it, wait for
     /// SSH and tilo-vmd, and check the VM booted what was staged.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked bootc staging transaction"
+    )]
     fn stage_and_boot(
         &mut self,
         vm: &Resolved,
@@ -2935,19 +2943,23 @@ impl App {
             endpoint,
             &format!("grep -l -F 'composefs={verity}' /boot/loader/entries/*.conf"),
         )?;
-        let paths: Vec<_> = bls.stdout.lines().collect();
-        if !bls.success
-            || paths.len() != 1
-            || !paths[0].starts_with("/boot/loader/entries/")
-            || !paths[0].ends_with(".conf")
-            || paths[0].contains("..")
-        {
-            return Err(CliError::Config {
+        let mut paths = bls.stdout.lines();
+        let path = paths
+            .next()
+            .filter(|path| {
+                bls.success
+                    && paths.next().is_none()
+                    && path.starts_with("/boot/loader/entries/")
+                    && path
+                        .rsplit_once('.')
+                        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("conf"))
+                    && !path.contains("..")
+            })
+            .ok_or_else(|| CliError::Config {
                 path: "/boot/loader/entries".into(),
                 detail: format!("expected one BLS entry for composefs={verity}"),
-            });
-        }
-        let entry = self.vm_sh(vm, endpoint, &format!("cat '{}'", paths[0]))?;
+            })?;
+        let entry = self.vm_sh(vm, endpoint, &format!("cat '{path}'"))?;
         let field = |prefix: &str| {
             entry
                 .stdout
@@ -2959,7 +2971,7 @@ impl App {
             || field("initrd ") != Some(format!("{base}initrd").as_str())
         {
             return Err(CliError::Config {
-                path: paths[0].into(),
+                path: path.into(),
                 detail: "BLS kernel and initrd do not match the staged deployment".into(),
             });
         }
@@ -2970,7 +2982,7 @@ impl App {
                         .any(|arg| arg == format!("composefs={verity}"))
             })
             .ok_or_else(|| CliError::Config {
-                path: paths[0].into(),
+                path: path.into(),
                 detail: "BLS options do not name the staged Tilo root".into(),
             })?;
         let disk = vm.entry.disk.as_deref().ok_or_else(|| CliError::Config {
@@ -3023,7 +3035,13 @@ impl App {
             }
         }
         let mut updated = vm.entry.clone();
-        let prior = updated.direct_kernel.as_ref().expect("checked by caller");
+        let prior = updated
+            .direct_kernel
+            .as_ref()
+            .ok_or_else(|| CliError::Config {
+                path: self.registry_path.display().to_string(),
+                detail: "WHPX VM has no direct boot bundle".into(),
+            })?;
         updated.direct_kernel = Some(DirectKernel {
             kernel: dest.join("Image").display().to_string(),
             initrd: dest.join("initrd").display().to_string(),
@@ -3039,6 +3057,10 @@ impl App {
 
     /// Reboot, wait for a new boot id over SSH, then for tilo-vmd, and check
     /// that the booted image has `digest`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked reboot and image verification"
+    )]
     fn reboot_into(
         &mut self,
         vm: &Resolved,
