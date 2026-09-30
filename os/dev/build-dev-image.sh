@@ -175,7 +175,14 @@ base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null |
 base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+case "$SOURCE_DATE_EPOCH" in
+  ''|0|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
+    ;;
+esac
 export SOURCE_DATE_EPOCH
 : "${TMPDIR:=$TILO_OUTPUT/.tmp}"
 mkdir -p "$TMPDIR"

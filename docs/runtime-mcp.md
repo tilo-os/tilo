@@ -219,6 +219,20 @@ naming why the file is not open (the app started empty either way). Workspace
 pages list `path?` on each application's `open`. Host applications
 (`app.host:…`) open without a path.
 
+Once the file is open, the reply's `content` carries the document's first
+page, so an agent edits without reading it first: the bridge runs, with no
+arguments, the action the app tagged `read:document`
+(`ActionSpec::reads_document`) and answers `{resource, action, value}`, the
+value being that action's output. That is the Word Processor's `read-text`
+(Markdown with block ids, up to 64 blocks, and its `nextCursor`), a sheet's
+`read-cells` (its used range, as `rows`, `formulas` and `bold`) and the
+deck's `read` outline. The File Explorer's `open` itself answers the folder's
+`entries` in `opened`. A value over 6 KiB is cut to fit (text at a line,
+arrays by whole elements) and says `"truncated": true`; its cursor is
+dropped, and the same action answers the page whole. An app without a
+tagged action answers no `content`, nor does a file that did not open or an
+instance that already held it.
+
 ### Reading back what an action did
 
 An agent sees the result of an edit in the edit's reply and reads a

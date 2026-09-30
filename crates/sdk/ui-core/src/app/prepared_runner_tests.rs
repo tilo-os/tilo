@@ -152,6 +152,53 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
 }
 
 #[test]
+#[serial_test::serial(process_env)]
+fn configured_theme_file_change_rethemes_an_open_app() {
+    let config = tempfile::tempdir().expect("isolated appearance store");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_bg = app.theme.bg_app;
+    let dark_name = app.theme.name.clone();
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "an appearance file write must retheme the next tick"
+    );
+    let light_bg = app.theme.bg_app;
+    assert_ne!(
+        (light_bg, app.theme.name.as_str()),
+        (dark_bg, dark_name.as_str()),
+        "light and dark app chrome must not share colours"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+}
+
+#[test]
 fn prepared_presentation_replaces_effective_factors_across_runners_and_setters() {
     for theme_scale in [0.5, 1.0, 1.5, 2.0] {
         for native in [true, false] {
