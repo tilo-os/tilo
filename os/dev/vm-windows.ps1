@@ -155,6 +155,17 @@ switch ($Action) {
         }
     }
     'keys' { foreach ($key in $Args) { Send-Key $key } }
+    'shot' {
+        if ($Args.Count -ne 1 -or $Args[0] -notmatch '^[a-z0-9-]+$') { throw 'shot requires one safe name' }
+        if (!(Get-VmProcess)) { throw 'scenario VM is not running' }
+        $ppm = Join-Path $run "$($Args[0]).ppm"
+        $png = Join-Path $run "$($Args[0]).png"
+        $null = Invoke-Qmp 'screendump' @{ filename = $ppm }
+        if (!(Test-Path -LiteralPath $ppm)) { throw 'QEMU screendump did not write a frame' }
+        & (Resolve-Tool 'magick') $ppm $png
+        if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $png)) { throw 'screendump conversion failed' }
+        $png
+    }
     'type' {
         if ($Args.Count -ne 1 -or $Args[0] -ne '-') { throw 'type accepts stdin only' }
         $value = [Console]::In.ReadToEnd().TrimEnd("`r", "`n")
