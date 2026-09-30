@@ -3228,16 +3228,33 @@ impl RecordStore {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
-            let mut candidate = local.clone();
+            let mut candidate;
             let observed = match mutation {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
                     let mut incoming =
                         AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
                     identity.validate(&incoming)?;
                     let heads = incoming.get_heads();
-                    candidate
-                        .merge_incoming(&mut incoming)
-                        .map_err(|error| error.to_string())?;
+                    // Merging copies every change the receiving side lacks, so
+                    // the local changes go into the snapshot rather than the
+                    // other way round: a late joiner's replica is a few
+                    // changes next to a room's checkpoint. Every ancestor of
+                    // the heads both sides know is already in the snapshot.
+                    let shared: Vec<automerge::ChangeHash> = heads
+                        .iter()
+                        .copied()
+                        .filter(|head| local.get_change_by_hash(head).is_some())
+                        .collect();
+                    if shared.len() == heads.len() {
+                        candidate = local.clone();
+                    } else {
+                        let unshared = local.save_after(&shared);
+                        incoming.set_actor(local.get_actor().clone());
+                        incoming
+                            .load_incoming(&unshared)
+                            .map_err(|error| error.to_string())?;
+                        candidate = incoming;
+                    }
                     heads
                 }
                 collab_types::DocumentMutation::Incremental(bytes) => {
@@ -3253,13 +3270,17 @@ impl RecordStore {
                         Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
                         Err(error) => return Err(error.to_string()),
                     }
+                    candidate = local.clone();
                     candidate
                         .load_incoming(&bytes)
                         .map_err(|error| error.to_string())?;
+                    // The new heads stand for every change the payload added:
+                    // listing each one re-encodes them all, which costs as
+                    // much as applying them on a long history.
                     candidate
-                        .get_changes(&before)
-                        .iter()
-                        .map(automerge::Change::hash)
+                        .get_heads()
+                        .into_iter()
+                        .filter(|head| !before.contains(head))
                         .collect()
                 }
             };
