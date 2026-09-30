@@ -316,6 +316,63 @@ impl<'a> Source<'a> {
             true,
         ))
     }
+    /// The inline marks over `fragment`, what [`Source::text_fragment`] read from `position`,
+    /// clipped to it, with `start`/`end` in characters of `fragment`.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadError::Limit`] when the scan budget is exhausted, and [`ReadError::Malformed`] for a
+    /// grapheme-indexed document or an unreadable text object.
+    pub fn fragment_marks(
+        &self,
+        text: Option<&ObjId>,
+        position: TextPosition,
+        fragment: &str,
+        work: &Work,
+    ) -> Result<Vec<crate::document::MarkSpan>, ReadError> {
+        let Some(text) = text.filter(|_| !fragment.is_empty()) else {
+            return Ok(Vec::new());
+        };
+        let encoding = self.doc.text_encoding();
+        let lead = match position.byte {
+            0 => 0,
+            byte => match self.doc.get(text, position.element) {
+                Ok(Some((automerge::Value::Scalar(scalar), _))) => match scalar.as_ref() {
+                    automerge::ScalarValue::Str(s) => {
+                        text_width(encoding, s.get(..byte).ok_or(ReadError::Malformed)?)?
+                    }
+                    _ => return Err(ReadError::Malformed),
+                },
+                _ => return Err(ReadError::Malformed),
+            },
+        };
+        let start = position.element.checked_add(lead).ok_or(ReadError::Limit)?;
+        let mut starts = Vec::with_capacity(fragment.len().saturating_add(1));
+        let mut end = start;
+        let mut buffer = [0u8; 4];
+        for c in fragment.chars() {
+            starts.push(end);
+            end = end
+                .checked_add(text_width(encoding, c.encode_utf8(&mut buffer))?)
+                .ok_or(ReadError::Limit)?;
+        }
+        starts.push(end);
+        let offset = |index: usize| starts.partition_point(|at| *at < index);
+        let mut marks = Vec::new();
+        for mark in self.doc.marks(text).map_err(|_| ReadError::Malformed)? {
+            work.visit()?;
+            let (from, to) = (mark.start.max(start), mark.end.min(end));
+            if from < to && !mark.value.is_null() {
+                marks.push(crate::document::MarkSpan {
+                    start: offset(from),
+                    end: offset(to),
+                    name: mark.name.to_string(),
+                    value: (&mark.value).into(),
+                });
+            }
+        }
+        Ok(marks)
+    }
 }
 
 /// How Automerge renders a text element that is not a string.
