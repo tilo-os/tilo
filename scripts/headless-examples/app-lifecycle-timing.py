@@ -140,12 +140,14 @@ class Session:
 
     def session_pids(self) -> dict[int, str]:
         """Every live process of this user running under this session's
-        runtime dir, except the compositor and the bus."""
+        runtime dir, except the compositor, the bus and what the bus
+        activated (portals belong to the session, not to the app whose
+        launch first asked for them)."""
         skip = {self.proc.pid} | descendants_named(
             self.proc.pid, {"shell", "dbus-daemon", "dbus-broker", "dbus-broker-lau"})
         out = {}
         for pid in all_pids():
-            if pid in skip or pid == os.getpid():
+            if pid in skip or pid == os.getpid() or bus_activated(pid):
                 continue
             if read_environ(pid).get("XDG_RUNTIME_DIR") == self.runtime:
                 out[pid] = comm(pid)
@@ -198,6 +200,12 @@ def ppid(pid: int) -> int:
         return int(stat.rsplit(")", 1)[1].split()[1])
     except (OSError, IndexError, ValueError):
         return 0
+
+
+def bus_activated(pid: int) -> bool:
+    """Whether the bus started `pid`. The daemon double-forks activated
+    services, so ancestry cannot tell; it does mark their environment."""
+    return "DBUS_STARTER_ADDRESS" in read_environ(pid)
 
 
 def descendants_named(root: int, names: set[str] | None) -> set[int]:
@@ -362,13 +370,18 @@ def run_one(session: Session, target: str, shots: str, scale: float) -> dict:
 
 
 def main() -> int:
+    global SHELL
     ap = argparse.ArgumentParser()
     ap.add_argument("--size", default="1920x1080", help="WxH[@SCALE], e.g. 5120x2880@2")
     ap.add_argument("--desktop", action="append", default=[], metavar="ID=EXEC",
                     help="install a session-local host entry, e.g. glxgears=glxgears")
     ap.add_argument("--list", action="store_true", help="print what the session offers and stop")
+    ap.add_argument("--shell", type=pathlib.Path, default=SHELL,
+                    help="a compositor that honours TILO_TEST_CONTROL (debug or dev-overrides); "
+                         "tilo-launcher is taken from beside it")
     ap.add_argument("targets", nargs="*")
     args = ap.parse_args()
+    SHELL = args.shell.resolve()
     if not SHELL.exists():
         print(f"missing {SHELL}; cargo build -p shell --bin shell -p launcher --bin tilo-launcher")
         return 2
