@@ -3025,23 +3025,20 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().overlays.overview);
-        let reduce_motion = ui::host::environment().accessibility.reduce_motion;
-        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, reduce_motion);
+        // Do not read `ui::host::environment()` here: that is a process
+        // input, and fixture pumps forbid ambient starts. Draw snaps
+        // with `theme.reduce_motion`.
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
     }
 
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
-    /// second slide implementation.
+    /// second slide implementation. Draw snaps this when motion is reduced.
     fn start_workspace_switch_frames(&mut self) {
-        let reduce_motion = ui::host::environment().accessibility.reduce_motion;
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch.set_open(
             true,
-            if reduce_motion {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(WORKSPACE_SWITCH_MS)
-            },
+            Duration::from_millis(WORKSPACE_SWITCH_MS),
             ui::Curve::EaseOut,
         );
     }
@@ -18708,6 +18705,10 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if theme.reduce_motion {
+            self.workspace_switch
+                .set_open(true, Duration::ZERO, ui::Curve::EaseOut);
+        }
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Sidebar wheel: above desktop content, below every overlay
@@ -20782,7 +20783,14 @@ impl ShellOverlayHost {
                 let state = c.borrow();
                 let tree = state.tree();
                 match tree.desktop.workspaces.get(idx) {
-                    Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
+                    // Chrome already holds the session identity. Do not
+                    // call `local_user_id()` here: latching the overview
+                    // during update means the first paint can draw the
+                    // panel, and fixtures forbid that ambient start.
+                    Some(ws) => tilo_desktop::collaborators::roster_colors_with_local_user(
+                        &ws.collaborators,
+                        &state.local_user_id,
+                    ),
                     None => std::collections::HashMap::default(),
                 }
             }
