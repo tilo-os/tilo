@@ -73,9 +73,6 @@ impl FloatingSurfaceService {
         }
         let listener = UnixListener::bind(&path)
             .map_err(|error| format!("bind shell-ui service {}: {error}", path.display()))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("make shell-ui listener nonblocking: {error}"))?;
 
         let (event_tx, event_rx) = mpsc::channel();
         let writers = Arc::new(Mutex::new(HashMap::new()));
@@ -86,8 +83,9 @@ impl FloatingSurfaceService {
             .name("tilo-shell-ui-accept".into())
             .spawn(move || {
                 let next_id = AtomicU64::new(1);
-                while !thread_stop.load(std::sync::atomic::Ordering::Acquire) {
+                loop {
                     match listener.accept() {
+                        Ok(_) if thread_stop.load(std::sync::atomic::Ordering::Acquire) => break,
                         Ok((stream, _)) => {
                             let connection = next_id.fetch_add(1, Ordering::Relaxed);
                             let tx = event_tx.clone();
@@ -96,9 +94,7 @@ impl FloatingSurfaceService {
                                 .name(format!("tilo-shell-ui-{connection}"))
                                 .spawn(move || serve_connection(connection, stream, tx, writers));
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(12));
-                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                         Err(error) => {
                             if thread_stop.load(std::sync::atomic::Ordering::Acquire) {
                                 break;
@@ -182,7 +178,11 @@ impl FloatingSurfaceService {
 impl Drop for FloatingSurfaceService {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Release);
-        if let Some(acceptor) = self.acceptor.take() {
+        // The acceptor sleeps in `accept`; one connection wakes it to see the
+        // flag. If nothing can connect it is not waited for.
+        if let Some(acceptor) = self.acceptor.take()
+            && UnixStream::connect(&self.path).is_ok()
+        {
             let _ = acceptor.join();
         }
         let _ = std::fs::remove_file(&self.path);
@@ -322,5 +322,23 @@ mod tests {
             "dropping the service must not wait on an accept() blocked forever"
         );
         assert!(!socket.exists(), "drop must unlink the service socket");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn idle_acceptor_sleeps_until_a_client_arrives() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+
+        let (service, acceptor) =
+            crate::idle_thread_probe::spawned_thread("tilo-shell-ui-a", || {
+                FloatingSurfaceService::start().expect("start floating service")
+            });
+        crate::idle_thread_probe::assert_stays_asleep(&acceptor, "shell-ui acceptor");
+        UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))
+            .expect("still accepts clients");
+        drop(service);
     }
 }
