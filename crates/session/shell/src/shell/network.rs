@@ -10862,13 +10862,22 @@ mod tests {
                 .unwrap();
             net.tick();
 
-            assert!(matches!(
-                cmd_rx.try_recv(),
-                Ok(NetCmd::PublishCheckpoint {
-                    ws,
-                    msg: NeighbourMsg::SyncResp { ref room, .. },
-                }) if ws == topic && room == &room_id.to_string()
-            ));
+            // A slow runner can pass SYNC_KICK_INTERVAL between the two
+            // ticks, so a periodic SyncReq may precede the checkpoint.
+            let mut commands = Vec::new();
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                commands.push(cmd);
+            }
+            assert!(
+                commands.iter().any(|cmd| matches!(
+                    cmd,
+                    NetCmd::PublishCheckpoint {
+                        ws,
+                        msg: NeighbourMsg::SyncResp { room, .. },
+                    } if *ws == topic && room == &room_id.to_string()
+                )),
+                "HostReady seeds the room checkpoint: {commands:?}"
+            );
             let app_events = net.inbound_app_presence.lock().unwrap().clone();
             assert_eq!(
                 app_events.len(),
