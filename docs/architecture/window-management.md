@@ -69,10 +69,10 @@ unless marked fixed.
 
 | Operation | Relative action | Keyboard | Touchpad and touchscreen | Pointer | Status |
 |---|---|---|---|---|---|
-| Previous / next window (tabs walked as one list, across displays) | `window.focus-previous` / `-next` | Super+← / → | 3 fingers horizontal: direct pan, snap on release, focus follows | click; Super+wheel | chord today |
+| Previous / next window (tabs walked as one list, across displays) | `window.focus-previous` / `-next` | Super+← / → | 3 fingers horizontal: direct pan, snap on release, focus follows | click; Super+wheel | today; gestures planned |
 | Nth / first / last group of the strip | `window.focus-nth` (`index`) | Super+1…9, Super+Home / End | — | click | 1…9 today |
-| Strip above / below | `strip.focus-previous` / `-next` | Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | chord today on Super+Shift+↑ / ↓ |
-| Previous / next workspace | `workspace.previous` / `-next` | Ctrl+Super+arrows; Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc; Ctrl+Super+wheel | PageUp / PageDown today |
+| Strip above / below | `strip.focus-previous` / `-next` | Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today; gesture planned |
+| Previous / next workspace | `workspace.previous` / `-next` | Ctrl+Super+arrows; Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc; Ctrl+Super+wheel | PageUp / PageDown and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
 | Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
@@ -83,7 +83,7 @@ unless marked fixed.
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
-| To the strip above / below | `group.move-to-strip-previous` / `-next` | Super+Shift+↑ / ↓ | drag onto another strip | planned; no model operation today |
+| To the strip above / below | `group.move-to-strip-previous` / `-next` | Super+Shift+↑ / ↓ | drag onto another strip | today, except the drag |
 | To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Ctrl+Super+Shift+↑ / ↓, Super+Shift+PageUp / PageDown | drag onto a wheel-disc entry (spring-loaded, 600 ms) | planned; one tab today via `tab.move` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
@@ -95,11 +95,11 @@ would show it; a chord opens the sheet and never bypasses it.
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| Maximize / restore | `group.maximize` | Super+M | double-click or double-tap the tab-bar ground; frame button | chord today on Super+↑ |
-| Full screen / restore | `group.fullscreen` | Super+F | — | chord today |
+| Maximize / restore | `group.maximize` | Super+M | double-click or double-tap the tab-bar ground; frame button | today, but it still hides the chrome |
+| Full screen / restore | `group.fullscreen` | Super+F | — | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag the right-edge handle; double-click it cycles ⅓, ½, ⅔ | steps today |
-| Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | chord today |
-| Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | chord today |
+| Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | today |
+| Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
 | New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
 

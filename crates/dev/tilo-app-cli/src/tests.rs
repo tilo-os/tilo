@@ -6034,7 +6034,7 @@ mod tests {
         .to_string();
     assert!(error.contains("cannot run on the web"), "{error}");
     assert!(error.contains("W1"), "{error}");
-    assert!(!app.join("target/web-build").exists());
+    assert!(!app.join("target/tilo-app").exists());
 }
 
 /// Every example is listed with its lesson in examples/README.md and

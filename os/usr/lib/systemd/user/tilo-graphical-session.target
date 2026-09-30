@@ -13,6 +13,11 @@ After=graphical-session-pre.target
 # started with the session. Each activated service is still bound to this target
 # through PartOf= and is stopped when the Tilo session ends.
 Wants=tilo-ush.service
+# Their activation sockets, though, must listen whenever the session does. The
+# image enables them globally, but a layered host package enables nothing, so
+# without this a host session has no app-host, model or gateway socket and
+# every app that requires one (Store, Agent) exits before drawing.
+Wants=tilo-app-host.socket tilo-models.socket tilo-model-gateway.socket
 PartOf=graphical-session.target
 # Releasing the Tilo-owned target must tear down both standard session
 # targets immediately; relying on later StopWhenUnneeded garbage collection

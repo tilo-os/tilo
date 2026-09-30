@@ -416,6 +416,14 @@ impl DesktopSurface {
     }
     /// The column holding the navigation drivers, the empty-workspace card
     /// and one row per strip, for hosts that restyle it per frame.
+    /// The [`SurfaceChrome::empty_workspace`] widget, while it is shown.
+    pub fn empty_workspace_mut(&mut self) -> Option<&mut dyn Widget> {
+        if self.empty_workspace_visible != Some(true) {
+            return None;
+        }
+        let index = if self.external_navigation { 0 } else { 2 };
+        child_mut(self.root.as_mut(), &[0, 1, self.column_index, index])
+    }
     pub fn work_area_mut(&mut self) -> Option<&mut Column> {
         child_mut(self.root.as_mut(), &[0, 1, self.column_index])?
             .as_any_mut()?

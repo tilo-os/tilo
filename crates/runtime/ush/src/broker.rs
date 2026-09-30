@@ -602,6 +602,9 @@ pub struct Broker {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
+    /// Anything connected. Only the guest can reach the socket, and its first
+    /// process asks for status before it becomes the shell.
+    connected: Arc<AtomicBool>,
 }
 
 impl Broker {
@@ -628,10 +631,13 @@ impl Broker {
         let connections = Arc::new(Mutex::new(Vec::new()));
         let thread_connections = Arc::clone(&connections);
         let host_mutation_gate = Arc::new(Mutex::new(()));
+        let connected = Arc::new(AtomicBool::new(false));
+        let thread_connected = Arc::clone(&connected);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        thread_connected.store(true, Ordering::Release);
                         let connection_state = Arc::clone(&thread_state);
                         let connection_stop = Arc::clone(&thread_stop);
                         let connection_mutation_gate = Arc::clone(&host_mutation_gate);
@@ -673,6 +679,7 @@ impl Broker {
             stop,
             thread: Some(thread),
             connections,
+            connected,
         })
     }
 
@@ -682,6 +689,12 @@ impl Broker {
 
     pub fn state(&self) -> &Arc<Mutex<BrokerState>> {
         &self.state
+    }
+
+    /// Did the guest's first process run? `false` after the guest exits means
+    /// `bwrap` failed to build the sandbox, before anything of the guest ran.
+    pub fn guest_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 
     /// Did the guest ask for a restart?
@@ -1668,6 +1681,7 @@ mod tests {
             std::fs::create_dir_all(&target).unwrap();
             let sock = dir.path().join("broker.sock");
             let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+            assert!(!broker.guest_connected());
 
             let resp = ask(
                 &sock,
@@ -1677,6 +1691,7 @@ mod tests {
             )
             .unwrap();
             assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+            assert!(broker.guest_connected());
 
             let resp = ask(&sock, &Request::ListPerms).unwrap();
             let Response::Perms { entries } = resp else {

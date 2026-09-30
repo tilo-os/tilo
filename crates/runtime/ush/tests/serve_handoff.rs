@@ -146,6 +146,44 @@ fn a_terminal_gets_a_working_shell_over_the_service_socket() {
     );
 }
 
+/// A guest whose sandbox cannot be built says why in words under `bwrap`'s
+/// own one-line reason; one that can be built runs without that notice.
+/// Both halves assert: which one runs depends on the machine, as probed.
+#[test]
+fn a_sandbox_that_cannot_be_built_is_explained() {
+    if which_bwrap().is_none() {
+        eprintln!("serve_handoff: bwrap is not installed; no sandbox to fail");
+        return;
+    }
+    let unavailable = guest_unavailable();
+    let data = xdg_paths::data_dir().expect("a data directory for the store");
+    let store = tempfile::TempDir::with_prefix_in("ush-explain-", data).expect("store dir");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-ush"))
+        .args(["run", "--ephemeral", "-c", "true"])
+        .env(ush::store::STORE_ENV, store.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("tilo-ush runs");
+    let path = store.keep();
+    ush::guest::remove_dir_all_forced(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let explained = stderr.contains("sandbox could not be set up");
+    if let Some(reason) = unavailable {
+        assert!(!out.status.success(), "{reason}; yet the guest ran");
+        assert!(
+            explained,
+            "a guest that cannot mount ({reason}) must say so, not leave only \
+             bwrap's line: {stderr}"
+        );
+    } else {
+        assert!(out.status.success(), "the guest should run here: {stderr}");
+        assert!(
+            !explained,
+            "a guest that ran is not a setup failure: {stderr}"
+        );
+    }
+}
+
 /// Can this machine build the guest's layered root at all? The probe
 /// performs the actual overlay mount the runtime performs — a user
 /// namespace, `/usr` as the lower, a directory on the store's filesystem as

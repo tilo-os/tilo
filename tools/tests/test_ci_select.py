@@ -271,7 +271,7 @@ class SelectorTests(unittest.TestCase):
         unrelated = plan(["qdoc/src/lib.rs"])
         self.assertFalse(unrelated["wasm_required"])
         self.assertEqual(unrelated["web_examples"], [])
-        build = plan(["crates/browser/tilo-browser-runtime/scripts/build-web-app.sh"])
+        build = plan(["crates/browser/tilo-browser-runtime/scripts/build.sh"])
         self.assertTrue(build["wasm_required"])
         self.assertEqual(build["web_examples"], ["example-counter"])
         with tempfile.TemporaryDirectory() as directory:
