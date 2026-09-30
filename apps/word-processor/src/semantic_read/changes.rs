@@ -62,6 +62,15 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
             let complete = block.text.chars().count() <= MAX_BLOCK_CHARS;
             Segment {
                 shape: Shape::of_attrs(&block.attrs),
+                marks: block
+                    .marks
+                    .into_iter()
+                    .filter(|mark| mark.start < MAX_BLOCK_CHARS)
+                    .map(|mark| qdoc::document::MarkSpan {
+                        end: mark.end.min(MAX_BLOCK_CHARS),
+                        ..mark
+                    })
+                    .collect(),
                 block: block.id,
                 kind: block.kind,
                 text: if complete {
@@ -100,6 +109,25 @@ mod tests {
     use super::{MAX_BLOCK_CHARS, summary};
     use automerge::AutoCommit;
     use tilo_automerge::ApplyIncoming as _;
+
+    #[test]
+    fn a_bolded_block_answers_bold() {
+        let mut source = qdoc::Document::new();
+        let line = source.insert_block(None, "paragraph");
+        source.splice_text(&line, 0, 0, "Deadline: October 15");
+        let mut doc = AutoCommit::load(&source.save()).unwrap();
+        let before = doc.get_heads();
+        let mut edited = qdoc::Document::load(&doc.save()).unwrap();
+        edited.add_mark(&line, 0, 20, "strong", true);
+        doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
+            .unwrap();
+        let after = doc.get_heads();
+        let changes = doc.diff(&before, &after);
+        assert_eq!(
+            summary(&doc, &changes),
+            format!("1 changed:\n**Deadline: October 15** {{#{line}}}\n")
+        );
+    }
 
     #[test]
     fn a_long_block_answers_with_its_start() {
