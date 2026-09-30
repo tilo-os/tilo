@@ -13713,29 +13713,43 @@ fn apply_shell_gesture(
         }
         _ => {}
     }
-    frame_builder.with_chrome(|st| match action {
+    match action {
         GestureAction::SwitchStrip(dir) => {
-            st.switch_strip(dir);
+            frame_builder.with_chrome(|st| {
+                st.switch_strip(dir);
+            });
         }
         GestureAction::SwitchWorkspace(dir) => {
-            st.switch_workspace(dir);
+            let mut switched = false;
+            frame_builder.with_chrome(|st| {
+                switched = st.switch_workspace(dir);
+            });
+            if switched {
+                frame_builder.host_mut().start_workspace_switch_frames();
+            }
+        }
+        GestureAction::ShowOverview => {
+            frame_builder.with_chrome(|st| {
+                if !st.overlays.overview {
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
+        }
+        GestureAction::HideOverview => {
+            frame_builder.with_chrome(|st| {
+                if st.overlays.overview {
+                    st.overlays.overview = false;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
         GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
-        GestureAction::ShowOverview => {
-            if !st.overlays.overview {
-                st.overlays.overview = true;
-                st.bump();
-            }
-        }
-        GestureAction::HideOverview => {
-            if st.overlays.overview {
-                st.overlays.overview = false;
-                st.bump();
-            }
-        }
-    });
+    }
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
