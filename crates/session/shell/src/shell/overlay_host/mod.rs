@@ -4253,9 +4253,10 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let fs_group = {
+        let (fs_group, maximize) = {
             let st = chrome.borrow();
-            st.fullscreen_group().or_else(|| st.maximized_group())
+            let client = st.fullscreen_group();
+            (client.or_else(|| st.maximized_group()), client.is_none())
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4278,6 +4279,9 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and `&mut self` gives us
             // unaliased access for the duration of this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            // A maximize fills the work area beside the wheel; a client
+            // fullscreen covers the whole output.
+            row.set_promotion_keeps_gutter(maximize);
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
@@ -4286,6 +4290,23 @@ impl ShellOverlayHost {
                 _ => row.set_fullscreen(None, false),
             }
         }
+    }
+
+    /// Whether a client's fullscreen group is represented by a live retained
+    /// row, so it covers the output and the wheel with it. A maximize does
+    /// not: the wheel says where you are.
+    fn client_fullscreen_is_owned(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let group = chrome.borrow().fullscreen_group();
+        group.is_some_and(|group| {
+            self.group_row_ptrs.values().any(|&row| {
+                // SAFETY: same retained-row ownership contract as
+                // `sync_fullscreen_from_chrome`; this is read-only.
+                unsafe { (*row).group_ids().contains(&group) }
+            })
+        })
     }
 
     /// Whether the requested fullscreen/maximized group is represented by a
@@ -15969,6 +15990,7 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
+        let covers_wheel = self.client_fullscreen_is_owned();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -16000,8 +16022,9 @@ impl Widget for ShellOverlayHost {
                 style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
                 // A fullscreen surface covers the whole output, so the
-                // wheel is suppressed alongside the top bar.
-                if fullscreen {
+                // wheel is suppressed alongside the top bar. A maximized
+                // group stops beside it.
+                if covers_wheel {
                     style.display = Display::None;
                 }
                 let _ = taffy.set_style(node, style);
@@ -16177,11 +16200,12 @@ impl Widget for ShellOverlayHost {
                 .unwrap_or(0.0);
             // A summoned wheel places itself around the pointer in screen
             // space; the strip's pan would shift it out from under the cursor.
-            let summoned = self
-                .chrome
-                .as_ref()
-                .is_some_and(|c| c.borrow().wheel_summon().is_some());
-            let anchor_x = if summoned {
+            // A promoted group is drawn unpanned, so the wheel beside it is too.
+            let pinned = self.chrome.as_ref().is_some_and(|c| {
+                let st = c.borrow();
+                st.wheel_summon().is_some() || st.is_fullscreen()
+            });
+            let anchor_x = if pinned {
                 self.rect.x0
             } else {
                 self.rect.x0 - active_scroll_x
@@ -16491,24 +16515,31 @@ impl Widget for ShellOverlayHost {
                 use ui::gesture::{TouchGestureEvent, TouchSwipeDirection};
                 match gesture {
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Left,
                     } => claimed |= self.step_focus_along_strip(1),
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Right,
                     } => claimed |= self.step_focus_along_strip(-1),
+                    // Three fingers are strips, four workspaces: the touchpad's
+                    // levels (`backend::drm::gestures`).
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
-                        direction,
-                    } => {
+                        fingers,
+                        direction: direction @ (TouchSwipeDirection::Up | TouchSwipeDirection::Down),
+                    } if fingers >= 3 => {
                         let step = if direction == TouchSwipeDirection::Up {
                             -1
                         } else {
                             1
                         };
                         if let Some(chrome) = self.chrome.as_ref() {
-                            claimed |= chrome.borrow_mut().switch_workspace(step);
+                            let mut chrome = chrome.borrow_mut();
+                            claimed |= if fingers == 3 {
+                                chrome.switch_strip(step)
+                            } else {
+                                chrome.switch_workspace(step)
+                            };
                         }
                     }
                     TouchGestureEvent::Pinch {
@@ -19835,12 +19866,20 @@ impl ShellOverlayHost {
                         TouchGesture::SwipeRight { fingers: 3 },
                     ),
                     (
-                        "guide-touch-previous-workspace",
+                        "guide-touch-strip-above",
                         TouchGesture::SwipeUp { fingers: 3 },
                     ),
                     (
-                        "guide-touch-next-workspace",
+                        "guide-touch-strip-below",
                         TouchGesture::SwipeDown { fingers: 3 },
+                    ),
+                    (
+                        "guide-touch-previous-workspace",
+                        TouchGesture::SwipeUp { fingers: 4 },
+                    ),
+                    (
+                        "guide-touch-next-workspace",
+                        TouchGesture::SwipeDown { fingers: 4 },
                     ),
                     ("guide-touch-open-overview", TouchGesture::PinchIn),
                     ("guide-touch-close-overview", TouchGesture::PinchOut),

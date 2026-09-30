@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -15,7 +15,7 @@ use tilo_vm_protocol::{
     LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, OutputSpec, Owner,
     PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
     SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult, StatusResult, Storage,
-    UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    TestIdentity, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
@@ -31,6 +31,9 @@ pub const DEFAULT_DOMAIN: &str = "unconfined_t";
 /// Layers and uploads younger than this survive gc: they may belong to a
 /// swap that is still in flight on another connection.
 const GC_MIN_AGE: Duration = Duration::from_secs(3600);
+
+/// How long a started session may take to bind its control socket.
+const CONTROL_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// In-VM build dirs `gc` keeps by default, most recently used first.
 pub const DEFAULT_KEEP_TARGETS: u32 = 2;
@@ -366,7 +369,7 @@ impl Daemon {
             Request::Status(p) => to_value(&self.status(p.slot)?),
             Request::SlotCreate(p) => {
                 let _locks = self.slot_locks(&p.name)?;
-                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs)?)
+                to_value(&self.create(&p.name, p.kind, p.owner, &p.outputs, p.identity)?)
             }
             Request::SlotList(_) => {
                 let records = self.slots.list()?;
@@ -777,6 +780,7 @@ impl Daemon {
         kind: SlotKind,
         owner: Owner,
         outputs: &[OutputSpec],
+        identity: bool,
     ) -> Result<SlotCreateResult, DaemonError> {
         let (mut record, created) = self.slots.create(name, kind, owner, outputs)?;
         let running = self.apply.unit_state(&session_unit(name)) == "active";
@@ -797,6 +801,13 @@ impl Daemon {
             actions
         } else {
             Vec::new()
+        };
+        let identity = if identity {
+            let (identity, steps) = self.provision_test_identity(&record)?;
+            actions.extend(steps);
+            Some(identity)
+        } else {
+            None
         };
         // Every create applies the layout again, so a create that failed
         // here is repaired by running it once more.
@@ -819,7 +830,66 @@ impl Daemon {
             slot: self.info(&record)?,
             created,
             actions,
+            identity,
         })
+    }
+
+    /// Have the slot's running session give its user a throwaway test
+    /// identity. A newly minted one comes with fresh desktop state: a
+    /// workspace made before the identity is owned by the Unix user, not
+    /// the identity, and hides every app launch.
+    fn provision_test_identity(
+        &mut self,
+        record: &SlotRecord,
+    ) -> Result<(TestIdentity, Vec<Action>), DaemonError> {
+        let name = record.name.as_str();
+        let fail = |detail: String| DaemonError::TestIdentity {
+            slot: name.to_owned(),
+            detail,
+        };
+        let user = record
+            .user()
+            .ok_or_else(|| fail("the slot has no user".into()))?;
+        self.apply.wait_session_ready(name).map_err(fail)?;
+        let args = [
+            "raw".to_owned(),
+            r#"{"op":"provision_test_identity"}"#.to_owned(),
+        ];
+        let asked = Instant::now();
+        let reply = loop {
+            let reply = self.apply.control(name, &user, &args)?;
+            // tilo-control exits 2 when it cannot reach the socket, which a
+            // session that has only just started has not bound yet.
+            if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
+                break reply;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        };
+        if reply.exit_code != 0 {
+            return Err(fail(reply.stderr.trim().to_owned()));
+        }
+        let identity = serde_json::from_str::<serde_json::Value>(reply.stdout.trim())
+            .ok()
+            .and_then(|reply| {
+                serde_json::from_value::<TestIdentity>(reply.get("answer")?.clone()).ok()
+            })
+            .filter(|identity| identity.throwaway)
+            .ok_or_else(|| fail(format!("unexpected reply: {}", reply.stdout.trim())))?;
+        let mut actions = vec![Action::ProvisionTestIdentity {
+            created: identity.created,
+        }];
+        if identity.created {
+            let session = session_unit(name);
+            self.apply.stop_unit(&session)?;
+            actions.push(Action::StopUnit { unit: session });
+            self.apply.reset_desktop_state(&user)?;
+            actions.push(Action::ResetDesktopState);
+            let uid = self.apply.ensure_user(&user)?;
+            actions.extend(apply::restart_session(self.apply.as_mut(), name, uid)?);
+            self.apply.wait_session_ready(name).map_err(fail)?;
+            self.verify_parity([name])?;
+        }
+        Ok((identity, actions))
     }
 
     fn restart(&mut self, name: &str) -> Result<ApplyResult, DaemonError> {
@@ -1271,6 +1341,7 @@ mod tests {
                 kind: SlotKind::Headful,
                 owner: Owner::default(),
                 outputs: tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+                identity: false,
             })
         };
         for _ in 0..2 {
@@ -1288,6 +1359,108 @@ mod tests {
     }
 
     use crate::apply::RecordingApply;
+
+    #[test]
+    fn slot_create_identity_mints_in_the_session_and_restarts_it_fresh() {
+        use tilo_vm_protocol::ControlResult;
+        let reply = |exit_code, stdout: &str, stderr: &str| ControlResult {
+            exit_code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        let mut apply = RecordingApply::default();
+        apply.control_replies.extend([
+            reply(2, "", "tilo-control: connect: No such file or directory"),
+            reply(
+                0,
+                r#"{"answer":{"created":true,"display_name":"Throwaway test identity","throwaway":true}}"#,
+                "",
+            ),
+            reply(
+                0,
+                r#"{"answer":{"created":false,"display_name":"Throwaway test identity","throwaway":true}}"#,
+                "",
+            ),
+            reply(1, "", "error [identity_exists]: this user already has an identity"),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let create = |identity| {
+            Request::SlotCreate(tilo_vm_protocol::SlotCreate {
+                name: "a".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: Vec::new(),
+                identity,
+            })
+        };
+        let session = session_unit("a");
+        // Phase `a_new_throwaway_restarts_the_session_with_fresh_desktop_state`.
+        {
+            let result: SlotCreateResult =
+                serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
+            let identity = result.identity.expect("the identity answer");
+            assert!(identity.created && identity.throwaway);
+            let minted = result
+                .actions
+                .iter()
+                .position(|action| action == &Action::ProvisionTestIdentity { created: true })
+                .expect("the identity is minted");
+            // After minting: the session stops, loses its layout, starts.
+            let after: Vec<&Action> = result.actions[minted..]
+                .iter()
+                .filter(|action| {
+                    matches!(action, Action::StopUnit { unit } | Action::StartUnit { unit } if *unit == session)
+                        || **action == Action::ResetDesktopState
+                })
+                .collect();
+            assert_eq!(
+                after.first(),
+                Some(&&Action::StopUnit {
+                    unit: session.clone()
+                }),
+                "{:?}",
+                result.actions
+            );
+            assert_eq!(after.get(1), Some(&&Action::ResetDesktopState));
+            assert_eq!(
+                after.last(),
+                Some(&&Action::StartUnit {
+                    unit: session.clone()
+                })
+            );
+        }
+        // Phase `a_kept_throwaway_keeps_the_running_session`.
+        {
+            let result: SlotCreateResult =
+                serde_json::from_value(daemon.handle(create(true)).unwrap()).unwrap();
+            assert_eq!(
+                result.identity.map(|identity| identity.created),
+                Some(false)
+            );
+            assert!(!result.actions.contains(&Action::ResetDesktopState));
+            assert!(!result.actions.contains(&Action::StopUnit { unit: session }));
+        }
+        // Phase `a_refused_identity_fails_the_create`.
+        {
+            let error = daemon.handle(create(true)).unwrap_err();
+            assert!(matches!(error, DaemonError::TestIdentity { .. }), "{error}");
+            assert!(error.to_string().contains("identity_exists"), "{error}");
+        }
+        // Phase `a_plain_create_leaves_identity_alone`.
+        {
+            let result: SlotCreateResult =
+                serde_json::from_value(daemon.handle(create(false)).unwrap()).unwrap();
+            assert_eq!(result.identity, None);
+            assert!(result.actions.is_empty(), "{:?}", result.actions);
+        }
+    }
 
     #[test]
     fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {

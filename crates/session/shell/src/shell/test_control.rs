@@ -104,6 +104,10 @@ pub enum Command {
         desktop_id: String,
         display_name: String,
     },
+    /// Mint a throwaway collaboration identity for the session's user.
+    /// Answered by the native test transport, and only by a dev build
+    /// (`compositor::dev_test_identity`); never on the agent-control socket.
+    ProvisionTestIdentity,
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -632,6 +636,13 @@ pub fn dispatch_command<S: ControlState>(
                 code: "test_transport_required".to_string(),
                 message: "host activation tokens are minted by the native test transport"
                     .to_string(),
+            },
+            Vec::new(),
+        ),
+        Command::ProvisionTestIdentity => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "test identities are provisioned by the native test transport".to_string(),
             },
             Vec::new(),
         ),
@@ -2783,6 +2794,23 @@ mod agent_request_tests {
             assert_eq!(code(response), AGENT_REQUIRED);
             assert!(actions.is_empty());
         }
+    }
+
+    #[test]
+    fn test_identity_provisioning_is_neither_pure_nor_agent_reachable() {
+        struct NoState;
+        impl ControlState for NoState {
+            fn widget_registry(&self) -> HashMap<String, Rect> {
+                HashMap::new()
+            }
+        }
+        let request = parse_request(r#"{"op":"provision_test_identity"}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert!(matches!(request.command, Command::ProvisionTestIdentity));
+        assert!(!Command::ProvisionTestIdentity.agent_permitted());
+        let (response, actions) = dispatch_command(&Command::ProvisionTestIdentity, &NoState);
+        assert_eq!(code(response), "test_transport_required");
+        assert!(actions.is_empty());
     }
 }
 
