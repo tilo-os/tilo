@@ -686,6 +686,30 @@ mod command_path_tests {
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
     }
 
+    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// must not look like a frame request. The native runner used to turn
+    /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
+    #[cfg(unix)]
+    #[test]
+    fn idle_directory_refresh_does_not_request_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        widget.next_metadata_refresh = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        widget.next_metadata_refresh = ui::time::now();
+        let animating = ui::widget::Widget::needs_animation_frame(&widget);
+        assert!(
+            !widget.refresh_metadata_if_due(ui::time::now()),
+            "an idle Files poll must not keep requesting frames"
+        );
+        assert_eq!(
+            ui::widget::Widget::needs_animation_frame(&widget),
+            animating
+        );
+    }
+
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
         let mut scroll = ui::widget::Scrollable::new_vertical();
         scroll.set_viewport_size(200.0, 300.0);
