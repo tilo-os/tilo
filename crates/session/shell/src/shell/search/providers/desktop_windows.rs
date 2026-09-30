@@ -813,7 +813,7 @@ mod tests {
                         title: format!("Win {i}"),
                         tile: TileContent::Foreign {
                             app_id: format!("app.{i}"),
-                            surface_id: 500 + gid,
+                            surface_id: 500_u64.saturating_add(gid),
                         },
                     }],
                     active_tab: gid,
