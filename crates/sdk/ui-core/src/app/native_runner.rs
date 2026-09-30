@@ -3425,8 +3425,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let scheduled_due =
             scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         if scheduled_due {
-            app.needs_sync = true;
-            request_primary_redraw();
+            // A due deadline means "run sync" (poll a directory, settle
+            // spellcheck), not "commit a buffer". Files' 750ms metadata
+            // poll found nothing and still presented at ~2 Hz because
+            // `needs_sync` forced a full redraw.
+            let updated = app.update_model();
+            let _ = app.sync_model(true);
+            let structure = app.root_widget.take_structure_dirty();
+            if structure {
+                app.layout.structure_dirty = true;
+            }
+            if present_after_deadline_sync(
+                updated,
+                structure,
+                app.layout.layout_dirty,
+                app.root_widget.needs_redraw(),
+                app.root_widget.needs_animation_frame(),
+            ) {
+                request_primary_redraw();
+            }
         }
 
         // A hover tooltip is not motion, so it reveals even under
@@ -3918,4 +3935,37 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = (app, window);
+}
+
+/// A due `next_wake_deadline` runs sync. Present only when that sync
+/// changed something; otherwise an idle Files metadata poll commits
+/// a buffer every 750ms and the shell paints at ~2 Hz.
+fn present_after_deadline_sync(
+    updated: bool,
+    structure: bool,
+    layout_dirty: bool,
+    needs_redraw: bool,
+    needs_animation: bool,
+) -> bool {
+    updated || structure || layout_dirty || needs_redraw || needs_animation
+}
+
+#[cfg(test)]
+mod deadline_present_tests {
+    use super::present_after_deadline_sync;
+
+    #[test]
+    fn idle_scheduled_sync_does_not_request_frames() {
+        assert!(
+            !present_after_deadline_sync(false, false, false, false, false),
+            "an idle scheduled poll must not keep requesting frames"
+        );
+        assert!(
+            present_after_deadline_sync(false, false, false, true, false),
+            "a dirty tree after the poll still presents"
+        );
+        assert!(present_after_deadline_sync(
+            false, false, false, false, true
+        ));
+    }
 }
