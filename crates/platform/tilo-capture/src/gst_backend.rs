@@ -1,5 +1,6 @@
-//! Native capture through `GStreamer`: `v4l2src` (Linux) and `avfvideosrc`
-//! (macOS) for cameras and the macOS screen, `autoaudiosrc` for microphones.
+//! Native capture through `GStreamer` (everywhere native but macOS):
+//! `v4l2src` for cameras, `autoaudiosrc` for microphones, and `pipewiresrc` on
+//! the node the `ScreenCast` portal grants.
 //! Frames arrive on the streaming thread of `GStreamer` and are handed over through
 //! a single latest-frame slot, so a slow UI never queues camera-sized
 //! allocations.
@@ -14,12 +15,10 @@ use gstreamer_app as gst_app;
 
 #[cfg(gst_camera)]
 use crate::CameraRequest;
-#[cfg(all(gst_screen, not(portal_screen)))]
-use crate::ScreenRequest;
 #[cfg(gst_microphone)]
 use crate::{AudioSource, MAX_BUFFERED_SAMPLES, MicrophoneRequest};
 use crate::{CaptureError, CaptureState, Device, DeviceKind};
-#[cfg(any(gst_camera, gst_screen))]
+#[cfg(any(gst_camera, portal_screen))]
 use crate::{Frame, VideoSource, valid_rgba_frame};
 
 fn init() -> Result<(), CaptureError> {
@@ -154,13 +153,13 @@ fn v4l2_nodes() -> Vec<Device> {
         .collect()
 }
 
-#[cfg(any(gst_camera, gst_screen))]
+#[cfg(any(gst_camera, portal_screen))]
 struct Video {
     pipeline: gst::Pipeline,
     shared: Arc<Mutex<Shared<Frame>>>,
 }
 
-#[cfg(any(gst_camera, gst_screen))]
+#[cfg(any(gst_camera, portal_screen))]
 impl Video {
     fn open(source: &str, caps: &str) -> Result<Self, CaptureError> {
         init()?;
@@ -200,7 +199,7 @@ impl Video {
     }
 }
 
-#[cfg(any(gst_camera, gst_screen))]
+#[cfg(any(gst_camera, portal_screen))]
 impl VideoSource for Video {
     fn state(&mut self) -> CaptureState {
         self.shared
@@ -215,7 +214,7 @@ impl VideoSource for Video {
     }
 }
 
-#[cfg(any(gst_camera, gst_screen))]
+#[cfg(any(gst_camera, portal_screen))]
 impl Drop for Video {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -240,33 +239,12 @@ pub(crate) fn camera(request: &CameraRequest) -> Result<Box<dyn VideoSource>, Ca
         Some(id) => Some(safe_id(id).ok_or(CaptureError::NotFound)?),
         None => None,
     };
-    let source = if cfg!(target_os = "macos") {
-        device.map_or_else(
-            || "avfvideosrc".to_owned(),
-            |index| format!("avfvideosrc device-index={index}"),
-        )
-    } else {
-        device.map_or_else(
-            || "v4l2src".to_owned(),
-            |path| format!("v4l2src device={path}"),
-        )
-    };
+    let source = device.map_or_else(
+        || "v4l2src".to_owned(),
+        |path| format!("v4l2src device={path}"),
+    );
     let caps = format!(",width={},height={}", request.width, request.height);
     Ok(Box::new(Video::open(&source, &caps)?))
-}
-
-#[cfg(all(gst_screen, not(portal_screen)))]
-pub(crate) fn screen(request: ScreenRequest) -> Result<Box<dyn VideoSource>, CaptureError> {
-    if !cfg!(target_os = "macos") {
-        return Err(CaptureError::Unsupported(
-            "no screen-capture backend on this platform",
-        ));
-    }
-    let cursor = if request.cursor { "true" } else { "false" };
-    Ok(Box::new(Video::open(
-        &format!("avfvideosrc capture-screen=true capture-screen-cursor={cursor}"),
-        "",
-    )?))
 }
 
 /// A `pipewiresrc` on the node the ScreenCast portal granted.

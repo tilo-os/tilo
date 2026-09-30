@@ -95,7 +95,7 @@ would show it; a chord opens the sheet and never bypasses it.
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| Maximize / restore | `group.maximize` | Super+M | double-click or double-tap the tab-bar ground; frame button | today, but it still hides the chrome |
+| Maximize / restore | `group.maximize` | Super+M | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag the right-edge handle; double-click it cycles ⅓, ½, ⅔ | steps today |
 | Previous / next tab | `tab.previous` / `-next` | Ctrl+Shift+Tab / Ctrl+Tab | click a tab | today |
@@ -106,10 +106,11 @@ would show it; a chord opens the sheet and never bypasses it.
 **Maximize** makes the group fill its display's work area. The top bar and the
 workspace wheel stay, because they say where you are; the group's title,
 restore and close chips appear when the pointer nears its top edge. **Full
-screen** hides all chrome on that display. Today maximize and full screen share
-one presentation that hides the wheel and the top bar on every display. They
-become two states, and each display gets its own slot, so a group full screen
-on a projector leaves the laptop's chrome alone.
+screen** hides all chrome on that display. The two are separate states today:
+a maximized group stops beside the wheel, where the strip's first window
+starts, and only a client's full screen covers it. Both still hold one slot
+for the whole desktop; each display getting its own, so a group full screen on
+a projector leaves the laptop's chrome alone, is planned.
 
 ## Gestures
 

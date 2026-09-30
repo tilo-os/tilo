@@ -12,7 +12,6 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/state.rs", "Files"),
     ("shell/state.rs", "Notes"),
     ("shell/state.rs", "Terminal"),
-    ("shell/tab_binding.rs", "While you were away"),
     // Fixed app names.
     ("shell/editor_app.rs", "Editor"),
     ("shell/notes_app.rs", "Note"),
