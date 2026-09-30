@@ -1658,16 +1658,7 @@ impl SidebarWheelDisc {
 
         Self::draw_rim_marker(ctx, geom, slot, fade_a);
 
-        let style = if slot.is_active {
-            ChipStyle::bare(None)
-        } else {
-            // Dimming primary text by a fixed factor is wrong under
-            // high contrast, where secondary copy is kept near-white
-            // to clear AAA — so this is the palette's own secondary
-            // token, not a derived alpha.
-            ChipStyle::bare(Some(ctx.theme.tokens.colors.text_dim))
-        }
-        .with_alpha(fade_a);
+        let style = Self::sector_label_style(ctx.theme, slot.is_active).with_alpha(fade_a);
         // `Affine * Affine` is matrix composition — total, no
         // overflow/panic path, unlike scalar arithmetic.
         #[allow(
@@ -1689,6 +1680,25 @@ impl SidebarWheelDisc {
         let marker = Rect::from_center_size(anchor, (28.0, 28.0));
         self.claim_hit_rect(hit_claim, slot, placed.union(marker));
         self.draw_presence_dots(ctx, geom, slot);
+    }
+
+    /// Labels hang outside the rim over the workspace's wallpaper, which
+    /// can be any image under any theme, so each sits on the raised tier
+    /// rather than on whatever is behind it. Resting sectors keep the
+    /// palette's own secondary ink — under high contrast that is kept
+    /// near-white for AAA, which a derived alpha would not be.
+    fn sector_label_style(theme: &Theme, is_active: bool) -> ChipStyle {
+        let colors = &theme.tokens.colors;
+        let fill = colors.surfaces.raised;
+        ChipStyle::measured(ui::tokens::colors::AccentChip {
+            fill,
+            border: ui::surface::edge_on(fill),
+            ink: if is_active {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+        })
     }
 
     /// Restrained selection treatment: a small seat on the rim and, for the
@@ -2479,6 +2489,34 @@ mod tests {
                 "no neighbour got a named sector: hit rects {:?}",
                 d.spoke_hit_rects
             );
+        }
+
+        // Phase `every_sector_name_reads_on_any_wallpaper_in_every_theme`.
+        {
+            for (name, theme) in [
+                ("light", Theme::light()),
+                ("dark", Theme::dark()),
+                ("high-contrast", Theme::high_contrast()),
+            ] {
+                for is_active in [false, true] {
+                    let style = SidebarWheelDisc::sector_label_style(&theme, is_active);
+                    let chip = style.resolved.expect("the label carries its own plate");
+                    assert!(
+                        !style.bare,
+                        "{name}: a bare label shows the wallpaper through"
+                    );
+                    assert_eq!(
+                        chip.fill.to_rgba8().a,
+                        255,
+                        "{name}: the plate must hide whatever wallpaper is behind it"
+                    );
+                    let ratio = ui::a11y::contrast_ratio(chip.ink, chip.fill);
+                    assert!(
+                        ratio >= 4.5,
+                        "{name} (active: {is_active}): label ink reads {ratio:.2}:1 on its plate"
+                    );
+                }
+            }
         }
 
         // Phase `sectors_sit_at_their_real_index_relative_to_the_active_one`.
