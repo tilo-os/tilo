@@ -160,6 +160,16 @@ struct SnapAnim {
 /// whole-group reorder drag instead of a focus click.
 const GROUP_DRAG_THRESHOLD: f64 = 6.0;
 
+/// One-finger swipe that is following the strip. Distinct from
+/// [`GroupDrag`]: a horizontal swipe pans; a grab that goes mostly
+/// vertical, or a pointer drag, still reorders.
+#[derive(Clone, Copy, Debug)]
+struct TouchPan {
+    id: u64,
+    start: Point,
+    engaged: bool,
+}
+
 /// In-flight whole-group reorder drag, set on a tab-bar-background press
 /// or touch (see [`WindowGroup::bar_grab_hit`]) and cleared on release.
 /// `moved` latches once the pointer passes [`GROUP_DRAG_THRESHOLD`].
@@ -280,6 +290,8 @@ pub struct GroupRow {
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an inter-group resize drag).
     group_drag: Option<GroupDrag>,
+    /// One-finger swipe on the tab bar that is panning the strip.
+    touch_pan: Option<TouchPan>,
     /// Insertion gap index targeted by an in-progress reorder drag;
     /// `draw` paints the indicator here. Cleared on release.
     group_reorder_target: Option<usize>,
@@ -864,6 +876,7 @@ impl GroupRow {
             promotion_keeps_gutter: false,
             hidden: false,
             group_drag: None,
+            touch_pan: None,
             group_reorder_target: None,
             group_reorder_lane: None,
             pending_group_reorder: None,
@@ -2301,11 +2314,66 @@ impl GroupRow {
         claimed
     }
 
+    /// A finger on the tab bar (pills or ground) may become a strip pan.
+    fn begin_touch_pan_candidate(&mut self, id: u64, at: Point) {
+        if self.touch_pan.is_none()
+            && self
+                .groups
+                .iter()
+                .any(|group| group.bar_rect().contains(at))
+        {
+            self.touch_pan = Some(TouchPan {
+                id,
+                start: at,
+                engaged: false,
+            });
+        }
+    }
+
+    /// Horizontal travel past the grab threshold pans 1:1; a reorder
+    /// that already claimed the finger is left alone.
+    fn update_touch_pan(&mut self, id: u64, at: Point) -> bool {
+        let Some(mut pan) = self.touch_pan.filter(|pan| pan.id == id) else {
+            return false;
+        };
+        let travel = pan.start.x - at.x;
+        let dy = at.y - pan.start.y;
+        if !pan.engaged {
+            if self.group_drag.is_some_and(|drag| drag.moved)
+                || travel.abs() <= GROUP_DRAG_THRESHOLD
+                || travel.abs() <= dy.abs()
+            {
+                return false;
+            }
+            let _ = self.end_group_drag(false);
+            self.begin_strip_pan();
+            pan.engaged = true;
+        }
+        let _ = self.update_strip_pan(travel);
+        self.touch_pan = Some(pan);
+        true
+    }
+
+    fn end_touch_pan(&mut self, id: u64) -> bool {
+        let Some(pan) = self.touch_pan.take() else {
+            return false;
+        };
+        if pan.id != id {
+            self.touch_pan = Some(pan);
+            return false;
+        }
+        if !pan.engaged {
+            return false;
+        }
+        let _ = self.end_strip_pan(crate::time::now());
+        true
+    }
+
     /// Returns `true` when the event is claimed by an in-flight group
-    /// drag (so the caller skips resize-handle + per-child dispatch). A
-    /// press records a *candidate* drag but does not claim it, so a
-    /// plain click still falls through to the child for focus — only
-    /// once past [`GROUP_DRAG_THRESHOLD`] does the row claim motion.
+    /// drag or a one-finger strip pan, so the caller skips resize-handle
+    /// and per-child dispatch. A press records a *candidate* but does not
+    /// claim it, so a tap still reaches the child for focus — only once
+    /// past [`GROUP_DRAG_THRESHOLD`] does the row claim motion.
     fn update_group_drag(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         let pointer_drag = self.group_drag.is_none_or(|drag| drag.touch.is_none());
         match event {
@@ -2324,12 +2392,13 @@ impl GroupRow {
                 button: MouseButton::Left,
                 ..
             } if pointer_drag => self.end_group_drag(true),
-            // A finger on a group's bar drags it exactly as the pointer
-            // does; the first finger down carries the drag.
+            // A finger on the tab bar pans the strip when the swipe is
+            // horizontal; a mostly-vertical grab still reorders the group.
             WindowEvent::Touch(touch) => {
                 let carries = self
                     .group_drag
                     .is_some_and(|drag| drag.touch == Some(touch.id));
+                let ours = self.touch_pan.is_some_and(|pan| pan.id == touch.id);
                 let at = Point::new(
                     touch.location.x / scale_factor,
                     touch.location.y / scale_factor,
@@ -2338,17 +2407,34 @@ impl GroupRow {
                     winit::event::TouchPhase::Started => {
                         self.last_cursor = at;
                         self.begin_group_drag(Some(touch.id));
+                        self.begin_touch_pan_candidate(touch.id, at);
                         false
                     }
-                    winit::event::TouchPhase::Moved if carries => {
+                    winit::event::TouchPhase::Moved if ours || carries => {
                         self.last_cursor = at;
-                        self.move_group_drag()
+                        if self.update_touch_pan(touch.id, at) {
+                            true
+                        } else if carries {
+                            self.move_group_drag()
+                        } else {
+                            false
+                        }
                     }
-                    winit::event::TouchPhase::Ended if carries => {
+                    winit::event::TouchPhase::Ended if ours || carries => {
                         self.last_cursor = at;
-                        self.end_group_drag(true)
+                        if self.end_touch_pan(touch.id) {
+                            true
+                        } else {
+                            self.end_group_drag(true)
+                        }
                     }
-                    winit::event::TouchPhase::Cancelled if carries => self.end_group_drag(false),
+                    winit::event::TouchPhase::Cancelled if ours || carries => {
+                        if self.end_touch_pan(touch.id) {
+                            true
+                        } else {
+                            self.end_group_drag(false)
+                        }
+                    }
                     _ => false,
                 }
             }
@@ -4761,6 +4847,16 @@ mod tests {
         );
     }
 
+    fn touch_event(id: u64, phase: winit::event::TouchPhase, p: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            force: None,
+            id,
+        })
+    }
+
     fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: &WindowEvent) {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
@@ -4900,6 +4996,45 @@ mod tests {
         drag_group_to_end_reorders_group_vector_and_publishes_one_shot();
         drag_group_backwards_between_two_groups();
         plain_click_on_bar_background_does_not_reorder();
+    }
+
+    #[test]
+    fn one_finger_horizontal_swipe_on_the_tab_bar_pans_the_strip() {
+        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
+        assert!(
+            row.pan_max_scroll_x() > 80.0,
+            "the fixture must have room to pan"
+        );
+        let start = group_grab_point(&row, 0);
+        let before = row.scroll_x();
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Started, start),
+        );
+        let mid = Point::new(start.x - 80.0, start.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Moved, mid),
+        );
+        assert!(
+            row.scroll_x() - before > 20.0,
+            "a leftward swipe must pan toward later groups; before {before} after {}",
+            row.scroll_x()
+        );
+        assert!(
+            !row.group_drag_active(),
+            "a horizontal swipe is a pan, not a reorder"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Ended, mid),
+        );
     }
 
     #[test]
