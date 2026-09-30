@@ -31,7 +31,7 @@
 let
   # A fixed-output vendor path can remain cached after Cargo.lock changes.
   # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "5fa198400222d7b5165e3d881f861b717e34a49b817e42f373504e212a631c28";
+  expectedCargoLockSha256 = "06da9834843a71e1e0133ac060e40d3360956c8319ce766d1fe22b5b7d875b5e";
 in
 assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
   "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
@@ -47,7 +47,7 @@ rustPlatform.buildRustPackage rec {
 
   # One fixed-output vendor closure avoids scheduling and copying each of the
   # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = "sha256-9qkRO6KOo6TjMWlBbq9FyCI77Q2jZIYf0yG01y2WgPc=";
+  cargoHash = "sha256-u9qbxT7sXspJb9QKYw/VWqM9DKRxRJDUZ7Yk2mMyorM=";
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"

@@ -214,7 +214,7 @@ DEDICATED_TEST_WEIGHT = 1_000
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
 TEST_SHARD_APART = (
-    frozenset({"fs", "fs-native", "private-fs"}),
+    frozenset({"tilo-fs", "fs-native", "private-fs"}),
     frozenset({
         "tilo-action-broker",
         "tilo-cloud-host",

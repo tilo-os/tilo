@@ -23,7 +23,7 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # TOTP secrets are sealed at rest with XChaCha20-Poly1305 under a key held by
 # Secret Service, DPAPI or an owner-only local file.
-secret-vault = { path = "../../crates/system/secret-vault" }
+tilo-secret-vault = { path = "../../crates/system/secret-vault" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Tilo resource and action model for replayable account mutations.
 tilo-actions = { path = "../../crates/collab/actions" }

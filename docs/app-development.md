@@ -98,6 +98,28 @@ A standalone app builds the code this repository tests:
 - A `.gitignore` for `target/`, and a git repository of its own when the app
   is not created inside one already.
 
+`--sdk-version` builds the app on the published SDK instead:
+`ui = { package = "tilo-app", version = "0.1.0" }` from crates.io (or the
+registry Cargo's source replacement names), with no `[patch]` and no seeded
+lockfile. Without a value it requires the version the CLI was built with. The
+toolchain, target flags and profiles are the same. Such an app always links
+the toolkit statically (`--static`): the shared toolkit library comes from a
+Tilo tree, not from crates.io. Three optional features need the workspace's
+patched crates and do not build on the published SDK: `presentation-feedback`
+and `dx12-shader-cache` (both on wgpu-hal) and `tilo-media`'s `pipewire`
+feature on PipeWire headers newer than libspa-sys 0.10.1 handles (Fedora 44).
+None is on by default.
+
+Until the SDK is on crates.io, `tools/sdk/publish_check.py --verify` packages
+and builds every SDK crate, and `tools/sdk/local_registry.py <dir>` turns the
+result into a local registry an app builds against:
+
+```bash
+cargo build \
+  --config 'source.crates-io.replace-with="tilo-sdk"' \
+  --config 'source.tilo-sdk.local-registry="<dir>"'
+```
+
 Without `--id`, an app outside this repository is named `local.dev.<name>`.
 That name cannot be published. Choose an id in a namespace you control before
 you package the app.

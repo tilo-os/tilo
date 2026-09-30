@@ -45,7 +45,7 @@ tokio = { workspace = true, optional = true, features = ["full"] }
 # The `time` module: the clock types and reads on every target.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tracing.workspace = true
-tts = { version = "0.1.0", path = "../../system/tts" }
+tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 unic-langid.workspace = true
 winit.workspace = true
 # The clipboard vocabulary and each target's clipboard.

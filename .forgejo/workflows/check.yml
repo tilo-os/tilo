@@ -61,7 +61,7 @@ env:
   # main still run them here, and ci-nightly.yml runs them with the whole
   # workspace, so a regression is caught at the merge that caused it.
   PUSH_ONLY_FILTER: >-
-    (package(fs) and binary(collab_release_matrix)) or
+    (package(tilo-fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
 
 jobs:
@@ -335,7 +335,7 @@ jobs:
       # Where the runner's kernel can enforce Landlock, the PDF helper's
       # sandbox is also required rather than allowed to stand down.
       - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p thumbnail')
+        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p tilo-thumbnail')
         run: |
           asset=$(bash tools/ci/install-pdfium.sh --asset-name)
           ./os/dev/cache-github-assets.sh "$asset"
