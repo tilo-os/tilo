@@ -996,15 +996,21 @@ impl FrameBuilder {
     fn restore_focus_after_tree_change(&mut self, focus: &mut Option<NodeId>) {
         *focus = None;
         let order = self.focusable_order();
-        let target = self.native_focus_ordinal.map_or_else(
-            || self.initial_focus_target(&order),
-            |ordinal| {
-                order
-                    .get(ordinal)
-                    .copied()
-                    .or_else(|| order.last().copied())
-            },
-        );
+        // Opening a Terminal rebuilds the tree. Restoring the previous
+        // chrome ordinal leaves Space/Enter on the workspace pill.
+        let target = if self.active_tile_is_terminal() {
+            self.initial_focus_target(&order)
+        } else {
+            self.native_focus_ordinal.map_or_else(
+                || self.initial_focus_target(&order),
+                |ordinal| {
+                    order
+                        .get(ordinal)
+                        .copied()
+                        .or_else(|| order.last().copied())
+                },
+            )
+        };
         self.set_native_focus(focus, target);
         self.focus_tree_changed = false;
     }
@@ -2916,6 +2922,54 @@ impl FrameBuilder {
         (&mut self.host, &self.taffy)
     }
 
+    /// Send Named Space/Enter to the hosted Terminal before chrome Activate.
+    fn offer_terminal_typing(
+        &self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root_obj: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed
+                    && matches!(
+                        key.logical_key,
+                        Key::Named(NamedKey::Enter | NamedKey::Space)
+                    )
+        ) || !self.active_tile_is_terminal()
+        {
+            return false;
+        }
+        let Some((&id, &widget)) = self
+            .node_map
+            .iter()
+            .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+        else {
+            return false;
+        };
+        let mut handled = false;
+        let taffy = self.taffy();
+        unsafe {
+            (*widget).handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers,
+                    state,
+                    path: root_obj,
+                    handled: &mut handled,
+                    focus_target,
+                    node_id: id,
+                    taffy,
+                },
+            );
+        }
+        handled
+    }
+
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
     /// pipeline. Returns whether it was consumed.
     ///
@@ -2944,6 +2998,14 @@ impl FrameBuilder {
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
         let mut focus_target: Option<NodeId> = None;
+        if self.offer_terminal_typing(event, modifiers, state, root_obj, &mut focus_target) {
+            if let Some(new_id) = focus_target
+                && prior_focus != Some(new_id)
+            {
+                self.set_native_focus(focus, Some(new_id));
+            }
+            return true;
+        }
         {
             let (host, taffy) = self.host_and_taffy_mut();
             host.handle_event(
@@ -2979,39 +3041,8 @@ impl FrameBuilder {
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
         // normally turns Enter/Space on the focused widget into an
-        // accessibility Activate action. First offer the raw event to the
-        // widget (editing controls may consume it), then activate only when it
-        // was otherwise unhandled.
-        if !handled
-            && let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == winit::event::ElementState::Pressed
-            && matches!(
-                key.logical_key,
-                Key::Named(NamedKey::Enter | NamedKey::Space)
-            )
-            && self.active_tile_is_terminal()
-            && let Some((&id, &widget)) = self
-                .node_map
-                .iter()
-                .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
-        {
-            let taffy = self.taffy();
-            unsafe {
-                (*widget).handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers,
-                        state,
-                        path: root_obj,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: id,
-                        taffy,
-                    },
-                );
-            }
-        }
+        // accessibility Activate action. Space/Enter for a live Terminal
+        // were already offered above; activate only when they were unhandled.
         if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
@@ -4425,6 +4456,97 @@ mod tests {
             got.as_slice(),
             b"e \r",
             "letters, Space and Enter must reach the PTY, not chrome Activate",
+        );
+    }
+
+    #[test]
+    fn chrome_focus_does_not_steal_terminal_space_and_enter() {
+        use crate::shell::state::{AppKind, TileContent};
+        use winit::keyboard::SmolStr;
+        // W17 / A01 on the live compositor: the workspace pill keeps
+        // keyboard focus after the Terminal tile opens. Letters still
+        // reach the PTY through tree dispatch; Named Space/Enter used
+        // to Activate chrome (Homeoffice workspace settings).
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
+            let name = unsafe { (**widget).name() };
+            (name == "TopBarChrome").then_some(*id)
+        });
+        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
+        fb.set_native_focus(&mut focus, Some(chrome_id));
+        assert_eq!(
+            fb.widget_name(focus.expect("top bar must take keyboard focus")),
+            Some("TopBarChrome"),
+            "this case is the VM path: chrome, not the Terminal, holds focus"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let mut doc = AutoCommit::new();
+        for key in [
+            Key::Character(SmolStr::new_static("e")),
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+        ] {
+            assert!(
+                fb.dispatch_event(
+                    &key_press(key),
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "typed keys must be consumed on the production chrome path"
+            );
+        }
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"e \r",
+            "Space and Enter must reach the PTY while chrome still has focus",
         );
     }
 
