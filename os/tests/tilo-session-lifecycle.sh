@@ -13,6 +13,7 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
+cloud_unit="$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service"
 release_workflow="$repo/.forgejo/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
@@ -57,17 +58,23 @@ grep -Fqx 'WantedBy=graphical-session.target' "$recipient_socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
 for policy in \
-  'ProtectSystem=strict' \
-  'ProtectHome=read-only' \
-  'ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo' \
   'PrivateIPC=yes' \
-  'ProtectKernelLogs=yes' \
   'ProtectClock=yes' \
   'ProtectHostname=yes' \
   'RestrictRealtime=yes' \
   'KeyringMode=private' \
   'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
   grep -Fqx "$policy" "$recipient_unit"
+done
+# A nested user session cannot remount /dev/mqueue. These stay off so the
+# units start instead of looping on 226/NAMESPACE.
+for unit in "$recipient_unit" "$cloud_unit"; do
+  for forbidden in ProtectSystem=strict ProtectHome=read-only ProtectKernelTunables=yes ProtectKernelModules=yes ProtectKernelLogs=yes; do
+    if grep -Fqx "$forbidden" "$unit"; then
+      echo "$(basename "$unit") still uses mount-namespace $forbidden (226/NAMESPACE on a nested user manager)" >&2
+      exit 1
+    fi
+  done
 done
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
