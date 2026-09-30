@@ -916,6 +916,47 @@ fn registered_home_peer_addrs(
     Ok(addrs)
 }
 
+/// Device endpoint ids this machine should dial directly.
+///
+/// These are ordinary peers of the same person, not relays. A relay handshake
+/// rejects a certificate that cannot act as a host, so a setup laptop is
+/// reached on its device endpoint instead.
+fn personal_device_peer_addrs(
+    path: &Path,
+    local_device: Option<[u8; 32]>,
+) -> Vec<iroh::EndpointAddr> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    if bytes.len() > 64 * 1024 {
+        tracing::warn!(path = %path.display(), "personal device list exceeds its bound");
+        return Vec::new();
+    }
+    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+        tracing::warn!(path = %path.display(), "personal device list is invalid");
+        return Vec::new();
+    };
+    if ids.len() > MAX_HOME_PEERS {
+        tracing::warn!(path = %path.display(), "personal device list exceeds its bound");
+        return Vec::new();
+    }
+    ids.into_iter()
+        .filter_map(|id| {
+            let bytes = decode_lower_hex_32(&id)?;
+            if local_device == Some(bytes) {
+                return None;
+            }
+            iroh::EndpointId::from_bytes(&bytes)
+                .ok()
+                .map(iroh::EndpointAddr::new)
+        })
+        .collect()
+}
+
+fn personal_device_peer_path() -> PathBuf {
+    home_peer_registry_path().with_file_name("personal-device-peers.json")
+}
+
 /// How often a shell asks the rooms it is in for anything it is
 /// missing. Room replication has no push side, so this interval is the
 /// upper bound on how stale a guest's view of a room can be.
@@ -1178,6 +1219,8 @@ pub struct ShellNetwork {
     /// registry. This lets refresh remove revoked/decommissioned entries
     /// without disturbing hosts carried by workspace invitations.
     registered_home_peer_ids: Mutex<std::collections::HashSet<iroh::EndpointId>>,
+    /// Device endpoints already handed to the actor as direct peers.
+    dialed_direct_peers: Mutex<std::collections::HashSet<iroh::EndpointId>>,
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
     registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
@@ -1546,6 +1589,14 @@ impl ShellNetwork {
                 expectation: Some(host.expectation),
             });
         }
+        let mut dialed_direct_peers = std::collections::HashSet::new();
+        for addr in personal_device_peer_addrs(
+            &home_peer_registry_path().with_file_name("personal-device-peers.json"),
+            Some(*local_peer_id.as_bytes()),
+        ) {
+            dialed_direct_peers.insert(addr.id);
+            let _ = cmd_tx.try_send(NetCmd::Connect { addr });
+        }
         host_addrs.sort_by_key(|addr| addr.id.to_string());
         host_addrs.dedup_by_key(|addr| addr.id);
 
@@ -1612,6 +1663,7 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             registered_home_peer_ids: Mutex::new(home_peer_ids),
+            dialed_direct_peers: Mutex::new(dialed_direct_peers),
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
@@ -2658,6 +2710,23 @@ impl ShellNetwork {
         }
         if let Ok(mut ids) = self.registered_home_peer_ids.lock() {
             *ids = applied_ids;
+        }
+        let direct = personal_device_peer_addrs(
+            &personal_device_peer_path(),
+            Some(*self.local_peer_id.as_bytes()),
+        );
+        if let Ok(mut dialed) = self.dialed_direct_peers.lock() {
+            for addr in direct {
+                let id = addr.id;
+                if !dialed.insert(id) {
+                    continue;
+                }
+                if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
+                    changed = true;
+                } else {
+                    dialed.remove(&id);
+                }
+            }
         }
         changed
     }
@@ -6139,6 +6208,7 @@ pub(crate) fn shell_network_for_test(
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
+        dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
@@ -6233,6 +6303,22 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
+
+    #[test]
+    fn personal_device_peers_are_dialable_endpoints_except_this_device() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("personal-device-peers.json");
+        let own = [0x11; 32];
+        let peer = [0x22; 32];
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&vec![hex::encode(own), hex::encode(peer)]).unwrap(),
+        )
+        .unwrap();
+        let addrs = personal_device_peer_addrs(&path, Some(own));
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(*addrs[0].id.as_bytes(), peer);
+    }
 
     #[test]
     #[serial_test::serial(process_env)]

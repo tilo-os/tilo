@@ -450,6 +450,7 @@ pub fn install_joined_device(
         &target_system,
         &local_cert,
         relay_service,
+        cert.device_public_key,
     )?;
     Ok(cert)
 }
@@ -531,6 +532,7 @@ fn copy_home_peers(
     target_system: &IdentityPaths,
     local_cert: &DeviceCert,
     relay_service_node_id: [u8; 32],
+    joined_device: [u8; 32],
 ) -> io::Result<()> {
     let identity_id = hex::encode(local_cert.user_public_key);
     let bytes = match fs::read(source) {
@@ -544,41 +546,48 @@ fn copy_home_peers(
             "home-peer registry exceeds 1 MiB",
         ));
     }
-    let mut own: Vec<tilo_relay_protocol::HomePeerRegistration> = if bytes.is_empty() {
+    let mut entries: Vec<tilo_relay_protocol::HomePeerRegistration> = if bytes.is_empty() {
         Vec::new()
     } else {
         serde_json::from_slice(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
     };
-    let device_id = hex::encode(local_cert.device_public_key);
-    let service_id = hex::encode(relay_service_node_id);
-    let topic = tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
-    let registration = tilo_relay_protocol::HomePeerRegistration {
-        schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-        device_node_id: device_id,
-        relay_service_node_id: service_id,
-        relay_endpoint: None,
-        label: if local_cert.device_label.trim().is_empty() {
-            "Setup machine".into()
-        } else {
-            local_cert.device_label.trim().to_string()
-        },
-        user_public_key: identity_id.clone(),
-        device_cert: Some(local_cert.clone()),
-        relay_workspace_ids: vec![topic],
-    };
-    // The setup machine's own session reads this file and dials the listed
-    // relays. Without this entry it never joins the relay the new device calls.
-    if !relay_is_dialable(&own, &registration) {
-        own.push(registration);
+    // Clients reject a relay whose certificate cannot act as a host. A normal
+    // setup machine is dialed directly instead; only a host-capable machine is
+    // recorded as a relay.
+    if local_cert.capabilities.can_act_as_host {
+        let device_id = hex::encode(local_cert.device_public_key);
+        let service_id = hex::encode(relay_service_node_id);
+        let topic =
+            tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
+        let registration = tilo_relay_protocol::HomePeerRegistration {
+            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: device_id,
+            relay_service_node_id: service_id,
+            relay_endpoint: None,
+            label: if local_cert.device_label.trim().is_empty() {
+                "Setup machine".into()
+            } else {
+                local_cert.device_label.trim().to_string()
+            },
+            user_public_key: identity_id.clone(),
+            device_cert: Some(local_cert.clone()),
+            relay_workspace_ids: vec![topic],
+        };
+        if !relay_is_dialable(&entries, &registration) {
+            entries.push(registration);
+        }
+        let local_encoded = serde_json::to_vec_pretty(&entries)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if let Some(parent) = source.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_file::write(source, &local_encoded)?;
     }
-    let local_encoded = serde_json::to_vec_pretty(&own)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if let Some(parent) = source.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    atomic_file::write(source, &local_encoded)?;
-    own.retain(|entry| entry.user_public_key == identity_id);
+    let own: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.user_public_key == identity_id)
+        .collect();
     let encoded = serde_json::to_vec_pretty(&own)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let parent = target_system
@@ -593,6 +602,56 @@ fn copy_home_peers(
         })?;
     fs::create_dir_all(parent)?;
     atomic_file::write(&parent.join("home-peers.json"), &encoded)?;
+    remember_personal_device(
+        &parent.join("personal-device-peers.json"),
+        local_cert.device_public_key,
+    )?;
+    let local_peers = source.with_file_name("personal-device-peers.json");
+    remember_personal_device(&local_peers, joined_device)?;
+    Ok(())
+}
+
+fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Result<()> {
+    let id = hex::encode(device_public_key);
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() > 64 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "personal device list exceeds 64 KiB",
+        ));
+    }
+    let mut ids: Vec<String> = if bytes.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+    };
+    if ids.len() > 128
+        || ids.iter().any(|known| {
+            known.len() != 64
+                || hex::decode(known)
+                    .ok()
+                    .is_none_or(|decoded| decoded.len() != 32)
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "personal device list is invalid",
+        ));
+    }
+    if !ids.iter().any(|known| known == &id) {
+        ids.push(id);
+    }
+    let encoded = serde_json::to_vec_pretty(&ids)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    atomic_file::write(path, &encoded)?;
     Ok(())
 }
 
@@ -1193,16 +1252,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
-        let topic = tilo_relay_protocol::personal_continuity_workspace_id(&user);
         let service = hex::encode(tilo_relay_protocol::relay_service_node_id(
             &local_device.to_bytes(),
         ));
-        assert_ne!(service, hex::encode(local_cert.device_public_key));
-        assert!(copied.iter().any(|entry| {
-            entry.device_node_id == hex::encode(local_cert.device_public_key)
-                && entry.relay_service_node_id == service
-                && entry.relay_workspace_ids.contains(&topic)
-        }));
+        assert!(
+            copied
+                .iter()
+                .all(|entry| entry.relay_service_node_id != service),
+            "a machine that cannot host is not recorded as a relay"
+        );
+        let direct: Vec<String> = serde_json::from_slice(
+            &std::fs::read(dir.path().join("var/lib/tilo/personal-device-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
+        let local_direct: Vec<String> = serde_json::from_slice(
+            &std::fs::read(peers.with_file_name("personal-device-peers.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
         let peers_bytes = std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap();
         assert!(
             !peers_bytes
@@ -1217,9 +1285,6 @@ mod tests {
                 .iter()
                 .any(|entry| entry.user_public_key == hex::encode([9_u8; 32]))
         );
-        assert!(local_registry.iter().any(|entry| {
-            entry.relay_service_node_id == service && entry.relay_workspace_ids.contains(&topic)
-        }));
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
