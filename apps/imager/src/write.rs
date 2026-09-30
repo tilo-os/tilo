@@ -136,6 +136,10 @@ pub struct WriteRequest {
     pub target: TargetDrive,
     pub action: Action,
     pub profile: InstallProfile,
+    /// Prepared etc/var tree with Wi-Fi and enrolled identity. Built on the
+    /// setup machine before elevation; the privileged writer only copies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_stage: Option<std::path::PathBuf>,
 }
 
 impl WriteRequest {
@@ -970,6 +974,18 @@ fn run_system_job(
                 };
             }
         }
+        if result.is_success()
+            && let Some(stage) = req.handoff_stage.as_deref()
+        {
+            if let Err(error) =
+                apply_handoff_stage_to_device(&dst, stage, req.source.size, req.target.size)
+            {
+                result = JobResult::VerifyFailed(format!(
+                    "could not apply Wi-Fi and identity onto the written disk: {error}"
+                ));
+            }
+            let _ = std::fs::remove_dir_all(stage);
+        }
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;
         }
@@ -1090,8 +1106,23 @@ fn run_udisks_job(
             return result;
         }
     };
-    let result = run_job_file_bound(req, &mut device, should_cancel, &mut relay);
+    let mut result = run_job_file_bound(req, &mut device, should_cancel, &mut relay);
     drop(device);
+    if result.is_success()
+        && let Some(stage) = req.handoff_stage.as_deref()
+    {
+        if let Err(error) = apply_handoff_stage_to_device(
+            std::path::Path::new(req.target.dev_path()),
+            stage,
+            req.source.size,
+            req.target.size,
+        ) {
+            result = JobResult::VerifyFailed(format!(
+                "could not apply Wi-Fi and identity onto the written disk: {error}"
+            ));
+        }
+        let _ = std::fs::remove_dir_all(stage);
+    }
     let error = match &result {
         JobResult::Verified => None,
         JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
@@ -1121,6 +1152,135 @@ fn run_udisks_job(
 }
 
 const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
+
+/// Mount the written disk and copy the staged Wi-Fi / identity tree onto it.
+#[cfg(target_os = "linux")]
+fn apply_handoff_stage_to_device(
+    device: &Path,
+    staged: &Path,
+    image_len: u64,
+    device_len: u64,
+) -> io::Result<()> {
+    if !staged.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "setup handoff staging directory is missing",
+        ));
+    }
+    let loop_dev = {
+        let output = match std::process::Command::new("losetup")
+            .args(["-fP", "--show"])
+            .arg(device)
+            .output()
+        {
+            Ok(output) if output.status.success() => output,
+            _ => {
+                return crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
+            }
+        };
+        String::from_utf8(output.stdout)
+            .map_err(io::Error::other)?
+            .trim()
+            .to_string()
+    };
+    let finish = |result: io::Result<()>| {
+        let _ = std::process::Command::new("losetup")
+            .args(["-d", &loop_dev])
+            .status();
+        result
+    };
+    let embed = || crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
+    let Some(root_part) = find_tilo_root_partition(&loop_dev) else {
+        return finish(embed());
+    };
+    let mnt = tempfile::Builder::new()
+        .prefix("tilo-imager-root-")
+        .tempdir()?;
+    let mount = std::process::Command::new("mount")
+        .args([&root_part, mnt.path().to_str().unwrap_or("/tmp")])
+        .status();
+    match mount {
+        Ok(status) if status.success() => {}
+        _ => return finish(embed()),
+    }
+    let applied = apply_handoff_stage_onto_mounted_root(mnt.path(), staged);
+    let _ = std::process::Command::new("umount")
+        .arg(mnt.path())
+        .status();
+    if applied
+        .as_ref()
+        .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    {
+        return finish(embed());
+    }
+    finish(applied)
+}
+
+/// Copy a staged handoff tree onto an already-mounted installed root.
+///
+/// Production mounts via losetup; tests exercise this with a fixture tree.
+pub(crate) fn apply_handoff_stage_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result<()> {
+    crate::handoff::install_staged_onto_mounted_root(mnt, staged)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_handoff_stage_to_device(
+    _device: &Path,
+    _staged: &Path,
+    _image_len: u64,
+    _device_len: u64,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "applying Wi-Fi and identity onto a written disk requires Linux",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn find_tilo_root_partition(loop_dev: &str) -> Option<String> {
+    // `losetup -P` creates the partition nodes before udev has identified
+    // their filesystems. Giving up on the first empty probe embeds the
+    // handoff in slack the installed system never reads.
+    for attempt in 0..8 {
+        if let Ok(output) = std::process::Command::new("lsblk")
+            .args(["-ln", "-o", "PATH,FSTYPE"])
+            .arg(loop_dev)
+            .output()
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(part) = select_tilo_root_partition(loop_dev, &text) {
+                return Some(part);
+            }
+        }
+        if attempt + 1 < 8 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    None
+}
+
+/// Prefer a child partition with a Linux root filesystem; fall back to the
+/// loop device itself when the image is a single filesystem.
+pub(crate) fn select_tilo_root_partition(loop_dev: &str, lsblk_text: &str) -> Option<String> {
+    let mut fallback = None;
+    for line in lsblk_text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(path) = parts.next() else {
+            continue;
+        };
+        let Some(fstype) = parts.next() else {
+            continue;
+        };
+        if matches!(fstype, "btrfs" | "ext4" | "xfs") {
+            if path != loop_dev {
+                return Some(path.to_string());
+            }
+            fallback = Some(path.to_string());
+        }
+    }
+    fallback
+}
 
 // `Start-Process` flattens its `ArgumentList` into a native command line. A
 // literal double quote must therefore surround each path so spaces remain in
@@ -1976,6 +2136,7 @@ mod tests {
             target: sample_targets()[0].clone(), // the USB stick
             action: Action::Flash,
             profile: InstallProfile::default(),
+            handoff_stage: None,
         }
     }
 
@@ -2793,6 +2954,64 @@ mod tests {
             assert_eq!(
                 std::fs::read(dst.path()).unwrap(),
                 b"leave destination untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn handoff_apply_selects_root_partition_and_copies_onto_a_mounted_fixture() {
+        // Phase `select_tilo_root_partition_prefers_child_linux_fs`.
+        {
+            let lsblk = "\
+/dev/loop7\n\
+/dev/loop7p1 vfat\n\
+/dev/loop7p2 btrfs\n\
+/dev/loop7p3 swap\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/loop7", lsblk).as_deref(),
+                Some("/dev/loop7p2")
+            );
+        }
+
+        // Phase `select_tilo_root_partition_falls_back_to_whole_device`.
+        {
+            let lsblk = "/dev/loop9 ext4\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/loop9", lsblk).as_deref(),
+                Some("/dev/loop9")
+            );
+            assert_eq!(
+                select_tilo_root_partition("/dev/loop9", "/dev/loop9\n"),
+                None
+            );
+        }
+
+        // Phase `apply_handoff_stage_onto_mounted_root_copies_etc_and_var`.
+        {
+            let staged = tempfile::tempdir().unwrap();
+            let conn = staged.path().join("etc/NetworkManager/system-connections");
+            std::fs::create_dir_all(&conn).unwrap();
+            std::fs::write(conn.join("tilo-setup.nmconnection"), b"ssid=studio\n").unwrap();
+            std::fs::create_dir_all(staged.path().join("var/lib/tilo")).unwrap();
+            std::fs::write(staged.path().join("var/lib/tilo/device.key"), b"secret").unwrap();
+
+            let mnt = tempfile::tempdir().unwrap();
+            let etc = mnt.path().join("ostree/deploy/tilo/deploy/abcd.0/etc");
+            let var = mnt.path().join("ostree/deploy/tilo/var");
+            std::fs::create_dir_all(&etc).unwrap();
+            std::fs::create_dir_all(&var).unwrap();
+
+            apply_handoff_stage_onto_mounted_root(mnt.path(), staged.path()).unwrap();
+            assert_eq!(
+                std::fs::read(
+                    etc.join("NetworkManager/system-connections/tilo-setup.nmconnection")
+                )
+                .unwrap(),
+                b"ssid=studio\n"
+            );
+            assert_eq!(
+                std::fs::read(var.join("lib/tilo/device.key")).unwrap(),
+                b"secret"
             );
         }
     }

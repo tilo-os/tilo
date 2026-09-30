@@ -105,6 +105,28 @@ pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     if id == 0 { 1 } else { id }
 }
 
+/// Domain-separated secret the relay binds, derived from the device secret.
+///
+/// The relay and the filesystem must not publish competing address records
+/// for one Iroh node id. Callers that only need the dial target use
+/// [`relay_service_node_id`].
+#[must_use]
+pub fn relay_service_secret(device_secret: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("tilo-relay-iroh-service-key-v1", device_secret)
+}
+
+/// Public Iroh endpoint id of the relay that belongs to this device secret.
+///
+/// This is the value stored as `relay_service_node_id`. It is not the device
+/// public key, and deriving it does not require sending the device secret.
+#[must_use]
+pub fn relay_service_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
+    iroh_base::SecretKey::from_bytes(&relay_service_secret(device_secret))
+        .public()
+        .as_bytes()
+        .to_owned()
+}
+
 /// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
 pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
     room_workspace_id(room).is_ok_and(|id| id == workspace)

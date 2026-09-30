@@ -936,6 +936,15 @@ jobs:
               max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
               gc = false
 
+      # A board build's layers include its private firmware, so its layer
+      # cache must never reach the public registry.
+      - name: Keep the board layer cache private
+        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        run: |
+          if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
+            echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
+          fi
+
       # Reads only the snapshot's metadata layer; BuildKit pulls the package
       # layers when a stage actually mounts them.
       - name: Verify frozen package snapshot matches every consumer
@@ -1251,10 +1260,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
-            # This first board artifact has an immutable update reference and
-            # no automatic upgrade series. Do not allocate a generic genN.
+            # Board artifacts have an immutable update reference and no automatic
+            # upgrade series. Do not allocate a generic genN.
             echo 'TILO_GENERATION=1' >> "$GITHUB_ENV"
-            echo '::notice::building one-off Lenovo image at generation 1'
+            echo "::notice::building one-off ${HARDWARE_PROFILE} image at generation 1"
             exit 0
           fi
           if [[ $PUBLISH != true ]]; then

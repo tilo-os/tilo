@@ -3247,7 +3247,21 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -5474,6 +5488,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(

@@ -450,6 +450,9 @@ pub struct FrameBuilder {
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
+    /// The session network, once peer sync is up, so a control invoke can
+    /// address an enrolled device.
+    enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -659,6 +662,7 @@ impl FrameBuilder {
             next_scene_revision: 1,
             painted_hdr_layers: Vec::new(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            enrolled_actions: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -683,6 +687,49 @@ impl FrameBuilder {
     /// viewport.
     pub fn output_geometry(&self) -> Vec<OutputGeometry> {
         self.effective_outputs()
+    }
+
+    /// Remember the session network so a later control invoke can address an
+    /// enrolled device.
+    pub fn set_enrolled_action_network(
+        &mut self,
+        network: std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) {
+        self.enrolled_actions = Some(network);
+    }
+
+    /// Hand one native action to an enrolled device on a shared workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this session has no network, or the network
+    /// refuses the device or the address.
+    pub fn invoke_enrolled_device(
+        &self,
+        device: &str,
+        provider: &str,
+        id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let network = self
+            .enrolled_actions
+            .as_ref()
+            .ok_or_else(|| "this session is not on the network".to_string())?;
+        let address = tilo_actions::ActionAddress::parse(id)
+            .ok_or_else(|| "action id is not a resource address".to_string())?;
+        let argument = if args.is_empty() {
+            tilo_actions::remote::InvokeArgument::None
+        } else {
+            tilo_actions::remote::InvokeArgument::Json(args.clone())
+        };
+        network.invoke_enrolled_device(
+            device,
+            tilo_actions::remote::RemoteActionTarget {
+                provider: provider.to_string(),
+                address,
+            },
+            argument,
+        )
     }
 
     /// Tell the frame builder which displays it's painting across, so a
