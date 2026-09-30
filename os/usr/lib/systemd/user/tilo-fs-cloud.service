@@ -16,8 +16,10 @@ Type=simple
 # credential on stdin. Per-account metadata, queued uploads and the content
 # cache live under the state dir: queued edits are not a cache and must
 # survive cache cleaning.
-# Create the mounts root and the accounts directory first so an
-# unconfigured session does not fail on a missing parent.
+# The sandbox below makes the home read-only; create the mounts root and
+# the accounts directory first. `-%E/tilo/accounts` is ignored when the
+# path does not exist, so create_dir_all then hits a read-only home and
+# the unit crash-loops on an unconfigured session.
 ExecStartPre=+/usr/bin/mkdir -p %h/Remote
 ExecStartPre=-/usr/bin/mkdir -p %E/tilo/accounts
 Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
@@ -27,14 +29,22 @@ RestartSec=2s
 TimeoutStopSec=20s
 
 # Mounts need `fusermount3`'s privilege transition in the children, so
-# NoNewPrivileges must remain off. The session user manager cannot set up
-# a systemd mount namespace (`/dev/mqueue`: EPERM → 226/NAMESPACE), so
-# ProtectSystem/ProtectHome/ProtectKernel* — the directives that remount
-# those — stay off, as on tilo-ush. The slot is already the sandbox.
+# NoNewPrivileges must remain off. Settings' account store and the handoff
+# store are read through the read-only home; the handoff key comes from the
+# session's Secret Service. The accounts directory stays writable for the
+# account status store and for the credential helper this service runs,
+# which seals rotated grants back into the vault and publishes handoff
+# credentials; nothing else under the config directory is.
 PrivateTmp=yes
 PrivateIPC=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Remote %S/tilo %E/tilo %E/tilo/accounts
 ConfigurationDirectory=tilo/accounts
 StateDirectory=tilo/cloud
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
