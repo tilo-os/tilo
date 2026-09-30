@@ -750,7 +750,7 @@ fn print_usage() {
          \x20                               (read-only; empty QUERY lists everything)\n\
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
          \x20                               run one typed action without synthetic input;\n\
-         \x20                               --device sends it to that enrolled device\n\
+         \x20                               --device sends resource/action to that enrolled device\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
