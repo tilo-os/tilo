@@ -184,6 +184,11 @@ PY
   install -d -m 0700 "$handoff_dir"
   cp -a "$unpack/." "$handoff_dir/"
   find "$handoff_dir" -type d -exec chmod 0700 {} +
+  key="$handoff_dir/var/lib/tilo/device-private/keypair.bin"
+  if [ -f "$key" ]; then
+    chmod 0640 "$key"
+  fi
+  find "$handoff_dir" -type f -name '*.nmconnection' -exec chmod 0600 {} +
 done
 if [ "$handoffs" -gt 1 ]; then
   rm -rf "$handoff_dir"
