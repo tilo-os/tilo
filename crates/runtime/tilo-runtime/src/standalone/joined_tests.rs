@@ -1,4 +1,4 @@
-//! Joining a room a real durable host governs, as a foreign device.
+//! Joining a room a certified host serves, as a foreign device.
 #![allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
@@ -10,25 +10,21 @@ use crate::RuntimeServices as _;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
-use tilo_action_broker::channel_encryption::{ChannelAccess, InboundChannelGovernance};
-use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
+use tilo_action_broker::channel_encryption::{
+    ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
+    GovernanceTransport, InboundChannelGovernance,
 };
+use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_joined_room::testing::governor::TestGovernor;
 use tilo_peer_state::{
+    StatePeer,
     join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
     owner_commit::CommitOperation,
 };
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationList, persist::IdentityPaths,
-    persist::read_device_key, sign_device_cert,
-};
-use tilo_workspace_host::{
-    SessionOwner,
-    collaboration::{CollaborationService, IssueInvitationRequest},
-};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-type Authority = Arc<std::sync::Mutex<(SessionOwner, CollaborationService)>>;
+type Authority = Arc<std::sync::Mutex<TestGovernor>>;
 
 /// What a sealed write says, which no file outside its key holders may hold.
 const SECRET: &str = "only the room's key holders read this";
@@ -46,35 +42,7 @@ impl WorkspaceJoinService for JoinService {
         remote: [u8; 32],
         request: JoinTransportRequest,
     ) -> JoinTransportResponse {
-        let now = ns(SystemTime::now());
-        let mut authority = self.0.lock().unwrap();
-        let (owner, service) = &mut *authority;
-        let result = match request {
-            JoinTransportRequest::Inspect { signed_invitation } => {
-                service.inspect(owner, &signed_invitation, now).map(|join| {
-                    JoinTransportResponse::Inspection(join::JoinInspection {
-                        invite_id: join.invite_id(),
-                        grant: join.grant().clone(),
-                    })
-                })
-            }
-            JoinTransportRequest::Challenge(request) => service
-                .challenge(owner, remote, request, now)
-                .map(JoinTransportResponse::Challenge),
-            JoinTransportRequest::Complete(request) => service
-                .complete(owner, remote, request, now)
-                .map(|completion| JoinTransportResponse::Complete(completion.bootstrap)),
-            _ => {
-                return JoinTransportResponse::Error {
-                    code: 400,
-                    message: "unexpected membership operation".into(),
-                };
-            }
-        };
-        result.unwrap_or_else(|error| JoinTransportResponse::Error {
-            code: 403,
-            message: error.to_string(),
-        })
+        self.0.lock().unwrap().handle(remote, request)
     }
 }
 
@@ -98,7 +66,7 @@ async fn local_endpoint(key: &SigningKey) -> iroh::Endpoint {
         .unwrap()
 }
 
-/// A room a real durable owner governs, hosted by a relay with the join
+/// A room its governor's certified host serves over a relay with the join
 /// service, and the governor's own session on it once it publishes.
 struct HostedRoom {
     authority: Authority,
@@ -110,21 +78,16 @@ struct HostedRoom {
     governor: DeviceCert,
     governor_key: SigningKey,
     host: DeviceCert,
+    hint: join::TransportHint,
 }
 
 impl HostedRoom {
     async fn start(dir: &std::path::Path) -> Self {
-        let governing = SessionOwner::initialize(&dir.join("authority")).unwrap();
-        let governor = governing.peer().authority().clone();
-        let governor_key = read_device_key(
-            &IdentityPaths::under(governing.root().join("identity")).device_privkey,
-        )
-        .unwrap();
-        let host = governing.host_certificate().clone();
-        let host_key = read_device_key(
-            &IdentityPaths::under(governing.root().join("host-identity")).device_privkey,
-        )
-        .unwrap();
+        let governing = TestGovernor::new();
+        let governor = governing.governor().clone();
+        let governor_key = governing.governor_key().clone();
+        let host = governing.host().clone();
+        let host_key = governing.host_key().clone();
         let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -132,31 +95,16 @@ impl HostedRoom {
             .bind()
             .await
             .unwrap();
-        let room = RoomId::parse(governing.peer().room()).unwrap();
+        let room = RoomId::parse(governing.room()).unwrap();
         let topic = room_topic(room).unwrap();
-        let hint = IrohWorkspaceHostHintV1 {
-            version: 1,
-            mode: WorkspaceHostMode::CertifiedHost,
-            room: room.to_string(),
-            workspace_id: topic,
-            governing_authority: governor.clone(),
-            endpoint_addr: server.addr(),
-            host_user_public_key: host.user_public_key,
-            host_device_certificate: host.clone(),
-            packet_relay_url: "https://relay.invalid".into(),
-        }
-        .transport_hint(&host_key)
-        .unwrap();
+        let hint = governing.hint(server.addr());
         let relay_root = dir.join("relay");
         let baseline = governing.peer().admitted_room().unwrap().clone().save();
         tilo_relay::store::WorkspaceStore::open(&relay_root, topic, true)
             .unwrap()
             .save_snapshot(&baseline)
             .unwrap();
-        let authority: Authority = Arc::new(std::sync::Mutex::new((
-            governing,
-            CollaborationService::new(vec![hint]),
-        )));
+        let authority: Authority = Arc::new(std::sync::Mutex::new(governing));
         let relay = tilo_relay::Relay::start_on_endpoint_with_protocols(
             tilo_relay::RelayConfig {
                 state_root: relay_root.clone(),
@@ -209,29 +157,21 @@ impl HostedRoom {
             governor,
             governor_key,
             host,
+            hint,
         }
     }
 
     /// An editor's invitation for a device of `recipient`.
     fn invite(&self, recipient: [u8; 32]) -> String {
         let now = ns(SystemTime::now());
-        let mut authority = self.authority.lock().unwrap();
-        let (owner, service) = &mut *authority;
-        let issued = service
-            .issue(
-                owner,
-                self.governor.device_public_key,
-                IssueInvitationRequest {
-                    request_id: [93; 32],
-                    role: MemberRole::Editor,
-                    recipient_user_public_key: Some(recipient),
-                    invitee_name: Some("Runtime".into()),
-                    expires_at_ns: now.saturating_add(60_000_000_000),
-                },
-                now,
-            )
-            .unwrap();
-        join::encode_invitation_text(&issued.signed_invitation)
+        let signed = self.authority.lock().unwrap().issue(
+            vec![self.hint.clone()],
+            MemberRole::Editor,
+            Some(recipient),
+            Some("Runtime".into()),
+            now.saturating_add(60_000_000_000),
+        );
+        join::encode_invitation_text(&signed)
     }
 
     /// Admit the room's current members at the relay, open the governor's
@@ -239,14 +179,12 @@ impl HostedRoom {
     /// through it.
     async fn publish_history(&self, member: [u8; 32]) -> (RelayCoeditSession, iroh::Endpoint) {
         let (access, publications) = {
-            let authority = self.authority.lock().unwrap();
-            let owner = &authority.0;
+            let owner = self.authority.lock().unwrap();
             (
-                owner.peer().governed_access(SystemTime::now()).unwrap(),
+                owner.governed_access(SystemTime::now()).unwrap(),
                 owner
                     .outgoing()
-                    .iter()
-                    .map(|entry| (entry.bytes.to_vec(), entry.kind))
+                    .map(|(bytes, kind)| (bytes.to_vec(), kind))
                     .collect::<Vec<_>>(),
             )
         };
@@ -545,9 +483,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     let (publisher, publisher_endpoint) = tilo_rt::app()
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
-    let steward =
-        tilo_workspace_host::channel_steward::Steward::open(&governing.authority.lock().unwrap().0)
-            .unwrap();
+    let steward = Steward::open(&governor_root, &governing.governor_key, governing.room);
 
     let log = std::fs::File::create(profile.join("sdk-app.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -596,11 +532,11 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
                     _ = tick.tick() => {
                         let authority = governing.authority.lock().unwrap();
                         steward.pump(
-                            &authority.0,
-                            &tilo_workspace_host::channel_steward::RelayGovernance::new(
-                                &publisher,
-                                std::mem::take(&mut inbound),
-                            ),
+                            authority.peer(),
+                            &RelayGovernance {
+                                session: &publisher,
+                                inbound: std::sync::Mutex::new(std::mem::take(&mut inbound)),
+                            },
                         );
                     }
                 }
@@ -613,7 +549,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
 
     // A key holder reads it: the steward opens what the app sealed.
     let metadata = sealed.encryption.unwrap();
-    let (ChannelAccess::Ready(keys), _) = steward.keys().access(governing.room, metadata.channel)
+    let (ChannelAccess::Ready(keys), _) = steward.keys.access(governing.room, metadata.channel)
     else {
         panic!("the steward holds the channel's keys")
     };
@@ -650,6 +586,103 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
             governing.relay.shutdown().await;
         })
         .unwrap();
+}
+
+/// The governor's steward of the room's encrypted channels: it admits every
+/// certified, unrevoked device the room's governance lets read.
+struct Steward {
+    keys: ChannelKeyAccess,
+    readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
+}
+
+impl Steward {
+    fn open(dir: &std::path::Path, device_key: &SigningKey, room: RoomId) -> Self {
+        let readers = Arc::default();
+        let service = ChannelEncryption::open(
+            ChannelEncryptionConfig {
+                root: dir.join("channels"),
+                vault: channel_crypto::VaultKey::new(blake3::derive_key(
+                    "tilo joined test steward v1",
+                    &device_key.to_bytes(),
+                )),
+                device_key: device_key.clone(),
+            },
+            Box::new(StewardDirectory {
+                room,
+                readers: Arc::clone(&readers),
+            }),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+        )
+        .unwrap();
+        Self {
+            keys: ChannelKeyAccess::new(service),
+            readers,
+        }
+    }
+
+    fn pump(&self, peer: &StatePeer, transport: &dyn GovernanceTransport) {
+        let now = SystemTime::now();
+        *self.readers.lock().unwrap() = peer
+            .certificates()
+            .into_iter()
+            .filter(|cert| !cert.capabilities.can_act_as_host)
+            .filter(|cert| {
+                matches!(
+                    peer.permissions(cert.device_public_key, now),
+                    Ok((
+                        collab_types::Role::Owner
+                            | collab_types::Role::Editor
+                            | collab_types::Role::Commenter
+                            | collab_types::Role::Viewer,
+                        _,
+                        _
+                    ))
+                )
+            })
+            .map(|cert| collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key))
+            .collect();
+        self.keys.pump(transport);
+    }
+}
+
+struct StewardDirectory {
+    room: RoomId,
+    readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
+}
+
+impl ChannelDirectory for StewardDirectory {
+    fn governs(&self, room: RoomId) -> bool {
+        room == self.room
+    }
+
+    fn steward_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
+        None
+    }
+
+    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<collab_types::Ed25519PublicKey> {
+        if room != self.room {
+            return BTreeSet::new();
+        }
+        self.readers.lock().unwrap().clone()
+    }
+}
+
+/// The governor's relay session as the steward's transport: governance goes
+/// to every member as room presence.
+struct RelayGovernance<'a> {
+    session: &'a RelayCoeditSession,
+    inbound: std::sync::Mutex<Vec<InboundChannelGovernance>>,
+}
+
+impl GovernanceTransport for RelayGovernance<'_> {
+    fn publish(&self, message: NeighbourMsg) -> bool {
+        postcard::to_allocvec(&message)
+            .is_ok_and(|bytes| self.session.publish_presence(bytes).is_ok())
+    }
+
+    fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
+        std::mem::take(&mut *self.inbound.lock().unwrap())
+    }
 }
 
 /// Every regular file under `root`: the host's relay store, the runtime's

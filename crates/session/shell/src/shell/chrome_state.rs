@@ -431,7 +431,7 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
-            brightness_available: true,
+            brightness_available: false,
             displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
@@ -598,6 +598,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Bumped when an appearance action writes the store so the live frame
+    /// applies theme and locale on the next paint without waiting for the
+    /// settings-file poll.
+    pub appearance_generation: u64,
     /// Last non-UI tree mutation observed by the compositor tick.
     observed_external_tree_revision: u64,
     /// Passive, private history awareness for the top bar. Never serialized
@@ -673,6 +677,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// Whether the active strip alone fills the work area, the others
+    /// collapsed: while agents drive this compositor, so the strip an agent
+    /// works in is the whole screen it sees and clicks. NOT persisted.
+    single_strip: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -815,6 +823,7 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
@@ -839,6 +848,7 @@ impl ChromeState {
             fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -1070,6 +1080,31 @@ impl ChromeState {
         self.maximized_group
     }
 
+    #[must_use]
+    pub fn single_strip(&self) -> bool {
+        self.single_strip
+    }
+
+    pub fn set_single_strip(&mut self, single: bool) {
+        if self.single_strip != single {
+            self.single_strip = single;
+            self.bump();
+        }
+    }
+
+    /// The active workspace's focused strip, or its first.
+    #[must_use]
+    pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        tree.desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))
+    }
+
     /// Idempotent, so cheap to call every frame from the compositor's
     /// fullscreen reconcile.
     pub fn set_maximized_group(&mut self, group: Option<u64>) {
@@ -1299,6 +1334,14 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Persist-side appearance change: chrome rebuilds, and the live frame
+    /// applies the configured theme and locale on the next paint instead of
+    /// waiting for the settings-file poll.
+    pub fn note_appearance_change(&mut self) {
+        self.appearance_generation = self.appearance_generation.wrapping_add(1);
+        self.bump();
     }
 
     /// Fold non-chrome mutations of the shared tree into retained chrome's

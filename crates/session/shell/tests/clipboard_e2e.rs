@@ -3006,6 +3006,23 @@ fn real_clients_get_immediate_focus_and_the_full_keyboard_contract() {
     }
 }
 
+/// Waits until `state_dump` reports the chrome overlay `name` open.
+fn wait_for_overlay(compositor: &Compositor, name: &str, failure: &str) {
+    let started = Instant::now();
+    loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        if state["state"]["chrome"]["overlays"][name].as_bool() == Some(true) {
+            return;
+        }
+        assert!(
+            started.elapsed() < deadline(),
+            "{failure}. {}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3100,13 +3117,30 @@ fn compositor_modes_take_and_return_client_input_cleanly() {
         // and open it. This remains stable as high-frequency controls are added
         // before the utility row;
         // the next Enter activates the default Lock row in the modal.
+        // Each overlay opens on a later compositor turn than the key that asks
+        // for it, so wait for it before sending the keys meant for it: sent
+        // early, they reach whatever had focus before.
         compositor.modifiers(false, false, false, true);
         compositor.key("q");
         compositor.modifiers(false, false, false, false);
+        wait_for_overlay(
+            &compositor,
+            "quick_settings",
+            "Super+Q did not open Quick Settings",
+        );
+        client.wait_until(
+            |state| !state.keyboard_focused,
+            "Quick Settings left the real Wayland client focused",
+        );
         compositor.modifiers(false, true, false, false);
         compositor.key("Tab");
         compositor.modifiers(false, false, false, false);
         compositor.key("Enter");
+        wait_for_overlay(
+            &compositor,
+            "power_menu",
+            "Enter on Power did not open the power menu",
+        );
         compositor.key("Enter");
 
         let started = Instant::now();

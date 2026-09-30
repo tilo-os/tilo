@@ -16,6 +16,7 @@ exclude = [
     "vendor/winit",
     "crates/forks/winit",
     "vendor/accesskit_winit",
+    "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
@@ -35,18 +36,13 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/agent/control-protocol",
-    "crates/agent/control-service",
     "crates/collab/tilo-action-broker",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-peer",
-    "crates/hosting/tilo-device-host",
     "crates/hosting/tilo-room-service",
-    "crates/hosting/tilo-workspace-host",
     "crates/hosting/tilo-moq",
-    "crates/hosting/tilo-cloud-host",
     "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
@@ -174,7 +170,6 @@ members = [
     "crates/doc/tilo-automerge-isolate",
 
     # Hosting
-    "crates/hosting/tilo-cloud-enrollment",
     "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
@@ -862,8 +857,12 @@ web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
 # ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
 libspa-sys = { path = "vendor/libspa-sys" }
-# Pinned DX12 shader cache and opt-in Metal presentation feedback.
+# Pinned DX12 shader cache and opt-in Metal presentation feedback; a device-loss
+# switch that lets tests reset a Vulkan device. See vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
+# `Device::poll` reports a lost device instead of panicking, so the compositor
+# survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
+wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # crates.io crates that depend on winit (accesskit_winit, smithay) get the
