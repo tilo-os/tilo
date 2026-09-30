@@ -5271,6 +5271,54 @@ mod tests {
         }
     }
 
+    /// A GPU reset under a live session (amdgpu cancelled the context during a window-switch
+    /// animation at 5K) used to panic inside `Device::poll` and take the session to a black
+    /// screen. The reset here is the driver's: every fence wait answers `DeviceError::Lost`, and
+    /// wgpu-core invalidates the device and runs its lost callback as it does for a real one.
+    #[test]
+    fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
+        const SIZE: u32 = 64;
+        let pitch = SIZE as usize * 4;
+        let scene = rect_scene(SIZE, SIZE, Color::WHITE);
+        let mut scanout = vec![0x11; pitch * SIZE as usize];
+        let mut bridge = required_bridge(SIZE, SIZE);
+        bridge
+            .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+            .expect("the frame before the reset");
+
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        let hal = unsafe { bridge.target.device.as_hal::<wgpu::hal::api::Vulkan>() };
+        hal.expect("the compositor renders through Vulkan")
+            .simulate_device_loss();
+
+        scanout.fill(0x11);
+        let result =
+            bridge.paint_damage_into_xrgb8888(&scene, version(2, None, None), &mut scanout, pitch);
+        assert!(
+            matches!(result, Err(BridgeError::DeviceLost(_))),
+            "the frame during the reset reports the loss: {result:?}"
+        );
+        assert!(
+            scanout.iter().all(|byte| *byte == 0x11),
+            "a lost frame publishes nothing, so the last good front stays on screen"
+        );
+        assert!(
+            bridge.device_lost().is_some(),
+            "the DRM backend replaces a bridge whose device_lost() is set"
+        );
+
+        let mut replacement = required_bridge(SIZE, SIZE);
+        replacement
+            .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+            .expect("the replacement bridge paints on a new device");
+        assert!(
+            scanout
+                .chunks_exact(4)
+                .all(|pixel| pixel.get(..3) == Some(&[0xFF, 0xFF, 0xFF][..])),
+            "the replacement repaints the whole scene"
+        );
+    }
+
     fn version(
         revision: u64,
         previous_revision: Option<u64>,
