@@ -83,6 +83,12 @@ impl ImageCache {
         }
     }
 
+    /// Limit atlas growth to `max_size` pixels per side. The atlas never
+    /// shrinks here; a smaller limit only stops further growth.
+    pub(crate) fn set_max_size(&mut self, max_size: i32) {
+        self.max_size = max_size.max(DEFAULT_ATLAS_SIZE);
+    }
+
     pub(crate) fn begin_resolve(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.evicted_in_resolve = 0;
@@ -248,6 +254,16 @@ mod tests {
         assert_eq!(cache.atlas.size().width, 32);
         cache.begin_resolve();
         assert_eq!(cache.atlas.size().width, 32);
+    }
+
+    #[test]
+    fn a_lowered_maximum_stops_atlas_growth() {
+        let mut cache = ImageCache::new();
+        cache.set_max_size(2048);
+        assert!(cache.bump_size());
+        assert_eq!(cache.atlas.size().width, 2048);
+        assert!(!cache.bump_size(), "grew past the 2048 limit");
+        assert_eq!(cache.atlas.size().width, 2048);
     }
 
     #[test]

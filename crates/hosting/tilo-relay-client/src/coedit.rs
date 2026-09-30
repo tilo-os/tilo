@@ -167,6 +167,15 @@ pub enum Inbound {
         /// The remote-action frame, as the sender encoded it.
         frame: Vec<u8>,
     },
+    /// A live-plane frame (presence, previews) another live member of the
+    /// workspace published: a native shell, a browser, an agent. The host
+    /// validated it and stamped the sender from its authenticated session.
+    Live {
+        /// The publishing device's public key.
+        from: [u8; 32],
+        /// The canonical `tilo_relay_protocol::live::LiveFrame` bytes.
+        frame: Vec<u8>,
+    },
     /// The host's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {

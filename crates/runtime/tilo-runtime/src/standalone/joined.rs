@@ -230,7 +230,7 @@ impl Joined {
                         self.publish(&scope, &session);
                     }
                     Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
-                    Some(Inbound::RemoteAction { .. }) => {}
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {
@@ -314,6 +314,7 @@ impl Joined {
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
                 role,
+                replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },
             |_| format!("peer@{}", hex::encode(author)),
