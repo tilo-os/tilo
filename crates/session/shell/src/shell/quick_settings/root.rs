@@ -2716,6 +2716,31 @@ mod tests {
             assert_eq!(root.keyboard_focus, Some(0));
         }
 
+        /// Super+Q then Shift+Tab must still open Power when brightness, Wi-Fi
+        /// and Bluetooth are absent. Those controls sit *before* the utility
+        /// row; hiding them must not move the last stop off Power, or the
+        /// clipboard e2e lock path (and a real user) activates History.
+        fn reverse_tab_from_no_selection_opens_power_without_hardware() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState::default();
+            root.panel = PANEL;
+            assert!(
+                !state.brightness_available && state.displays.is_empty(),
+                "default is a machine with no backlight"
+            );
+            assert!(!state.radios.wifi_available && !state.bluetooth_available);
+            root.reset_focus();
+            assert!(root.focus_next(&state, true));
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            assert_eq!(
+                root.activate_focused(PANEL, &mut state),
+                RootAction::OpenPowerMenu
+            );
+        }
+
         fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -2899,6 +2924,7 @@ mod tests {
         }
 
         opening_has_no_hidden_focus_and_first_tab_selects_brightness();
+        reverse_tab_from_no_selection_opens_power_without_hardware();
         normal_focus_order_matches_visible_actions_and_accessibility_paths();
         each_focus_stop_marks_exactly_one_accessibility_node();
         every_destination_tile_click_routes_to_its_action();
