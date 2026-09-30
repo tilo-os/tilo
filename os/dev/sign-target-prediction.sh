@@ -98,7 +98,7 @@ verify_signed_efi() {
     || die "broker did not return a regular signed $label"
   count="$(podman run --rm -v "$work:/work:ro,Z" \
     --entrypoint /usr/bin/tilo-crypto "$image" efi-signature-count \
-    "/work/${signed#"$work/"}" 2>/dev/null)" \
+    "/work/${signed#"$work/"}")" \
     || die "broker did not return a structurally valid signed $label"
   case "$count" in ''|*[!0-9]*|0) die "broker returned an unsigned $label" ;; esac
   podman run --rm -v "$work:/work:ro,Z" \
@@ -198,7 +198,7 @@ PY
 rm -f "$signature"
 
 "$signer" sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"
-image_crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
+image_crypto verify-rsa-sha256-efi "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
   || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
   "$work/layer/boot/EFI/tilo/pcr-predictions/"

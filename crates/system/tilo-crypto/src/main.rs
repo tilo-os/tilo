@@ -9,7 +9,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-const MAX_EFI_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+// ARM release UKIs include the kernel, initrd and board DTB. The Lenovo 83ED
+// image already reaches 273,856,512 bytes before signing, so the verifier and
+// broker output checks must accept more than 256 MiB.
+const MAX_EFI_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_OTHER_SIGNED_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: u64 = 1024 * 1024;
 const MAX_CERTIFICATE_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 1024 * 1024;
@@ -140,7 +144,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256-efi PUBLIC_KEY EFI_IMAGE SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
@@ -516,7 +520,7 @@ fn sign_module_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> Re
     }
     let key = read_private_key(&key)?;
     let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
-    let module = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "kernel module")?;
+    let module = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "kernel module")?;
     let signed = tilo_crypto::sign_kernel_module(&key, &certificate, &module)?;
     write_new(&output, &signed, 0o644)
 }
@@ -528,7 +532,7 @@ fn verify_module_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> 
         return Err(usage());
     }
     let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
-    let module = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "kernel module")?;
+    let module = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "kernel module")?;
     tilo_crypto::verify_kernel_module(&certificate, &module)
 }
 
@@ -706,7 +710,7 @@ fn sign_rsa_sha256_command(
         return Err(usage());
     }
     let key = read_private_key(&key)?;
-    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    let message = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "signed input")?;
     let signature = tilo_crypto::sign_rsa_sha256(&key, &message)?;
     write_new(&output, &signature, 0o600)
 }
@@ -752,6 +756,7 @@ fn key_matches_certificate_command(
 
 fn verify_rsa_sha256_command(
     mut args: impl Iterator<Item = std::ffi::OsString>,
+    efi_image: bool,
 ) -> Result<(), String> {
     let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
     let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
@@ -760,7 +765,14 @@ fn verify_rsa_sha256_command(
         return Err(usage());
     }
     let key = read_text_bounded(&key, MAX_CERTIFICATE_BYTES, "public key")?;
-    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    // The detached target-UKI signature covers the full EFI image. Keep the
+    // ordinary RSA operation bounded separately for small policy messages.
+    let limit = if efi_image {
+        MAX_EFI_IMAGE_BYTES
+    } else {
+        MAX_OTHER_SIGNED_INPUT_BYTES
+    };
+    let message = read_bounded(&input, limit, "signed input")?;
     let signature = read_bounded(&signature, MAX_SIGNATURE_BYTES, "signature")?;
     tilo_crypto::verify_rsa_sha256(&key, &message, &signature)
 }
@@ -798,7 +810,8 @@ fn run() -> Result<(), String> {
         Some("rsa-public-key") => rsa_public_key_command(args),
         Some("rsa-public-key-info") => rsa_public_key_info_command(args),
         Some("key-matches-certificate") => key_matches_certificate_command(args),
-        Some("verify-rsa-sha256") => verify_rsa_sha256_command(args),
+        Some("verify-rsa-sha256") => verify_rsa_sha256_command(args, false),
+        Some("verify-rsa-sha256-efi") => verify_rsa_sha256_command(args, true),
         Some("sign-module") => sign_module_command(args),
         Some("verify-module") => verify_module_command(args),
         Some("sign-efi") => sign_efi_command(args),
@@ -833,6 +846,33 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn detached_efi_signature_check_accepts_large_uki_without_widening_generic_rsa() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let public = temp.path().join("authority.pub");
+        let image = temp.path().join("target.efi");
+        let signature = temp.path().join("target.sig");
+        let authority = tilo_crypto::generate_tpm_authority_key().expect("RSA authority");
+        fs::write(&public, authority.public_key_pem()).expect("public authority");
+        fs::File::create(&image)
+            .expect("sparse target UKI")
+            .set_len(MAX_OTHER_SIGNED_INPUT_BYTES + 1)
+            .expect("large target UKI");
+        fs::write(&signature, b"invalid signature").expect("signature fixture");
+        let arguments = || {
+            [
+                OsString::from(&public),
+                OsString::from(&image),
+                OsString::from(&signature),
+            ]
+            .into_iter()
+        };
+        let generic = verify_rsa_sha256_command(arguments(), false).unwrap_err();
+        assert!(generic.contains("268435456-byte safety limit"), "{generic}");
+        let efi = verify_rsa_sha256_command(arguments(), true).unwrap_err();
+        assert!(!efi.contains("safety limit"), "{efi}");
+    }
 
     #[test]
     fn ed25519_generation_is_exclusive_and_emits_matching_public_identity() {
