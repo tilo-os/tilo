@@ -1698,8 +1698,82 @@ mod command_path_tests {
             (notes, "move-to"),
             ("folder", &nowhere),
         );
-        assert!(missing.unwrap_err().contains("new-folder"));
+        let refusal = missing.unwrap_err();
+        assert!(
+            refusal.contains(r#"move on the folder with {"entries":["notes.txt"],"folder":""#)
+                && refusal.ends_with(r#"","create":true}"#),
+            "{refusal}"
+        );
         assert!(downloads.join("notes.txt").exists());
+    }
+
+    /// `move` takes several entries by name into a folder it creates, answers
+    /// with what moved, and moves nothing when one name is wrong.
+    #[test]
+    fn move_puts_several_entries_into_a_folder_it_creates() {
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        for name in ["a.png", "b.jpg", "c.txt"] {
+            std::fs::write(downloads.join(name), name).unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(downloads.clone()));
+        files.navigate(downloads.clone());
+        let mut doc = automerge::AutoCommit::new();
+        let images = root.path().join("out/images");
+        let mut invoke = |arguments: serde_json::Value| -> Result<
+            Option<serde_json::Value>,
+            ui::tilo_actions::DoorError,
+        > {
+            let resources = ui::resources::resources(&files, &doc);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(crate::search_provider::folder_resource_id(&downloads), "move"),
+                arguments.as_object().unwrap(),
+            )?;
+            let started = Widget::start_operation(
+                &mut files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &automerge::ROOT,
+            )
+            .map_err(ui::tilo_actions::DoorError::Failed)?;
+            match started {
+                Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
+                _ => panic!("move completes at once"),
+            }
+        };
+
+        let misspelt =
+            invoke(serde_json::json!({"entries": ["a.png", "nope.gif"], "folder": images}));
+        let refusal = format!("{misspelt:?}");
+        assert!(
+            refusal.contains("nope.gif") && refusal.contains("nothing moved"),
+            "{refusal}"
+        );
+        assert!(downloads.join("a.png").exists() && !images.exists());
+
+        let kept =
+            invoke(serde_json::json!({"entries": ["a.png"], "folder": images, "create": false}));
+        assert!(format!("{kept:?}").contains("create:true"), "{kept:?}");
+
+        let moved =
+            invoke(serde_json::json!({"entries": ["a.png", "b.jpg"], "folder": images})).unwrap();
+        assert_eq!(
+            moved,
+            Some(serde_json::json!(format!(
+                "moved 2 into {} (created): a.png, b.jpg",
+                images.display()
+            )))
+        );
+        assert!(images.join("a.png").exists() && images.join("b.jpg").exists());
+        assert!(!downloads.join("a.png").exists() && downloads.join("c.txt").exists());
     }
 
     fn exported_rename_changes_case_without_overwriting_another_entry() {
