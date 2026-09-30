@@ -411,10 +411,13 @@ impl Desk {
 
     /// Drag from `from` to `to` in steps, with the pointer or one finger,
     /// and let go.
+    /// A finger grabs the group with a short downward pull first: a swipe
+    /// that starts sideways on the tab bar pans the strip instead.
     fn drag(&mut self, from: Point, to: Point, touch: bool) {
         use winit::event::TouchPhase;
         if touch {
             self.finger(TouchPhase::Started, from);
+            self.finger(TouchPhase::Moved, Point::new(from.x, from.y + 12.0));
         } else {
             self.cursor_to(from);
             self.button(ElementState::Pressed);
