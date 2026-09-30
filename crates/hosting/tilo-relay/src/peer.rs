@@ -5928,6 +5928,17 @@ fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedP
         || wr.admitted_users.contains(&peer.user_public_key)
 }
 
+fn unavailable_target(
+    wr: &crate::workspace::WorkspaceRuntime,
+    target: &[u8; 32],
+) -> UnavailableReason {
+    if wr.membership.contains(target) {
+        UnavailableReason::Offline
+    } else {
+        UnavailableReason::NotAuthorised
+    }
+}
+
 fn current_session(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
@@ -6177,12 +6188,8 @@ async fn route_private(
     {
         return Ok(Some(U::NotAuthorised));
     }
-    // Membership revocations are NotAuthorised, not merely Offline.
-    if !wr.membership.contains(&action.target) {
-        return Ok(Some(U::NotAuthorised));
-    }
     let Some(sub) = wr.subscribers.get(&action.target) else {
-        return Ok(Some(U::Offline));
+        return Ok(Some(unavailable_target(&wr, &action.target)));
     };
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
