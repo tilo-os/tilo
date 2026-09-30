@@ -821,43 +821,25 @@ level `[package.isa]` names for it (`tilo-app new` declares `v3` and
 
 ### The web
 
-In the browser the toolkit is a WebAssembly core, and an app is a small side
-module the page links into it at run time, as a thin app links the toolkit
-the OS ships:
+In the browser the runtime is one WebAssembly module, and `wasm32` has no
+dynamic linking, so an app's web build is the runtime bundle with the app
+linked in and registered:
 
 ```bash
-tilo-app build --platform web      # target/web: the core, the app and index.html
-tilo-app dev --platform web        # serve it on http://127.0.0.1:4321/, rebuild on save
-tilo-app package --platform web    # dist/<pkg>-web-wasm32.tapp
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app dev --platform web        # serve it, rebuild and reload on save
+tilo-app package --target web      # the bundle in the immutable layout Cloud serves
 ```
 
 Nothing in the app is web-specific: the build registers the `definition()`
-that `ui::dev_reload_entry!` defines, as component apps export theirs. It
-comes from the SDK checkout the app builds against
-(`crates/browser/tilo-browser-runtime`, see its `WEB_RUNTIME.md`): the app is
-built as a member of a workspace that mirrors the checkout, so every crate it
-shares with the core compiles to the core's symbols, and a crate it needs with
-features the core lacks is named and refused. The first build compiles and
-links the core, a few minutes; later builds keep it while nothing under it
-changed, and `--app-only` relinks only the app against the core already built.
-
-The core the build links exports what the app imports. The core the registry
-serves is built for Tilo's own web apps, so a package that imports something
-only this app uses (a generic instantiation from `serde_json`, say) can fail
-to link in a page that runs that core; the page names the missing symbols.
-
-`dev --platform web` serves the page and rebuilds after every save. An edit to
-the app relinks only its module; the page notices the finished build and
-reloads into the same record. The record's state lives in the browser's
-storage, not in the module, so the document survives the new code. An edit
-to the SDK rebuilds the core too. `--bind` picks another address.
-
-The build needs wasm-bindgen 0.2.108, binaryen's `wasm-opt`, lld's `wasm-ld`,
-Node.js and brotli, which the builder image `tilo-app add ci` uses has.
-`TILO_WEB_BUILD_RUNNER` runs the build under a command prefix instead, for
-example a wrapper that runs it on a remote machine and brings `target/web`
-back. A web package's `[budget]` applies to its module as it
-does to a thin binary.
+that `ui::dev_reload_entry!` defines, as component apps export theirs. A
+small generated crate under the target directory depends on the runtime from
+the SDK checkout the app builds against (`crates/browser/tilo-browser-runtime`,
+see its `WEB_RUNTIME.md`) and on the app, and builds into the app
+workspace's target directory, so the runtime compiles once and later builds
+relink only what changed. `build --target web --bundle app` is the same
+build; Tilo's own apps also build into the shared desktop bundle
+(`--bundle desktop`).
 
 ### Android
 
