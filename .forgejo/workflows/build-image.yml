@@ -3001,15 +3001,18 @@ jobs:
   # (bootc#2334), so the job installs the disk before it publishes the image.
   board:
     name: "board: ${{ matrix.board }}"
-    needs: [plan, build-and-push]
-    if: ${{ !cancelled() && needs.build-and-push.result != 'skipped' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
+    # Not build-and-push: that would wait for the x86_64 lane too. The job
+    # sets itself up alongside the lanes and waits for the aarch64 dev image
+    # its board layer builds on.
+    needs: [plan, ensure-rpms]
+    if: ${{ !cancelled() && needs.ensure-rpms.result == 'success' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
     strategy:
       # Each board publishes on its own; one broken board must not cancel another.
       fail-fast: false
       matrix:
         board: ${{ fromJSON(needs.plan.outputs.boards) }}
     runs-on: runner-large-arm64
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       BOARD: ${{ matrix.board }}
       BOARD_IMAGE: localhost/tilo-board:ci
@@ -3086,17 +3089,6 @@ jobs:
       - name: Use native Podman overlay for the disk install
         run: ./os/dev/ci-native-podman-store.sh
 
-      - name: Require this commit's aarch64 dev image
-        env:
-          SERIES: ${{ steps.series.outputs.series }}
-        run: |
-          set -euo pipefail
-          base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
-          raw="$(skopeo inspect --raw "docker://$base")" || {
-            echo "::error::$base is missing: the aarch64 dev lane did not publish it"; exit 1; }
-          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
-          echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
-
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
         with:
@@ -3134,6 +3126,27 @@ jobs:
         uses: ./.forgejo/actions/setup-buildx
         with:
           driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      # Built while the aarch64 lane still runs; the disk install below finds
+      # it matching its pinned sources and reuses it.
+      - name: Build the Rockchip loader
+        if: matrix.board == 'orangepi-3b-v2-1'
+        run: ./os/dev/build-orangepi-uboot.sh "$BOARD_OUTPUT/rockchip-loader"
+
+      # The aarch64 lane publishes it about when this job's setup is done. It
+      # does not come if that lane fails: the job then fails at the timeout.
+      - name: Wait for this commit's aarch64 dev image
+        timeout-minutes: 45
+        env:
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
+          started=$(date +%s)
+          until raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)"; do sleep 20; done
+          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
+          echo "::notice::waited $(( $(date +%s) - started ))s for $base ($digest)"
 
       # The first build seals an all-zero placeholder digest. It goes to an
       # immutable candidate tag only so the disk install below can pull it
