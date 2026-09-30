@@ -94,8 +94,11 @@ UPSTREAM_SUFFICES = {
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
+    "wgpu": "a lost device is reported from `poll` instead of panicking; an app on the "
+    "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
-    "feature uses it) and the Windows DX12 shader cache; Linux and macOS builds use neither",
+    "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
+    "set; SDK apps use none of them",
 }
 
 # The forks the SDK depends on under their own names. They sit outside the
