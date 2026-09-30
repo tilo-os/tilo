@@ -5010,8 +5010,37 @@ mod tests {
             );
         }
 
+        fn compositor_paint_run_is_not_host_demand() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| st.request_transition_paints(8));
+            assert_eq!(fb.chrome().transition_paints_remaining(), 8);
+            assert!(
+                !fb.needs_animation_frame(),
+                "the compositor paint run must not keep the host asking after the crossfade; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn latch_asks_the_compositor_for_eight_paints() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            assert_eq!(
+                fb.chrome().transition_paints_remaining(),
+                8,
+                "overview must keep the compositor painting until eight frames have run"
+            );
+        }
+
         overview_toggle_requests_frames_before_draw();
         workspace_switch_requests_frames_before_draw();
+        compositor_paint_run_is_not_host_demand();
+        latch_asks_the_compositor_for_eight_paints();
     }
 
     /// Look up a widget's rect by its *last* path segment
