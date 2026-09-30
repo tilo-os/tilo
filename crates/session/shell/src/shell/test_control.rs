@@ -188,6 +188,10 @@ pub enum Command {
         id: String,
         #[serde(default)]
         args: serde_json::Map<String, serde_json::Value>,
+        /// Enrolled device id. When set, the action is sent to that device
+        /// instead of being resolved against this machine's catalogue.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
     /// Read the latest broker lifecycle state for an invocation receipt id.
     ActionsStatus { invocation_id: u64 },
@@ -461,6 +465,8 @@ pub enum PlannedAction {
         provider: String,
         id: String,
         args: serde_json::Map<String, serde_json::Value>,
+        /// Enrolled device this invocation is sent to. `None` runs it here.
+        device: Option<String>,
     },
 }
 
@@ -711,7 +717,15 @@ pub fn dispatch_command<S: ControlState>(
             answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
             Vec::new(),
         ),
-        Command::ActionsInvoke { provider, id, args } => actions_invoke(state, provider, id, args),
+        Command::ActionsInvoke {
+            provider,
+            id,
+            args,
+            device,
+        } => match device {
+            Some(device) => plan_enrolled_device_action(device, provider, id, args),
+            None => actions_invoke(state, provider, id, args),
+        },
         Command::ActionsStatus { invocation_id } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_status_id(*invocation_id),
         ),
@@ -738,6 +752,7 @@ fn invocation_control(id: String) -> (Response, Vec<PlannedAction>) {
             provider: crate::shell::search::providers::live_app_actions::PROVIDER_ID.into(),
             id,
             args: serde_json::Map::new(),
+            device: None,
         }],
     )
 }
@@ -1127,6 +1142,7 @@ fn actions_invoke<S: ControlState>(
                 provider: provider.to_string(),
                 id: id.to_string(),
                 args: args.clone(),
+                device: None,
             }],
         ),
         Err(refusal) => (
@@ -1137,6 +1153,84 @@ fn actions_invoke<S: ControlState>(
             Vec::new(),
         ),
     }
+}
+
+/// Plan an invocation for an enrolled device. The address is not resolved
+/// against this machine: the provider token belongs to the device that will
+/// run it.
+fn plan_enrolled_device_action(
+    device: &str,
+    provider: &str,
+    id: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> (Response, Vec<PlannedAction>) {
+    if decode_device_id(device).is_none() {
+        return (
+            Response::Err {
+                code: "invalid_arguments".into(),
+                message: "device is not an enrolled device id".into(),
+            },
+            Vec::new(),
+        );
+    }
+    let Some(address) = remote_action_address(id) else {
+        return (
+            Response::Err {
+                code: "unknown_action".into(),
+                message: "action id is not a resource address".into(),
+            },
+            Vec::new(),
+        );
+    };
+    if provider.is_empty() {
+        return (
+            Response::Err {
+                code: "unknown_action".into(),
+                message: "action id is not a resource address".into(),
+            },
+            Vec::new(),
+        );
+    }
+    let id = address.encode();
+    (
+        Response::Answer(serde_json::json!({
+            "device": device,
+            "provider": provider,
+            "id": id,
+            "queued": true,
+        })),
+        vec![PlannedAction::InvokeAction {
+            provider: provider.to_string(),
+            id,
+            args: args.clone(),
+            device: Some(device.to_string()),
+        }],
+    )
+}
+
+/// A catalogue address, or `resource/action` when the action name itself
+/// contains no slash. Resource ids such as `files.entry:/tmp/report` stay on
+/// the catalogue separator; a slash there would be ambiguous.
+fn remote_action_address(id: &str) -> Option<tilo_actions::ActionAddress> {
+    if let Some(address) = tilo_actions::ActionAddress::parse(id) {
+        return Some(address);
+    }
+    let (resource, action) = id.split_once('/')?;
+    if resource.is_empty() || action.is_empty() || action.contains('/') {
+        return None;
+    }
+    Some(tilo_actions::ActionAddress::new(resource, action))
+}
+
+fn decode_device_id(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    hex::decode(value).ok()?.try_into().ok()
 }
 
 /// Wrap a capability-op result in the wire envelope. A refusal is a [`Response::Err`], not an `Answer` with `allowed: false` — conflating them would read a refused *grant* as a successful deny.
@@ -2291,6 +2385,7 @@ mod tests {
             provider: "shell.actions".to_string(),
             id: id.to_string(),
             args: args.as_object().cloned().unwrap_or_default(),
+            device: None,
         }
     }
 
@@ -2341,8 +2436,49 @@ mod tests {
                         provider: "shell.actions".to_string(),
                         id: "settings.open".to_string(),
                         args: serde_json::Map::new(),
+                        device: None,
                     }]
                 );
+            }
+
+            // Phase `an_enrolled_device_is_addressed_without_the_local_catalogue`.
+            {
+                let device = "22".repeat(32);
+                let id = tilo_actions::ActionAddress::new("app.files", "open").encode();
+                let (resp, actions) = dispatch_command(
+                    &Command::ActionsInvoke {
+                        provider: "workspace:room".into(),
+                        id: "app.files/open".into(),
+                        args: serde_json::Map::new(),
+                        device: Some(device.clone()),
+                    },
+                    &ActionState,
+                );
+                let Response::Answer(payload) = resp else {
+                    panic!("expected Response::Answer, got {resp:?}");
+                };
+                assert_eq!(payload["queued"], true);
+                assert_eq!(payload["device"], device);
+                assert_eq!(
+                    actions,
+                    vec![PlannedAction::InvokeAction {
+                        provider: "workspace:room".into(),
+                        id,
+                        args: serde_json::Map::new(),
+                        device: Some(device),
+                    }]
+                );
+                let (refused, none) = dispatch_command(
+                    &Command::ActionsInvoke {
+                        provider: "workspace:room".into(),
+                        id: "not-an-address".into(),
+                        args: serde_json::Map::new(),
+                        device: Some("33".repeat(32)),
+                    },
+                    &ActionState,
+                );
+                assert!(matches!(refused, Response::Err { .. }));
+                assert!(none.is_empty());
             }
 
             // Phase `status_and_cancel_plan_the_broker_job_addresses`.
@@ -2367,6 +2503,7 @@ mod tests {
                                     .into(),
                             id: expected,
                             args: serde_json::Map::new(),
+                            device: None,
                         }]
                     );
                 }
@@ -2435,6 +2572,7 @@ mod tests {
                         provider: "p".to_string(),
                         id: "i".to_string(),
                         args: serde_json::Map::new(),
+                        device: None,
                     }
                 );
 

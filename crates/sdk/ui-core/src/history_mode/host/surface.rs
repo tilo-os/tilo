@@ -170,7 +170,14 @@ impl HistoryHost {
         if chrome_event && !matches!(event, WindowEvent::KeyboardInput { .. }) {
             *ctx.handled = true;
         }
-        if !chrome_event
+        // Toolbar focus makes `controls_event` true for every key. Letters
+        // still belong on the live Terminal; leftover Space/Enter must too
+        // or App Activate steals them (A01).
+        let leftover_typing = matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) && !self.captures_input();
+        if (!chrome_event || leftover_typing)
             && !*ctx.handled
             && let Some(child) = self.live_node
         {

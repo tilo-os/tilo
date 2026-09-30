@@ -87,11 +87,11 @@ D2 = 2
 
 [apps.imager]
 D1 = 6
-D2 = 6
-R1 = 299
-R2 = 204
-R3 = 51
-R4 = 22
+D2 = 9
+R1 = 305
+R2 = 207
+R3 = 55
+R4 = 27
 
 [apps.logs]
 D1 = 1
@@ -205,17 +205,17 @@ D2 = 4
 D1 = 1
 D2 = 10
 
-[sdk.tilo-app-state]
-R1 = 9
-W1 = 1
-W2 = 3
-W3 = 7
-
 [sdk.settings-store]
 W3 = 11
 
 [sdk.tilo-app]
 R1 = 24
+
+[sdk.tilo-app-state]
+R1 = 9
+W1 = 1
+W2 = 3
+W3 = 7
 
 [sdk.tilo-host]
 R1 = 18

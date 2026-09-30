@@ -3604,6 +3604,37 @@ impl WorkspaceTree {
         true
     }
 
+    /// Join a room copied from the machine that enrolled this device.
+    ///
+    /// This is membership, not a continuation offer, so turning app
+    /// continuations off does not remove it.
+    pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
+        if room.is_nil()
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "From another device");
+        workspace.room = room;
+        // The same person sits at this machine. Without their membership the
+        // room exists but every launch from either of their devices is denied.
+        let user = local_user_id();
+        workspace.set_owner(user.clone());
+        self.desktop.workspaces.push(workspace);
+        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.doc_set_owner(id, &user);
+        self.flush_to_disk();
+        true
+    }
+
     /// Turn a synchronized offer into a locally-owned live app. The Wayland
     /// toplevel adoption handshake is the only caller: merely receiving or
     /// painting an offer must not make this device echo it.

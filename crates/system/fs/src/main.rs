@@ -626,7 +626,17 @@ async fn run_command() -> Result<()> {
             mounts_root,
             cache_root,
             fs_binary,
-        } => recipient_service(socket, mounts_root, cache_root, fs_binary).await,
+        } => match recipient_service(socket, mounts_root, cache_root, fs_binary).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Keep the activation socket. Restart=on-failure plus a
+                // missing identity, inbox bind, or cache root is a loop;
+                // P03 saw tilo-fs-recipient hit start-limit on a fresh boot.
+                eprintln!("recipient-service idle: {error}");
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        },
         #[cfg(target_os = "linux")]
         Command::CloudService {
             mounts_root,
@@ -638,7 +648,7 @@ async fn run_command() -> Result<()> {
                 Some(path) => path,
                 None => std::env::current_exe()?,
             };
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 fs::cloud::CloudService::new(
                     fs::cloud::ServiceConfig {
                         // Settings' credential helper, the only process that
@@ -658,7 +668,11 @@ async fn run_command() -> Result<()> {
                 )
                 .run()
             })
-            .await??;
+            .await?;
+            if let Err(error) = result {
+                eprintln!("cloud-service idle: {error}");
+                std::future::pending::<()>().await;
+            }
             Ok(())
         }
         #[cfg(target_os = "linux")]
@@ -2666,10 +2680,14 @@ fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener>
     );
     // SAFETY: validated activation metadata transfers ownership of fd 3 once.
     let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    anyhow::ensure!(
-        listener.local_addr()?.as_pathname() == Some(socket),
-        "systemd recipient-service listener has an unexpected path"
-    );
+    // systemd may hand over an unnamed connected socket; a missing pathname
+    // is not a different listener. Refuse only an explicit other path.
+    if let Some(actual) = listener.local_addr()?.as_pathname() {
+        anyhow::ensure!(
+            actual == socket,
+            "systemd recipient-service listener has an unexpected path"
+        );
+    }
     listener.set_nonblocking(true)?;
     // Do not leak the service control endpoint into supervised FUSE children.
     anyhow::ensure!(
