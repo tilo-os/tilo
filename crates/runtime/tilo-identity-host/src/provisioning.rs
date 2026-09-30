@@ -512,6 +512,20 @@ fn safe_account_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
+fn relay_is_dialable(
+    entries: &[tilo_relay_protocol::HomePeerRegistration],
+    registration: &tilo_relay_protocol::HomePeerRegistration,
+) -> bool {
+    entries.iter().any(|entry| {
+        entry.device_node_id == registration.device_node_id
+            && entry.relay_service_node_id == registration.relay_service_node_id
+            && registration
+                .relay_workspace_ids
+                .iter()
+                .all(|topic| entry.relay_workspace_ids.contains(topic))
+    })
+}
+
 fn copy_home_peers(
     source: &Path,
     target_system: &IdentityPaths,
@@ -536,31 +550,35 @@ fn copy_home_peers(
         serde_json::from_slice(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
     };
-    own.retain(|entry| entry.user_public_key == identity_id);
     let device_id = hex::encode(local_cert.device_public_key);
     let service_id = hex::encode(relay_service_node_id);
     let topic = tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
-    let already_dialable = own.iter().any(|entry| {
-        entry.device_node_id == device_id
-            && entry.relay_service_node_id == service_id
-            && entry.relay_workspace_ids.contains(&topic)
-    });
-    if !already_dialable {
-        own.push(tilo_relay_protocol::HomePeerRegistration {
-            schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: device_id,
-            relay_service_node_id: service_id,
-            relay_endpoint: None,
-            label: if local_cert.device_label.trim().is_empty() {
-                "Setup machine".into()
-            } else {
-                local_cert.device_label.trim().to_string()
-            },
-            user_public_key: identity_id,
-            device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![topic],
-        });
+    let registration = tilo_relay_protocol::HomePeerRegistration {
+        schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+        device_node_id: device_id,
+        relay_service_node_id: service_id,
+        relay_endpoint: None,
+        label: if local_cert.device_label.trim().is_empty() {
+            "Setup machine".into()
+        } else {
+            local_cert.device_label.trim().to_string()
+        },
+        user_public_key: identity_id.clone(),
+        device_cert: Some(local_cert.clone()),
+        relay_workspace_ids: vec![topic],
+    };
+    // The setup machine's own session reads this file and dials the listed
+    // relays. Without this entry it never joins the relay the new device calls.
+    if !relay_is_dialable(&own, &registration) {
+        own.push(registration);
     }
+    let local_encoded = serde_json::to_vec_pretty(&own)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if let Some(parent) = source.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    atomic_file::write(source, &local_encoded)?;
+    own.retain(|entry| entry.user_public_key == identity_id);
     let encoded = serde_json::to_vec_pretty(&own)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let parent = target_system
@@ -1192,6 +1210,16 @@ mod tests {
                 .any(|window| window == local_device.to_bytes()),
             "the setup machine's device secret must stay off the target"
         );
+        let local_registry: Vec<HomePeerRegistration> =
+            serde_json::from_slice(&std::fs::read(&peers).unwrap()).unwrap();
+        assert!(
+            local_registry
+                .iter()
+                .any(|entry| entry.user_public_key == hex::encode([9_u8; 32]))
+        );
+        assert!(local_registry.iter().any(|entry| {
+            entry.relay_service_node_id == service && entry.relay_workspace_ids.contains(&topic)
+        }));
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", dir.path().join("var/home/quser/.config"));
