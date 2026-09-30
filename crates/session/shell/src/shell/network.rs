@@ -2703,6 +2703,69 @@ impl ShellNetwork {
             .is_ok()
     }
 
+    /// Send one native action to an enrolled personal device, on a workspace
+    /// both machines joined. A device that is not in the enrolled peer list
+    /// is refused, so this cannot address an arbitrary endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `device_hex` is not an enrolled peer, the two
+    /// machines share no workspace, or the frame cannot be handed to the
+    /// transport.
+    pub fn invoke_enrolled_device(
+        &self,
+        device_hex: &str,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) -> Result<(), String> {
+        let device = decode_lower_hex_32(device_hex)
+            .ok_or_else(|| "device is not an enrolled device id".to_string())?;
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .and_then(|device| decode_lower_hex_32(device.as_str()));
+        let enrolled = personal_device_peer_addrs(&personal_device_peer_path(), local);
+        if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
+            return Err("device is not an enrolled device".into());
+        }
+        let endpoint = iroh::EndpointId::from_bytes(&device)
+            .map_err(|_| "device is not an enrolled device id".to_string())?;
+        let shared = self.shared_enrolled_room()?;
+        let topic = room_topic_id(shared);
+        if !self.join_topic(topic) {
+            return Err("the shared workspace is not joined".into());
+        }
+        let message = tilo_actions::remote::RemoteActionMessage::Invoke(
+            tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target,
+                argument,
+                context: None,
+                confirmation: None,
+                revision: None,
+            },
+        );
+        if self.send_remote_action(topic, endpoint, message) {
+            Ok(())
+        } else {
+            Err("the action could not be handed to the enrolled device".into())
+        }
+    }
+
+    fn shared_enrolled_room(&self) -> Result<RoomId, String> {
+        let enrolled =
+            personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
+        let replica = self
+            .replica
+            .lock()
+            .map_err(|_| "workspace state is unavailable".to_string())?;
+        let local = replica.tree.read().rooms();
+        enrolled
+            .into_iter()
+            .find(|room| local.iter().any(|candidate| candidate == room))
+            .ok_or_else(|| "the enrolled device shares no workspace".to_string())
+    }
+
     /// Sort one authenticated remote-action frame: requests queue for the
     /// broker with the caller the transport proved, answers wake the local
     /// caller waiting on that device. An unauthenticated device reaches
@@ -6649,6 +6712,70 @@ mod tests {
             }
         }
         assert!(found, "the action must be handed to the personal transport");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn enrolled_device_receives_a_native_action_on_the_shared_room() {
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let device = [0x22_u8; 32];
+        std::fs::write(
+            dir.path().join("personal-device-peers.json"),
+            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+        )
+        .unwrap();
+        let room = "11111111-1111-4111-8111-111111111111";
+        std::fs::write(
+            dir.path().join("personal-rooms.json"),
+            format!("[\"{room}\"]"),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
+        while commands.try_recv().is_ok() {}
+        let address = tilo_actions::ActionAddress::new("app.files", "open");
+        net.invoke_enrolled_device(
+            &hex::encode(device),
+            tilo_actions::remote::RemoteActionTarget {
+                provider: format!("workspace:{room}"),
+                address: address.clone(),
+            },
+            tilo_actions::remote::InvokeArgument::None,
+        )
+        .expect("enrolled device");
+        let (ws, target, msg) = std::iter::from_fn(|| commands.try_recv().ok())
+            .find_map(|command| match command {
+                NetCmd::PublishRemoteAction { ws, target, msg } => Some((ws, target, msg)),
+                _ => None,
+            })
+            .expect("native action");
+        assert_eq!(*target.as_bytes(), device);
+        assert_eq!(
+            ws,
+            room_topic_id(crate::shell::state::RoomId::parse(room).expect("room"))
+        );
+        let NeighbourMsg::RemoteAction { frame } = msg else {
+            panic!("expected a remote action frame");
+        };
+        let decoded = tilo_actions::remote::RemoteActionFrame::decode(&frame).expect("frame");
+        let tilo_actions::remote::RemoteActionMessage::Invoke(request) = decoded.message else {
+            panic!("expected an invocation");
+        };
+        assert_eq!(request.target.address, address);
+        let stranger = net.invoke_enrolled_device(
+            &hex::encode([0x33; 32]),
+            request.target,
+            tilo_actions::remote::InvokeArgument::None,
+        );
+        assert!(stranger.is_err());
+        assert!(
+            std::iter::from_fn(|| commands.try_recv().ok())
+                .all(|command| !matches!(command, NetCmd::PublishRemoteAction { .. }))
+        );
     }
 
     #[test]
