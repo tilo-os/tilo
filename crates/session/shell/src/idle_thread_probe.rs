@@ -26,15 +26,25 @@ fn context_switches(tid: &str) -> u64 {
 pub(crate) fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = thread_ids();
     let started = start();
-    let tid = thread_ids()
-        .difference(&before)
-        .find(|tid| {
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                .is_ok_and(|name| name.trim() == comm)
-        })
-        .cloned()
-        .unwrap_or_else(|| panic!("no new thread named {comm}"));
-    (started, tid)
+    // A thread names itself once it runs, so it may not be named yet.
+    let waiting = std::time::Instant::now();
+    loop {
+        let named = thread_ids()
+            .difference(&before)
+            .find(|tid| {
+                std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                    .is_ok_and(|name| name.trim() == comm)
+            })
+            .cloned();
+        if let Some(tid) = named {
+            return (started, tid);
+        }
+        assert!(
+            waiting.elapsed() < Duration::from_secs(5),
+            "no new thread named {comm}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// Fail if thread `tid` is scheduled at all during an idle 400 ms.
