@@ -1844,12 +1844,12 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
         },
     )?;
     eprintln!(
-        "[tilo-app] built {} for the web in {:.1} s: {} (module {} bytes, core {} bytes)",
+        "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
         build.app_id,
         build.elapsed.as_secs_f64(),
         build.output.display(),
-        build.module_bytes,
-        build.core_bytes
+        build.entry,
+        build.module_bytes
     );
     Ok(build.to_json())
 }

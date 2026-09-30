@@ -45,6 +45,10 @@ pub(crate) struct PowerMenu {
     /// Whether the display manager can open a greeter beside this session.
     /// Without it, Switch user is not offered at all rather than failing.
     user_switching: bool,
+    /// Whether this session owns the machine's power. A headless or nested
+    /// session shares the host with another desktop, so it offers no
+    /// suspend, restart or shut down.
+    owns_host_power: bool,
 }
 
 impl Default for PowerMenu {
@@ -106,22 +110,33 @@ impl PowerMenu {
             selected: 0,
             text_scale: 1.0,
             user_switching,
+            owns_host_power: true,
         }
+    }
+
+    /// Hide the rows that act on the host: switching user, suspend, restart
+    /// and shut down.
+    pub(crate) fn detach_from_host(&mut self) {
+        self.user_switching = false;
+        self.owns_host_power = false;
+        self.selected = 0;
     }
 
     /// The rows this session offers, in paint order. Paint, clicks, keys,
     /// semantic targets and the accessibility tree all index this list.
     fn rows(&self) -> impl Iterator<Item = &'static PowerMenuRow> + '_ {
-        ACTIONS.iter().filter(|(action, ..)| {
-            self.user_switching
-                || !matches!(
-                    action,
-                    PowerMenuAction::External(os_actions::SessionAction::SwitchUser)
-                )
+        ACTIONS.iter().filter(|(action, ..)| match action {
+            PowerMenuAction::External(os_actions::SessionAction::SwitchUser) => self.user_switching,
+            PowerMenuAction::External(
+                os_actions::SessionAction::Suspend
+                | os_actions::SessionAction::Restart
+                | os_actions::SessionAction::ShutDown,
+            ) => self.owns_host_power,
+            _ => true,
         })
     }
 
-    fn row_count(&self) -> usize {
+    pub(crate) fn row_count(&self) -> usize {
         self.rows().count()
     }
 

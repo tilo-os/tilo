@@ -20,4 +20,19 @@ impl PeerPublishSink for ShellNetwork {
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
         self.publish_scrollback_request(artifact, before_seq, max);
     }
+
+    fn app_live_presence(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        presence: &PeerPresence,
+    ) {
+        self.publish_live_presence(app_id, cluster_id, record_id, presence);
+    }
+
+    fn local_route(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        let _ = self.register_local_record(app_id, cluster_id, record_id);
+        self.request_room_replay(cluster_id);
+    }
 }

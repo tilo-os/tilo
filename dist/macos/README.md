@@ -46,7 +46,17 @@ bundled daemon on a throwaway profile and HOME and requires its status reply.
 
 Without credentials the bundle is signed ad hoc with the hardened runtime:
 it runs on the machine that built it, and elsewhere only after the user
-clears quarantine. Signing takes the variables `package-host.sh` uses for
+clears quarantine.
+
+Only a Developer ID build's login Keychain items survive a rebuild: an
+ad-hoc (or unbundled `cargo build`) runtime's items belong to that exact
+build, and reading one another build stored needs the Keychain password.
+A runtime without a Developer ID signature therefore never lets the
+Keychain ask; it fails at once, naming the item and the `security
+delete-generic-password` command that removes it. A debug build keeps its
+identity secrets in owner-only files in the profile instead. A locally
+built release does so only when started with `TILO_IDENTITY_FILE_SECRETS=1`,
+which a Developer ID build ignores. Signing takes the variables `package-host.sh` uses for
 Tilo Imager:
 
 | Variable | Effect |

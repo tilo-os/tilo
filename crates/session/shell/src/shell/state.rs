@@ -2502,6 +2502,64 @@ impl WorkspaceTree {
         adopted.into_iter().map(|(id, _)| id).collect()
     }
 
+    /// Hand every locally-governed workspace still owned by the OS account
+    /// name `account` to the key identity selected for its room.
+    ///
+    /// Before a device has an identity, [`local_user_id`] falls back to the
+    /// account name, so a workspace created then is owned by `"quinten"`.
+    /// Once the identity exists the same person acts as its key-derived
+    /// principal, is no member of that workspace, and every app they open
+    /// there is refused its collaboration route and exits before drawing.
+    /// Rooms governed elsewhere keep whatever they say: there `account` may
+    /// name somebody else entirely.
+    pub fn rebind_account_owned_workspaces(
+        &mut self,
+        account: &str,
+        identity_for_room: impl Fn(&RoomId) -> UserId,
+    ) -> Vec<WorkspaceId> {
+        let governed_elsewhere: Vec<RoomId> = self
+            .room_authority
+            .iter()
+            .filter(|(_, a)| **a != RoomAuthority::Local)
+            .map(|(room, _)| *room)
+            .collect();
+        let mut rebound = Vec::new();
+        for ws in &mut self.desktop.workspaces {
+            if ws.owner.as_deref() != Some(account) || governed_elsewhere.contains(&ws.room) {
+                continue;
+            }
+            let user = identity_for_room(&ws.room);
+            if user == account {
+                continue;
+            }
+            for cap in &mut ws.capabilities {
+                if matches!(&cap.subject, Subject::Principal(Principal::Person(p)) if p == account)
+                {
+                    cap.subject = Subject::Principal(Principal::Person(user.clone()));
+                }
+            }
+            ws.set_owner(user.clone());
+            rebound.push((ws.id, user));
+        }
+        for (id, user) in &rebound {
+            self.doc_set_owner(*id, user);
+            let caps: Vec<CapOverride> = self
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == *id)
+                .map(|w| w.capabilities.clone())
+                .unwrap_or_default();
+            for cap in caps {
+                self.doc_insert_capability(*id, &cap);
+            }
+        }
+        if !rebound.is_empty() {
+            self.flush_to_disk();
+        }
+        rebound.into_iter().map(|(id, _)| id).collect()
+    }
+
     /// The durable room identity of `workspace_id`. What the launch path
     /// needs to turn a local handle into the value the wire speaks.
     pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
@@ -4976,6 +5034,78 @@ mod automerge_foundation_tests {
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"xaver".to_string());
         (host, guest, room)
+    }
+
+    #[test]
+    fn workspaces_owned_by_the_account_name_pass_to_the_device_identity() {
+        let key = "61".repeat(32);
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.adopt_ownerless_workspaces(&"quinten".to_string());
+        let home = tree.desktop.workspaces[0].id;
+        let joined = tree.append_empty_workspace("Joined");
+        let joined_room = tree.room_of(joined).expect("a room");
+        {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == joined)
+                .unwrap();
+            ws.set_owner("quinten".to_string());
+        }
+        tree.room_authority
+            .insert(joined_room, RoomAuthority::Unpinned);
+
+        let rebound = tree.rebind_account_owned_workspaces("quinten", |_| key.clone());
+
+        assert_eq!(
+            rebound,
+            vec![home],
+            "only the locally governed workspace moves"
+        );
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == home)
+            .unwrap();
+        assert_eq!(ws.owner.as_deref(), Some(key.as_str()));
+        assert_eq!(ws.role_of_at(&key, 0), Some(CapRole::Owner));
+        assert_eq!(ws.role_of_at(&"quinten".to_string(), 0), None);
+        let other = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == joined)
+            .unwrap();
+        assert_eq!(
+            other.owner.as_deref(),
+            Some("quinten"),
+            "a foreign room keeps its owner"
+        );
+
+        let mut replica = WorkspaceTree::default();
+        replica
+            .apply_changes(&tree.export_changes_since(&[]))
+            .expect("apply");
+        let mirrored = replica
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == home)
+            .unwrap();
+        assert_eq!(
+            mirrored.owner.as_deref(),
+            Some(key.as_str()),
+            "the room doc agrees"
+        );
+        assert_eq!(mirrored.role_of_at(&key, 0), Some(CapRole::Owner));
+
+        assert!(
+            tree.rebind_account_owned_workspaces("quinten", |_| "quinten".to_string())
+                .is_empty(),
+            "without an identity the account name is still who sits here"
+        );
     }
 
     #[test]

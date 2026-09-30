@@ -1041,6 +1041,7 @@ pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
+    use std::collections::BTreeMap;
 
     /// The group holding the foreign tab for `surface_id`, wherever placement put it — tests assert
     /// on the adopted tab, not a fixed index, so a placement change fails as a placement assertion, not five unrelated ones.
@@ -2591,6 +2592,7 @@ mod tests {
                 crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
                     package_id: "so.tilo.adoptfixture".into(),
                     display_name: "Adopt Fixture".into(),
+                    localized_names: BTreeMap::default(),
                     category: None,
                     version: "0.1.0".into(),
                     manifest_path: std::path::PathBuf::new(),

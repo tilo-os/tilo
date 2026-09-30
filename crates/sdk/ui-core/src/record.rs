@@ -165,6 +165,14 @@ impl RecordId {
         Self(format!("tab:{tab:016x}"))
     }
 
+    /// The record an app opens in a room when nothing names another one:
+    /// the first window of the app on any device of the room, native or
+    /// browser, so they all meet on one document. Constant, so every
+    /// device derives the same id without asking; the room scopes it.
+    pub fn room_default() -> Self {
+        Self::derived("default", &Self::for_tab(0))
+    }
+
     /// Identity of the record that plays `role` for `of` — "the annotations
     /// of this document". Distinct from its target so the two can be
     /// shared separately: handing over the document doesn't hand the notes.

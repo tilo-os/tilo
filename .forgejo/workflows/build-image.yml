@@ -765,9 +765,16 @@ jobs:
           # Podman reads an existing authfile before login; mktemp leaves it
           # empty, which Podman rejects as invalid JSON.
           printf '{}\n' > "$firmware_authfile"
-          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.tilo.so \
+          # The login needs no image store; give it a throwaway one. Left to
+          # the default, root's store was created with the vfs driver here and
+          # the installed-image gate's overlay store later refused it ("contains
+          # several valid graphdrivers", run 50750).
+          login_store=$(mktemp -d "${RUNNER_TEMP:-/tmp}/tilo-firmware-login.XXXXXX")
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+            --root "$login_store/graph" --runroot "$login_store/run" login code.tilo.so \
             --authfile "$firmware_authfile" \
             --username "${{ github.actor }}" --password-stdin
+          sudo -n rm -rf -- "$login_store"
           sudo -n python3 -c 'import json,sys; assert "code.tilo.so" in json.load(open(sys.argv[1]))["auths"]' \
             "$firmware_authfile"
           sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \

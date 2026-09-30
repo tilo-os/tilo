@@ -28,20 +28,32 @@ pub enum IdentityStorage {
     Files,
 }
 
-/// Set (to anything) in a test's environment, it keeps every identity
-/// secret of the session in [`IdentityStorage::Files`], out of the user's
-/// login Keychain. A release build ignores it.
+/// Set (to anything), it keeps every identity secret of the session in
+/// [`IdentityStorage::Files`], out of the user's login Keychain: for tests,
+/// and for a release built without a Developer ID signature
+/// ([`runtime_identity::file_secrets_requested`]).
 pub use runtime_identity::FILE_SECRETS_ENV;
 
 impl IdentityStorage {
     /// What this session keeps its identity secrets in.
     #[must_use]
     pub fn for_session() -> Self {
-        if runtime_identity::file_secrets_requested() {
-            Self::Files
-        } else {
-            Self::Platform
+        if !runtime_identity::file_secrets_requested() {
+            return Self::Platform;
         }
+        // A test asks for files and needs no word about it; anyone else is
+        // told where the secrets went.
+        if !(cfg!(debug_assertions) && std::env::var_os(FILE_SECRETS_ENV).is_some()) {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::warn!(
+                    "this build has no Developer ID signature, and the Keychain would keep \
+                     its identity secrets for this exact build only; they are in owner-only \
+                     files in the profile instead"
+                );
+            });
+        }
+        Self::Files
     }
 
     /// Where the device key is kept under this storage.

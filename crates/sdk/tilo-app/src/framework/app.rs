@@ -261,10 +261,7 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
 /// The record a standalone launch opens: the default one of the definition's kind.
 #[cfg(not(target_arch = "wasm32"))]
 fn default_record_of(definition: &ApplicationDefinition) -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(0)),
-        definition.record_kind.clone(),
-    )
+    RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
