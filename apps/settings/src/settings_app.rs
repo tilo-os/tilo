@@ -698,51 +698,23 @@ impl SettingsApp {
                         }
                     }
                     crate::actions::PowerOperation::SetProfile { profile } => {
-                        if !["Power Saver", "Balanced", "Performance"].contains(&profile.as_str()) {
+                        if crate::panes::power::profile_from_label(profile).is_none() {
                             return Err("unsupported power profile".into());
                         }
                     }
                     crate::actions::PowerOperation::SetAutoSuspend { .. } => {}
                     crate::actions::PowerOperation::SetBlankTimeout { label } => {
-                        if ![
-                            "1 minute",
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::blank_from_label(label).is_none() {
                             return Err("unsupported screen blank timeout".into());
                         }
                     }
                     crate::actions::PowerOperation::SetLockTimeout { label } => {
-                        if ![
-                            "1 minute",
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::lock_from_label(label).is_none() {
                             return Err("unsupported automatic lock timeout".into());
                         }
                     }
                     crate::actions::PowerOperation::SetSuspendTimeout { profile, label } => {
-                        if ![
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "45 minutes",
-                            "1 hour",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::suspend_from_label(label).is_none() {
                             return Err("unsupported suspend timeout".into());
                         }
                         match profile.as_str() {
@@ -753,7 +725,7 @@ impl SettingsApp {
                     crate::actions::PowerOperation::SetLidAction { action }
                     | crate::actions::PowerOperation::SetPowerKeyAction { action }
                     | crate::actions::PowerOperation::SetCriticalAction { action } => {
-                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
+                        if crate::panes::power::action_from_label(action).is_none() {
                             return Err("unsupported power action".into());
                         }
                     }
