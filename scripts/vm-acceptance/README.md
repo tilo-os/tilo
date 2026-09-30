@@ -70,5 +70,7 @@ starts at the first painted frame after an idle park and spans the transition's 
 and its painted-to-painted intervals are held to the budgets, so the park itself never
 counts as a stall.
 
-Not yet drivable, so failing as unobservable: touchpad gestures (W15; `tilo-vm input` has
-no touchpad device) and output hotplug (B06; a slot's outputs are fixed at creation).
+Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
+feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
+`tilo-vm input` does not have yet. Not yet drivable, so failing as unobservable: output
+hotplug (B06; a slot's outputs are fixed at creation).
