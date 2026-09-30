@@ -67,7 +67,9 @@ Tilo Imager:
 | `TILO_REQUIRE_SIGNING=1` | fail closed without all of the above; `verify-app.sh` then also requires a stapled ticket and `spctl` acceptance |
 
 Nested code is signed inside out and never with `--deep`. The entitlements in
-`Tilo.entitlements` are empty on purpose. Tilo is not App Sandboxed, because
+`Tilo.entitlements` are empty on purpose; `tilo-runtime` alone adds the camera
+and microphone (`Runtime.entitlements`), which it captures through AVFoundation
+for the apps it confines after the person allows each one. Tilo is not App Sandboxed, because
 `tilo-runtime` is the launcher that sandboxes apps. It needs no JIT or
 unsigned executable memory, and it loads no third-party dylibs. The file
 explains each key it leaves out.
