@@ -715,8 +715,10 @@ workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vo
 workspace-settings-apps-header = STANDARDANWENDUNGEN
 workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
 workspace-settings-your-choice = Deine Wahl
+workspace-settings-resource-extension = .{ $ext }-Dateien
+workspace-settings-resource-scheme = { $scheme }:-Links
 workspace-settings-follow-personal = Persönlichen Standards folgen
-workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
+workspace-settings-use-workspace-choice = Dem Arbeitsbereich folgen
 workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
 workspace-settings-apps-file-types = { $count ->
     [one] 1 Dateityp
