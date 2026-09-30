@@ -127,7 +127,13 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Position { workspace_id, .. }
         | Envelope::CompactVolunteer { workspace_id }
         | Envelope::CompactRequest { workspace_id, .. }
-        | Envelope::Compacted { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        | Envelope::Compacted { workspace_id, .. }
+        | Envelope::VoiceCall { workspace_id, .. }
+        | Envelope::VoiceCallResult { workspace_id, .. }
+        | Envelope::VoiceJoin { workspace_id, .. }
+        | Envelope::VoiceGranted { workspace_id, .. }
+        | Envelope::VoiceRefused { workspace_id, .. }
+        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } => false,
     }

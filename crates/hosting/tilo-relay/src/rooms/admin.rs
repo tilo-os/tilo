@@ -192,10 +192,6 @@ impl RoomAdminProtocol {
         Ok(())
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "each exchange runs one room decision to completion before it is answered"
-    )]
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
         let rooms = &self.rooms;
         let result = match command {

@@ -62,7 +62,14 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
-        | Envelope::CommitRefused { reason, .. } => reason.len(),
+        | Envelope::CommitRefused { reason, .. }
+        | Envelope::VoiceRefused { reason, .. } => reason.len(),
+        Envelope::VoiceGranted { grant, .. } => grant
+            .participants
+            .len()
+            .saturating_add(grant.subscriptions.len())
+            .saturating_mul(200)
+            .saturating_add(grant.endpoint.len()),
         Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
@@ -118,6 +125,12 @@ pub const FEATURE_RESUME: u64 = 1;
 /// [`crate::transport::Envelope::Compacted`], and may send volunteers
 /// [`crate::transport::Envelope::CompactRequest`].
 pub const FEATURE_COMPACTION: u64 = 2;
+
+/// The host governs calls in its rooms: it accepts
+/// [`crate::transport::Envelope::VoiceCall`],
+/// [`crate::transport::Envelope::VoiceJoin`] and
+/// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
+pub const FEATURE_VOICE: u64 = 4;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits. A device that predates the features reads the grant

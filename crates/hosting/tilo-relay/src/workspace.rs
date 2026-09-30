@@ -64,6 +64,9 @@ pub struct WorkspaceRuntime {
     /// retained body a device's admitted delta carries. Bounded; a full queue
     /// drops the notice.
     pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
+    /// The in-process authority governing this workspace's room, if any: it
+    /// answers the room's calls.
+    pub(crate) room_authority: Option<crate::rooms::RoomAuthority>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -319,6 +322,7 @@ impl WorkspaceRuntime {
             checkpoint_served: HashMap::new(),
             sync_refresh: None,
             governor_tap: None,
+            room_authority: None,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,

@@ -56,6 +56,7 @@ pub mod process_lease;
 pub mod retention;
 mod sig64;
 pub mod transport;
+pub mod voice;
 pub mod web;
 
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};

@@ -1774,6 +1774,9 @@ async fn handle_envelope(
             handle_compaction(peer, session, subscribed, env).await;
             Ok(None)
         }
+        env @ (Envelope::VoiceCall { .. }
+        | Envelope::VoiceJoin { .. }
+        | Envelope::VoiceLeave { .. }) => handle_voice(peer, session, subscribed, env).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -1785,7 +1788,10 @@ async fn handle_envelope(
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
         | Envelope::LiveMember { .. }
-        | Envelope::Position { .. } => Ok(None),
+        | Envelope::Position { .. }
+        | Envelope::VoiceCallResult { .. }
+        | Envelope::VoiceGranted { .. }
+        | Envelope::VoiceRefused { .. } => Ok(None),
     }
 }
 
@@ -5257,6 +5263,90 @@ async fn handle_live_join(
         });
     }
     Ok(None)
+}
+
+/// Handle a call envelope for a subscribed workspace whose room this relay
+/// governs; see [`crate::rooms`].
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn handle_voice(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let workspace_id = match &env {
+        Envelope::VoiceCall { workspace_id, .. }
+        | Envelope::VoiceJoin { workspace_id, .. }
+        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id,
+        _ => return Ok(None),
+    };
+    let authority = if subscribed.contains(&workspace_id) {
+        let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+        match ws {
+            Some(ws) => ws.lock().await.room_authority.clone(),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let rooms = authority
+        .as_ref()
+        .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())));
+    let refusal = "calls require a subscription to a room this host governs";
+    Ok(match env {
+        Envelope::VoiceCall {
+            request, operation, ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => rooms.voice_call(room, peer, &operation).await,
+                None => Err(refusal.into()),
+            };
+            Some(Envelope::VoiceCallResult {
+                workspace_id,
+                request,
+                result,
+            })
+        }
+        Envelope::VoiceJoin {
+            call,
+            participation,
+            ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => {
+                    rooms
+                        .voice_join(room, peer, call, participation, session.outbound.clone())
+                        .await
+                }
+                None => Err(refusal.into()),
+            };
+            Some(match result {
+                Ok(grant) => Envelope::VoiceGranted {
+                    workspace_id,
+                    grant: Box::new(grant),
+                },
+                Err(reason) => Envelope::VoiceRefused {
+                    workspace_id,
+                    call,
+                    reason,
+                },
+            })
+        }
+        Envelope::VoiceLeave {
+            call,
+            participation,
+            ..
+        } => {
+            if let Some((rooms, _)) = &rooms {
+                rooms.voice_leave(peer, call, participation);
+            }
+            None
+        }
+        _ => None,
+    })
 }
 
 /// Handle `LiveLeave`.
