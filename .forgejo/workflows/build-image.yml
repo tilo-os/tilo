@@ -2584,28 +2584,36 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
         run: ./os/dev/install-cached-syft.sh
 
-      # SBOM (security plan §9): generate an SPDX inventory of the image and
-      # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
-      # what shipped + verify it came from us. Use the reviewed native binary:
-      # Forgejo cannot resolve GitHub-only transitive action dependencies.
+      # SBOM (security plan §9): Rekor's public instance admits at most 100 KB
+      # per attestation, smaller than the full OS SPDX inventory. Keep the full
+      # inventory in the OCI registry and bind its exact SHA-256 into the
+      # KMS-signed, Rekor-logged SLSA provenance below.
       - name: Generate SBOM (syft → SPDX)
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
         run: |
+          set -euo pipefail
           syft \
             "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}" \
             --output spdx-json=sbom.spdx.json
+          # Syft gives an otherwise identical scan a new timestamp and random
+          # document namespace on each run. Make retries of the same image
+          # publish identical SBOM bytes before recording their digest.
+          created="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+          jq -e --arg digest '${{ steps.release.outputs.digest }}' --arg created "$created" '
+            select(.spdxVersion == "SPDX-2.3" and (.packages | type == "array"))
+            | .documentNamespace = ("https://tilo.sh/spdx/os/" + ($digest | sub(":"; "-")))
+            | .creationInfo.created = $created
+          ' sbom.spdx.json > sbom.normalized.json
+          mv sbom.normalized.json sbom.spdx.json
 
-      - name: Attest the SBOM to the image (signed)
+      - name: Attach the complete SPDX SBOM and pin its digest for provenance
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
-        env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
-          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
-          . os/dev/configure-cosign-kms.sh
-          cosign attest --yes \
-            --predicate sbom.spdx.json --type spdxjson \
-            --key "$COSIGN_KEY_REF" \
-            "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
+          set -euo pipefail
+          image="$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
+          cosign attach sbom --type spdx --input-format json \
+            --sbom sbom.spdx.json "$image"
+          printf 'TILO_SBOM_SHA256=%s\n' "$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - name: Generate and attest SLSA provenance
         if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
@@ -2654,8 +2662,7 @@ jobs:
           set -euo pipefail
           image="$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
-          cosign verify-attestation --key keys/cosign.pub \
-            --type spdxjson "$image" >/dev/null
+          ./os/dev/verify-release-sbom.sh "$image"
           cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$image" >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
@@ -2807,7 +2814,7 @@ jobs:
               exit 1
             }
             cosign verify --key keys/cosign.pub "$image" >/dev/null
-            cosign verify-attestation --key keys/cosign.pub --type spdxjson "$image" >/dev/null
+            ./os/dev/verify-release-sbom.sh "$image"
             provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
             printf '%s' "$provenance" | jq -e --arg digest "$digest" --arg source "$GITHUB_SHA" \
               --argjson generation "$generation" '
@@ -3177,6 +3184,7 @@ jobs:
           SOURCE_REVISION: ${{ github.sha }}
           DISK_TOOLING_REVISION: ${{ github.sha }}
           DEV_TAG: ${{ matrix.board }}-ci
+          DISK_VARIANT: ${{ matrix.board }}
           BASE_TRUST: integration
           SOURCE_DISK: ${{ env.BOARD_OUTPUT }}/qcow2/disk.qcow2
           SOURCE_BOOT: ${{ env.BOARD_OUTPUT }}/direct-boot
@@ -3238,7 +3246,7 @@ jobs:
           image="code.tilo.so/tilo/tilo@$digest"
           target="code.tilo.so/tilo/tilo:lenovo-83ed-$GITHUB_SHA"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
-          cosign verify-attestation --key keys/cosign.pub --type spdxjson "$image" >/dev/null
+          ./os/dev/verify-release-sbom.sh "$image"
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
             --type https://tilo.sh/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
