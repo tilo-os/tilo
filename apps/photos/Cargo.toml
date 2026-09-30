@@ -27,7 +27,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
 # The shared preview pipeline behind the library grid.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 tilo-files = { path = "../../crates/platform/tilo-files" }

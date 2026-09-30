@@ -2,8 +2,10 @@
 name = "tilo-search"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Tilo's search layer: tantivy with Tilo's folding, tiers and ranking"
 
 [package.metadata.cargo-machete]

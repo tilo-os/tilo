@@ -2,15 +2,17 @@
 name = "tilo-dav"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "WebDAV/CalDAV client: bounded multistatus parsing, request bodies, and blocking and async clients on Tilo's TLS defaults."
 
 [dependencies]
 quick-xml.workspace = true
 roxmltree.workspace = true
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
-tilo-net = { path = "../../platform/tilo-net", optional = true }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]

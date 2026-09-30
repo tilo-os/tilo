@@ -25,9 +25,9 @@ run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
 run 'Path-filtered package dependency triggers' \
   python3 tools/policy/check_workflow_package_paths.py \
-  --check atomic-file .forgejo/workflows/build-ci-builder.yml \
+  --check tilo-atomic-file .forgejo/workflows/build-ci-builder.yml \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
-  --check fs .forgejo/workflows/ci-filesystem.yml \
+  --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml

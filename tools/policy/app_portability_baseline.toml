@@ -205,7 +205,7 @@ D2 = 4
 D1 = 2
 D2 = 11
 
-[sdk.app-state]
+[sdk.tilo-app-state]
 R1 = 9
 W1 = 1
 W2 = 3

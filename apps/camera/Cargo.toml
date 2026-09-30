@@ -45,7 +45,7 @@ anyhow.workspace = true
 # Default features are trimmed to formats cameras and image portals provide.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # The shared preview pipeline (recent-capture peek) and bounded image decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
