@@ -23,7 +23,7 @@ on:
         required: false
         default: "1"
       hardware_profile:
-        description: "generic or lenovo-83ed; board builds require pinned firmware inputs"
+        description: "generic, lenovo-83ed, or orangepi-3b-v2-1; Lenovo requires pinned firmware"
         required: false
         default: "generic"
       firmware_candidate:
@@ -79,7 +79,7 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  group: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (github.event_name == 'workflow_dispatch' && github.event.inputs.hardware_profile == 'orangepi-3b-v2-1') && format('tilo-os-image-orangepi-3b-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -170,6 +170,16 @@ jobs:
                  && ${FIRMWARE_MANIFEST_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || {
                 echo '::error::Lenovo publication requires immutable firmware and reviewed manifest SHA-256'; exit 1;
               } ;;
+            orangepi-3b-v2-1)
+              [[ -z ${FIRMWARE_CANDIDATE:-} && -z ${FIRMWARE_MANIFEST_SHA256:-} ]] || {
+                echo '::error::Orange Pi builds do not accept a private firmware artifact'; exit 1;
+              }
+              [[ $GITHUB_EVENT_NAME == workflow_dispatch ]] || {
+                echo '::error::Orange Pi image builds require an explicit workflow dispatch'; exit 1;
+              }
+              [[ ${REQUESTED_PUBLISH:-false} != true ]] || {
+                echo '::error::Orange Pi images are built with publication left off; they do not join the signed generic series'; exit 1;
+              } ;;
             *) echo '::error::unsupported hardware profile'; exit 1 ;;
           esac
           publish=false
@@ -199,6 +209,10 @@ jobs:
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
             matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+          elif [[ $profile == orangepi-3b-v2-1 ]]; then
+            # One ARM64 disk. No reproduction lane: publication is refused above,
+            # and a reproduction lane runs only for a publication.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"}]}'
           elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
@@ -222,6 +236,16 @@ jobs:
             else
               matrix='{"include":[{"arch":"x86_64","runner":"runner-large"}]}'
             fi
+          fi
+          # Main's own OS build also produces the Orange Pi disk. It is an
+          # extra lane in the same run, tagged orangepi-3b-v2-1-<sha>, and it
+          # does not enter latest or genN. An explicit Orange Pi dispatch
+          # already has its own lane and must not gain a second one.
+          if [[ $profile == generic && $GITHUB_REF == refs/heads/main \
+                && ( $GITHUB_EVENT_NAME == schedule || $GITHUB_EVENT_NAME == workflow_dispatch ) ]]; then
+            close=']}'
+            matrix=${matrix%"$close"}
+            matrix+=',{"arch":"aarch64","runner":"runner-large-arm64","hardware_profile":"orangepi-3b-v2-1"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
@@ -305,7 +329,7 @@ jobs:
       # Board images carry private firmware: they stay in the forge's private
       # registry, which anonymous clients cannot read. Every other OS image is
       # public on registry.tilo.so.
-      TILO_OS_REPOSITORY: ${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && 'code.tilo.so/tilo/tilo' || 'registry.tilo.so/tilo/tilo' }}
+      TILO_OS_REPOSITORY: ${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' && 'code.tilo.so/tilo/tilo' || 'registry.tilo.so/tilo/tilo' }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -598,7 +622,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Log in to the private board registry
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.tilo.so
@@ -606,7 +630,7 @@ jobs:
           password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Import independently pinned Lenovo firmware data
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed'
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
@@ -648,7 +672,7 @@ jobs:
             firmware-import.json >/dev/null
 
       - name: Retain public Lenovo firmware import evidence
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed'
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-lenovo-firmware-import-${{ github.sha }}
@@ -718,7 +742,7 @@ jobs:
           WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}
           FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
-          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          HARDWARE_PROFILE: ${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
         run: |
           set -euo pipefail
           if [[ -n "$FEX_PAYLOAD_CANDIDATE" || -n "$WINDOWS_GUEST_CANDIDATE" ]]; then
@@ -774,7 +798,7 @@ jobs:
       # A board build's layers include its private firmware, so its layer
       # cache must never reach the public registry.
       - name: Keep the board layer cache private
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        if: (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed'
         run: |
           if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
             echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
@@ -1007,14 +1031,14 @@ jobs:
           # that genesis for one exact commit; once gen1 exists the repository
           # does too, and the variable no longer changes anything.
           SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}
-          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          HARDWARE_PROFILE: ${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
         run: |
           set -euo pipefail
-          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
-            # This first board artifact has an immutable update reference and
-            # no automatic upgrade series. Do not allocate a generic genN.
+          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed || ${HARDWARE_PROFILE:-generic} == orangepi-3b-v2-1 ]]; then
+            # Board artifacts have an immutable update reference and no automatic
+            # upgrade series. Do not allocate a generic genN.
             echo 'TILO_GENERATION=1' >> "$GITHUB_ENV"
-            echo '::notice::building one-off Lenovo image at generation 1'
+            echo "::notice::building one-off ${HARDWARE_PROFILE} image at generation 1"
             exit 0
           fi
           if [[ $PUBLISH != true ]]; then
@@ -1142,21 +1166,22 @@ jobs:
           labels: |
             org.opencontainers.image.created=${{ env.SOURCE_DATE_ISO }}
           tags: |
-            type=raw,value=lenovo-83ed-${{ github.sha }},enable=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' }}
-            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' }}
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.hardware-profile == 'generic' }}
-            type=ref,event=pr,enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
+            type=raw,value=lenovo-83ed-${{ github.sha }},enable=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' }}
+            type=raw,value=orangepi-3b-v2-1-${{ github.sha }},enable=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'orangepi-3b-v2-1' }}
+            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
+            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
+            type=ref,event=pr,enable=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
             # workflow_dispatch off a non-main branch — without this, the metadata
             # step emits zero tags and the push fails "tag is needed". Derives a
             # "<branch>-<sha>" tag so a manual dispatch from a feature branch still
             # produces a discoverable image without polluting the `latest` channel.
-            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
             # The generation tag is what makes the series self-recording: the next
             # build reads these back to learn which numbers are taken. It is only
             # ever pushed on a run that publishes, so a number is consumed exactly
             # when an image carrying it becomes reachable.
-            type=raw,value=gen${{ env.TILO_GENERATION }},enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
+            type=raw,value=gen${{ env.TILO_GENERATION }},enable=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' }}
 
       # The WPE engine is the longest single compile and changes rarely. It
       # compiles only from os/Containerfile.wpe; the image builds below take
@@ -1223,8 +1248,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
-            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_HARDWARE_PROFILE=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
+            TILO_TARGET_IMGREF=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'orangepi-3b-v2-1' && format('registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
@@ -1298,8 +1323,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
-            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_HARDWARE_PROFILE=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
+            TILO_TARGET_IMGREF=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'orangepi-3b-v2-1' && format('registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
@@ -1392,8 +1417,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
-            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_HARDWARE_PROFILE=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
+            TILO_TARGET_IMGREF=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'orangepi-3b-v2-1' && format('registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
@@ -1428,7 +1453,7 @@ jobs:
       - name: Publish the dev-trust integration image
         id: dev-image
         # Generic images only: a board image carries private firmware.
-        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-series != '' && needs.plan.outputs.hardware-profile == 'generic'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-series != '' && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic'
         # A registry hiccup here must never block a release.
         continue-on-error: true
         env:
@@ -1501,8 +1526,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
-            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
-            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_HARDWARE_PROFILE=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
+            TILO_TARGET_IMGREF=${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'orangepi-3b-v2-1' && format('registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
@@ -1681,7 +1706,7 @@ jobs:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_RESEALED_DIGEST_FILE: /var/tmp/tilo-resealed-composefs-digest
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
-          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          HARDWARE_PROFILE: ${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
           DEV_GATE: ${{ steps.release-mode.outputs.dev-gate }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_PUBLISHED: ${{ steps.dev-image.outputs.ref }}
@@ -1763,8 +1788,8 @@ jobs:
           # store; retaining its archive would duplicate it during resealing.
           rm -f /var/tmp/tilo-image.tar
 
-          if [[ $DEV_GATE == true ]]; then
-            [[ $HARDWARE_PROFILE == generic && -n $DEV_SERIES ]] || {
+          if [[ $DEV_GATE == true && $HARDWARE_PROFILE == generic ]]; then
+            [[ -n $DEV_SERIES ]] || {
               echo "::error::the dev image gate needs a generic branch build"
               exit 1
             }
@@ -1942,11 +1967,11 @@ jobs:
             # disk-install and independent reproduction above remain required;
             # the generic ARM VM gate covers the common desktop separately.
             # Physical boot remains a distinct acceptance test.
-            echo '::notice::Lenovo board image sealed and disk-installed; QEMU virt desktop boot is inapplicable'
+            echo "::notice::${HARDWARE_PROFILE} board image sealed and disk-installed; QEMU virt desktop boot is inapplicable"
           fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
-            if [[ '${{ needs.plan.outputs.hardware-profile }}' == lenovo-83ed ]]; then
+            if [[ '${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}' == lenovo-83ed ]]; then
               REGISTRY_TOKEN="$TILO_REGISTRY_TOKEN" \
                 python3 os/dev/require-private-oci-owner.py
             fi
@@ -2047,7 +2072,7 @@ jobs:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
-          TILO_HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          TILO_HARDWARE_PROFILE: ${{ (matrix.hardware_profile || needs.plan.outputs.hardware-profile) }}
           TILO_RELEASE_ARCHITECTURE: ${{ matrix.arch }}
           TILO_FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           TILO_FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
@@ -2139,7 +2164,7 @@ jobs:
       # against keys/cosign.pub and its provenance, then builds, boots and
       # publishes this architecture alone, never waiting on the other lane.
       - name: Request this architecture's dev disk from the signed child
-        if: steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true' && (matrix.hardware_profile || needs.plan.outputs.hardware-profile) == 'generic' && matrix.role != 'reproduce'
         # A dev disk must never hold back a release.
         continue-on-error: true
         env:

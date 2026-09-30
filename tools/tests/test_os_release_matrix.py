@@ -34,6 +34,7 @@ def plan(
     published: str = "",
     configured: str = "true",
     integration: str = "",
+    hardware_profile: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "output"
@@ -50,6 +51,8 @@ def plan(
                 "INTEGRATION_REVISION": integration,
             }
         )
+        if hardware_profile:
+            environment["HARDWARE_PROFILE"] = hardware_profile
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         return (
@@ -89,6 +92,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "aarch64", "runner": "runner-large-arm64"},
                     {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
                     {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -97,6 +101,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(lanes, [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
             ])
         with self.subTest(phase='nightly main publishes through the manual main fleet'):
             publish, skip, lanes = plan("refs/heads/main", "schedule", "", "f" * 40)
@@ -109,6 +114,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "aarch64", "runner": "runner-large-arm64"},
                     {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
                     {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
                 ],
             )
 
@@ -133,6 +139,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(lanes, [
                 {"arch": "x86_64", "runner": "runner-large"},
                 {"arch": "aarch64", "runner": "runner-large-arm64"},
+                {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
             ])
         with self.subTest(phase='unconfigured nightly skips an already built integration image'):
             publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)
@@ -188,6 +195,15 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true"),
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
             )
+        with self.subTest(phase='Orange Pi dispatch has its own lock and one ARM64 lane'):
+            self.assertEqual(
+                concurrency_group("refs/heads/feature", "workflow_dispatch", "false", "orangepi-3b-v2-1"),
+                f"tilo-os-image-orangepi-3b-{SHA}",
+            )
+            publish, _, lanes = plan(
+                "refs/heads/feature", "workflow_dispatch", "false", hardware_profile="orangepi-3b-v2-1")
+            self.assertFalse(publish)
+            self.assertEqual(lanes, [{"arch": "aarch64", "runner": "runner-large-arm64"}])
 
 
 def generation_script() -> str:
@@ -381,6 +397,7 @@ def concurrency_group(
     for source, target in [
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
+        ("format('tilo-os-image-orangepi-3b-{0}', github.sha)", "('tilo-os-image-orangepi-3b-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
         ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.publish", "requested"),
