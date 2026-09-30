@@ -85,9 +85,9 @@ fn writer_seed(room: &str) -> Result<Vec<u8>, String> {
 }
 
 impl SessionOwner {
-    /// A new room under `root`, governed by a fresh device with a Writer record.
-    pub fn initialize(root: &Path) -> Result<Self, String> {
-        std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    /// A new room under `dir`, governed by a fresh device with a Writer record.
+    pub fn initialize(dir: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let seed: Vec<u8> = (0..4)
             .flat_map(|_| *uuid::Uuid::new_v4().as_bytes())
             .collect();
@@ -131,7 +131,7 @@ impl SessionOwner {
             now,
         )?;
         let mut owner = Self {
-            root: root.to_path_buf(),
+            root: dir.to_path_buf(),
             person,
             key,
             peer,

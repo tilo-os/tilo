@@ -596,11 +596,11 @@ struct Steward {
 }
 
 impl Steward {
-    fn open(root: &std::path::Path, device_key: &SigningKey, room: RoomId) -> Self {
+    fn open(dir: &std::path::Path, device_key: &SigningKey, room: RoomId) -> Self {
         let readers = Arc::default();
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
-                root: root.join("channels"),
+                root: dir.join("channels"),
                 vault: channel_crypto::VaultKey::new(blake3::derive_key(
                     "tilo joined test steward v1",
                     &device_key.to_bytes(),

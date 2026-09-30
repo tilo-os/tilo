@@ -60,13 +60,13 @@ impl TestGovernor {
     #[must_use]
     pub fn new() -> Self {
         let now = SystemTime::now();
-        let root = SigningKey::from_bytes(&random());
+        let person = SigningKey::from_bytes(&random());
         let governor_key = SigningKey::from_bytes(&random());
-        let governor = certificate(&root, &governor_key, "Governor");
+        let governor = certificate(&person, &governor_key, "Governor");
         let host_key = SigningKey::from_bytes(&random());
-        let mut host = certificate(&root, &host_key, "Certified host");
+        let mut host = certificate(&person, &host_key, "Certified host");
         host.capabilities.can_act_as_host = true;
-        tilo_user_identity::sign_device_cert(&mut host, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut host, &person).unwrap();
         let room = uuid::Builder::from_random_bytes(random())
             .into_uuid()
             .to_string();
@@ -103,7 +103,7 @@ impl TestGovernor {
         .unwrap();
         peer.select_admission_v5().unwrap();
         let delegation = join::sign_workspace_delegation(
-            room.clone(),
+            room,
             workspace_id,
             &governor,
             host.clone(),
