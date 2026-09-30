@@ -71,6 +71,19 @@ enum Command {
     Snapshot {
         path: String,
     },
+    /// A touchpad swipe; the shell takes three fingers or more.
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+        steps: Option<u32>,
+    },
+    /// A touchpad pinch to absolute `scale`.
+    Pinch {
+        fingers: u32,
+        scale: f64,
+        steps: Option<u32>,
+    },
     /// Attach (`on`) or detach (`off`) a viewer of a headless session.
     Watch {
         watching: bool,
@@ -192,6 +205,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
                 steps,
             }
         }
+        "swipe" | "pinch" => parse_gesture(op, &mut iter)?,
         "key" => {
             let key = iter
                 .next()
@@ -253,6 +267,34 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
 
 /// Parse the `actions list|invoke ...` subcommand. Split out of
 /// [`parse_args`] to keep it short.
+fn parse_gesture<'a>(
+    op: &str,
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    const SWIPE: &str = "swipe FINGERS DX DY [STEPS]";
+    const PINCH: &str = "pinch FINGERS SCALE [STEPS]";
+    if op == "swipe" {
+        let fingers = next_u32(iter, SWIPE)?;
+        let dx = next_f64(iter, SWIPE)?;
+        let dy = next_f64(iter, SWIPE)?;
+        let steps = optional_u32(iter, SWIPE)?;
+        return Ok(Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+        });
+    }
+    let fingers = next_u32(iter, PINCH)?;
+    let scale = next_f64(iter, PINCH)?;
+    let steps = optional_u32(iter, PINCH)?;
+    Ok(Command::Pinch {
+        fingers,
+        scale,
+        steps,
+    })
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -356,6 +398,28 @@ fn next_f64<'a>(
         .map_err(|e| ParseError::Usage(format!("{err_msg} — `{raw}` is not a number ({e})")))
 }
 
+fn next_u32<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+    err_msg: &str,
+) -> Result<u32, ParseError> {
+    let raw = iter
+        .next()
+        .ok_or_else(|| ParseError::Usage(err_msg.to_string()))?;
+    raw.parse::<u32>()
+        .map_err(|e| ParseError::Usage(format!("{err_msg} — `{raw}` is not a count ({e})")))
+}
+
+fn optional_u32<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+    err_msg: &str,
+) -> Result<Option<u32>, ParseError> {
+    let mut rest = iter.peekable();
+    if rest.peek().is_none() {
+        return Ok(None);
+    }
+    next_u32(&mut rest, err_msg).map(Some)
+}
+
 /// Parse `"ctrl,shift"` into `(ctrl, shift, alt, logo)`. Empty string
 /// clears every flag. Unknown flag names error out so a typo doesn't
 /// silently drop a modifier on the next chord.
@@ -428,6 +492,17 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
+        Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+        } => json!({ "op": "swipe", "fingers": fingers, "dx": dx, "dy": dy, "steps": steps }),
+        Command::Pinch {
+            fingers,
+            scale,
+            steps,
+        } => json!({ "op": "pinch", "fingers": fingers, "scale": scale, "steps": steps }),
         Command::Watch { watching } => json!({ "op": "watch", "watching": watching }),
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::ActionsList { query, .. } => {
@@ -611,6 +686,8 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
         Command::Click { .. }
         | Command::ClickAt { .. }
         | Command::Drag { .. }
+        | Command::Swipe { .. }
+        | Command::Pinch { .. }
         | Command::Key { .. }
         | Command::Type { .. }
         | Command::Modifiers { .. }
@@ -645,6 +722,8 @@ fn print_usage() {
          \x20 click NAME                    click_named\n\
          \x20 click-at X Y                  click_at\n\
          \x20 drag X1 Y1 X2 Y2 [STEPS]      drag\n\
+         \x20 swipe FINGERS DX DY [STEPS]   touchpad swipe through the shell's gesture tracker\n\
+         \x20 pinch FINGERS SCALE [STEPS]   touchpad pinch to an absolute scale\n\
          \x20 key KEY                       key (named like `Enter`, or single char)\n\
          \x20 type TEXT                     type each character in TEXT\n\
          \x20 modifiers FLAGS               comma-separated subset of ctrl,shift,alt,logo\n\
@@ -753,6 +832,40 @@ mod tests {
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
         let owned: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         parse_args(&owned)
+    }
+
+    #[test]
+    fn touchpad_gestures_parse_with_optional_steps() {
+        let cases: Vec<(&[&str], Command)> = vec![
+            (
+                &["swipe", "3", "-240", "0"],
+                Command::Swipe {
+                    fingers: 3,
+                    dx: -240.0,
+                    dy: 0.0,
+                    steps: None,
+                },
+            ),
+            (
+                &["pinch", "4", "0.5", "6"],
+                Command::Pinch {
+                    fingers: 4,
+                    scale: 0.5,
+                    steps: Some(6),
+                },
+            ),
+        ];
+        for (args, want) in cases {
+            assert_eq!(parse(args).unwrap().command, want, "case {args:?}");
+        }
+        assert!(
+            parse(&["swipe", "3", "-240"]).is_err(),
+            "a swipe needs both axes"
+        );
+        assert!(
+            parse(&["pinch", "three", "0.5"]).is_err(),
+            "fingers are a count"
+        );
     }
 
     #[test]

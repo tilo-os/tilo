@@ -424,6 +424,9 @@ pub struct TileHost {
     /// Readiness of this occupant, separate from the tile's visibility.
     /// Reset on replacement so a visible notice cannot mark an app ready.
     content_was_presented: std::cell::Cell<bool>,
+    /// The tab this tile shows, named to [`panic_scope`](super::panic_scope)
+    /// while its application runs. Stamped by the owning `WindowGroup`.
+    panic_scope: std::cell::Cell<Option<u64>>,
     rect: Rect,
     pub focused: bool,
     /// Adjacent canvas windows own exactly their layout rectangle, including
@@ -663,6 +666,7 @@ impl TileHost {
             structure_dirty: false,
             was_presented: std::cell::Cell::new(false),
             content_was_presented: std::cell::Cell::new(false),
+            panic_scope: std::cell::Cell::new(None),
             rect: Rect::ZERO,
             focused: false,
             flush_edges: false,
@@ -682,6 +686,16 @@ impl TileHost {
 
     pub(crate) fn set_flush_edges(&mut self, flush: bool) {
         self.flush_edges = flush;
+    }
+
+    /// Name `tab` to a panic hook while this tile's application runs: see
+    /// [`panic_scope`](super::panic_scope).
+    pub fn set_panic_scope(&self, tab: u64) {
+        self.panic_scope.set(Some(tab));
+    }
+
+    fn running(&self) -> super::panic_scope::Scope {
+        super::panic_scope::enter(self.panic_scope.get())
     }
 
     pub fn set_opening_name(&mut self, name: &str) {
@@ -1708,6 +1722,7 @@ impl Widget for TileHost {
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        let _running = self.running();
         if let TileContent::App(live) = &mut self.content {
             if self
                 .history
@@ -1726,6 +1741,7 @@ impl Widget for TileHost {
         }
     }
     fn native_view_frame_start(&mut self) {
+        let _running = self.running();
         if self
             .history
             .as_ref()
@@ -1736,6 +1752,7 @@ impl Widget for TileHost {
         }
     }
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+        let _running = self.running();
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
         }
@@ -1747,6 +1764,7 @@ impl Widget for TileHost {
         }
     }
     fn needs_idle_sync(&self) -> bool {
+        let _running = self.running();
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),
             _ => false,
@@ -1759,6 +1777,7 @@ impl Widget for TileHost {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let _running = self.running();
         let (_, scope) = op.with_custody();
         op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
@@ -1813,6 +1832,7 @@ impl Widget for TileHost {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        let _running = self.running();
         if let Some(update) = self.take_retained_update(invocation) {
             return Some(update);
         }
@@ -1921,6 +1941,7 @@ impl Widget for TileHost {
     }
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let _running = self.running();
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
@@ -1951,6 +1972,7 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+        let _running = self.running();
         // This custody is independent of the outer App State and remains
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
@@ -2003,6 +2025,7 @@ impl Widget for TileHost {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let _running = self.running();
         self.live_callback_node = None;
         let node = match &mut self.content {
             TileContent::App(w) => {
@@ -2044,6 +2067,7 @@ impl Widget for TileHost {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let _running = self.running();
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -2084,6 +2108,7 @@ impl Widget for TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let _running = self.running();
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
@@ -2128,6 +2153,7 @@ impl Widget for TileHost {
         self.draw_steady_state(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let _running = self.running();
         if *ctx.handled {
             return;
         }
@@ -2234,6 +2260,7 @@ impl Widget for TileHost {
         "TileHost"
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let _running = self.running();
         if let Some(detail) = &self.record_error {
             return Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
@@ -2310,6 +2337,7 @@ impl Widget for TileHost {
         swapped || inner
     }
     fn needs_animation_frame(&self) -> bool {
+        let _running = self.running();
         // `TileHost` has no `children()`, so the default recursive
         // implementation would always say false; override so the spawn
         // fade and a hosted app's own signal both bubble up. The opening
@@ -4202,6 +4230,78 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    /// Records the window a panic hook would name while it lays out.
+    struct ScopeProbe(std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>);
+
+    impl Widget for ScopeProbe {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.0
+                .borrow_mut()
+                .push(super::super::panic_scope::current());
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "ScopeProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for ScopeProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Scope probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("S")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let host = TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+        let mut group = crate::widget::WindowGroup::from_hosts(
+            3,
+            vec![(crate::widget::TabDescriptor::new(41, "Probe"), host)],
+            41,
+            crate::widget::WindowWidth::Fraction(500),
+        );
+        // A host swapped in after the group was built is named too.
+        *group.host_for_tab_mut(41).unwrap() =
+            TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        for child in group.children_mut() {
+            child.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        }
+        assert_eq!(*seen.borrow(), [Some(41)]);
+        assert_eq!(super::super::panic_scope::current(), None);
     }
 
     #[test]

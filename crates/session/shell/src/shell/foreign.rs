@@ -2193,6 +2193,13 @@ impl ForeignFrameStore {
         })
     }
 
+    /// Forget the size last sent, so the next [`Self::take_pending_configure`]
+    /// sends the tab size again even though the layout did not change: the
+    /// client was configured to something else in between.
+    pub fn resend_configure(&self, id: SurfaceId) {
+        self.with_entry(id, |e| e.configured = None);
+    }
+
     /// Whether this surface has something worth putting on screen, and
     /// latch the answer once it does. Read by
     /// [`ForeignSurfaceWidget::presented`], the predicate deciding when a launched window turns up.
@@ -3095,6 +3102,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    // A fullscreen client is sized to its output by the fullscreen overlay;
+    // its promoted tile still lays out underneath and must not resize it.
+    let fullscreen = state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .map(|target| target.surface_id);
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
@@ -3121,6 +3135,9 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);

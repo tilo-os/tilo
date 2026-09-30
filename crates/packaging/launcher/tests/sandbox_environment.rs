@@ -57,6 +57,7 @@ fn manifest() -> MinimalManifest {
     MinimalManifest {
         package_id: PACKAGE.to_string(),
         name: None,
+        localized_names: BTreeMap::default(),
         category: None,
         icon: None,
         version: "0.0.0".to_string(),
