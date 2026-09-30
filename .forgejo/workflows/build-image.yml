@@ -2944,8 +2944,16 @@ jobs:
           digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
           echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
 
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+
       - name: Resolve RPMS_REF (frozen package snapshot)
-        run: echo "RPMS_REF=$(./os/dev/resolve-rpm-snapshot.sh)" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          rpms_ref="$(./os/dev/resolve-rpm-snapshot.sh)"
+          echo "RPMS_REF=$rpms_ref" >> "$GITHUB_ENV"
 
       - name: Import the pinned Lenovo firmware
         env:
