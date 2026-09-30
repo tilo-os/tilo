@@ -367,6 +367,7 @@ fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
     Ok(radios.wifi_enabled)
 }
 
+#[cfg(test)]
 fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
     let line = stdout
         .lines()
