@@ -888,6 +888,33 @@ pub fn reorder_group(
     true
 }
 
+/// Record a group moved whole into `strip_id` at `index`, out of whichever
+/// strip held it, rewritten from the tree's copy so it cannot drift.
+/// All-or-nothing: `false` leaves `doc` as it was.
+pub fn move_group(
+    doc: &mut AutoCommit,
+    strip_id: StripId,
+    group: &WindowGroup,
+    index: usize,
+) -> bool {
+    let before = doc.clone();
+    let moved = (|| {
+        let (_, strip_entry, _) = strip_entries(doc)
+            .into_iter()
+            .find(|(id, _, _)| *id == strip_id.raw())?;
+        let (source, at) = group_anywhere(doc, group.id)?;
+        doc.delete(&source, at).ok()?;
+        let groups = child_object(doc, &strip_entry, GROUPS_KEY, ObjType::List)?;
+        let index = index.min(doc.length(&groups));
+        insert_group(doc, &groups, index, group);
+        Some(())
+    })();
+    if moved.is_none() {
+        *doc = before;
+    }
+    moved.is_some()
+}
+
 /// Replace one strip's group list with `groups`, leaving the rest of the
 /// document — and concurrent changes to it — alone.
 pub fn rewrite_strip_groups(

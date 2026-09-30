@@ -6,7 +6,8 @@
 //! foreign runtime among them, ask it for access over the room's relay
 //! session, and it admits every certified device the room's governance lets
 //! read. The durable owner still keeps sealed writes only as ciphertext; the
-//! channel keys live in this steward's sealed state alone.
+//! channel keys live in this steward's sealed state alone, and with them the
+//! steward compacts a sealed history before it reaches its bound.
 use crate::SessionOwner;
 use collab_types::{Ed25519PublicKey, Role};
 use std::{
@@ -84,6 +85,35 @@ impl Steward {
             *readers = readers_of(owner.peer(), SystemTime::now());
         }
         self.keys.pump(transport);
+    }
+
+    /// Compact `app`/`record`'s sealed history in `owner` with this
+    /// steward's keys: opened under every epoch it holds, re-sealed under
+    /// the current one.
+    ///
+    /// # Errors
+    /// A write does not open, the steward holds no current key, or the owner
+    /// refuses or cannot commit the compaction.
+    pub fn compact(
+        &self,
+        owner: &mut SessionOwner,
+        app: &str,
+        record: &str,
+    ) -> anyhow::Result<crate::CommitReceipt> {
+        let room = RoomId::parse(owner.peer().room())
+            .ok_or_else(|| anyhow::anyhow!("the governed room is invalid"))?;
+        let workspace = room.to_string();
+        let channel = collab_types::document_channel_id(app, &workspace, record);
+        let artifact = collab_types::document_artifact_id(app, &workspace, record);
+        owner.commit_sealed_compaction(
+            app,
+            record,
+            &mut |op| self.keys.open_history_write(room, op),
+            &mut |plaintext| {
+                self.keys
+                    .seal_current_checkpoint(room, channel, artifact, plaintext)
+            },
+        )
     }
 }
 

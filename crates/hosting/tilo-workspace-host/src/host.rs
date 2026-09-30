@@ -1980,6 +1980,7 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         .inspect_err(|problem| tracing::warn!(%problem, "channel steward unavailable"))
         .ok();
     let mut governance = tokio::time::interval(STEWARD_INTERVAL);
+    let mut compaction_checked = 0u64;
     governance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pump = tokio::time::interval(Duration::from_millis(10));
     let mut action_error: Option<String> = None;
@@ -2434,6 +2435,22 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             _ = governance.tick(), if steward.is_some() => {
                 if let (Some(steward), Some(current)) = (steward.as_ref(), session.as_ref().filter(|current| current.is_ready())) {
                     steward.pump(&owner, &crate::channel_steward::RelayGovernance::new(current, current.take_governance()));
+                }
+                if let Some(steward) = steward.as_ref()
+                    && owner.permits_publication()
+                    && compaction_checked != owner.committed_generation()
+                {
+                    compaction_checked = owner.committed_generation();
+                    for (app, record) in owner.peer().sealed_records_to_compact() {
+                        let update = committed.begin(&owner)?;
+                        let compacted = steward.compact(&mut owner, &app, &record);
+                        if !publish_owner_authority(update, &owner)? { break; }
+                        match compacted {
+                            Ok(_) => if let Some(current) = session.as_ref().filter(|current| current.is_ready())
+                                && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); },
+                            Err(problem) => tracing::warn!(%problem, app, record, "sealed history not compacted"),
+                        }
+                    }
                 }
             }
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
