@@ -287,20 +287,34 @@ impl ActionHost for Writer {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        self.invoked
+        let page_size = self
+            .invoked
             .lock()
             .unwrap()
             .iter()
-            .any(|request| request.invocation == *id)
-            .then(|| {
-                InvocationState::new(
-                    *id,
-                    InvocationUpdate::Succeeded {
-                        invocation: *id,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                )
-            })
+            .find(|request| request.invocation == *id)
+            .map(|request| match &request.argument {
+                InvokeArgument::Json(map) => map.get("pageSize").and_then(Value::as_u64),
+                _ => None,
+            })?;
+        // As the broker validates arguments against the published schema.
+        let update = if page_size.is_some_and(|size| size > 64) {
+            InvocationUpdate::Failed {
+                invocation: *id,
+                error: tilo_actions::ActionFailure {
+                    code: "invalid_arguments".into(),
+                    message: "argument `pageSize` must be at most 64".into(),
+                    details: None,
+                    retryable: false,
+                },
+            }
+        } else {
+            InvocationUpdate::Succeeded {
+                invocation: *id,
+                output: tilo_actions::ActionOutput::default(),
+            }
+        };
+        Some(InvocationState::new(*id, update))
     }
 
     fn cancel(
@@ -696,4 +710,37 @@ fn doc_real_headings_takes_three_tilo_turns() {
         "{calls:?}"
     );
     assert_eq!(calls.len(), 10);
+}
+
+/// cross-standup asked `read-text` for 200 blocks and was refused; the
+/// bridge now reads the most the action allows and says so.
+#[test]
+fn a_number_beyond_its_bound_is_clamped_and_the_answer_says_so() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "resource": DOC, "action": "read-text", "arguments": {"pageSize": 200}}),
+        )
+        .await
+        .unwrap()
+    });
+    assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+    assert_eq!(reply["adjusted"], "pageSize 200 is out of range; used 64");
+    let calls = host.invoked();
+    let sizes: Vec<&Value> = calls
+        .iter()
+        .filter(|call| call.2 == "read-text")
+        .map(|call| &call.3["pageSize"])
+        .collect();
+    assert_eq!(sizes, [&json!(200), &json!(64)]);
 }
