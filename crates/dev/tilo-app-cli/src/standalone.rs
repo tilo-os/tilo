@@ -2,7 +2,9 @@
 //! workspace tests: the SDK's `[patch]` set, its lockfile, toolchain, target
 //! flags and profiles. All of it is derived from the SDK's own workspace files,
 //! read from the checkout the app builds against or, for a git SDK, embedded in
-//! this CLI at the commit the dependency is pinned to.
+//! this CLI at the commit the dependency is pinned to. An app on the published
+//! SDK needs only the toolchain, target flags and profiles: its crates name
+//! their dependencies by version and carry no `[patch]`.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -24,6 +26,7 @@ const EMBEDDED_MANIFEST: &str = include_str!("../../../../Cargo.toml");
 const EMBEDDED_LOCK: &str = include_str!("../../../../Cargo.lock");
 const EMBEDDED_TOOLCHAIN: &str = include_str!("../../../../rust-toolchain.toml");
 const EMBEDDED_CARGO_CONFIG: &str = include_str!("../../../../.cargo/config.toml");
+const EMBEDDED_SDK_MANIFEST: &str = include_str!("../../../sdk/tilo-app/Cargo.toml");
 
 /// The crates an app links: the SDK and the shared toolkit a thin build uses.
 const SDK_ROOTS: [&str; 2] = ["tilo-app", "runtime-dylib"];
@@ -40,6 +43,9 @@ pub enum SdkSource {
     Checkout(PathBuf),
     /// A Tilo repository, pinned to `rev` or following its default branch.
     Git { url: String, rev: Option<String> },
+    /// The published SDK: `tilo-app` from crates.io, or whatever registry
+    /// Cargo's source replacement names, at this version requirement.
+    Registry { version: String },
 }
 
 impl SdkSource {
@@ -52,7 +58,15 @@ impl SdkSource {
                 Some(rev) => format!("git = {url:?}, rev = {rev:?}"),
                 None => format!("git = {url:?}"),
             },
+            Self::Registry { version } => format!("version = {version:?}"),
         }
+    }
+
+    /// Whether the app builds on published crates, which bring no `[patch]`,
+    /// lockfile or shared toolkit dylib.
+    #[must_use]
+    pub fn is_registry(&self) -> bool {
+        matches!(self, Self::Registry { .. })
     }
 
     /// One line for humans: where the SDK comes from.
@@ -65,6 +79,7 @@ impl SdkSource {
                 rev: Some(rev),
             } => format!("{url} at {rev}"),
             Self::Git { url, rev: None } => format!("{url} (default branch)"),
+            Self::Registry { version } => format!("tilo-app {version} from the registry"),
         }
     }
 }
@@ -76,6 +91,7 @@ pub struct Baseline {
     lock: String,
     toolchain: toml::Table,
     cargo_config: toml::Table,
+    sdk_version: Option<String>,
 }
 
 impl Baseline {
@@ -90,6 +106,7 @@ impl Baseline {
             EMBEDDED_LOCK.to_owned(),
             EMBEDDED_TOOLCHAIN,
             EMBEDDED_CARGO_CONFIG,
+            EMBEDDED_SDK_MANIFEST,
         )
     }
 
@@ -108,20 +125,41 @@ impl Baseline {
             read("Cargo.lock", EMBEDDED_LOCK),
             &read("rust-toolchain.toml", EMBEDDED_TOOLCHAIN),
             &read(".cargo/config.toml", EMBEDDED_CARGO_CONFIG),
+            &read("crates/sdk/tilo-app/Cargo.toml", EMBEDDED_SDK_MANIFEST),
         )
     }
 
-    fn parse(manifest: &str, lock: String, toolchain: &str, cargo_config: &str) -> Result<Self> {
+    fn parse(
+        manifest: &str,
+        lock: String,
+        toolchain: &str,
+        cargo_config: &str,
+        sdk_manifest: &str,
+    ) -> Result<Self> {
         let manifest = toml::from_str(manifest).context("parsing the SDK workspace Cargo.toml")?;
         let toolchain = toml::from_str(toolchain).context("parsing the SDK rust-toolchain.toml")?;
         let cargo_config =
             toml::from_str(cargo_config).context("parsing the SDK .cargo/config.toml")?;
+        let sdk_manifest: toml::Table =
+            toml::from_str(sdk_manifest).context("parsing the tilo-app Cargo.toml")?;
+        let sdk_version = sdk_manifest
+            .get("package")
+            .and_then(|package| package.get("version"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned);
         Ok(Self {
             manifest,
             lock,
             toolchain,
             cargo_config,
+            sdk_version,
         })
+    }
+
+    /// The version of `tilo-app` these files belong to.
+    #[must_use]
+    pub fn sdk_version(&self) -> Option<&str> {
+        self.sdk_version.as_deref()
     }
 
     fn locked_packages(&self) -> Vec<toml::Value> {
@@ -165,9 +203,16 @@ pub struct Standalone {
 }
 
 impl Standalone {
-    /// The `[dependencies]` entries for the SDK and the optional shared toolkit.
+    /// The `[dependencies]` entries for the SDK and, from a checkout or git,
+    /// the optional shared toolkit.
     #[must_use]
     pub fn dependencies(&self) -> String {
+        if self.source.is_registry() {
+            return format!(
+                "ui = {{ package = \"tilo-app\", {} }}\n",
+                self.source.locate("crates/sdk/tilo-app")
+            );
+        }
         format!(
             "ui = {{ package = \"tilo-app\", {} }}\nruntime-dylib = {{ {}, optional = true }}\n",
             self.source.locate("crates/sdk/tilo-app"),
@@ -186,6 +231,7 @@ impl Standalone {
         let packages = self.baseline.locked_packages();
         let closure = Baseline::sdk_closure(&packages);
         let mut patches = Vec::new();
+        let registry = self.source.is_registry();
         let workspace_patches = self
             .baseline
             .manifest
@@ -193,7 +239,7 @@ impl Standalone {
             .and_then(|patch| patch.get("crates-io"))
             .and_then(toml::Value::as_table);
         for (name, patch) in workspace_patches.into_iter().flatten() {
-            if UNPATCHED.contains(&name.as_str()) || !closure.contains(name) {
+            if registry || UNPATCHED.contains(&name.as_str()) || !closure.contains(name) {
                 continue;
             }
             let location = match patch.get("path").and_then(toml::Value::as_str) {
@@ -256,12 +302,17 @@ impl Standalone {
     ///
     /// Returns an error if a generated file cannot be serialised.
     pub fn files(&self) -> Result<Vec<(PathBuf, String)>> {
-        Ok(vec![
-            (PathBuf::from("Cargo.lock"), self.baseline.lock.clone()),
+        let mut files = vec![
             (PathBuf::from("rust-toolchain.toml"), self.toolchain()?),
             (PathBuf::from(".cargo/config.toml"), self.cargo_config()?),
             (PathBuf::from(".gitignore"), "/target\n".to_owned()),
-        ])
+        ];
+        // The workspace's lockfile names its own path crates; published crates
+        // resolve from the registry on the first build.
+        if !self.source.is_registry() {
+            files.insert(0, (PathBuf::from("Cargo.lock"), self.baseline.lock.clone()));
+        }
+        Ok(files)
     }
 
     /// The SDK's compiler. A thin app links the toolkit dylib the OS ships,

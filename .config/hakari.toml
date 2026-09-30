@@ -73,9 +73,9 @@ third-party = [
 #   a host stack after desktop-model gains a member dependency, list it here.
 # - tilo-crypto is also built standalone from registry dependencies only
 #   (os/kernel/project-crate.py).
-# - tilo-vm, its protocol and xdg-paths are the tilo-vm Windows CLI's whole
+# - tilo-vm, its protocol and tilo-xdg-paths are the tilo-vm Windows CLI's whole
 #   workspace graph; keep that cross build to the crates it uses.
-# - atomic-file is the builder image's sccache canary, compiled cold into an
+# - tilo-atomic-file is the builder image's sccache canary, compiled cold into an
 #   empty namespace (build-builder-image.yml); it must stay small.
 workspace-members = [
     # tilo-desktop-model and its member dependencies
@@ -92,10 +92,10 @@ workspace-members = [
     # tilo-vm Windows CLI
     "tilo-vm",
     "tilo-vm-protocol",
-    "xdg-paths",
+    "tilo-xdg-paths",
     # builder sccache canary and its member dependency
-    "advisory-lock",
-    "atomic-file",
+    "tilo-advisory-lock",
+    "tilo-atomic-file",
     # The [patch.crates-io] replacement for rustls-native-certs sits below
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.

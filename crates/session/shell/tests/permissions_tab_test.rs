@@ -782,6 +782,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
         &tree.desktop.workspaces[0],
         pane,
         &shell::shell::launcher::ShellApps,
+        "viewer-user",
     );
     let row = listed
         .rows

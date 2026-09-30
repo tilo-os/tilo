@@ -621,6 +621,7 @@ workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis
 workspace-settings-expiry-always = Immer
 workspace-settings-granted-by-person = erteilt von { $id }
+workspace-settings-granted-by-you = von dir erteilt
 workspace-settings-granted-by-app = erteilt von der App { $app }
 workspace-settings-granted-by-agent = erteilt von Agent { $id }
 workspace-settings-granted-by-token = erteilt über Token { $id }

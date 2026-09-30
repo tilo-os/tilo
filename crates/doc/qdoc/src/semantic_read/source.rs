@@ -137,6 +137,15 @@ impl<'a> Source<'a> {
         })?;
         Ok(result)
     }
+    /// The attribute map of `block` (heading level, list numbering, a cell's
+    /// place), if it has one.
+    ///
+    /// # Errors
+    ///
+    /// As [`Source::field`].
+    pub fn block_attrs(&self, block: &ObjId) -> Result<Option<ObjId>, ReadError> {
+        self.object(block, crate::schema::BLOCK_ATTRS, ObjType::Map)
+    }
     /// The winning string under `key`, or empty when it is absent or not a string.
     ///
     /// # Errors
