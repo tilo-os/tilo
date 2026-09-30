@@ -11253,7 +11253,7 @@ impl ui::undo::UndoPoints for WordProcessorWidget {
             tilo_actions::ActionContext::for_resource(
                 "Edit document",
                 resource_id,
-                "word_processor.document",
+                "tilo.rich-text",
                 resource_label,
             )
             .with_app("org.tilo.Writer", "Writer")

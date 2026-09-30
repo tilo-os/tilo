@@ -1839,11 +1839,6 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
     if let Some(file) = &ctx.local_file {
         known_tracks.insert(file.id.clone());
     }
-    if id == "music.library" {
-        return provide_resources(ctx, &AutoCommit::new())
-            .into_iter()
-            .next();
-    }
     if id == "music.player:player" {
         return Some(with_playback_actions(
             Resource::new("music.player:player", "music.player", "Player"),
@@ -1894,10 +1889,22 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::MusicApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.music_resource_ctx(), doc)
+        let state =
+            <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Music>(
+            "music.library",
+            "Library",
+            &state,
+        );
+        root.children
+            .extend(live_device_resources(&self.music_resource_ctx()));
+        vec![root]
     }
 
-    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "music.library" {
+            return self.publish_resources(doc).into_iter().next();
+        }
         let ctx = self.music_resource_ctx_for_id(id)?;
         resource_by_id(&ctx, id)
     }

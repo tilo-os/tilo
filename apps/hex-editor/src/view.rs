@@ -2231,25 +2231,14 @@ impl Widget for HexView {
 }
 
 impl ui::resources::PublishesResources for HexView {
-    /// Standalone / `--shots` / unit tests publish the full hand tree. When the
+    /// Standalone / `--shots` / unit tests publish the document door. When the
     /// framework hosts the surface, [`tilo_resource::publish`] already owns
     /// `hex_editor.document` — keep only live cursor / selection byte extras.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.hosted {
             return crate::actions::live_buffer_extras(&self.hex_resource_ctx());
         }
-        let ctx = self.hex_resource_ctx();
-        let state = crate::resource::HexState {
-            label: ctx.label.clone(),
-        };
-        let mut root = ui::tilo_resource::publish::<crate::resource::HexEditor>(
-            "hex_editor.document",
-            &ctx.label,
-            &state,
-        );
-        root.children
-            .extend(crate::actions::live_buffer_extras(&ctx));
-        vec![root]
+        self.publish_resources(doc)
     }
 }
 

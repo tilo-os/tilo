@@ -379,25 +379,31 @@ impl SlidesDoc {
         name: &str,
         on: bool,
     ) -> bool {
-        let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
+        let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return false;
         };
         let blocks =
             tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
-        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = tilo_doc::model::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
-        };
-        for block in blocks.iter().filter(|block| !block.text.is_empty()) {
-            let len = block.text.chars().count();
-            dm.remove_mark(&block.id, 0, len, name);
-            if on {
-                dm.add_mark(&block.id, 0, len, name, true);
-            }
+        let spans: Vec<tilo_document::action::Span> = blocks
+            .iter()
+            .filter(|block| !block.text.is_empty())
+            .map(|block| tilo_document::action::Span {
+                block: block.id.clone(),
+                start: 0,
+                end: block.text.chars().count(),
+            })
+            .collect();
+        if spans.is_empty() {
+            return true;
         }
-        true
+        let action = tilo_document::RichTextAction::SetMark {
+            region: tilo_document::action::RegionKind::Body,
+            spans,
+            name: name.to_string(),
+            value: on.then_some(tilo_document::action::MarkVal::Bool(true)),
+            also_clear: Vec::new(),
+        };
+        action.apply_under(doc, &body).is_ok()
     }
 
     /// Every text element Map still in the first format: a plain `text`
@@ -683,7 +689,7 @@ impl SlidesDoc {
         del: usize,
         ins: &str,
     ) {
-        let Some((_, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
+        let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return;
         };
         let blocks =
@@ -700,18 +706,14 @@ impl SlidesDoc {
         }) else {
             return;
         };
-        let mut ids = tilo_doc::model::IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = tilo_doc::model::DocMut {
-            doc,
-            c: &containers,
-            ids: &mut ids,
+        let action = tilo_document::RichTextAction::SpliceText {
+            region: tilo_document::action::RegionKind::Body,
+            block,
+            at: offset,
+            del,
+            ins: ins.to_string(),
         };
-        dm.splice_text(
-            &block,
-            offset,
-            isize::try_from(del).unwrap_or(isize::MAX),
-            ins,
-        );
+        let _ = action.apply_under(doc, &body);
     }
 
     /// The body of element `elem_id` on slide `slide_idx`, and its containers.

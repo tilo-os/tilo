@@ -529,7 +529,7 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::SnippetsApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.snippets_resource_ctx(), doc)
+        vec![self.published_library(doc)]
     }
 }
 
@@ -572,12 +572,12 @@ mod tests {
             .expect("a snippet resource names its id")
     }
 
-    // The complete tree (every tag and snippet), not the bounded contextual
-    // root Ctrl+K shows first, so the sweep reaches each snippet's actions.
+    // The published library: every tag and snippet from the document, so the
+    // sweep reaches each snippet's actions.
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| provide_resources(&SnippetsApp::new_demo().snippets_resource_ctx(), doc),
+        resources: |doc| SnippetsApp::new_demo().publish_resources(doc),
         palette: ["New snippet", "Delete snippet", "Reveal tagged snippets"],
         replay: [
             rename => |doc| encode(&rename_action(first_snippet(doc).id, "Converged Title")),

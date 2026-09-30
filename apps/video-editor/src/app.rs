@@ -7414,20 +7414,7 @@ impl ui::resources::PublishesResources for VideoEditorApp {
         if self.actions.is_hosted() {
             return crate::actions::live_playhead_resources(&self.video_resource_ctx());
         }
-        let ctx = self.video_resource_ctx();
-        let label = if ctx.project.name.is_empty() {
-            "Project".to_string()
-        } else {
-            ctx.project.name.clone()
-        };
-        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
-            "video.project",
-            &label,
-            &ctx.project,
-        );
-        root.children
-            .extend(crate::actions::live_playhead_resources(&ctx));
-        vec![root]
+        self.publish_resources(_doc)
     }
 }
 

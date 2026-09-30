@@ -340,7 +340,10 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
     clippy::too_many_lines,
     reason = "the small resource tree is kept together so labels, contracts, and hierarchy cannot drift"
 )]
-pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+/// The presentation tree: transport, tracks, local queue, and the shared library.
+/// [`resources`] publishes this through [`VideoPlayer`](crate::resource::VideoPlayer)
+/// and keeps these children, which depend on the live decoder and this device.
+pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
         // A portal-granted path and its decoder/cache state are meaningful
@@ -1043,6 +1046,21 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
     vec![app]
 }
 
+/// Standalone / `--shots` door. The resource publishes the application root;
+/// this peer's decoder and device library replace the static children.
+pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let state = crate::shared::read(doc);
+    let mut published = ui::tilo_resource::publish::<crate::resource::VideoPlayer>(
+        "video-player.application",
+        "Video Player",
+        &state,
+    );
+    if let Some(live) = application_tree(ctx, doc).into_iter().next() {
+        published.children = live.children;
+    }
+    vec![published]
+}
+
 /// Live decoder track/chapter projection for the palette — not CRDT.
 ///
 /// Standalone [`resources`] nests these under `media.video`. Hosted
@@ -1050,7 +1068,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
 /// slices alone so agents keep audio/subtitle/chapter rows without a second
 /// application or shared-library root beside [`crate::resource::VideoPlayer`].
 pub fn live_track_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
-    let Some(root) = resources(ctx, doc).into_iter().next() else {
+    let Some(root) = application_tree(ctx, doc).into_iter().next() else {
         return Vec::new();
     };
     let Some(media) = root

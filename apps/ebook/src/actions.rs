@@ -2199,16 +2199,25 @@ impl crate::app::BooksApp {
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "ebook.library" {
-            return Some(library_preference_actions(
-                Resource::new("ebook.library", "ebook.library", "Books library")
-                    .with_action(open_book_operation()),
-                doc,
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            return Some(ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
             ));
         }
         if id == "ebook.settings" {
-            let mut settings = settings_resource(doc);
-            settings.children.clear();
-            return Some(settings);
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            return ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
+            )
+            .children
+            .into_iter()
+            .find(|child| child.id.as_str() == "ebook.settings");
         }
         if let Some(book_id) = id.strip_prefix("ebook.selection:") {
             let ctx = self.current_book_resource_context()?;
@@ -2345,6 +2354,11 @@ mod tests {
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let (app, _seed, book_id, _group) = open_with_annotations();
         let mut resources = ui::resources::resources(&app, doc);
+        fn contains_id(resources: &[Resource], id: &str) -> bool {
+            resources
+                .iter()
+                .any(|resource| resource.id.as_str() == id || contains_id(&resource.children, id))
+        }
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
@@ -2357,6 +2371,9 @@ mod tests {
                     .map(|scheme| format!("ebook.scheme:{}", scheme.id)),
             );
         for id in lazy {
+            if contains_id(&resources, &id) {
+                continue;
+            }
             resources.push(
                 ui::resources::resource(&app, doc, &id).unwrap_or_else(|| panic!("{id} resolves")),
             );
@@ -2382,7 +2399,7 @@ mod tests {
                 }
                 AnnoKind::Note => format!("ebook.note:{}", annotation.id),
             };
-            if !seen.insert(id.clone()) {
+            if !seen.insert(id.clone()) || contains_id(&resources, &id) {
                 continue;
             }
             resources.push(

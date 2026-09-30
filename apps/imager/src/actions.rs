@@ -155,6 +155,11 @@ pub fn operation_resource(
 ) -> Resource {
     let device = device.unwrap_or("").to_string();
     let expected = device.clone();
+    let confirmation = if device.is_empty() {
+        ConfirmationPolicy::Confirm
+    } else {
+        ConfirmationPolicy::Phrase { phrase: device }
+    };
     let write = ActionSpec::typed_operation(
         "write",
         "Erase drive and write image",
@@ -176,7 +181,7 @@ pub fn operation_resource(
     .with_contract(ActionContract {
         permission: PermissionRequirement::Admin,
         risk: RiskLevel::Destructive,
-        confirmation: ConfirmationPolicy::Phrase { phrase: device },
+        confirmation,
         retry: RetryPolicy::AtMostOnce,
         // The handler starts the worker; status is a separate operation.
         execution: ExecutionMode::Immediate,
@@ -1058,12 +1063,18 @@ mod tests {
     /// profile come from the document, the local device observations from the
     /// sample drives with no job running.
     fn doc_resources(doc: &AutoCommit) -> Vec<Resource> {
-        plan_resources(
-            ImagerDoc::source(doc).as_ref(),
+        let state =
+            <crate::resource::Imager as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Imager>(
+            "imager.sources",
+            "Image sources",
+            &state,
+        )];
+        resources.extend(machine_local_resources(
             &sample_targets(),
             &crate::model::Progress::default(),
-            &ImagerDoc::profile(doc),
-        )
+        ));
+        resources
     }
 
     ui::action_contract_tests! {

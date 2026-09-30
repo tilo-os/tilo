@@ -800,6 +800,24 @@ pub(crate) fn document_children(shared: &crate::resource::TubeShared) -> Vec<Res
     ]
 }
 
+/// The open watch page, addressed as `tube.current:{id}`. Live presentation
+/// and the on-screen play/share controls share this one resource.
+pub(crate) fn current_watch_resource(model: &TubeModel) -> Option<Resource> {
+    let Route::Watch(id) = &model.route else {
+        return None;
+    };
+    let mut current = video_resource(model, id, true)?;
+    current.id.0 = format!("tube.current:{id}");
+    if let Some(play) = view_spec(
+        "play-pause",
+        "Play or pause",
+        &TubeOperation::TogglePlayback,
+    ) {
+        current = current.with_action(play);
+    }
+    Some(current)
+}
+
 /// Live presentation beside the framework root: current watch context, fetched
 /// catalogues, owner-local history/search hits, and Grayjay device sync.
 pub(crate) fn live_presentation_resources(
@@ -807,35 +825,19 @@ pub(crate) fn live_presentation_resources(
     device: &crate::sync::SyncView,
 ) -> Vec<Resource> {
     let mut extras = Vec::new();
-    if let Route::Watch(id) = &model.route
-        && let Some(mut current) = video_resource(model, id, true)
-    {
-        current.id.0 = format!("tube.current:{id}");
-        if let Some(play) = view_spec(
-            "play-pause",
-            "Play or pause",
-            &TubeOperation::TogglePlayback,
-        ) {
-            current = current.with_action(play);
-        }
+    if let Some(current) = current_watch_resource(model) {
         extras.push(current);
     }
-    if let Some(app) = provide_resources(model).into_iter().next() {
-        for child in app.children {
-            if child.id.0 == "tube.library" {
-                for nested in child.children {
-                    if matches!(
-                        nested.id.0.as_str(),
-                        "tube.videos"
-                            | "tube.creators"
-                            | "tube.playlists"
-                            | "tube.history"
-                            | "tube.search-results"
-                    ) {
-                        extras.push(nested);
-                    }
-                }
-            }
+    for nested in library_resource(model).children {
+        if matches!(
+            nested.id.0.as_str(),
+            "tube.videos"
+                | "tube.creators"
+                | "tube.playlists"
+                | "tube.history"
+                | "tube.search-results"
+        ) {
+            extras.push(nested);
         }
     }
     extras.push(provide_device_resources(device));
@@ -846,26 +848,20 @@ pub(crate) fn live_presentation_resources(
 /// view resources. Search/history/agents can therefore navigate Tube even when
 /// the watch page is not open, without materialising an unbounded catalogue.
 pub fn provide_resources(model: &TubeModel) -> Vec<Resource> {
-    let mut app = Resource::new("tube.app", "tube.application", "Tube");
-    // Current context is deliberately first: bounded palettes surface what the
-    // user is looking at before the broader known library.
-    if let Route::Watch(id) = &model.route
-        && let Some(mut current) = video_resource(model, id, true)
-    {
-        current.id.0 = format!("tube.current:{id}");
-        if let Some(play) = view_spec(
-            "play-pause",
-            "Play or pause",
-            &TubeOperation::TogglePlayback,
-        ) {
-            current = current.with_action(play);
-        }
-        app = app.with_child(current);
+    let shared = crate::resource::TubeShared::from_model(model);
+    let mut app = ui::tilo_resource::publish::<crate::resource::Tube>("tube.app", "Tube", &shared);
+    if let Some(current) = current_watch_resource(model) {
+        app.children.insert(0, current);
     }
-    app = app
-        .with_child(navigation_resource())
-        .with_child(library_resource(model))
-        .with_child(settings_resource(model));
+    if let Some(library) = app
+        .children
+        .iter_mut()
+        .find(|child| child.id.0 == "tube.library")
+    {
+        *library = library_resource(model);
+    } else {
+        app.children.push(library_resource(model));
+    }
     vec![app]
 }
 

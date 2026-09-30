@@ -1,11 +1,6 @@
 use super::*;
 fn resource() -> Resource {
-    Resource::new(
-        "word-processor.document",
-        "word_processor.document",
-        "Document",
-    )
-    .with_action(spec())
+    Resource::new("word-processor.document", "tilo.rich-text", "Document").with_action(spec())
 }
 
 #[test]

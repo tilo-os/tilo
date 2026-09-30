@@ -3869,7 +3869,19 @@ fn parse_transition(s: &str) -> Transition {
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::VideoEditorApp {
     pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.video_resource_ctx())
+        let ctx = self.video_resource_ctx();
+        let label = if ctx.project.name.is_empty() {
+            "Project".to_string()
+        } else {
+            ctx.project.name.clone()
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            "video.project",
+            &label,
+            &ctx.project,
+        );
+        root.children.extend(live_playhead_resources(&ctx));
+        vec![root]
     }
 }
 

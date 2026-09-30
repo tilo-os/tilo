@@ -306,16 +306,23 @@ mod tests {
         app.sync(&mut seeded, &ROOT);
         assert!(!app.is_hosted(), "standalone stays on the local host");
         let standalone = app.publish_resources(&seeded);
+        let camera = standalone
+            .iter()
+            .find(|resource| resource.kind == "camera")
+            .expect("standalone publishes the camera root");
         assert!(
-            standalone.iter().any(|r| r.kind == "camera.settings"),
-            "standalone keeps settings Document root"
+            camera
+                .children
+                .iter()
+                .any(|child| child.kind == "camera.settings"),
+            "settings ride the published camera"
         );
         assert!(
-            standalone
+            camera
+                .actions
                 .iter()
-                .find(|r| r.kind == "camera.capture")
-                .is_some_and(|r| r.actions.iter().any(|a| a.id == "video-mode")),
-            "standalone capture keeps mode Document ops"
+                .any(|action| action.id == "video-mode"),
+            "mode Document ops ride the published camera"
         );
 
         app.mark_hosted_for_test();

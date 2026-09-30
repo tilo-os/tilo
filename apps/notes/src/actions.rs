@@ -1823,14 +1823,12 @@ fn block_resource_in_page(
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut resources = vec![notebook_resource(ctx, doc), tags_resource(ctx)];
+    let mut notebook = notebook_resource(ctx, doc);
     let backlink_targets = canonical_backlink_index(doc, &ctx.pages)
         .into_keys()
         .collect::<HashSet<_>>();
-    for resource in &mut resources {
-        decorate_backlinks(resource, &backlink_targets);
-    }
-    resources
+    decorate_backlinks(&mut notebook, &backlink_targets);
+    vec![notebook]
 }
 
 fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
@@ -1857,6 +1855,11 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     // deterministic.
     let index = PageResourceIndex::new(&ctx.pages);
     let order = index.next_order(None);
+    // The declaration already published `new-page`. The standalone spec carries
+    // the current order and continuation identity, so it replaces that row.
+    notebook
+        .actions
+        .retain(|action| action.id.as_str() != "new-page");
     notebook = notebook.with_action(
         ActionSpec::prompted(
             "new-page",
@@ -1880,8 +1883,10 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     notebook = with_daily_note_action(notebook, ctx, &index);
 
     // `publish` already attached [`crate::resource::Notebook::children`];
-    // replace with the doc-enriched tree (previews, duplicate, tree moves).
+    // replace pages with the doc-enriched tree (previews, duplicate, tree
+    // moves) and keep the tag catalogue on the same notebook.
     notebook.children = notebook_page_children(&ctx.pages, Some(doc));
+    notebook.children.push(tags_resource(ctx));
     decorate_tag_actions(&mut notebook, ctx);
     notebook
 }
@@ -1923,10 +1928,10 @@ fn with_daily_note_action(
     )
 }
 
-fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
-    // Tags are sibling resources, not a page-tree hack. Assignment edges are
-    // exposed as absolute assign/unassign actions on each page, while tag
-    // records publish their own stable open/rename/delete identities.
+pub(crate) fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
+    // Tags ride the notebook. Assignment edges are exposed as absolute
+    // assign/unassign actions on each page, while tag records publish their
+    // own stable open/rename/delete identities.
     let mut tags_root = Resource::new("notes.tags", "notes.tags", "Tags");
     tags_root = tags_root.with_action(
         ActionSpec::prompted(
@@ -2740,15 +2745,23 @@ mod tests {
         {
             let (doc, projects_id, _a, _b, _inbox) = seeded();
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            assert_eq!(resources.len(), 2, "notebook + stable tags root");
+            assert_eq!(resources.len(), 1, "one notebook root");
             let notebook = &resources[0];
             assert_eq!(notebook.kind, "notes.notebook");
             let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(nb_actions.contains(&"new-page"), "{nb_actions:?}");
             assert!(nb_actions.contains(&"daily-note"), "{nb_actions:?}");
 
-            // Two root pages, in order.
-            assert_eq!(notebook.children.len(), 2, "Projects + Inbox");
+            // Two root pages, in order, plus the tag catalogue.
+            assert_eq!(
+                notebook
+                    .children
+                    .iter()
+                    .filter(|child| child.kind == "notes.page")
+                    .count(),
+                2,
+                "Projects + Inbox"
+            );
             let projects = notebook
                 .children
                 .iter()
@@ -3515,10 +3528,11 @@ mod tests {
             );
             NotesDoc::set_tag_assignment(&mut doc, projects, tag, true);
             let resources = provide_resources(&ctx_from(&doc), &doc);
-            let tags = resources
+            let tags = resources[0]
+                .children
                 .iter()
                 .find(|resource| resource.id.as_str() == "notes.tags")
-                .expect("tags root");
+                .expect("tags ride the notebook");
             let resource = tags
                 .children
                 .iter()

@@ -735,7 +735,19 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded(),
         registry: registry(),
-        resources: |doc| vec![resource(&ProjectDoc::read(doc))],
+        resources: |doc| {
+            let project = ProjectDoc::read(doc);
+            let label = if project.name.is_empty() {
+                "Image Editor"
+            } else {
+                project.name.as_str()
+            };
+            vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+                PROJECT_RESOURCE_ID,
+                label,
+                &project,
+            )]
+        },
         palette: ["Add exposure", "Remove adjustment", "Set contrast"],
         replay: [
             add_adjustment => |_| encode(ADD_ADJUSTMENT_TYPE, &AddAdjustment {

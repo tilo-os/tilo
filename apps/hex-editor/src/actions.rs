@@ -469,39 +469,20 @@ fn byte_edit_specs(ctx: &HexResourceCtx) -> Vec<ActionSpec> {
     specs
 }
 
-/// Build the resource tree the editor currently has open: the buffer as one
-/// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
-/// selection. Palette effects and local keyboard input use the same compact
-/// edit shape, but neither path replicates raw bytes.
-///
-/// Standalone / `--shots` / unit tests use this hand tree. When hosted,
-/// [`tilo_resource::publish`] owns the document door and
-/// [`live_buffer_extras`] keeps only the cursor slice.
-#[allow(
-    clippy::too_many_lines,
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the resource surface is one auditable declaration; serialization cannot fail for these serde-only values"
-)]
-pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
-    let mut root = Resource::new(
-        "hex_editor.document",
-        "hex_editor.document",
-        ctx.label.clone(),
-    );
-    for spec in root_palette_specs(ctx) {
-        root = root.with_action(spec);
-    }
-    for spec in byte_edit_specs(ctx) {
-        root = root.with_action(spec);
-    }
-    vec![root]
-}
-
 // Inherent resource publication (was ResourceProvider)
 impl crate::view::HexView {
     pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.hex_resource_ctx())
+        let ctx = self.hex_resource_ctx();
+        let state = crate::resource::HexState {
+            label: ctx.label.clone(),
+        };
+        let mut root = ui::tilo_resource::publish::<crate::resource::HexEditor>(
+            "hex_editor.document",
+            &ctx.label,
+            &state,
+        );
+        root.children.extend(live_buffer_extras(&ctx));
+        vec![root]
     }
 }
 
@@ -536,9 +517,8 @@ mod tests {
         view
     }
 
-    // The bytes are device-local: the editor publishes only local effect and
-    // view operations, never a document action, so its surface carries no
-    // collaborative registry and the sweep checks surface and protocol only.
+    // Byte edits are device-local effects. The published door also carries
+    // apply/group for the resource; the sweep checks the surface protocol.
     ui::action_contract_tests! {
         seed: open_view(&[0x00, 0x11, 0x22, 0x33]).1,
         registry: ActionRegistry::new(),
@@ -551,17 +531,16 @@ mod tests {
     #[test]
     fn document_resource_actions_follow_buffer_state() {
         // Open and save publish direct paths as confirmed jobs.
-        let resources = provide_resources(&HexResourceCtx {
+        let state = crate::resource::HexState {
             label: "x.bin".into(),
-            cursor: 0,
-            len: 1,
-            selection: None,
-            has_file: true,
-            can_undo: false,
-            can_redo: false,
-        });
+        };
+        let root = ui::tilo_resource::publish::<crate::resource::HexEditor>(
+            "hex_editor.document",
+            "x.bin",
+            &state,
+        );
         for id in ["open", "save"] {
-            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            let spec = root.actions.iter().find(|a| a.id == id).unwrap();
             assert_eq!(spec.params()[0].name, "path", "case {id}");
             assert!(
                 matches!(
@@ -690,6 +669,10 @@ mod tests {
         // The palette's "Delete byte" spec.
         let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice")
             .actions
             .iter()
             .find(|a| a.id == "delete-byte")
@@ -714,6 +697,10 @@ mod tests {
         view.model_mut().move_to(1, false);
         let resources = ui::resources::resources(&view, &doc);
         let spec = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice")
             .actions
             .iter()
             .find(|a| a.id == "overwrite-byte")

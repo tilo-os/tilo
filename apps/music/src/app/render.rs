@@ -1920,17 +1920,7 @@ impl ui::resources::PublishesResources for MusicApp {
         if self.actions.is_hosted() {
             return crate::actions::live_device_resources(&self.music_resource_ctx());
         }
-        let state =
-            <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Music>(
-            "music.library",
-            "Library",
-            &state,
-        );
-        root.children.extend(crate::actions::live_device_resources(
-            &self.music_resource_ctx(),
-        ));
-        vec![root]
+        self.publish_resources(doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {

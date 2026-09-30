@@ -269,7 +269,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
                 .resource
                 .as_ref()
                 .map(|resource| resource.kind.as_str()),
-            Some("word_processor.document")
+            Some("tilo.rich-text")
         );
     }
 }
