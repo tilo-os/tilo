@@ -9185,6 +9185,12 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
         tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
             .is_none()
     );
+    // The records' writer commits in the background: every write lands and
+    // the writer stops before its directory goes.
+    drop(tile);
+    store.flush();
+    drop(store);
+    drop(owners);
     std::fs::remove_dir_all(directory).unwrap();
 }
 

@@ -14,7 +14,7 @@ two could diverge:
   * the dev build's environment is the Containerfile's ENV block, plus only
     the documented LOCALVERSION suffix;
   * tilo-vmd builds a swapped kernel's initramfs with the dracut arguments
-    os/Containerfile uses for the image's initramfs.
+    os/scripts/build-initramfs.sh uses for the image's initramfs.
 
 Run: python3 tools/policy/check_kernel_dev_build.py
 """
@@ -29,7 +29,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 CONTAINERFILE = REPO / "os/kernel/Containerfile"
 DEV_BUILD = REPO / "os/kernel/dev-build.sh"
-IMAGE_CONTAINERFILE = REPO / "os/Containerfile"
+IMAGE_INITRAMFS = REPO / "os/scripts/build-initramfs.sh"
 VMD_BOOT = REPO / "crates/dev/tilo-vmd/src/boot.rs"
 
 SHARED_COMMANDS = ("prepare-source", "compile", "stage-modules")
@@ -74,7 +74,7 @@ def dev_env(text: str) -> dict[str, str]:
 
 
 def image_dracut_args(text: str) -> list[str]:
-    """os/Containerfile's dracut invocation for the image initramfs, minus
+    """The image initramfs's dracut invocation (os/scripts/build-initramfs.sh), minus
     the per-call words (`--force -v --kver "$kver" <output>`)."""
     match = re.search(r"dracut --force (.*?)\"/usr/lib/modules/\$kver/initramfs\.img\"", text, re.S)
     if not match:
@@ -162,13 +162,13 @@ def main() -> int:
                          "does not; add it to both or document it in DEV_ONLY_ENV here")
 
     # The swapped kernel's initramfs.
-    image_args = image_dracut_args(IMAGE_CONTAINERFILE.read_text())
+    image_args = image_dracut_args(IMAGE_INITRAMFS.read_text())
     vmd_args = vmd_dracut_args(VMD_BOOT.read_text())
     if not image_args:
-        fail(errors, "found no image initramfs dracut call in os/Containerfile")
+        fail(errors, "found no image initramfs dracut call in os/scripts/build-initramfs.sh")
     elif image_args != vmd_args:
         fail(errors, "tilo-vmd's IMAGE_DRACUT_ARGS (crates/dev/tilo-vmd/src/boot.rs) differ from "
-                     f"os/Containerfile's dracut arguments:\n    image:    {image_args}\n"
+                     f"os/scripts/build-initramfs.sh's dracut arguments:\n    image:    {image_args}\n"
                      f"    tilo-vmd: {vmd_args}")
 
     if errors:

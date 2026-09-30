@@ -3266,6 +3266,9 @@ mod tests {
         fn startup_keeps_unread_activity_passive() {
             let mut frame =
                 crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+            crate::shell::test_support::collaborator_renames_active_workspace(
+                &mut frame.chrome().tree_mut(),
+            );
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,

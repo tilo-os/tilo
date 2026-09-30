@@ -3786,6 +3786,9 @@ fn dispatch_control_command(
                 Vec::new(),
             )
         }
+        test_control::Command::ProvisionTestIdentity => {
+            (crate::compositor::dev_test_identity::respond(), Vec::new())
+        }
         cmd => {
             let state = FrameBuilderControlState {
                 fb: frame_builder,
@@ -12623,7 +12626,7 @@ mod tests {
             run(
                 &mut fb,
                 &[
-                    TouchpadEdge::SwipeBegin { fingers: 3 },
+                    TouchpadEdge::SwipeBegin { fingers: 4 },
                     TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
                     TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
                     TouchpadEdge::SwipeEnd { cancelled: false },
@@ -12632,7 +12635,7 @@ mod tests {
             assert_ne!(
                 fb.chrome().tree().desktop.active,
                 first,
-                "a three-finger downward swipe switches workspace"
+                "a four-finger downward swipe switches workspace"
             );
         }
         // Phase `set_modifiers_action_updates_ctx_mask`.
@@ -13594,6 +13597,9 @@ fn apply_shell_gesture(
         _ => {}
     }
     frame_builder.with_chrome(|st| match action {
+        GestureAction::SwitchStrip(dir) => {
+            st.switch_strip(dir);
+        }
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
@@ -14009,15 +14015,42 @@ mod gesture_wireup_tests {
                 st.add_workspace("second");
             });
             let before = fb.chrome().tree().desktop.active;
-            // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
+            // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
             apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
-                "a three-finger swipe must move the active workspace, not just resolve to an intent"
+                "a four-finger swipe must move the active workspace, not just resolve to an intent"
             );
         }
-        // Phase `a_four_finger_swipe_opens_and_closes_the_overview`.
+        // Phase `a_three_finger_vertical_swipe_focuses_the_neighbouring_strip`.
+        {
+            let mut fb = builder();
+            fb.with_chrome(|st| {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                ws.strips.push(crate::shell::state::Strip::new(
+                    crate::shell::state::StripId(9_000),
+                    "Below".to_owned(),
+                ));
+                drop(tree);
+                st.bump();
+            });
+            let workspace = fb.chrome().tree().desktop.active;
+            let (_, focused) = fb.chrome().strip_focus();
+            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            assert_eq!(
+                fb.chrome().strip_focus().1,
+                focused + 1,
+                "a three-finger swipe down must focus the strip below, as Super+↓ does"
+            );
+            assert_eq!(
+                fb.chrome().tree().desktop.active,
+                workspace,
+                "a strip switch stays on the workspace"
+            );
+        }
+        // Phase `a_pinch_opens_and_closes_the_overview`.
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);

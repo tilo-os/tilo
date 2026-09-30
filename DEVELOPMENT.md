@@ -44,6 +44,37 @@ The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
 does; `tilo-vm guide fedora-loop` maps its commands.
 
+### Board dev images on real hardware
+
+A board dev image is the board layer (`os/Containerfile.board`: firmware, device
+tree, initramfs) on the same commit's aarch64 dev image. Every `Build / OS dev`
+run with an aarch64 lane builds one per board in its own job (`board:
+lenovo-83ed`), a few minutes after the dev image:
+
+| Board | Image of one build | Moving tag (main) |
+| --- | --- | --- |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+
+To flash, get a disk of it: dispatch `Release / Dev VM disk` (`dev-disk.yml`) with
+the inputs the board job prints (`source_revision`, `base_image`, `dev_image`,
+`tag=lenovo-83ed-ci`, `architectures=aarch64`, `validate_boot=false`: CI's QEMU
+cannot boot a board device tree). Its summary links the installed disk,
+`tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT disk. Write it to a USB drive or
+the internal disk of at least 64 GB, then boot it from the firmware boot menu:
+
+```sh
+curl -fLO <disk URL from the run summary>
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
+```
+
+The installed system follows the moving tag, so later builds of main arrive with:
+
+```sh
+sudo bootc upgrade && sudo systemctl reboot
+# or one particular build:
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+```
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets

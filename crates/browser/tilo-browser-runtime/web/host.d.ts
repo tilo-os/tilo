@@ -188,7 +188,7 @@ export interface MountOptions {
   /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
   local?: LocalDesktop;
 }
-/** Which window of a local desktop an action call addresses. */
+/** Which window of a desktop an action call addresses. */
 export interface WindowOption {
   /** The window's tab id (a navigation route's `tab`); defaults to the focused window. */
   window?: string;
@@ -230,9 +230,8 @@ export interface DesktopMount {
    * applied. `resource` narrows to one resource and its children, including
    * one the application resolves only on request; the application's own
    * resolution wins over what the full listing shows (a Chat channel asked
-   * for by name lists its latest messages). On a local desktop, those of one
-   * window's app (`window`, else the focused window). Throws for a peer's
-   * canonical desktop.
+   * for by name lists its latest messages). On a desktop, those of one
+   * window's app (`window`, else the focused window).
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
   /**
@@ -240,8 +239,9 @@ export interface DesktopMount {
    * one the palette, agents and assistive technology use. Throws
    * `code: reason` when the address is not published now, the permissions
    * refuse it, the arguments do not bind, or its contract requires
-   * confirmation and `confirm` is not set. On a local desktop it addresses
-   * one window's app, as `actions` does.
+   * confirmation and `confirm` is not set. On a desktop it addresses one
+   * window's app, as `actions` does. Through a certified peer the action
+   * claims the mount's live presence only if it moved the mount's caret.
    */
   invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
   /**

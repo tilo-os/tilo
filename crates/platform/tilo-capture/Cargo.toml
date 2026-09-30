@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Camera, microphone, screen and document-scanner capture with one API on Linux, macOS and the web: GStreamer (v4l2 / AVFoundation) and the ScreenCast portal natively, getUserMedia and getDisplayMedia in the browser."
+description = "Camera, microphone, screen and document-scanner capture with one API on Linux, macOS and the web: GStreamer and the ScreenCast portal on Linux, AVFoundation on macOS, getUserMedia and getDisplayMedia in the browser."
 build = "build.rs"
 
 [lib]
@@ -15,9 +15,12 @@ path = "src/lib.rs"
 # nothing extra on the web, where the page's media devices serve all of them.
 [features]
 default = []
-camera = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
-microphone = ["dep:gstreamer", "dep:gstreamer-app"]
-screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashpd", "dep:tilo-rt"]
+camera = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "avfoundation"]
+microphone = ["dep:gstreamer", "dep:gstreamer-app", "avfoundation"]
+screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashpd", "dep:tilo-rt", "avfoundation"]
+# The macOS backend's frameworks, which the capabilities above select;
+# nothing on other targets.
+avfoundation = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2-core-graphics", "dep:block2", "dep:dispatch2"]
 scanner = ["dep:os-actions"]
 # Synthetic devices (`broker::synthetic`), for dependents' tests.
 test-support = []
@@ -28,10 +31,25 @@ thiserror.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+tilo-rt = { path = "../tilo-rt", optional = true }
+
+# GStreamer everywhere native but macOS, which captures through AVFoundation
+# and never links GStreamer.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "macos")))'.dependencies]
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 gstreamer-video = { workspace = true, optional = true }
-tilo-rt = { path = "../tilo-rt", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "block2", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSNotification", "NSObject", "NSOperation", "NSString", "NSValue"] }
+objc2-av-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-graphics", "objc2-core-media", "AVCaptureAudioDataOutput", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
+objc2-core-media = { version = "0.3", optional = true, default-features = false, features = ["std", "objc2-core-video", "CMBlockBuffer", "CMSampleBuffer"] }
+objc2-core-video = { version = "0.3", optional = true, default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "CFString"] }
+objc2-core-graphics = { version = "0.3", optional = true, default-features = false, features = ["std", "CGDirectDisplay"] }
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true, default-features = false, features = ["std", "objc2"] }
 
 # Capture descriptors pass between an app and its host.
 [target.'cfg(unix)'.dependencies]
