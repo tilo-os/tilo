@@ -60,6 +60,16 @@ const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 /// deliberately small; an exact item is materialised from the live snapshot
 /// by [`FileExplorerWidget::resource`] when a caller addresses it directly.
 const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
+/// The most entries one `move` takes.
+const MAX_MOVE_ENTRIES: usize = 256;
+
+/// A `move` of several of the current folder's entries into `folder`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MoveRequest {
+    entries: Vec<String>,
+    folder: String,
+    create: bool,
+}
 type MergePreflightResult = Arc<
     std::sync::Mutex<
         Option<(
@@ -538,6 +548,8 @@ pub struct FileExplorerWidget {
     merge_preflight_result: MergePreflightResult,
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
+    /// The value the operation being answered returns, when it returns one.
+    operation_result: Option<serde_json::Value>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     /// Settings' config root remote accounts are read from; `None` reads
     /// none (embedded and test views), so no ambient store is touched.
@@ -880,6 +892,7 @@ impl FileExplorerWidget {
             merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
             merge_preflight_pending: None,
             resource_invocation: None,
+            operation_result: None,
             resource_result: None,
             accounts_root: None,
             accounts_cache: Vec::new(),
@@ -6583,6 +6596,7 @@ impl FileExplorerWidget {
         let mut folder = self.folder_resource_base();
         Self::append_navigation_actions(&mut folder);
         folder.actions.push(Self::go_to_action());
+        folder.actions.push(self.move_action());
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
         self.append_nearby_receiver_resources(&mut folder);
@@ -6623,6 +6637,153 @@ impl FileExplorerWidget {
                     .expect("folder path is serializable")
             },
         )
+    }
+
+    /// `move`: put several of this folder's entries into another folder in
+    /// one step, creating that folder unless told not to. Answers with what
+    /// moved where.
+    #[allow(
+        clippy::expect_used,
+        reason = "a move request of strings and a flag is serializable"
+    )]
+    fn move_action(&self) -> ActionSpec {
+        ActionSpec::typed_operation(
+            "move",
+            "Move entries to folder",
+            "entry names, absolute folder path, e.g. /data/out/images",
+            OperationKind::Effect,
+            "files.move",
+            vec![
+                ActionParam::required(
+                    "entries",
+                    ParamType::Array,
+                    "Names of entries in this folder, e.g. [\"a.png\",\"b.jpg\"]",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_MOVE_ENTRIES,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+                })),
+                ActionParam::required(
+                    "folder",
+                    ParamType::Text,
+                    "Absolute path of the destination folder; names are kept",
+                ),
+                ActionParam::optional(
+                    "create",
+                    ParamType::Boolean,
+                    "Create the folder (and its parents) when missing; default true",
+                ),
+            ],
+            |args: &ActionArgs| {
+                let request = MoveRequest {
+                    entries: args
+                        .array("entries")
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|entry| entry.as_str().map(str::to_owned))
+                        .collect(),
+                    folder: args.text("folder").unwrap_or_default().to_owned(),
+                    create: args.boolean("create").unwrap_or(true),
+                };
+                EncodedAction::encode_operation("files.move", &request)
+                    .expect("move request is serializable")
+            },
+        )
+        .with_description(
+            "Move several entries of this folder into another folder in one call, creating it when missing",
+        )
+        .with_contract(ActionContract {
+            availability: if self.current_path.is_dir() {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "location_unavailable".into(),
+                    reason: "The current location lists no entries to move".into(),
+                }
+            },
+            permission: PermissionRequirement::Write,
+            retry: RetryPolicy::AtMostOnce,
+            reversible: false,
+            result: ResultSpec::Json {
+                schema: serde_json::json!({"type": "string"}),
+            },
+            ..ActionContract::default()
+        })
+    }
+
+    /// Carry out a [`MoveRequest`]: every entry is found before anything
+    /// moves, so a misspelt name moves nothing.
+    fn move_entries(&mut self, request: MoveRequest) -> Result<String, String> {
+        let folder = PathBuf::from(&request.folder);
+        if !folder.is_absolute() {
+            return Err(format!(
+                "{} is not an absolute path; pass the full destination, e.g. {}",
+                folder.display(),
+                self.current_path.join(&folder).display()
+            ));
+        }
+        let mut sources = Vec::with_capacity(request.entries.len());
+        let mut unknown = Vec::new();
+        for name in &request.entries {
+            let wanted = Path::new(name);
+            match self.entries.iter().find(|entry| {
+                entry.path == wanted || (entry.name == *name && !wanted.is_absolute())
+            }) {
+                Some(entry) => sources.push((entry.name.clone(), entry.path.clone())),
+                None => unknown.push(name.as_str()),
+            }
+        }
+        if !unknown.is_empty() {
+            let names: Vec<&str> = self
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect();
+            return Err(format!(
+                "not in {}: {}; nothing moved. Its entries: {}",
+                self.current_path.display(),
+                unknown.join(", "),
+                names.join(", ")
+            ));
+        }
+        let created = !folder.exists();
+        if created {
+            if !request.create {
+                return Err(format!(
+                    "{} does not exist; nothing moved. Call move again with create:true to make it",
+                    folder.display()
+                ));
+            }
+            std::fs::create_dir_all(&folder)
+                .map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
+        } else if !folder.is_dir() {
+            return Err(format!(
+                "{} is a file, not a folder; nothing moved",
+                folder.display()
+            ));
+        }
+        let mut moved = Vec::new();
+        let mut failed = Vec::new();
+        for (name, source) in sources {
+            match fileops::move_into(&source, &folder) {
+                Ok(_) => moved.push(name),
+                Err(error) => failed.push(format!("{name}: {error}")),
+            }
+        }
+        self.refresh();
+        let into = format!(
+            "{}{}",
+            folder.display(),
+            if created { " (created)" } else { "" }
+        );
+        let summary = format!("moved {} into {into}: {}", moved.len(), moved.join(", "));
+        if failed.is_empty() {
+            Ok(summary)
+        } else {
+            Err(format!("{summary}; not moved: {}", failed.join("; ")))
+        }
     }
 
     /// `move-to` and `copy-to` for one entry: put it into another folder,
@@ -8753,6 +8914,14 @@ impl FileExplorerWidget {
                 }
                 self.navigate(path);
             }
+            (OperationKind::Effect, "files.move") => {
+                let request: MoveRequest =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                if request.entries.is_empty() || request.entries.len() > MAX_MOVE_ENTRIES {
+                    return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
+                }
+                self.operation_result = Some(self.move_entries(request)?.into());
+            }
             (OperationKind::Effect, "files.transfer") => {
                 let [verb, resource_id, folder]: [String; 3] =
                     serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -8761,9 +8930,18 @@ impl FileExplorerWidget {
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 let folder = PathBuf::from(folder);
                 if !folder.is_absolute() || !folder.is_dir() {
+                    let name = source
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     return Err(format!(
-                        "{} is not an existing folder; create it with new-folder first",
-                        folder.display()
+                        "{} is not an existing folder. To create it and move there, call move on the folder with {}",
+                        folder.display(),
+                        format!(
+                            r#"{{"entries":[{}],"folder":{},"create":true}}"#,
+                            serde_json::Value::from(name),
+                            serde_json::Value::from(folder.to_string_lossy().into_owned())
+                        )
                     ));
                 }
                 match verb.as_str() {
@@ -9103,7 +9281,10 @@ impl FileExplorerWidget {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput {
+                    value: self.operation_result.take(),
+                    ..tilo_actions::ActionOutput::default()
+                },
             )))
         }
     }
