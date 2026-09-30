@@ -7,6 +7,7 @@
 //! its responsibility-specific implementation units.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -98,6 +99,12 @@ struct AppHandler {
     decorations: linux_header::Decorations,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
+    /// Settings.json changed while this process was idle. The next
+    /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
+    settings_store_changed: Arc<AtomicBool>,
+    /// Lives for the event loop so an idle app still hears Theme Studio
+    /// and compositor appearance writes.
+    _settings_watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 #[cfg(target_os = "macos")]
@@ -3322,7 +3329,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // event loop; this is short-lived only while GPU setup runs.
             audience.window.request_redraw();
         }
+        let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
         let app = &mut self.app;
+        if force_theme {
+            if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
+            {
+                app.last_theme_store_check = due;
+            }
+        }
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
@@ -3828,6 +3842,21 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
+        let settings_store_changed = Arc::new(AtomicBool::new(false));
+        let settings_watch = {
+            let _entry = self.enter_wake_scope();
+            self.watch_system_settings
+                .then(|| {
+                    let pending = Arc::clone(&settings_store_changed);
+                    let wake = crate::wake::WakeHandle::new();
+                    settings_store::watch::watch_settings(move || {
+                        pending.store(true, Ordering::Release);
+                        wake.wake();
+                    })
+                    .ok()
+                })
+                .flatten()
+        };
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -3879,6 +3908,8 @@ impl App {
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
             host_appearance,
+            settings_store_changed,
+            _settings_watch: settings_watch,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

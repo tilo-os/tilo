@@ -3248,7 +3248,21 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -5475,6 +5489,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
@@ -8392,6 +8407,17 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
+            // Input/display reload above does not re-theme. An appearance
+            // write must rebuild chrome on this tick and wake tiled apps so
+            // they paint the new Theme instead of keeping the last buffer.
+            frame_builder
+                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
+            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+            }
+            force_first_paint = true;
             let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
@@ -13705,29 +13731,43 @@ fn apply_shell_gesture(
         }
         _ => {}
     }
-    frame_builder.with_chrome(|st| match action {
+    match action {
         GestureAction::SwitchStrip(dir) => {
-            st.switch_strip(dir);
+            frame_builder.with_chrome(|st| {
+                st.switch_strip(dir);
+            });
         }
         GestureAction::SwitchWorkspace(dir) => {
-            st.switch_workspace(dir);
+            let mut switched = false;
+            frame_builder.with_chrome(|st| {
+                switched = st.switch_workspace(dir);
+            });
+            if switched {
+                frame_builder.host_mut().start_workspace_switch_frames();
+            }
+        }
+        GestureAction::ShowOverview => {
+            frame_builder.with_chrome(|st| {
+                if !st.overlays.overview {
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
+        }
+        GestureAction::HideOverview => {
+            frame_builder.with_chrome(|st| {
+                if st.overlays.overview {
+                    st.overlays.overview = false;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
         GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
-        GestureAction::ShowOverview => {
-            if !st.overlays.overview {
-                st.overlays.overview = true;
-                st.bump();
-            }
-        }
-        GestureAction::HideOverview => {
-            if st.overlays.overview {
-                st.overlays.overview = false;
-                st.bump();
-            }
-        }
-    });
+    }
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it

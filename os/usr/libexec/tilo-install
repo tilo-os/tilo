@@ -1619,6 +1619,29 @@ if [ "$WANT_CODECS" -eq 1 ]; then
   log "  wrote $CODECS_SEED (installed on first boot once online)"
 fi
 
+if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]; then
+  step "Copying Wi-Fi and identity from the setup machine"
+  HANDOFF_SRC="${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff"
+  [ -n "$DEPLOY_ETC" ] || die "setup handoff is present but the installed /etc was not found"
+  HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
+  [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
+  if [ -d "$HANDOFF_SRC/etc" ]; then
+    cp -a "$HANDOFF_SRC/etc/." "$DEPLOY_ETC/"
+  fi
+  if [ -d "$HANDOFF_SRC/var" ]; then
+    cp -a "$HANDOFF_SRC/var/." "$HANDOFF_VAR/"
+  fi
+  key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
+  if [ -f "$key" ]; then
+    chgrp tilo-identity "$key" || die "tilo-identity group is missing; cannot install the device key"
+    chmod 0640 "$key"
+  fi
+  if [ -d "$DEPLOY_ETC/NetworkManager/system-connections" ]; then
+    find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +
+  fi
+  log "  applied the setup handoff"
+fi
+
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
