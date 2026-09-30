@@ -1743,7 +1743,7 @@ mod command_path_tests {
                 &mut doc,
                 &automerge::ROOT,
             )
-            .map_err(|error| ui::tilo_actions::DoorError::Failed(error.to_string()))?;
+            .map_err(ui::tilo_actions::DoorError::Failed)?;
             match started {
                 Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
                 _ => panic!("move completes at once"),

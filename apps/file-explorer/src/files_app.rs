@@ -8,6 +8,8 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
+use std::fmt::Write as _;
+
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
@@ -6715,7 +6717,7 @@ impl FileExplorerWidget {
 
     /// Carry out a [`MoveRequest`]: every entry is found before anything
     /// moves, so a misspelt name moves nothing.
-    fn move_entries(&mut self, request: MoveRequest) -> Result<String, String> {
+    fn move_entries(&mut self, request: &MoveRequest) -> Result<String, String> {
         let folder = PathBuf::from(&request.folder);
         if !folder.is_absolute() {
             return Err(format!(
@@ -8920,7 +8922,7 @@ impl FileExplorerWidget {
                 if request.entries.is_empty() || request.entries.len() > MAX_MOVE_ENTRIES {
                     return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
                 }
-                self.operation_result = Some(self.move_entries(request)?.into());
+                self.operation_result = Some(self.move_entries(&request)?.into());
             }
             (OperationKind::Effect, "files.transfer") => {
                 let [verb, resource_id, folder]: [String; 3] =
@@ -8934,15 +8936,16 @@ impl FileExplorerWidget {
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    return Err(format!(
-                        "{} is not an existing folder. To create it and move there, call move on the folder with {}",
-                        folder.display(),
-                        format!(
-                            r#"{{"entries":[{}],"folder":{},"create":true}}"#,
+                    let mut error = format!("{} is not an existing folder.", folder.display());
+                    if verb == "move-to" {
+                        let _ = write!(
+                            error,
+                            r#" To create it and move there, call move on the folder with {{"entries":[{}],"folder":{},"create":true}}"#,
                             serde_json::Value::from(name),
                             serde_json::Value::from(folder.to_string_lossy().into_owned())
-                        )
-                    ));
+                        );
+                    }
+                    return Err(error);
                 }
                 match verb.as_str() {
                     "move-to" => fileops::move_into(&source, &folder)?,
