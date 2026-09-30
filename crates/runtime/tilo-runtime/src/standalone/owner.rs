@@ -185,7 +185,7 @@ impl RoomOwner {
                 self.workspace.keep_effect_receipt(&self.room, receipt)?;
             }
             CommitOperation::DesktopCommand { .. }
-            | CommitOperation::AgentRuntime { .. }
+            | CommitOperation::RetiredAgentRuntime
             | CommitOperation::DocumentImport { .. } => {
                 return Err("the runtime room owner commits documents and effect receipts".into());
             }

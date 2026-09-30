@@ -431,7 +431,7 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
-            brightness_available: true,
+            brightness_available: false,
             displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
@@ -598,6 +598,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Bumped when an appearance action writes the store so the live frame
+    /// applies theme and locale on the next paint without waiting for the
+    /// settings-file poll.
+    pub appearance_generation: u64,
     /// Last non-UI tree mutation observed by the compositor tick.
     observed_external_tree_revision: u64,
     /// Passive, private history awareness for the top bar. Never serialized
@@ -819,6 +823,7 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
@@ -1329,6 +1334,14 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Persist-side appearance change: chrome rebuilds, and the live frame
+    /// applies the configured theme and locale on the next paint instead of
+    /// waiting for the settings-file poll.
+    pub fn note_appearance_change(&mut self) {
+        self.appearance_generation = self.appearance_generation.wrapping_add(1);
+        self.bump();
     }
 
     /// Fold non-chrome mutations of the shared tree into retained chrome's

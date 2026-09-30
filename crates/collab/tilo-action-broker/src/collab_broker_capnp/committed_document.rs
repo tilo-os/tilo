@@ -102,7 +102,6 @@ impl CapnpChannelHandle {
                     || local.app_id != checked_route.app_id
                     || local.workspace_id != checked_route.cluster_id
                     || admitted.agent_id.is_some()
-                    || admitted.enrolled
                 {
                     return Err("committed read launcher custody ended".into());
                 }

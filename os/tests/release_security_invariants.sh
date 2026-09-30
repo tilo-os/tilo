@@ -117,6 +117,13 @@ if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow"; then
 else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
+if grep -Fq 'cosign attach sbom --type spdx --input-format json' "$workflow" \
+   && [ "$(grep -Fc './os/dev/verify-release-sbom.sh "$image"' "$workflow")" -eq 3 ] \
+   && ! grep -Fq -- '--type spdxjson' "$workflow"; then
+  ok 'release gates verify the complete registry SBOM through logged provenance'
+else
+  bad 'a release path bypasses the logged SBOM digest and complete registry attachment'
+fi
 
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
@@ -229,15 +236,16 @@ hex="$(printf 'a%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_APP_COLLECTION_SHA256="$hex" \
-   TILO_DESKTOP_PAYLOAD_SHA256="$hex" \
+   TILO_DESKTOP_PAYLOAD_SHA256="$hex" TILO_SBOM_SHA256="$hex" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
-  ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
+   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.runDetails.byproducts[] | select(.name == "spdx-sbom" and .uri == "sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null; then
+  ok 'SLSA provenance binds generation, source inputs, app collection, image and SBOM digests'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi

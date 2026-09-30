@@ -92,6 +92,69 @@ enum RelayStartupMode {
     NativeInteractiveWorkspaceOwner,
 }
 
+/// Replaces a governed workspace's admitted members and the handshake
+/// allowlist derived from them, one replacement at a time.
+#[derive(Clone)]
+pub(crate) struct GovernedAccessWriter {
+    workspaces: WorkspaceRegistry,
+    handshake_trust: HandshakeTrust,
+    update: Arc<AsyncMutex<()>>,
+    state_root: PathBuf,
+}
+
+impl GovernedAccessWriter {
+    pub(crate) fn state_root(&self) -> &std::path::Path {
+        &self.state_root
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+    )]
+    pub(crate) async fn replace(
+        &self,
+        workspace_id: u64,
+        pinned: bool,
+        access: tilo_peer_state::GovernedAccess,
+    ) -> Result<(), RelayError> {
+        if self.handshake_trust.allow_any {
+            return Err(RelayError::GovernedAccess(
+                "allow_any cannot host governed workspace admission".into(),
+            ));
+        }
+        let _update = self.update.lock().await;
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            self.state_root.clone(),
+            workspace_id,
+            pinned,
+            false,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        let mut member_devices = access.member_devices;
+        member_devices.sort_unstable();
+        member_devices.dedup();
+        let mut member_user_roots = access.member_user_roots;
+        member_user_roots.sort_unstable();
+        member_user_roots.dedup();
+        let result = crate::workspace_io::replace_governed_access(
+            &workspace,
+            crate::store::GovernedAccessRecord {
+                member_devices,
+                member_user_roots,
+            },
+        )
+        .await;
+        // Also run after an I/O error: replace_governed_access keeps every
+        // requested removal narrowed in memory, and the handshake union must
+        // reflect that fail-closed ceiling.
+        self.handshake_trust.refresh(&self.workspaces).await;
+        result?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct HandshakeTrust {
     base_roots: Arc<HashSet<[u8; 32]>>,
@@ -211,6 +274,8 @@ pub struct Relay {
     handshake_trust: HandshakeTrust,
     governed_access_update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
+    /// The rooms this relay governs; absent when it hosts no room authority.
+    rooms: Option<crate::rooms::Rooms>,
     /// Exact server-side room ceiling for native interactive startup. A
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
@@ -579,7 +644,6 @@ impl Relay {
         let live_trust_policy = handshake_trust.live_policy.clone();
         let handler = RelayProtocol {
             v2: false,
-            agent_reads_v1: false,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -645,12 +709,50 @@ impl Relay {
             relay: handler.clone(),
             certification: certification.clone(),
         });
+        let governed_access_update = Arc::new(AsyncMutex::new(()));
+        // A certified host governs the rooms it creates, unless its embedder
+        // serves workspace joining itself.
+        let rooms = if startup_mode == RelayStartupMode::CertifiedHost
+            && !handshake_trust.allow_any
+            && !additional_protocols.iter().any(|(alpn, _)| {
+                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
+                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
+            }) {
+            Some(
+                crate::rooms::Rooms::open(
+                    crate::rooms::RoomHost {
+                        workspaces: workspaces.clone(),
+                        access: GovernedAccessWriter {
+                            workspaces: workspaces.clone(),
+                            handshake_trust: handshake_trust.clone(),
+                            update: Arc::clone(&governed_access_update),
+                            state_root: cfg.state_root.clone(),
+                        },
+                        records: crate::room_records::RoomRecords::new(
+                            workspaces.clone(),
+                            identity.device_cert.device_public_key,
+                            identity.user_public_key,
+                            identity.device_signing_key.clone(),
+                            metrics.clone(),
+                        ),
+                        endpoint: endpoint.clone(),
+                        cert: identity.device_cert.clone(),
+                        key: identity.device_signing_key.clone(),
+                        revocations: revocations.clone(),
+                    },
+                    cfg.state_root.join("rooms"),
+                )
+                .await
+                .map_err(|error| RelayError::Identity(format!("governed rooms: {error}")))?,
+            )
+        } else {
+            None
+        };
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
                     v2: true,
-                    agent_reads_v1: true,
                     ..handler.clone()
                 },
             )
@@ -661,6 +763,17 @@ impl Relay {
                 .accept(DISCOVERY_ALPN, discovery)
                 .accept(MANAGEMENT_ALPN, management)
                 .accept(COMPUTE_ALPN, compute);
+        }
+        if let Some(rooms) = &rooms {
+            router = router
+                .accept(
+                    tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
+                    crate::workspace_join::WorkspaceJoinProtocol::new(rooms.join_service()),
+                )
+                .accept(
+                    crate::rooms::ROOM_ADMIN_ALPN,
+                    crate::rooms::RoomAdminProtocol::new(rooms.clone()),
+                );
         }
         for (alpn, handler) in additional_protocols {
             router = router.accept(alpn, handler);
@@ -733,10 +846,11 @@ impl Relay {
             web,
             compute_ready,
             handshake_trust,
-            governed_access_update: Arc::new(AsyncMutex::new(())),
+            governed_access_update,
             state_root: cfg.state_root,
             interactive_workspace_id,
             interactive_owner_trust,
+            rooms,
         })
     }
 
@@ -942,10 +1056,6 @@ impl Relay {
     /// relay or with a state root other than the relay's configured root, and
     /// [`RelayError::Store`] when workspace initialization or durable
     /// replacement fails.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-    )]
     pub async fn replace_governed_workspace_access(
         &self,
         workspace_id: u64,
@@ -964,36 +1074,24 @@ impl Relay {
             ));
         }
         self.ensure_workspace_mutation_scope(workspace_id)?;
-        let _update = self.governed_access_update.lock().await;
-        let workspace = crate::workspace_io::get_or_initialize(
-            &self.workspaces,
-            state_root,
-            workspace_id,
-            pinned,
-            false,
-            crate::peer::MAX_AUTOBOUND_WORKSPACES,
-        )
-        .await?;
-        let mut member_devices = access.member_devices;
-        member_devices.sort_unstable();
-        member_devices.dedup();
-        let mut member_user_roots = access.member_user_roots;
-        member_user_roots.sort_unstable();
-        member_user_roots.dedup();
-        let result = crate::workspace_io::replace_governed_access(
-            &workspace,
-            crate::store::GovernedAccessRecord {
-                member_devices,
-                member_user_roots,
-            },
-        )
-        .await;
-        // Also run after an I/O error: replace_governed_access keeps every
-        // requested removal narrowed in memory, and the handshake union must
-        // reflect that fail-closed ceiling.
-        self.handshake_trust.refresh(&self.workspaces).await;
-        result?;
-        Ok(())
+        self.governed_access_writer()
+            .replace(workspace_id, pinned, access)
+            .await
+    }
+
+    fn governed_access_writer(&self) -> GovernedAccessWriter {
+        GovernedAccessWriter {
+            workspaces: self.workspaces.clone(),
+            handshake_trust: self.handshake_trust.clone(),
+            update: Arc::clone(&self.governed_access_update),
+            state_root: self.state_root.clone(),
+        }
+    }
+
+    /// The rooms this relay governs, when it hosts the room authority.
+    #[must_use]
+    pub const fn rooms(&self) -> Option<&crate::rooms::Rooms> {
+        self.rooms.as_ref()
     }
 
     fn ensure_workspace_mutation_scope(&self, workspace_id: u64) -> Result<(), RelayError> {
@@ -1031,6 +1129,7 @@ impl Relay {
             self.own_cert.device_public_key,
             self.own_user_public_key,
             self.own_signing_key.clone(),
+            self.metrics.clone(),
         )
     }
 }
@@ -1827,7 +1926,6 @@ fn validate_native_interactive_workspace_identity(
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
     pub(crate) v2: bool,
-    pub(crate) agent_reads_v1: bool,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -2293,7 +2391,6 @@ async fn handle_conn(
         send,
         ctx.peer_context(),
         ctx.v2,
-        ctx.agent_reads_v1,
     ))
     .await;
     if let Err(e) = peer_result {
