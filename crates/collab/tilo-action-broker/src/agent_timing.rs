@@ -1,10 +1,10 @@
-//! Content-free agent latency marks shared by the broker and the Cloud host.
+//! Content-free agent latency marks of the broker.
 //!
 //! Every line carries only a static stage name, an optional opaque invocation
 //! id, a wall-clock microsecond stamp and numeric durations/counters; never
 //! arguments, text, record ids or keys. Filter with target
-//! `tilo_cloud_host::agent_timing` (the host's historical target, kept so one
-//! filter follows a step across the broker, worker and Store).
+//! `tilo_cloud_host::agent_timing` (the retired Cloud host's target, kept so
+//! existing filters still match).
 use std::time::{Duration, Instant};
 
 /// Stages shorter than this are not logged by [`slow`]; hot paths (every

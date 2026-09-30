@@ -56,7 +56,6 @@ workspace-hack = { version = "0.1" }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true
