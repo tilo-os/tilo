@@ -3802,9 +3802,17 @@ impl ui::resources::PublishesResources for VpnApp {
         if self.actions.is_hosted() {
             return Vec::new();
         }
+        vec![self.published_vault(&self.vault)]
+    }
+}
+
+impl VpnApp {
+    /// The vault door from [`tilo_resource::publish`], with this device's
+    /// tunnel availability written onto connect, disconnect, and delete.
+    pub(crate) fn published_vault(&self, vault: &crate::model::Vault) -> tilo_actions::Resource {
         let mut root =
-            ui::tilo_resource::publish::<crate::resource::Vpn>("vpn.vault", "VPN", &self.vault);
-        for connection in &self.vault.connections {
+            ui::tilo_resource::publish::<crate::resource::Vpn>("vpn.vault", "VPN", vault);
+        for connection in &vault.connections {
             let Some(resource) = root
                 .children
                 .iter_mut()
@@ -3867,7 +3875,7 @@ impl ui::resources::PublishesResources for VpnApp {
                 }
             }
         }
-        vec![root]
+        root
     }
 }
 

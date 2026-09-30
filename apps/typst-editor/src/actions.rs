@@ -303,17 +303,22 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
     extras
 }
 
-/// Full standalone / `--shots` tree: static workspace door plus live extras.
+/// Full standalone / `--shots` tree: the resource's published door, plus live
+/// diagnostics and preview pages on the open document.
 pub fn resources(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
-    let mut workspace = workspace_resource();
-    let mut document = workspace
+    let mut workspace = ui::tilo_resource::publish::<crate::resource::TypstEditor>(
+        "typst.workspace",
+        "Typst workspace",
+        &(),
+    );
+    if let Some(document) = workspace
         .children
-        .pop()
-        .unwrap_or_else(|| Resource::new("typst.current", "typst.document", "Current document"));
-    for extra in live_extras(ctx) {
-        document = document.with_child(extra);
+        .iter_mut()
+        .find(|child| child.kind == "typst.document")
+    {
+        document.children.extend(live_extras(ctx));
     }
-    vec![workspace.with_child(document)]
+    vec![workspace]
 }
 
 /// Decode one operation payload advertised by this app.
@@ -576,9 +581,12 @@ mod tests {
                 a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
             }));
             assert!(
-                actions
-                    .iter()
-                    .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
+                actions.iter().all(|flat| {
+                    flat.action.kind != tilo_actions::OperationKind::Document
+                        || flat.action.id == "apply"
+                        || flat.action.id == "group"
+                }),
+                "the only document actions are the resource apply and group door"
             );
             assert!(
                 ui::undo::take_committed_action(&mut app).is_none(),

@@ -39,7 +39,7 @@ impl Resource for VideoPlayer {
     fn children(state: &SharedLibrary) -> Vec<tilo_actions::Resource> {
         let ctx = actions::empty_resource_ctx();
         let doc = actions::doc_from_library(state);
-        actions::resources(&ctx, &doc)
+        actions::application_tree(&ctx, &doc)
             .into_iter()
             .next()
             .map(|root| root.children)
@@ -49,15 +49,9 @@ impl Resource for VideoPlayer {
     fn local_operations() -> Vec<ActionSpec> {
         let ctx = actions::empty_resource_ctx();
         let doc = automerge::AutoCommit::new();
-        actions::resources(&ctx, &doc)
+        actions::application_tree(&ctx, &doc)
             .into_iter()
-            .flat_map(|resource| {
-                let nested = resource
-                    .children
-                    .into_iter()
-                    .flat_map(|child| child.actions);
-                resource.actions.into_iter().chain(nested)
-            })
+            .flat_map(|resource| resource.actions)
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }

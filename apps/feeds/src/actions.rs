@@ -1026,8 +1026,8 @@ pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::FeedsApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.feeds_resource_ctx(), doc)
+    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        self.published_reader()
     }
 
     pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {

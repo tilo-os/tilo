@@ -1641,8 +1641,12 @@ pub(super) fn add_operations(
         .is_some_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS);
     let guard = |spec: ActionSpec| spec.reversible().requires(ContextRequirement::Caret);
     let publish = |root: &mut Resource, spec: ActionSpec, handler: &'static str| {
-        root.actions
-            .push(continuation::pure(spec, handler, domain.clone()));
+        let spec = continuation::pure(spec, handler, domain.clone());
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
     };
 
     let typing = r.as_ref().map(TypeTarget::new);
@@ -2963,7 +2967,7 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(
-            requirement("word_processor.document", "replace-selection"),
+            requirement("tilo.rich-text", "replace-selection"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
@@ -2971,11 +2975,11 @@ mod tests {
             [ContextRequirement::Selection]
         );
         assert_eq!(
-            requirement("word_processor.document", "set-hyperlink"),
+            requirement("tilo.rich-text", "set-hyperlink"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
-            requirement("word_processor.document", "add-comment"),
+            requirement("tilo.rich-text", "add-comment"),
             [ContextRequirement::Selection]
         );
         assert_eq!(
@@ -2983,7 +2987,7 @@ mod tests {
             [ContextRequirement::FindHits]
         );
         assert_eq!(
-            requirement("word_processor.document", "type-text"),
+            requirement("tilo.rich-text", "type-text"),
             [ContextRequirement::Caret]
         );
     }

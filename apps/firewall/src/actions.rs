@@ -277,7 +277,7 @@ fn rule_label(r: &Rule) -> String {
 )]
 pub fn apply_effect_spec() -> ActionSpec {
     ActionSpec::operation(
-        "apply",
+        "apply-config",
         "Apply firewall configuration",
         OperationKind::Effect,
         FIREWALL_APPLY_TYPE,
@@ -823,7 +823,14 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| provide_resources(&config(doc)),
+        resources: |doc| {
+            let config = config(doc);
+            vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
+                "firewall.config",
+                "Firewall",
+                &config,
+            )]
+        },
         palette: ["Delete rule", "Make active zone", "Set default policy"],
         replay: [
             toggle_rule => |doc| {

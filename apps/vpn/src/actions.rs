@@ -393,9 +393,7 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::VpnApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Level-triggered: recomputed each frame from the document, the source
-        // of truth every action reads and writes.
-        provide_resources(&VpnDoc::read_vault(doc))
+        vec![self.published_vault(&VpnDoc::read_vault(doc))]
     }
 }
 
@@ -613,9 +611,6 @@ mod tests {
             "Route all traffic over Tor",
             "Import WireGuard profile",
             "Import OpenVPN profile",
-            "Connect",
-            "Disconnect",
-            "Delete connection",
             "Set up on this device",
         ],
         replay: [

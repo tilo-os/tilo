@@ -5621,14 +5621,14 @@ impl crate::SettingsApp {
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "settings.root" {
-            // Exact root lookup is intentionally shallow. Building every live
-            // hardware inventory merely to resolve the root made one address
-            // proportional to every device, stream, account, job, and model.
-            let root = Category::ALL.iter().copied().fold(
-                Resource::new("settings.root", "settings.root", "Settings"),
-                |root, category| root.with_child(pane_navigation_resource(category)),
-            );
-            return Some(root);
+            // The document door, not a navigation stub and not the live hardware
+            // inventory. Preference panes come from `tilo_resource::publish`.
+            let state = crate::resource::SettingsState::from_doc(doc);
+            return Some(ui::tilo_resource::publish::<crate::resource::Settings>(
+                "settings.root",
+                "Settings",
+                &state,
+            ));
         }
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();
@@ -5844,7 +5844,7 @@ mod tests {
             }
         }
 
-        // Case `exact_root_lookup_is_shallow_and_section_lookup_is_canonical`.
+        // Case `exact_root_lookup_is_the_published_document_door`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app();
@@ -5852,12 +5852,28 @@ mod tests {
             let root = app
                 .publish_resource(&doc, "settings.root")
                 .expect("root resolves exactly");
-            assert_eq!(root.children.len(), Category::ALL.len());
+            assert_eq!(root.kind, "settings.root");
             assert!(
-                root.children
+                root.actions.iter().any(|action| action.id == "apply"),
+                "the root lookup is the published document door"
+            );
+            assert_eq!(
+                root.children.len(),
+                Category::ALL
                     .iter()
-                    .all(|section| section.children.is_empty()),
-                "resolving the root must not enumerate live dynamic inventories"
+                    .copied()
+                    .filter(|category| is_document_door_category(*category))
+                    .count(),
+                "hardware panes stay off the exact root lookup"
+            );
+            assert!(
+                root.children.iter().all(|section| {
+                    section
+                        .children
+                        .iter()
+                        .all(|child| child.kind != "settings.account")
+                }),
+                "resolving the root must not enumerate live account inventories"
             );
 
             let appearance = app

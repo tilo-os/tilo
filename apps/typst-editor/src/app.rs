@@ -2445,10 +2445,9 @@ impl ui::undo::UndoPoints for TypstApp {
 impl ui::resources::PublishesResources for TypstApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let ctx = self.resource_ctx();
-        // Framework [`tilo_resource::publish`] owns `typst.workspace`, compile /
-        // save / zoom Views, and the document children. Diagnostics and preview
-        // pages are live presentation only — keep that same standalone slice
-        // when hosted, never a second workspace root.
+        // [`tilo_resource::publish`] owns the workspace door on every path.
+        // Diagnostics and preview pages are live presentation only — hosted
+        // returns that slice alone, never a second workspace root.
         if self.framework_hosted {
             return crate::actions::live_extras(&ctx);
         }

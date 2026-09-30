@@ -246,13 +246,28 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-fn document_resource() -> Resource {
-    Resource::new(
+fn document_resource(doc: &AutoCommit) -> Resource {
+    let state =
+        <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap_or_else(|_| {
+            let mut empty = AutoCommit::new();
+            <tilo_document::RichText as ui::tilo_resource::Resource>::initialize(&mut empty)
+                .expect("empty rich text initializes");
+            <tilo_document::RichText as ui::tilo_resource::Resource>::read(&empty)
+                .expect("empty rich text reads")
+        });
+    let mut root = ui::tilo_resource::publish::<tilo_document::RichText>(
         "word-processor.document",
-        "word_processor.document",
         "Document",
-    )
-    .with_action(crate::semantic_read::action::spec())
+        &state,
+    );
+    if !root
+        .actions
+        .iter()
+        .any(|action| action.id.as_str() == "read-text")
+    {
+        root.actions.push(crate::semantic_read::action::spec());
+    }
+    root
 }
 
 fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
@@ -1399,7 +1414,7 @@ fn resource_root(
     file: Option<&continuation::FileContext>,
     body: Option<&tilo_document::BodyOrder>,
 ) -> Resource {
-    let mut root = document_resource();
+    let mut root = document_resource(doc);
     add_file_operations(&mut root, file);
     add_view_operations(&mut root);
     add_caret_actions(&mut root, ctx);
@@ -1584,7 +1599,7 @@ mod tests {
     fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
         // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
         {
-            let mut root = document_resource();
+            let mut root = document_resource(&AutoCommit::new());
             add_view_operations(&mut root);
             let spec = root
                 .actions
@@ -2168,14 +2183,14 @@ mod tests {
             )),
         ],
         encodes: [
-            insert_table => ("word_processor.document", "insert-table", |doc, _| {
+            insert_table => ("tilo.rich-text", "insert-table", |doc, _| {
                 encode(&insert_table_action(&nth_block(doc, 1), 2, 2))
             }),
-            align_center => ("word_processor.document", "align-center", |doc, _| {
+            align_center => ("tilo.rich-text", "align-center", |doc, _| {
                 encode(&set_align_action(vec![nth_block(doc, 1)], "center"))
             }),
             replace_selection => (
-                "word_processor.document",
+                "tilo.rich-text",
                 "replace-selection",
                 arg: "guide",
                 |doc, _| {
@@ -2191,7 +2206,7 @@ mod tests {
                 }
             ),
             set_hyperlink => (
-                "word_processor.document",
+                "tilo.rich-text",
                 "set-hyperlink",
                 arg: "https://example.com/guide",
                 |doc, _| encode(&set_hyperlink_action(

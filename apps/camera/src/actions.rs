@@ -834,55 +834,76 @@ pub(crate) fn live_effect_extras(ctx: &CameraResourceCtx) -> Vec<Resource> {
     ]
 }
 
-/// Capture, scanner, document, settings, and screen-reveal roots. Standalone /
-/// `--shots` / unit tests use this door; when hosted, Document ops ride
-/// [`tilo_resource::publish`] and only [`live_effect_extras`] remain on the widget.
-#[allow(
-    clippy::too_many_lines,
-    reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
-)]
-pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = capture_effect_root(ctx);
-    for spec in bound_mode_facing_actions(ctx.facing, ctx.recording) {
-        root = root.with_action(spec);
+fn state_from_ctx(ctx: &CameraResourceCtx) -> crate::resource::CameraState {
+    crate::resource::CameraState {
+        mode: ctx.mode,
+        facing: ctx.facing,
+        settings: ctx.settings,
+        scans: Vec::new(),
+        recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
+            id: item.id.clone(),
+            media_id: item.media_id.clone().unwrap_or_default(),
+            kind: if item.is_video {
+                CaptureKind::Video
+            } else {
+                CaptureKind::Photo
+            },
+            ts: 0,
+            w: 0,
+            h: 0,
+            dur_ms: 0,
+            label: item.label.clone(),
+            facing: ctx.facing,
+        }),
     }
-    if let Some(it) = &ctx.recent {
-        root = root.with_child(capture_resource(it));
-    }
-    let settings = settings_document_resource(&ctx.settings);
-    let scanner = scanner_effect_root(ctx);
-    let document = document_effect_root(ctx);
-    let mut camera = Resource::new("camera", "camera", "Camera");
-    for spec in screen_view_specs() {
-        camera = camera.with_action(spec);
-    }
-    vec![root, scanner, document, settings, camera]
 }
 
-/// Resolve a stable root or the single recent-capture handoff independently
-/// of the bounded contextual snapshot. Camera never enumerates a roll.
-pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    if matches!(
-        id,
-        "camera.capture"
-            | "camera.scanner"
-            | "camera.document-scanner"
-            | "camera.settings"
-            | "camera"
-    ) {
-        return provide_resources(ctx, doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == id);
+/// The published camera door plus live shutter and scanner extras.
+///
+/// Document mode, lens, settings, and the recent handoff come from
+/// [`tilo_resource::publish`]. Capture, code-scanner, and document-scanner
+/// Effects stay beside that root because they are device I/O, not shared state.
+pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let state = state_from_ctx(ctx);
+    let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+        crate::resource::CAMERA_RESOURCE_ID,
+        "Camera",
+        &state,
+    )];
+    resources.extend(live_effect_extras(ctx));
+    resources
+}
+
+fn find_resource(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
     }
-    ctx.recent
-        .as_ref()
-        .and_then(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_resource(child, id))
+}
+
+/// Resolve a stable root or the single recent-capture handoff from the
+/// published camera tree. Camera never enumerates a roll.
+pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    provide_resources(ctx, doc)
+        .iter()
+        .find_map(|resource| find_resource(resource, id))
 }
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::CameraApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.camera_resource_ctx(), doc)
+        let state =
+            <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+            crate::resource::CAMERA_RESOURCE_ID,
+            "Camera",
+            &state,
+        )];
+        resources.extend(live_effect_extras(&self.camera_resource_ctx()));
+        resources
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1090,7 +1111,12 @@ mod tests {
             };
             let doc = AutoCommit::new();
             let page = provide_resources(&ctx, &doc);
-            assert_eq!(page[0].children.len(), 1);
+            let handoffs: Vec<_> = page[0]
+                .children
+                .iter()
+                .filter(|child| matches!(child.kind.as_str(), "camera.photo" | "camera.video"))
+                .collect();
+            assert_eq!(handoffs.len(), 1);
             let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
                 .expect("recent capture resolves");
             let open = recent
@@ -1128,6 +1154,7 @@ mod tests {
             let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
             let settings = resources
                 .iter()
+                .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
                 .find(|resource| resource.id.as_str() == "camera.settings")
                 .expect("stable settings resource");
             let ids: Vec<&str> = settings
@@ -1163,7 +1190,11 @@ mod tests {
                 },
                 &AutoCommit::new(),
             );
-            let capture = resources[0]
+            let capture_root = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root");
+            let capture = capture_root
                 .actions
                 .iter()
                 .find(|a| a.id == "capture")
@@ -1173,7 +1204,12 @@ mod tests {
                 !capture.contract.availability.is_available(),
                 "a palette must not claim capture works without a feed"
             );
-            assert!(resources[0].children[0].actions.is_empty());
+            let unverified = resources[0]
+                .children
+                .iter()
+                .find(|child| child.kind.as_str() == "camera.photo")
+                .expect("recent handoff");
+            assert!(unverified.actions.is_empty());
 
             let available = provide_resources(
                 &CameraResourceCtx {
@@ -1182,7 +1218,10 @@ mod tests {
                 },
                 &AutoCommit::new(),
             );
-            let capture = available[0]
+            let capture = available
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root")
                 .actions
                 .iter()
                 .find(|action| action.id == "capture")
@@ -1199,7 +1238,11 @@ mod tests {
                 },
                 &AutoCommit::new(),
             );
-            let actions = &resources[0].actions;
+            let actions = &resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera.capture")
+                .expect("capture effect root")
+                .actions;
             let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
             for id in [
                 "retry-camera",

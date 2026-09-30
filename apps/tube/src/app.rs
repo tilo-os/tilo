@@ -684,11 +684,7 @@ impl TubeApp {
             return;
         }
 
-        let current_id = format!("tube.current:{video_id}");
-        let current = crate::actions::provide_resources(&self.model)
-            .into_iter()
-            .flat_map(|resource| resource.children)
-            .find(|resource| resource.id.0 == current_id);
+        let current = crate::actions::current_watch_resource(&self.model);
         let Some(current) = current else {
             self.play_action = None;
             self.share_action = None;

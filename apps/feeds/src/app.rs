@@ -1815,6 +1815,13 @@ impl FeedsApp {
         self.actions.is_hosted()
     }
 
+    pub(crate) fn published_reader(&self) -> Vec<tilo_actions::Resource> {
+        crate::resource::provide_resources(&crate::resource::FeedsState {
+            store: self.store.clone(),
+            settings: self.settings,
+        })
+    }
+
     /// Test-only: mark the sink hosted without constructing a framework dispatcher.
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
@@ -5381,15 +5388,7 @@ impl ui::resources::PublishesResources for FeedsApp {
         if self.is_hosted() {
             return Vec::new();
         }
-        let state = crate::resource::FeedsState {
-            store: self.store.clone(),
-            settings: self.settings,
-        };
-        vec![ui::tilo_resource::publish::<crate::resource::Feeds>(
-            crate::resource::READER_RESOURCE_ID,
-            "Feeds",
-            &state,
-        )]
+        self.published_reader()
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.publish_resource(doc, id)

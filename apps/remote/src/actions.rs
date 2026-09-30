@@ -544,7 +544,17 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::RemoteApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+        let state =
+            <crate::resource::Remote as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Remote>(
+            "remote.connections",
+            "Remote connections",
+            &state,
+        );
+        if let Some(session) = self.live_session_resources().pop() {
+            root.children.push(session);
+        }
+        vec![root]
     }
 }
 
@@ -594,7 +604,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_connections(),
         registry: registry(),
-        resources: |doc| provide_resources(doc),
+        resources: |doc| crate::app::RemoteApp::new().publish_resources(doc),
         palette: [
             "Rename connection",
             "Open connection settings",

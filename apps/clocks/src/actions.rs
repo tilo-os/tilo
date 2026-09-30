@@ -206,47 +206,6 @@ fn world_clock_resource(clock: &crate::WorldClock) -> Resource {
     ))
 }
 
-/// Recomputed from the durable state each time global search asks. The resource
-/// tree is consequently a truthful snapshot, rather than presentation rows.
-pub fn provide_resources(state: &ClockState) -> Vec<Resource> {
-    let timers = Resource::new("clocks.timers", "clocks.timer-list", "Timers")
-        .with_action(op(
-            "new-timer",
-            "Start a five-minute timer",
-            &ClockOperation::NewTimer {
-                seconds: 300,
-                label: "Timer".into(),
-            },
-        ))
-        .with_children(state.timers.iter().map(timer_resource));
-    let alarms = Resource::new("clocks.alarms", "clocks.alarm-list", "Alarms")
-        .with_action(op(
-            "new-alarm",
-            "Create a 07:30 alarm",
-            &ClockOperation::NewAlarm {
-                hours: 7,
-                minutes: 30,
-                label: "Alarm".into(),
-            },
-        ))
-        .with_children(state.alarms.iter().map(alarm_resource));
-    let world = Resource::new("clocks.world", "clocks.world-list", "World clocks")
-        .with_action(op(
-            "add-new-york",
-            "Add New York",
-            &ClockOperation::AddWorldClock {
-                city: "New York".into(),
-                timezone: "America/New_York".into(),
-            },
-        ))
-        .with_children(state.world_clocks.iter().map(world_clock_resource));
-    let stopwatch = stopwatch_resource(state);
-    vec![
-        Resource::new("clocks", "clocks.collection", "Clocks")
-            .with_children([world, alarms, timers, stopwatch]),
-    ]
-}
-
 /// Create / stopwatch commands that do not name a live timer, alarm, or city.
 /// They ride [`crate::resource::Clocks::local_operations`] through
 /// `tilo_resource::publish`. Per-item rows and the floating-overlay polarity
@@ -298,13 +257,15 @@ pub(crate) fn live_clock_extras(state: &ClockState) -> Vec<Resource> {
     extras
 }
 
-/// Empty-state provider retained for lightweight contract consumers. The app
-/// itself uses [`provide_resources`] with its current state.
+/// Empty-state provider. The app publishes through [`crate::resource::Clocks`].
 pub struct ClockResources;
 // Inherent resource publication (was ResourceProvider)
 impl ClockResources {
     pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&ClockState::default())
+        let state = ClockState::default();
+        vec![ui::tilo_resource::publish::<crate::resource::Clocks>(
+            "clocks", "Clocks", &state,
+        )]
     }
 }
 
@@ -315,13 +276,24 @@ mod tests {
 
     #[test]
     fn resource_contract_addresses_the_exact_timer_and_rejects_foreign_payloads() {
-        // Case: the contract is addressable and the empty state is truthful.
-        let root = provide_resources(&ClockState::default()).remove(0);
-        assert_eq!(root.id.0, "clocks", "case empty: root id");
-        assert_eq!(root.children.len(), 4, "case empty: four collections");
+        // Case: an empty collection publishes no timer rows.
+        let empty = ui::tilo_resource::publish::<crate::resource::Clocks>(
+            "clocks",
+            "Clocks",
+            &ClockState::default(),
+        );
+        assert_eq!(empty.id.0, "clocks", "case empty: root id");
+        assert_eq!(empty.kind, "clocks.collection");
         assert!(
-            root.children.iter().any(|r| r.id.0 == "clocks.timers"),
-            "case empty: timers collection"
+            empty.actions.iter().any(|action| action.id == "new-timer"),
+            "case empty: start-timer stays on the collection"
+        );
+        assert!(
+            empty
+                .children
+                .iter()
+                .all(|child| child.kind != "clocks.timer"),
+            "case empty: no timer rows"
         );
 
         // Case: timer operations address the exact timer.
@@ -329,15 +301,20 @@ mod tests {
         let timer = crate::Timer::new("Pasta", Duration::from_secs(600));
         let id = timer.id;
         state.timers.push(timer);
-        let root = provide_resources(&state).remove(0);
-        let timer = root.children[2].children.first().expect("timer resource");
-        assert_eq!(
-            timer.id.0,
-            format!("clocks.timer:{id}"),
-            "case exact-timer: resource id"
-        );
-        let encoded = &timer.actions[0];
-        let tilo_actions::ActionInput::Immediate(encoded) = &encoded.input else {
+        let mut root =
+            ui::tilo_resource::publish::<crate::resource::Clocks>("clocks", "Clocks", &state);
+        root.children.extend(live_clock_extras(&state));
+        let timer = root
+            .children
+            .iter()
+            .find(|child| child.id.0 == format!("clocks.timer:{id}"))
+            .expect("timer resource");
+        let toggle = timer
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle")
+            .expect("toggle");
+        let tilo_actions::ActionInput::Immediate(encoded) = &toggle.input else {
             panic!("timer action should be immediate");
         };
         let operation = decode(&encoded.type_id, &encoded.payload).expect("valid operation");
@@ -375,13 +352,21 @@ mod tests {
         state
     }
 
-    // Clocks publishes only effect operations against its local state, never
-    // document actions, so the registry is empty and the sweep checks the
-    // surface and the protocol.
+    // The published collection plus live timer, alarm, and city rows. The
+    // registry is empty; the sweep checks the surface protocol.
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: tilo_actions::ActionRegistry::new(),
-        resources: |_| provide_resources(&populated_state()),
+        resources: |_| {
+            let state = populated_state();
+            let mut root = ui::tilo_resource::publish::<crate::resource::Clocks>(
+                "clocks",
+                "Clocks",
+                &state,
+            );
+            root.children.extend(live_clock_extras(&state));
+            vec![root]
+        },
         palette: [
             "Start a five-minute timer",
             "Create a 07:30 alarm",

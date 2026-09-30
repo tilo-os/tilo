@@ -1534,7 +1534,7 @@ impl ui::search::capability::SearchSource for SnippetsApp {
 }
 
 impl SnippetsApp {
-    fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+    pub(crate) fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
         let state = <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
         let mut root = ui::tilo_resource::publish::<crate::resource::Snippets>(

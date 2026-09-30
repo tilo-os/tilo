@@ -5929,25 +5929,21 @@ impl ui::resources::PublishesResources for BooksApp {
                 exhausted: next_offset >= total,
             });
         }
-        let roots: &[&str] = &["ebook.library", "ebook.settings"];
-        if offset > roots.len() {
+        let resources = self.resources(doc);
+        let total = resources.len();
+        if offset > total {
             return None;
         }
-        let take = max_results.min(roots.len().saturating_sub(offset));
+        let take = max_results.min(total.saturating_sub(offset));
         let next_offset = offset.saturating_add(take);
-        let resources = roots
-            .get(offset..next_offset)?
-            .iter()
-            .filter_map(|id| self.publish_resource(doc, id))
-            .collect();
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: if next_offset < roots.len() {
+            resources: resources.into_iter().skip(offset).take(take).collect(),
+            next_cursor: if next_offset < total {
                 vec![next_offset as u8]
             } else {
                 Vec::new()
             },
-            exhausted: next_offset >= roots.len(),
+            exhausted: next_offset >= total,
         })
     }
     fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {

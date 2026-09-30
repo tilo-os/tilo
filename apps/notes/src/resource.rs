@@ -94,11 +94,25 @@ impl Resource for Notebook {
     }
 
     fn children(state: &Workspace) -> Vec<tilo_actions::Resource> {
-        // Page tree with each note's rich-text body nested underneath.
-        // `provide_resources` replaces this with a doc-enriched copy (previews,
-        // duplicate, tree moves). Body edits from the editor still wrap through
+        // Page tree with each note's rich-text body nested underneath, plus
+        // the tag catalogue. Body edits from the editor still wrap through
         // NotesAction::EditBody until a nested dispatcher addresses the body map.
-        crate::actions::notebook_page_children(state.pages(), None)
+        let mut children = crate::actions::notebook_page_children(state.pages(), None);
+        let ctx = crate::actions::NotesResourceCtx {
+            pages: state.pages().to_vec(),
+            blocks: std::collections::HashMap::new(),
+            tags: state.tags().to_vec(),
+            tag_assignments: state
+                .data
+                .tag_assignments
+                .iter()
+                .map(|assignment| (assignment.page, assignment.tag))
+                .collect(),
+            can_go_back: false,
+            can_go_forward: false,
+        };
+        children.push(crate::actions::tags_resource(&ctx));
+        children
     }
 
     fn search(state: &Workspace) -> Vec<SearchEntry> {

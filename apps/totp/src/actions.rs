@@ -577,35 +577,28 @@ pub fn provide_account_resource(
 
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let accounts = AuthDoc::list_accounts(doc);
-    let mut root = provide_contextual_resources(&accounts)
-        .pop()
-        .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
-    let account_count = accounts.len();
-    for (index, acc) in accounts.iter().enumerate() {
-        root = root.with_child(provide_account_resource(acc, index, account_count, false));
-    }
-
-    vec![root]
+    vec![ui::tilo_resource::publish::<crate::resource::Totp>(
+        "totp.vault",
+        "Accounts",
+        &accounts,
+    )]
 }
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::AuthenticatorApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut roots = provide_resources(doc);
+        let Some(root) = roots.first_mut() else {
+            return roots;
+        };
         let accounts = AuthDoc::list_accounts(doc);
-        let mut root = provide_contextual_resources(&accounts)
-            .pop()
-            .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
         let count = accounts.len();
-        for (index, account) in accounts.iter().enumerate() {
-            let has_local_secret = self.has_local_secret(account.id);
-            root = root.with_child(provide_account_resource(
-                account,
-                index,
-                count,
-                has_local_secret,
-            ));
-        }
-        vec![root]
+        root.children.retain(|child| child.kind != "totp.account");
+        root.children
+            .extend(accounts.iter().enumerate().map(|(index, account)| {
+                provide_account_resource(account, index, count, self.has_local_secret(account.id))
+            }));
+        roots
     }
 }
 

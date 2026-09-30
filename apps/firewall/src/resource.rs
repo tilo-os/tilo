@@ -185,7 +185,7 @@ mod tests {
         let apply = published
             .actions
             .iter()
-            .find(|action| action.id == "apply")
+            .find(|action| action.id == "apply-config")
             .expect("apply Effect must ride local_operations via publish");
         assert_eq!(apply.kind, OperationKind::Effect);
         assert_eq!(apply.operation_type.as_deref(), Some(FIREWALL_APPLY_TYPE));
@@ -205,7 +205,10 @@ mod tests {
         assert!(
             standalone.iter().any(|root| {
                 root.kind == "firewall.config"
-                    && root.actions.iter().any(|action| action.id == "apply")
+                    && root
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "apply-config")
             }),
             "standalone still publishes apply"
         );
