@@ -116,6 +116,7 @@ jobs:
       publish: ${{ steps.matrix.outputs.publish }}
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
+      boards: ${{ steps.matrix.outputs.boards }}
       app_collection_source: ${{ steps.pins.outputs.app_collection_source }}
       app_collection_url: ${{ steps.pins.outputs.app_collection_url }}
       app_collection_sha256: ${{ steps.pins.outputs.app_collection_sha256 }}
@@ -213,6 +214,7 @@ jobs:
           # they are configured the nightly run is a main integration build, so
           # dev VMs still get a same-commit image every night.
           PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
+          LENOVO_FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
           HARDWARE_PROFILE: ${{ github.event.inputs.hardware_profile }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
@@ -306,6 +308,13 @@ jobs:
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "::notice::$mode build"
           echo "hardware-profile=$profile" >> "$GITHUB_OUTPUT"
+          # Board dev images layer on a dev build's aarch64 dev image.
+          boards=false
+          if [[ $GITHUB_EVENT_NAME == workflow_call && $skip != true && -n $LENOVO_FIRMWARE_REF ]] \
+             && jq -e 'any(.include[]; .arch == "aarch64")' <<< "$matrix" >/dev/null; then
+            boards=true
+          fi
+          echo "boards=$boards" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
     needs: plan
@@ -2886,7 +2895,7 @@ jobs:
   board-lenovo-83ed:
     name: "board: lenovo-83ed"
     needs: [plan, build-and-push]
-    if: ${{ always() && github.event_name == 'workflow_call' && needs.plan.outputs.skip != 'true' && contains(inputs.arches, 'aarch64') && vars.TILO_LENOVO_FIRMWARE_REF != '' }}
+    if: ${{ always() && needs.plan.outputs.boards == 'true' }}
     runs-on: runner-large-arm64
     timeout-minutes: 30
     steps:
