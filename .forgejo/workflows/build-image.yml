@@ -97,10 +97,10 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  # A pull request's dev build is superseded by its next commit. On main the
-  # running build finishes and only the newest waiting commit follows it, so a
-  # stream of merges cannot starve every build of completion.
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  # A pull request's dev build is superseded by its next commit. Every main
+  # commit's dev build runs at once, side by side; its moving tags only move
+  # forward (os/dev/move-tag-forward.sh).
   cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
@@ -2158,6 +2158,7 @@ jobs:
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           BOARDS: ${{ needs.plan.outputs.boards }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
           FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
         run: |
@@ -2185,7 +2186,6 @@ jobs:
           pids=()
           for board in $(jq -r '.[]' <<< "$BOARDS"); do
             names="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-$board"
-            [[ $GITHUB_REF != refs/heads/main ]] || names="$names,registry.tilo.so/tilo/tilo-vm:$board-ci"
             ( docker buildx build --builder "$BUILDER_NAME" --provenance=false \
                 -f os/Containerfile.board \
                 --build-arg "BASE_IMAGE=$base" \
@@ -2195,6 +2195,7 @@ jobs:
                 --label "org.opencontainers.image.version=$DEV_SERIES-$board" \
                 --output "type=image,\"name=$names\",push=true,compression=zstd,compression-level=1" \
                 . > "$RUNNER_TEMP/tilo-board-$board.log" 2>&1 \
+              && { [[ $GITHUB_REF != refs/heads/main ]] || ./os/dev/move-tag-forward.sh "$names" "registry.tilo.so/tilo/tilo-vm:$board-ci"; } \
               && echo "::notice::$board dev image published in $(( $(date +%s) - started ))s: tilo-vm:$DEV_SERIES-$board" \
               || { tail -60 "$RUNNER_TEMP/tilo-board-$board.log"; echo "::error::the $board board layer failed to build"; exit 1; } ) &
             pids+=("$!")
@@ -3220,6 +3221,7 @@ jobs:
           TILO_ROCKCHIP_LOADER: ${{ matrix.board == 'orangepi-3b-v2-1' && format('{0}/rockchip-loader', env.BOARD_OUTPUT) || '' }}
           TILO_QCOW2_COMPRESS: "1"
           TILO_DEV_DIRECT_BUNDLE_DIR: ${{ env.BOARD_OUTPUT }}/direct-boot
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
@@ -3232,8 +3234,8 @@ jobs:
             podman push --compression-format zstd --digestfile "$digest_file" "$BOARD_IMAGE" "docker://$image"
             digest="$(tr -d '[:space:]' < "$digest_file")"
             if [[ $GITHUB_REF == refs/heads/main ]]; then
-              skopeo copy --preserve-digests "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
-                "docker://registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
+              ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$digest" \
+                "registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
             fi
             echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
           fi

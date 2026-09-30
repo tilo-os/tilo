@@ -34,10 +34,11 @@ on:
       - "tools/ci/os_dev_arches.py"
 
 # One run per pull request: its newest commit cancels the build of the one
-# before. On main the running build finishes and only the newest waiting
-# commit follows it.
+# before. Every main commit builds at once, side by side with the ones before
+# it; the moving tags they publish only move forward
+# (os/dev/move-tag-forward.sh).
 concurrency:
-  group: os-dev-${{ github.ref }}
+  group: os-dev-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
