@@ -1078,9 +1078,12 @@ mod tests {
         write_device_cert(&paths.device_cert, &cert).unwrap();
         let certified = crate::identity::load_certified_mount_identity(&paths, now).unwrap();
         let (mount, credentials) = certified.into_parts();
-        let endpoint = Endpoint::builder(presets::N0)
+        let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(mount.secret)
+            .relay_mode(iroh::RelayMode::Disabled)
             .address_lookup(MemoryLookup::new())
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
             .bind()
             .await
             .unwrap();
@@ -1121,13 +1124,10 @@ mod tests {
             &owner.root,
         )
         .unwrap();
-        let envelope = NamedShareEnvelopeV1::bind_at(
-            owner.endpoint.addr(),
-            invite,
-            &owner.root,
-            unix_now_ms(),
-        )
-        .unwrap();
+        let bound_at = unix_now_ms();
+        let envelope =
+            NamedShareEnvelopeV1::bind_at(owner.endpoint.addr(), invite, &owner.root, bound_at)
+                .unwrap();
         let client = NamedShareDeliveryClient::new(
             owner.endpoint.clone(),
             owner.credentials,
@@ -1148,8 +1148,10 @@ mod tests {
         );
         router.shutdown().await.unwrap();
         drop(inbox);
-        let reopened = NamedShareInbox::open_at(inbox_path, person, unix_now_ms()).unwrap();
-        assert_eq!(reopened.entries_at(unix_now_ms()), vec![envelope]);
+        // Read back at the bind instant: the invite expires on the wall
+        // clock, and a slow delivery must not decide what durability means.
+        let reopened = NamedShareInbox::open_at(inbox_path, person, bound_at).unwrap();
+        assert_eq!(reopened.entries_at(bound_at), vec![envelope]);
         owner.endpoint.close().await;
     }
 }

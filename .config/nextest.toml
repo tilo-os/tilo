@@ -38,6 +38,7 @@ agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
 cloud-host-workers = { max-threads = 4 }
 browser-peer-relay = { max-threads = 2 }
+agent-participant-sessions = { max-threads = 2 }
 
 # Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
@@ -87,6 +88,13 @@ test-group = "cloud-host-workers"
 [[profile.default.overrides]]
 filter = 'package(tilo-browser-peer) and kind(test)'
 test-group = "browser-peer-relay"
+
+# Each tilo-agent-participant integration test runs a relay host, agents and
+# browser sessions that drive every web app natively against fixed deadlines;
+# the all-app coverage runs starve a concurrent session of the CPU it needs.
+[[profile.default.overrides]]
+filter = 'package(tilo-agent-participant) and kind(test)'
+test-group = "agent-participant-sessions"
 
 # Megabytes of fsynced commits: these need the runner's disk and CPUs to
 # themselves to finish within their deadlines.

@@ -374,6 +374,8 @@ name = "browser-runtime-web"
 # app catalogue.
 inputs = ["crates/browser/tilo-browser-runtime/"]
 suites = [
+  "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
@@ -575,6 +577,19 @@ readers = [
   "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
   "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
   "apps/pdf-viewer/tests/capture.rs",
+]
+
+[[cargo]]
+package = "tilo-agent-participant"
+# The session tests mount apps against the controlled font fixture and share
+# the browser peer's relay test support.
+inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
+readers = [
+  "crates/agent/agent-participant/tests/common/mod.rs",
+  "crates/agent/agent-participant/tests/room_actions.rs",
+  "crates/agent/agent-participant/tests/host_agents.rs",
+  "crates/agent/agent-participant/tests/session_coverage.rs",
+  "crates/agent/agent-participant/tests/shared_session.rs",
 ]
 
 [[cargo]]
