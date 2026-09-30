@@ -29,6 +29,13 @@ pub enum SessionIntent {
         strip: StripId,
         group: GroupId,
     },
+    /// Move `group` whole into strip `to`, before group `before` or at the
+    /// end of that strip.
+    MoveGroup {
+        group: GroupId,
+        to: StripId,
+        before: Option<GroupId>,
+    },
 }
 impl SessionIntent {
     /// The group the request was made in.
@@ -37,7 +44,8 @@ impl SessionIntent {
             Self::CloseTab { group, .. }
             | Self::ReorderTab { group, .. }
             | Self::ReorderGroup { group, .. }
-            | Self::OpenTab { group, .. } => *group,
+            | Self::OpenTab { group, .. }
+            | Self::MoveGroup { group, .. } => *group,
         }
     }
 }

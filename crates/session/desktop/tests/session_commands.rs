@@ -130,6 +130,46 @@ fn missing_targets_and_wrong_room_never_bind_to_active_fallback() {
 }
 
 #[test]
+fn a_group_move_binds_to_its_destination_strip_and_refuses_a_stale_one() {
+    let (mut tree, source) = source();
+    tree.workspaces[0]
+        .strips
+        .push(Strip::new(StripId(11), "Below"));
+    let bound = bind_intent(
+        &tree,
+        source.clone(),
+        SessionIntent::MoveGroup {
+            group: 20,
+            to: StripId(11),
+            before: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        bound.command,
+        DesktopCommand::MoveGroup {
+            group: 20,
+            strip: 11,
+            before: None,
+        }
+    );
+    for stale in [
+        SessionIntent::MoveGroup {
+            group: 20,
+            to: StripId(404),
+            before: None,
+        },
+        SessionIntent::MoveGroup {
+            group: 20,
+            to: StripId(11),
+            before: Some(20),
+        },
+    ] {
+        assert!(bind_intent(&tree, source.clone(), stale).is_err());
+    }
+}
+
+#[test]
 fn new_tab_uses_exact_selected_app_identity_and_stable_placement() {
     let (tree, source) = source();
     let command = bind_intent(

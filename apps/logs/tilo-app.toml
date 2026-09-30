@@ -17,6 +17,9 @@ runtime  = "tilo-runtime/2026.07"
 platforms = ["tilo-os"]
 platform-reason = "Reads the systemd journal; a unified-log backend would widen it to macOS."
 
+[package.names]
+de = "Protokolle"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"

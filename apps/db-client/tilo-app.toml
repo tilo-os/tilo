@@ -15,6 +15,9 @@ runtime  = "tilo-runtime/2026.07"
 platforms = ["linux", "macos"]
 platform-reason = "Opens raw TCP database connections and links C SQLite."
 
+[package.names]
+de = "Datenbank-Client"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
