@@ -1057,6 +1057,18 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
+          # A dev lane keeps its cargo target directories (in the builder's
+          # cache mounts, which a runner slot may start with from main's
+          # previous dev build) and rebuilds only what changed, found by
+          # content (os/scripts/cargo-freshness.sh). Everything else cleans
+          # them first and names its own target cache.
+          if [[ $fast == true ]]; then
+            echo "TILO_CARGO_FRESHNESS=content" >> "$GITHUB_ENV"
+            echo "TILO_BUILD_CACHE_KEY=dev-${{ matrix.arch }}" >> "$GITHUB_ENV"
+          else
+            echo "TILO_CARGO_FRESHNESS=clean" >> "$GITHUB_ENV"
+            echo "TILO_BUILD_CACHE_KEY=default" >> "$GITHUB_ENV"
+          fi
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
           # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
@@ -1423,6 +1435,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1481,6 +1495,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1532,7 +1548,7 @@ jobs:
               -f os/Containerfile.dev --target dev-builder \
               --build-arg "RPMS_REF=$RPMS_REF" \
               --build-arg "BASE_REF=$BASE_REF" \
-              --build-arg TILO_CARGO_FRESHNESS=clean \
+              --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
               --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
               --build-arg TILO_DEV_RUST_LTO=off \
               --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
@@ -1583,6 +1599,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1641,6 +1659,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1711,6 +1731,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1798,6 +1820,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -1909,6 +1933,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
@@ -2081,7 +2107,7 @@ jobs:
             --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
             --build-arg "TILO_BASE_CREATED=$created" \
-            --build-arg TILO_CARGO_FRESHNESS=clean \
+            --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
             --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
             --build-arg TILO_DEV_RUST_LTO=off \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
@@ -2144,6 +2170,8 @@ jobs:
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
