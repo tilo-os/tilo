@@ -968,7 +968,10 @@ impl QuickSettingsRoot {
     /// four destination tiles. Controls come first so the first Tab after
     /// opening reaches Brightness.
     fn root_stops(&self, state: &QuickSettingsState) -> Vec<RootStop> {
-        let mut stops: Vec<RootStop> = (0..self.slider_count()).map(RootStop::Slider).collect();
+        let mut stops: Vec<RootStop> = (0..self.slider_count())
+            .filter(|&index| self.slider_available(state, index))
+            .map(RootStop::Slider)
+            .collect();
         stops.extend(
             self.visible_controls(state)
                 .into_iter()
