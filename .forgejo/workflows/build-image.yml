@@ -2337,6 +2337,9 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           fi
 
+          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+            ./os/tests/validation_drive_qemu.sh
+          fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
