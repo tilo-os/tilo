@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +52,31 @@ class TiloError(RuntimeError):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+def scratch_session_env(base: dict[str, str] | None = None) -> tuple[dict[str, str], pathlib.Path]:
+    """Point HOME and the XDG dirs at a disposable profile.
+
+    Headless scripts used to inherit the login `$HOME`, so the compositor
+    indexed the operator's real files. The profile lives under the
+    caller's cache (not a tmpfs) and is the caller's to delete.
+    """
+    env = dict(os.environ if base is None else base)
+    login_home = os.path.realpath(env.get("HOME") or "/")
+    cache_root = env.get("XDG_CACHE_HOME") or os.path.join(env.get("HOME", "/tmp"), ".cache")
+    os.makedirs(cache_root, exist_ok=True)
+    profile = pathlib.Path(tempfile.mkdtemp(prefix="tilo-headless.", dir=cache_root))
+    for name in ("config", "data", "state", "cache", "home", "identity"):
+        (profile / name).mkdir(mode=0o700, exist_ok=True)
+    home = profile / "home"
+    if os.path.realpath(home) == login_home:
+        raise RuntimeError(f"scratch profile home {home} is the login HOME")
+    env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(profile / "config")
+    env["XDG_DATA_HOME"] = str(profile / "data")
+    env["XDG_STATE_HOME"] = str(profile / "state")
+    env["XDG_CACHE_HOME"] = str(profile / "cache")
+    env["TILO_IDENTITY_ROOT"] = str(profile / "identity")
+    return env, profile
 
 
 class TiloClient:
@@ -111,7 +138,8 @@ class TiloClient:
                 "run `cargo build -p shell --bin shell` first"
             )
 
-        env = {**os.environ, "TILO_TEST_CONTROL": socket_path}
+        env, profile = scratch_session_env()
+        env["TILO_TEST_CONTROL"] = socket_path
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
         proc = subprocess.Popen(
@@ -125,9 +153,10 @@ class TiloClient:
         while time.time() < deadline:
             if os.path.exists(socket_path):
                 time.sleep(0.3)  # let the first paint complete
-                return _SpawnedTilo(proc, cls(socket_path), socket_path)
+                return _SpawnedTilo(proc, cls(socket_path), socket_path, profile)
             time.sleep(0.2)
         proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
         raise TimeoutError(f"compositor did not bind {socket_path} within {wait_seconds}s")
 
     # --- Commands ---
@@ -218,9 +247,16 @@ class _SpawnedTilo:
     """Context manager returned by TiloClient.spawn_headless — kills
     the child + removes the socket on exit."""
 
-    def __init__(self, proc: subprocess.Popen, client: TiloClient, socket_path: str):
+    def __init__(
+        self,
+        proc: subprocess.Popen,
+        client: TiloClient,
+        socket_path: str,
+        profile: pathlib.Path | None = None,
+    ):
         self._proc = proc
         self._socket_path = socket_path
+        self._profile = profile
         self.client = client
 
     def __enter__(self) -> TiloClient:
@@ -236,6 +272,8 @@ class _SpawnedTilo:
             os.unlink(self._socket_path)
         except FileNotFoundError:
             pass
+        if self._profile is not None:
+            shutil.rmtree(self._profile, ignore_errors=True)
 
 
-__all__ = ["TiloClient", "Target", "TiloError"]
+__all__ = ["TiloClient", "Target", "TiloError", "scratch_session_env"]
