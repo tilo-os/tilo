@@ -23,6 +23,8 @@ const DIGEST_BYTES: usize = 32;
 /// A log longer than this starts over: the device replays everything once,
 /// and the log it then keeps is bounded by what that replay carried.
 pub(crate) const MAX_RESUME_ENTRIES: u64 = 1 << 20;
+/// Logs kept per device: the one each recent subscription started or forked.
+const RETAINED_LOGS: usize = 4;
 
 /// The digest a resume log records for a delivered frame: the frame's
 /// canonical transport encoding.
@@ -71,23 +73,48 @@ impl WorkspaceStore {
             .join(format!("{}.log", hex::encode(log)))
     }
 
-    /// Start a new, empty resume log for `device`, removing its older logs:
-    /// a subscription without a usable position replays everything, so
-    /// nothing an older log recorded is needed any more.
+    /// Start a new, empty resume log for `device`. Its older logs stay within
+    /// [`RETAINED_LOGS`]: a session the device already left may subscribe
+    /// after the one it uses, and must not take that session's log away.
     ///
     /// # Errors
     /// Returns an error if the log directory can't be prepared.
     pub fn start_resume(&self, device: &[u8; 32]) -> Result<[u8; 16], StoreError> {
-        let dir = self.resume_dir(device);
-        if dir.exists() {
-            for entry in fs::read_dir(&dir)?.flatten() {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-        fs::create_dir_all(&dir)?;
+        fs::create_dir_all(self.resume_dir(device))?;
         let log: [u8; 16] = rand::random();
         fs::File::create(self.resume_path(device, &log))?;
+        self.prune_resume(device, &[log]);
         Ok(log)
+    }
+
+    /// Remove `device`'s logs beyond the newest [`RETAINED_LOGS`], never one
+    /// of `keep`.
+    fn prune_resume(&self, device: &[u8; 32], keep: &[[u8; 16]]) {
+        let Ok(entries) = fs::read_dir(self.resume_dir(device)) else {
+            return;
+        };
+        let keep: Vec<PathBuf> = keep
+            .iter()
+            .map(|log| self.resume_path(device, log))
+            .collect();
+        let mut others: Vec<(std::time::SystemTime, PathBuf)> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| !keep.contains(path))
+            .map(|path| {
+                let modified = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                (modified, path)
+            })
+            .collect();
+        others.sort_unstable_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        for (_, path) in others
+            .into_iter()
+            .skip(RETAINED_LOGS.saturating_sub(keep.len()))
+        {
+            let _ = fs::remove_file(path);
+        }
     }
 
     /// The digests of the first `len` entries of `device`'s log `log`, or
@@ -126,10 +153,12 @@ impl WorkspaceStore {
     }
 
     /// Continue `device`'s log `log` from its first `len` entries under a
-    /// new log, removing every other log of the device. A session the device
-    /// left may still be writing to the old log what the device never
-    /// received; the new log records only what the resumed session delivers.
-    /// Returns `None` when `log` does not hold `len` entries.
+    /// new log. A session the device left may still be writing to the old
+    /// log what the device never received; the new log records only what the
+    /// resumed session delivers. `log` itself stays: the session that forked
+    /// it may be lost before the device learns the new position, and the
+    /// device then presents `log` again. Returns `None` when `log` does not
+    /// hold `len` entries.
     ///
     /// # Errors
     /// Returns an error if the logs can't be read or written.
@@ -149,12 +178,9 @@ impl WorkspaceStore {
         else {
             return Ok(None);
         };
-        let dir = self.resume_dir(device);
-        for entry in fs::read_dir(&dir)?.flatten() {
-            let _ = fs::remove_file(entry.path());
-        }
         let fork: [u8; 16] = rand::random();
         fs::write(self.resume_path(device, &fork), held)?;
+        self.prune_resume(device, &[*log, fork]);
         Ok(Some(fork))
     }
 
@@ -229,17 +255,51 @@ mod tests {
             store.load_resume(&device, &fork, 3).unwrap().unwrap(),
             HashSet::from([[1; 32], [2; 32], [4; 32]])
         );
-        assert!(
-            store.append_resume(&device, &log, &[[5; 32]]).is_err(),
-            "a session left behind no longer writes to what the device resumes from"
+        store.append_resume(&device, &log, &[[5; 32]]).unwrap();
+        assert_eq!(
+            store.load_resume(&device, &fork, 3).unwrap().unwrap(),
+            HashSet::from([[1; 32], [2; 32], [4; 32]]),
+            "a session left behind never writes to what the device resumes from"
         );
         assert!(store.fork_resume(&device, &fork, 9).unwrap().is_none());
-        let log = fork;
         let fresh = store.start_resume(&device).unwrap();
-        assert!(store.load_resume(&device, &log, 1).unwrap().is_none());
         assert_eq!(
             store.load_resume(&device, &fresh, 0).unwrap().unwrap(),
             HashSet::new()
+        );
+    }
+
+    /// The session that forked a position can be lost before the device
+    /// hears the new one; the device then presents the old position again,
+    /// and a session it already left may subscribe after the one it uses.
+    #[test]
+    fn a_position_survives_a_fork_the_device_never_heard_of() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let device = [2; 32];
+        let log = store.start_resume(&device).unwrap();
+        store
+            .append_resume(&device, &log, &[[1; 32], [2; 32]])
+            .unwrap();
+        let lost = store.fork_resume(&device, &log, 2).unwrap().unwrap();
+        store.append_resume(&device, &lost, &[[3; 32]]).unwrap();
+        let resumed = store.fork_resume(&device, &log, 2).unwrap().unwrap();
+        assert_eq!(
+            store.load_resume(&device, &resumed, 2).unwrap().unwrap(),
+            HashSet::from([[1; 32], [2; 32]])
+        );
+        assert!(store.fork_resume(&device, &log, 2).unwrap().is_some());
+        store.start_resume(&device).unwrap();
+        assert!(
+            store.load_resume(&device, &resumed, 2).unwrap().is_some(),
+            "a late subscription of a session the device left"
+        );
+        for _ in 0..2 * RETAINED_LOGS {
+            store.start_resume(&device).unwrap();
+        }
+        assert_eq!(
+            fs::read_dir(store.resume_dir(&device)).unwrap().count(),
+            RETAINED_LOGS
         );
     }
 }
