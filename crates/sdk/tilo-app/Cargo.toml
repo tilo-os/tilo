@@ -47,6 +47,9 @@ notifications = []
 priority-contacts = ["tilo-runner-native?/priority-contacts"]
 # Optional native presentation diagnostics shared by app entrypoints.
 presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
+# The Windows DX12 shader cache; see `tilo-ui`. Like `presentation-feedback`,
+# it builds only against the workspace's patched wgpu-hal.
+dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
 ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false }

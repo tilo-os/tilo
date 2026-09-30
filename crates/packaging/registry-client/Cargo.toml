@@ -13,7 +13,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-app-package = { path = "../tilo-app-package" }
 registry-types = { path = "../registry-types" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 anyhow.workspace = true
 blake3.workspace = true

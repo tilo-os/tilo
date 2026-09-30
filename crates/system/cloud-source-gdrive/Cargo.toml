@@ -2,23 +2,25 @@
 name = "cloud-source-gdrive"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Google Drive accounts as a cloud-source provider: Drive API v3 ids and parents, the changes feed, ranged reads, resumable uploads, revisions, native documents and exports."
 
 [dependencies]
 hex = { workspace = true, optional = true }
 chrono = { workspace = true, features = ["std"] }
-cloud-source = { path = "../cloud-source" }
+cloud-source = { version = "0.1.0", path = "../cloud-source" }
 reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 # The in-memory Drive server behind `fake-server`.
 md-5 = { workspace = true, optional = true }
 sha1 = { version = "0.11", optional = true }
 sha2 = { workspace = true, optional = true }
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 
 [features]
 # `cloud_source_gdrive::fake::FakeDrive`, an in-memory Drive API v3 server on
