@@ -8,9 +8,11 @@
 //! its author must be the device the host authenticated, and the route and
 //! artifact must match.
 
+use std::collections::{BTreeMap, HashMap};
+
 use collab_types::{
-    ContentRetention, DocumentFrame, DocumentMutation, EncryptionMetadata, SignedOp,
-    document_artifact_id, document_attestation_id,
+    ContentRetention, DocumentFrame, DocumentMutation, DocumentMutationKind, EncryptionMetadata,
+    SignedOp, document_artifact_id, document_attestation_id,
 };
 use neighbour_wire::{NeighbourMsg, Retention};
 use tilo_relay_client::DeviceSigner;
@@ -113,11 +115,27 @@ pub struct OpenedDocument {
     pub author: [u8; 32],
     /// Cleartext when the envelope was sealed.
     pub decrypted_payload: Option<Vec<u8>>,
+    /// The complete mutation when this is the last segment of a segmented
+    /// transfer; `envelope` is then that segment's.
+    whole: Option<DocumentMutation>,
+    /// Retained entry ids of the frames this document came in.
+    entries: Vec<[u8; 32]>,
 }
 
 impl OpenedDocument {
-    /// The typed mutation carried by a whole (unsegmented) frame.
+    /// The host's ids ([`tilo_relay_protocol::compaction::entry_id`]) of the
+    /// retained frames this document came in: one, or every segment of a
+    /// reassembled transfer.
+    pub fn entries(&self) -> &[[u8; 32]] {
+        &self.entries
+    }
+
+    /// The typed mutation: carried by a whole frame, or reassembled from
+    /// every segment of a large one.
     pub fn mutation(&self) -> Option<DocumentMutation> {
+        if let Some(whole) = &self.whole {
+            return Some(whole.clone());
+        }
         match DocumentFrame::decode(
             self.decrypted_payload
                 .as_deref()
@@ -128,6 +146,165 @@ impl OpenedDocument {
             DocumentFrame::Whole(mutation) => Some(mutation),
             DocumentFrame::Segment(_) => None,
         }
+    }
+
+    /// Whether this document stands for a reassembled segmented transfer
+    /// rather than for its own envelope's payload.
+    pub fn is_reassembled(&self) -> bool {
+        self.whole.is_some()
+    }
+
+    fn payload(&self) -> &[u8] {
+        self.decrypted_payload
+            .as_deref()
+            .unwrap_or(&self.envelope.payload)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct TransferKey {
+    artifact: collab_types::ArtifactId,
+    author: [u8; 32],
+    digest: [u8; 32],
+}
+
+struct Transfer {
+    kind: DocumentMutationKind,
+    total_len: u64,
+    segment_len: u32,
+    segments: BTreeMap<u32, Vec<u8>>,
+    entries: Vec<[u8; 32]>,
+    bytes: usize,
+    touched: u64,
+}
+
+/// Rebuilds segmented document transfers (a snapshot or change set larger
+/// than one frame, see `collab_types::document_transfer`) from their
+/// individually signed and verified segments. Memory stays within the
+/// collaboration transport's reassembly limits by dropping the least
+/// recently extended incomplete transfer; the page has no monotonic clock
+/// `DocumentReassembler` accepts, so recency is an arrival counter.
+#[derive(Default)]
+pub struct Reassembly {
+    transfers: HashMap<TransferKey, Transfer>,
+    buffered: usize,
+    arrivals: u64,
+}
+
+impl Reassembly {
+    /// Pass a whole document through, hold a segment, or return the
+    /// document completed by this final segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentError::Payload`] for a segment that contradicts
+    /// its transfer or a complete transfer that fails its digest; the
+    /// transfer is dropped.
+    pub fn accept(
+        &mut self,
+        mut document: OpenedDocument,
+    ) -> Result<Option<OpenedDocument>, DocumentError> {
+        let segment = match DocumentFrame::decode(document.payload()) {
+            Ok(DocumentFrame::Segment(segment)) => segment,
+            Ok(DocumentFrame::Whole(_)) | Err(_) => return Ok(Some(document)),
+        };
+        self.arrivals = self.arrivals.saturating_add(1);
+        let key = TransferKey {
+            artifact: document.envelope.artifact,
+            author: document.author,
+            digest: segment.digest,
+        };
+        if let Some(transfer) = self.transfers.get(&key)
+            && (transfer.kind != segment.kind
+                || transfer.total_len != segment.total_len
+                || transfer.segment_len != segment.segment_len)
+        {
+            self.remove(&key);
+            return Err(DocumentError::Payload(
+                "document segment contradicts its transfer".into(),
+            ));
+        }
+        let len = segment.data.len();
+        if self
+            .transfers
+            .get(&key)
+            .is_some_and(|transfer| transfer.segments.contains_key(&segment.index))
+        {
+            return Ok(None);
+        }
+        self.make_room(len, &key);
+        let transfer = self.transfers.entry(key).or_insert_with(|| Transfer {
+            kind: segment.kind,
+            total_len: segment.total_len,
+            segment_len: segment.segment_len,
+            segments: BTreeMap::new(),
+            entries: Vec::new(),
+            bytes: 0,
+            touched: 0,
+        });
+        transfer.touched = self.arrivals;
+        transfer.bytes = transfer.bytes.saturating_add(len);
+        let count = segment.count() as usize;
+        transfer.segments.insert(segment.index, segment.data);
+        transfer.entries.extend_from_slice(&document.entries);
+        self.buffered = self.buffered.saturating_add(len);
+        if transfer.segments.len() < count {
+            return Ok(None);
+        }
+        let Some(transfer) = self.remove(&key) else {
+            return Ok(None);
+        };
+        let mut data = Vec::with_capacity(usize::try_from(transfer.total_len).unwrap_or(0));
+        for chunk in transfer.segments.into_values() {
+            data.extend_from_slice(&chunk);
+        }
+        if u64::try_from(data.len()).ok() != Some(transfer.total_len)
+            || collab_types::document_transfer::transfer_digest(transfer.kind, &data) != key.digest
+        {
+            return Err(DocumentError::Payload(
+                "reassembled document does not match its transfer digest".into(),
+            ));
+        }
+        document.whole = Some(match transfer.kind {
+            DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
+            DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
+        });
+        document.entries = transfer.entries;
+        Ok(Some(document))
+    }
+
+    /// Bytes held for incomplete transfers.
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffered
+    }
+
+    fn make_room(&mut self, extra: usize, keep: &TransferKey) {
+        loop {
+            let slot = !self.transfers.contains_key(keep)
+                && self.transfers.len()
+                    >= collab_types::document_transfer::MAX_CONCURRENT_TRANSFERS;
+            let bytes = self.buffered.saturating_add(extra)
+                > collab_types::document_transfer::MAX_REASSEMBLY_BUFFER_BYTES;
+            if !slot && !bytes {
+                return;
+            }
+            let Some(victim) = self
+                .transfers
+                .iter()
+                .filter(|(key, _)| *key != keep)
+                .min_by_key(|(_, transfer)| transfer.touched)
+                .map(|(key, _)| *key)
+            else {
+                return;
+            };
+            self.remove(&victim);
+        }
+    }
+
+    fn remove(&mut self, key: &TransferKey) -> Option<Transfer> {
+        let transfer = self.transfers.remove(key)?;
+        self.buffered = self.buffered.saturating_sub(transfer.bytes);
+        Some(transfer)
     }
 }
 
@@ -144,12 +321,27 @@ fn frame_retention(cleartext: &[u8]) -> ContentRetention {
     }
 }
 
+/// Join each run of consecutive incremental changes into one change set.
+/// Automerge loads concatenated change chunks as one, so a route's
+/// checkpoint and its retained tail merge in two steps however long the
+/// tail is. A snapshot stays on its own: its changes may depend on ones only
+/// the local replica holds.
+pub fn coalesce(mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
+    let mut out: Vec<DocumentMutation> = Vec::with_capacity(mutations.len());
+    for mutation in mutations {
+        match (out.last_mut(), mutation) {
+            (Some(DocumentMutation::Incremental(run)), DocumentMutation::Incremental(bytes)) => {
+                run.extend_from_slice(&bytes);
+            }
+            (_, mutation) => out.push(mutation),
+        }
+    }
+    out
+}
+
 /// Stable `NeighbourMsg` peer handle of a device.
 pub fn peer_id(device: &[u8; 32]) -> u64 {
-    let digest = blake3::derive_key("tilo-browser-peer-id-v1", device);
-    u64::from_le_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-    ])
+    neighbour_wire::peer_handle(device)
 }
 
 /// Sign one cleartext document frame (one element of
@@ -280,5 +472,200 @@ pub fn open_frame(
         envelope: *envelope,
         author,
         decrypted_payload,
+        whole: None,
+        entries: vec![tilo_relay_protocol::compaction::entry_id(body)],
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+    use tilo_automerge::ApplyIncoming as _;
+
+    fn opened(
+        artifact: collab_types::ArtifactId,
+        author: [u8; 32],
+        payload: Vec<u8>,
+    ) -> OpenedDocument {
+        let entry = tilo_relay_protocol::compaction::entry_id(&payload);
+        OpenedDocument {
+            route: DocumentRoute {
+                app_id: "app".into(),
+                cluster_id: "room".into(),
+                record: "record".into(),
+            },
+            envelope: SignedOp::new_unsigned(
+                payload,
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes(author),
+                collab_types::AttestationId::new(),
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            ),
+            author,
+            decrypted_payload: None,
+            whole: None,
+            entries: vec![entry],
+        }
+    }
+
+    fn noise(len: usize) -> Vec<u8> {
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state.to_le_bytes()[0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_checkpoint_and_its_coalesced_tail_converge_like_one_change_at_a_time() {
+        let mut author = AutoCommit::new();
+        let text = author
+            .put_object(automerge::ROOT, "text", automerge::ObjType::Text)
+            .unwrap();
+        author.splice_text(&text, 0, 0, "begin ").unwrap();
+        let checkpoint = author.save();
+        let mut tail = Vec::new();
+        for round in 0..50 {
+            author
+                .splice_text(&text, 0, 0, &format!("round {round} "))
+                .unwrap();
+            tail.push(DocumentMutation::Incremental(author.save_incremental()));
+        }
+        let mut mutations = vec![DocumentMutation::Snapshot(checkpoint)];
+        mutations.extend(tail.iter().cloned());
+        let runs = coalesce(mutations);
+        assert_eq!(runs.len(), 2, "one snapshot, one change set");
+
+        let apply = |runs: &[DocumentMutation]| {
+            let mut doc = AutoCommit::new();
+            for run in runs {
+                match run {
+                    DocumentMutation::Snapshot(bytes) => {
+                        doc.merge_incoming(&mut AutoCommit::load(bytes).unwrap())
+                            .unwrap();
+                    }
+                    DocumentMutation::Incremental(bytes) => {
+                        doc.load_incoming(bytes).unwrap();
+                    }
+                }
+            }
+            doc
+        };
+        let mut one_by_one = vec![runs[0].clone()];
+        one_by_one.extend(tail);
+        let mut batched = apply(&runs);
+        let mut single = apply(&one_by_one);
+        assert_eq!(batched.get_heads(), author.get_heads());
+        assert_eq!(single.get_heads(), batched.get_heads());
+        assert_eq!(batched.text(&text).unwrap(), author.text(&text).unwrap());
+    }
+
+    #[test]
+    fn coalesce_keeps_snapshots_apart_and_joins_incremental_runs() {
+        use DocumentMutation::{Incremental, Snapshot};
+        let runs = coalesce(vec![
+            Incremental(vec![1]),
+            Incremental(vec![2, 3]),
+            Snapshot(vec![4]),
+            Snapshot(vec![5]),
+            Incremental(vec![6]),
+        ]);
+        assert_eq!(
+            runs,
+            vec![
+                Incremental(vec![1, 2, 3]),
+                Snapshot(vec![4]),
+                Snapshot(vec![5]),
+                Incremental(vec![6]),
+            ]
+        );
+    }
+
+    #[test]
+    fn segmented_snapshots_reassemble_in_any_order() {
+        let mutation = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2));
+        let mut frames = mutation.encode_frames().unwrap();
+        assert_eq!(frames.len(), 3, "a 2.5 MiB snapshot travels as segments");
+        frames.reverse();
+        frames.insert(1, frames[0].clone());
+        let artifact = collab_types::ArtifactId::new();
+        let mut reassembly = Reassembly::default();
+        let mut completed = Vec::new();
+        for frame in frames {
+            let document = opened(artifact, [7; 32], frame);
+            assert!(
+                document.mutation().is_none(),
+                "a segment alone is no mutation"
+            );
+            if let Some(done) = reassembly.accept(document).unwrap() {
+                completed.push(done);
+            }
+        }
+        assert_eq!(completed.len(), 1, "the transfer completes exactly once");
+        assert!(completed[0].is_reassembled());
+        assert_eq!(
+            completed[0].entries().len(),
+            3,
+            "a reassembled document names every segment it came in, once"
+        );
+        assert_eq!(completed[0].mutation(), Some(mutation));
+        assert_eq!(reassembly.buffered_bytes(), 0);
+    }
+
+    #[test]
+    fn whole_frames_pass_and_segments_of_other_authors_never_mix() {
+        let artifact = collab_types::ArtifactId::new();
+        let mut reassembly = Reassembly::default();
+        let small = DocumentMutation::Incremental(vec![1, 2, 3]);
+        let whole = reassembly
+            .accept(opened(artifact, [1; 32], small.encode().unwrap()))
+            .unwrap()
+            .unwrap();
+        assert!(!whole.is_reassembled());
+        assert_eq!(whole.mutation(), Some(small));
+
+        let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 1))
+            .encode_frames()
+            .unwrap();
+        let last = frames.len() - 1;
+        for (index, frame) in frames.into_iter().enumerate() {
+            let author = if index == last { [2; 32] } else { [1; 32] };
+            assert!(
+                reassembly
+                    .accept(opened(artifact, author, frame))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn a_tampered_segment_fails_the_transfer_digest() {
+        let frames = DocumentMutation::Incremental(noise(2 * 1024 * 1024 + 5))
+            .encode_frames()
+            .unwrap();
+        let artifact = collab_types::ArtifactId::new();
+        let mut reassembly = Reassembly::default();
+        let count = frames.len();
+        let mut outcome = Ok(None);
+        for (index, mut frame) in frames.into_iter().enumerate() {
+            if index == 1 {
+                let at = frame.len() - 3;
+                frame[at] ^= 0xff;
+            }
+            outcome = reassembly.accept(opened(artifact, [3; 32], frame));
+            if index + 1 < count {
+                assert!(matches!(outcome, Ok(None)));
+            }
+        }
+        assert!(matches!(outcome, Err(DocumentError::Payload(_))));
+        assert_eq!(reassembly.buffered_bytes(), 0);
+    }
 }

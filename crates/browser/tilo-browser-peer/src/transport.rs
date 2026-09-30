@@ -177,6 +177,7 @@ impl RelayCollabTransport {
         self.peer
             .join(workspace)
             .and_then(|()| self.peer.live_join(workspace))
+            .and_then(|()| self.peer.open_route(document_route(route)))
             .map_err(|_| TransportError::Closed)?;
         Ok(workspace)
     }
@@ -247,9 +248,12 @@ impl RelayCollabTransport {
                     self.ready.insert(workspace_id);
                 }
                 PeerEvent::Document(document) => {
-                    // Segments of a mutation larger than one frame need
-                    // reassembly before an app may see them.
-                    if !self.routes.contains(&document.route) || document.mutation().is_none() {
+                    // The toolkit takes whole frames only; a reassembled
+                    // transfer's envelope is just its last segment.
+                    if !self.routes.contains(&document.route)
+                        || document.is_reassembled()
+                        || document.mutation().is_none()
+                    {
                         continue;
                     }
                     self.live
@@ -268,11 +272,14 @@ impl RelayCollabTransport {
                     self.live.member(device, active);
                 }
                 // Remote actions are the page's (`agents.mjs`, `actionsV1`),
-                // consumed from their own event queue.
+                // consumed from their own event queue. The toolkit keeps its
+                // documents in the collaboration manager, so another
+                // volunteer answers compaction requests.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::RemoteAction { .. }
-                | PeerEvent::RemoteActionUndeliverable { .. } => {}
+                | PeerEvent::RemoteActionUndeliverable { .. }
+                | PeerEvent::CompactionRequested { .. } => {}
             }
         }
         if self.confirm_pending

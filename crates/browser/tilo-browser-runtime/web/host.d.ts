@@ -109,7 +109,14 @@ export interface LocalDesktop {
 }
 export interface RuntimeStatus {
   /** `resolving`/`linking`/`linked` report an app installed from a side module (`app`). */
-  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed';
+  /**
+   * `crashed`: an application panicked and the runtime stopped. With
+   * `crashedWindow` (its tab id) the window is kept out of the room's next
+   * load, which shows `error` in it; `restarting` says the page reloads.
+   */
+  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed' | 'crashed';
+  crashedWindow?: string | null;
+  restarting?: boolean;
   app?: string;
   error?: string;
   persistence?: 'committed' | 'failed';
@@ -153,6 +160,12 @@ export interface MountOptions {
   mac?: boolean;
   signal?: AbortSignal;
   onStatus?: (status: RuntimeStatus) => void;
+  /**
+   * Reload the page after an application crashed the runtime (default
+   * true), which starts the desktop again without that window; `false`
+   * leaves it to the caller after the `crashed` status.
+   */
+  restartOnCrash?: boolean;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
   /**
    * A file for the app to open, as it would open one the user chose. The
@@ -175,7 +188,7 @@ export interface MountOptions {
   /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
   local?: LocalDesktop;
 }
-/** Which window of a local desktop an action call addresses. */
+/** Which window of a desktop an action call addresses. */
 export interface WindowOption {
   /** The window's tab id (a navigation route's `tab`); defaults to the focused window. */
   window?: string;
@@ -217,9 +230,8 @@ export interface DesktopMount {
    * applied. `resource` narrows to one resource and its children, including
    * one the application resolves only on request; the application's own
    * resolution wins over what the full listing shows (a Chat channel asked
-   * for by name lists its latest messages). On a local desktop, those of one
-   * window's app (`window`, else the focused window). Throws for a peer's
-   * canonical desktop.
+   * for by name lists its latest messages). On a desktop, those of one
+   * window's app (`window`, else the focused window).
    */
   actions(resource?: string, options?: WindowOption): ActionDescriptor[];
   /**
@@ -227,8 +239,9 @@ export interface DesktopMount {
    * one the palette, agents and assistive technology use. Throws
    * `code: reason` when the address is not published now, the permissions
    * refuse it, the arguments do not bind, or its contract requires
-   * confirmation and `confirm` is not set. On a local desktop it addresses
-   * one window's app, as `actions` does.
+   * confirmation and `confirm` is not set. On a desktop it addresses one
+   * window's app, as `actions` does. Through a certified peer the action
+   * claims the mount's live presence only if it moved the mount's caret.
    */
   invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
   /**

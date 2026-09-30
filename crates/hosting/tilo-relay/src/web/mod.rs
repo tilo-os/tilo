@@ -257,10 +257,16 @@ fn bridge_browser_presence(
                 from_device_public_key: device,
                 frame,
             };
-            workspace
+            let delivered = workspace
                 .lock()
                 .await
                 .relay_bridged_live(&device, &envelope);
+            tracing::debug!(
+                workspace_id,
+                from = %hex::encode(&device[..4]),
+                delivered,
+                "browser presence bridged to iroh live members"
+            );
         }
     })
 }
@@ -515,10 +521,18 @@ async fn route(
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            sessions
+            let grant = sessions
                 .finish(&finish.handshake, &finish.ack2)
-                .map(|grant| encoded(&grant))
-                .map_err(|error| session_status(&error))
+                .map_err(|error| session_status(&error))?;
+            Ok(
+                match protocol::encode_grant(
+                    &grant,
+                    protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION,
+                ) {
+                    Ok(bytes) => reply(StatusCode::OK, bytes),
+                    Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                },
+            )
         }
         "/send" => {
             let session = authed()?;

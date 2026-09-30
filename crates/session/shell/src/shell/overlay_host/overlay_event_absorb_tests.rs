@@ -506,8 +506,8 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
 
         // This is the exact lock-boundary call made by native.rs after it
         // cancels the backend stream. Late End events must not turn a partial
-        // vertical three-finger swipe into a workspace switch.
-        for id in 0..3 {
+        // vertical four-finger swipe into a workspace switch.
+        for id in 0..4 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -518,7 +518,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 ),
             );
         }
-        for id in 0..3 {
+        for id in 0..4 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -530,7 +530,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
             ));
         }
         h.host.cancel_direct_touch_gestures();
-        for id in 0..3 {
+        for id in 0..4 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -545,7 +545,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         // Physical removal runs through the raw Cancelled phase instead of
         // the explicit lock helper. It must have the same no-terminal-action
         // property even if stale End edges arrive after unplug.
-        for id in 10..13 {
+        for id in 10..14 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -556,7 +556,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 ),
             );
         }
-        for id in 10..13 {
+        for id in 10..14 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -567,7 +567,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 )
             ));
         }
-        for id in 10..13 {
+        for id in 10..14 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -578,7 +578,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 )
             ));
         }
-        for id in 10..13 {
+        for id in 10..14 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -602,8 +602,80 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         );
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the test renders bounded contact indices as touch coordinates"
+    )]
+    fn touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four() {
+        fn swipe_up(h: &mut AbsorbHarness, first_id: u64, fingers: u64) {
+            let ids = first_id..first_id + fingers;
+            let x = |id: u64| 400.0 + (id - first_id) as f64 * 8.0;
+            for id in ids.clone() {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Started, x(id), 500.0),
+                );
+            }
+            for id in ids.clone() {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Moved, x(id), 250.0),
+                );
+            }
+            for id in ids {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Ended, x(id), 250.0),
+                );
+            }
+        }
+        let mut h = build_harness();
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            let mut tree = chrome.tree_mut();
+            let second = tree.append_empty_workspace("Second");
+            tree.desktop.active = second;
+            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+            ws.strips.push(crate::shell::state::Strip::new(
+                crate::shell::state::StripId(9_000),
+                "Below".to_owned(),
+            ));
+            drop(tree);
+            let (_, focused) = chrome.strip_focus();
+            if focused == 0 {
+                assert!(chrome.switch_strip(1), "fixture focuses the lower strip");
+            }
+        }
+        let workspace = h.chrome.borrow().tree().desktop.active;
+        let (_, strip) = h.chrome.borrow().strip_focus();
+        assert!(strip > 0, "there is a strip above to swipe to");
+
+        swipe_up(&mut h, 0, 3);
+        {
+            let chrome = h.chrome.borrow();
+            assert_eq!(
+                chrome.strip_focus().1,
+                strip - 1,
+                "three fingers up focus the strip above, as Super+↑ does"
+            );
+            assert_eq!(
+                chrome.tree().desktop.active,
+                workspace,
+                "three fingers stay on the workspace"
+            );
+        }
+
+        swipe_up(&mut h, 10, 4);
+        assert_ne!(
+            h.chrome.borrow().tree().desktop.active,
+            workspace,
+            "four fingers up go one level out, to the previous workspace"
+        );
+    }
+
     first_local_key_releases_follow_without_also_running_a_shell_chord();
     lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions();
+    touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four();
 }
 
 fn left_button_pressed() -> WindowEvent {

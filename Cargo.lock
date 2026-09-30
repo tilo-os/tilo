@@ -1353,7 +1353,7 @@ dependencies = [
 name = "bounded-zip"
 version = "0.1.0"
 dependencies = [
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "thiserror 2.0.18",
  "workspace-hack",
  "zip",
@@ -3406,7 +3406,7 @@ dependencies = [
  "bounded-zip",
  "image",
  "qdoc-rich-text",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9190,6 +9190,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-av-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "478ae33fcac9df0a18db8302387c666b8ef08a3e2d62b510ca4fc278a384b6c0"
+dependencies = [
+ "bitflags 2.11.0",
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.3",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9211,6 +9226,28 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-core-audio"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
+dependencies = [
+ "dispatch2",
+ "objc2 0.6.3",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-core-audio-types"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
+dependencies = [
+ "bitflags 2.11.0",
+ "objc2 0.6.3",
 ]
 
 [[package]]
@@ -9286,6 +9323,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-media"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
+dependencies = [
+ "bitflags 2.11.0",
+ "dispatch2",
+ "objc2 0.6.3",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-video",
+]
+
+[[package]]
 name = "objc2-core-spotlight"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9296,6 +9348,19 @@ dependencies = [
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
+]
+
+[[package]]
+name = "objc2-core-video"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
+dependencies = [
+ "bitflags 2.11.0",
+ "objc2 0.6.3",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -11952,6 +12017,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "libc",
  "postcard",
  "runtime-portal",
  "serde",
@@ -11993,7 +12059,7 @@ dependencies = [
  "mime_guess",
  "os-actions",
  "registry-types",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "runtime",
  "runtime-fs",
  "runtime-identity",
@@ -13185,6 +13251,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -13297,6 +13364,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
@@ -13342,6 +13410,7 @@ dependencies = [
  "wire-frame",
  "word-processor",
  "workspace-hack",
+ "x11rb",
  "xattr",
  "xdg-paths",
  "xkeysym",
@@ -14885,6 +14954,7 @@ dependencies = [
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
+ "automerge",
  "blake3",
  "bytes",
  "channel-crypto",
@@ -14906,9 +14976,12 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "test-http",
  "thiserror 2.0.18",
+ "tilo-automerge",
  "tilo-clock",
  "tilo-moq",
+ "tilo-net",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -14926,48 +14999,35 @@ dependencies = [
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
- "automerge",
- "calculator",
- "chat",
  "collab-types",
- "ebook",
+ "durable-store",
  "ed25519-dalek 3.0.0",
- "futures",
  "hex",
  "js-sys",
- "notes",
  "postcard",
- "qdoc",
  "serde",
  "serde_json",
- "taffy",
- "tempfile",
+ "settings-store",
  "tilo-actions",
- "tilo-agent-control-protocol",
- "tilo-app",
  "tilo-automerge",
- "tilo-automerge-isolate",
  "tilo-browser-peer",
- "tilo-clock",
- "tilo-cloud-enrollment",
- "tilo-content",
- "tilo-delivery-protocol",
- "tilo-desktop",
  "tilo-desktop-model",
- "tilo-peer-state",
+ "tilo-desktop-search",
+ "tilo-desktop-surface",
+ "tilo-files",
+ "tilo-paths",
  "tilo-relay-protocol",
+ "tilo-secrets",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-winit",
  "tokio",
- "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
  "wgpu",
- "word-processor",
  "workspace-hack",
 ]
 
@@ -14997,10 +15057,19 @@ name = "tilo-capture"
 version = "0.1.0"
 dependencies = [
  "ashpd",
+ "block2 0.6.2",
+ "dispatch2",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
  "libc",
+ "objc2 0.6.3",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
  "os-actions",
  "tempfile",
  "thiserror 2.0.18",
@@ -15205,7 +15274,7 @@ version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
  "reqwest",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "test-http",
  "tilo-net",
  "tokio",
@@ -15309,6 +15378,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-desktop-search"
+version = "0.1.0"
+dependencies = [
+ "tilo-actions",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-desktop-surface"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-desktop-model",
+ "tilo-desktop-search",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-device-host"
 version = "0.1.0"
 dependencies = [
@@ -15333,7 +15423,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-moq",
@@ -15986,7 +16075,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-moq",
@@ -16176,6 +16264,7 @@ dependencies = [
  "channel-crypto",
  "chrono",
  "collab-types",
+ "console-control",
  "ed25519-dalek 3.0.0",
  "fs",
  "fuser",
@@ -16598,6 +16687,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-web-desktop"
+version = "0.1.0"
+dependencies = [
+ "api-tester",
+ "calculator",
+ "calendar",
+ "camera",
+ "chat",
+ "clocks",
+ "contacts",
+ "diffmerge",
+ "ebook",
+ "feeds",
+ "hex-editor",
+ "image-editor",
+ "maps",
+ "music",
+ "notes",
+ "passwords",
+ "pdf-viewer",
+ "photos",
+ "scratchpad",
+ "sheets",
+ "shortcuts",
+ "slides",
+ "snippets",
+ "speed-test",
+ "themes",
+ "tilo-app",
+ "tilo-browser-runtime",
+ "totp",
+ "tube",
+ "typst-editor",
+ "video-editor",
+ "video-player",
+ "wasm-bindgen",
+ "weather",
+ "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-winit"
 version = "0.30.13"
 dependencies = [
@@ -16685,7 +16816,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
