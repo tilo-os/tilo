@@ -9,7 +9,6 @@ publish.workspace = true
 # The shell retention authority a relay binding pins.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 fnv.workspace = true
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 flate2.workspace = true
 automerge.workspace = true
 # Untrusted automerge bytes are decoded in isolated workers first.

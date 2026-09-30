@@ -289,6 +289,13 @@ pub(crate) async fn replace_governed_access(
             } else {
                 runtime.membership_ceiling = Some(requested_devices);
             }
+            let removed: Vec<[u8; 32]> = runtime
+                .membership
+                .devices
+                .iter()
+                .copied()
+                .filter(|device| !access.member_devices.contains(device))
+                .collect();
             runtime
                 .membership
                 .devices
@@ -298,6 +305,9 @@ pub(crate) async fn replace_governed_access(
                 .retain(|root| access.member_user_roots.contains(root));
             runtime.governed_access = true;
             runtime.admit_authenticated = false;
+            // Refuse while the authority lane is held so the writer can deliver
+            // NotAuthorised before a waiting access audit closes the session.
+            runtime.refuse_removed_live_members(&removed);
         }
         let saved = access.clone();
         authorization_io(move || store.save_governed_access(&saved), None).await?;
