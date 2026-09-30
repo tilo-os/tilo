@@ -69,6 +69,11 @@ crates.io release, and only the optional `presentation-feedback` feature
 needs the patched Metal observer (now part of the `metal` feature, since a
 published crate cannot name a feature the release lacks).
 
+The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
+instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
+survive a GPU reset; an SDK app built on the crates.io release still panics on
+one, as it always has, and its process is restarted.
+
 ## Git forks
 
 Some patches live in public forks on code.tilo.so rather than in this tree.
