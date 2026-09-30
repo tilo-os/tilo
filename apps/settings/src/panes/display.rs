@@ -54,6 +54,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::i18n::t;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{
     El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
@@ -84,18 +85,38 @@ const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
     ("Very warm · 2800 K", 2_800),
 ];
 
-fn temperature_label(kelvin: u32) -> &'static str {
-    NIGHT_LIGHT_TEMPERATURES
+fn temperature_ftl(english: &str) -> &'static str {
+    match english {
+        "Subtle · 4500 K" => "display-night-light-temp-subtle",
+        "Very warm · 2800 K" => "display-night-light-temp-very-warm",
+        _ => "display-night-light-temp-warm",
+    }
+}
+
+fn temperature_shown(english: &str) -> String {
+    t(temperature_ftl(english))
+}
+
+fn temperature_label(kelvin: u32) -> String {
+    let english = NIGHT_LIGHT_TEMPERATURES
         .iter()
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
-        .map_or("Warm · 3700 K", |(label, _)| *label)
+        .map_or("Warm · 3700 K", |(label, _)| *label);
+    temperature_shown(english)
 }
 
 fn temperature_from_label(label: &str) -> Option<u32> {
     NIGHT_LIGHT_TEMPERATURES
         .iter()
-        .find(|(candidate, _)| *candidate == label)
+        .find(|(english, _)| *english == label || temperature_shown(english) == label)
         .map(|(_, value)| *value)
+}
+
+fn temperature_options() -> Vec<String> {
+    NIGHT_LIGHT_TEMPERATURES
+        .iter()
+        .map(|(english, _)| temperature_shown(english))
+        .collect()
 }
 
 /// Offered `HiDPI` display scales as `(display label, factor)`. The label is
@@ -140,18 +161,51 @@ const TRANSFORMS: &[(&str, OutputTransform)] = &[
     ("Portrait left", OutputTransform::Rotate270),
 ];
 
-pub(crate) fn transform_label(transform: OutputTransform) -> &'static str {
-    TRANSFORMS
+fn transform_ftl(english: &str) -> &'static str {
+    match english {
+        "Portrait right" => "display-rotation-portrait-right",
+        "Upside down" => "display-rotation-upside-down",
+        "Portrait left" => "display-rotation-portrait-left",
+        _ => "display-rotation-landscape",
+    }
+}
+
+fn transform_shown(english: &str) -> String {
+    t(transform_ftl(english))
+}
+
+pub(crate) fn transform_label(transform: OutputTransform) -> String {
+    let english = TRANSFORMS
         .iter()
         .find(|(_, candidate)| *candidate == transform)
-        .map_or("Landscape", |(label, _)| *label)
+        .map_or("Landscape", |(label, _)| *label);
+    transform_shown(english)
 }
 
 fn transform_from_label(label: &str) -> Option<OutputTransform> {
     TRANSFORMS
         .iter()
-        .find(|(candidate, _)| *candidate == label)
+        .find(|(english, _)| *english == label || transform_shown(english) == label)
         .map(|(_, transform)| *transform)
+}
+
+fn transform_options() -> Vec<String> {
+    TRANSFORMS
+        .iter()
+        .map(|(english, _)| transform_shown(english))
+        .collect()
+}
+
+/// Localise the built-in panel name for chrome. The stored label stays
+/// `Built-in display` so placement strings and tests keep one identifier.
+fn output_title(output: &DisplayOutput) -> String {
+    if output.builtin {
+        output
+            .label
+            .replacen("Built-in display", &t("display-builtin"), 1)
+    } else {
+        output.label.clone()
+    }
 }
 
 /// Best pair of timings which address the same pixel extent. The compositor
@@ -884,6 +938,7 @@ impl DisplayPane {
                         &crate::i18n::t("display-identify"),
                         None,
                     )
+                    .content_sized()
                     .on_action(
                         crate::actions::display_unit_binding("identify")
                             .expect("display identify action is published"),
@@ -948,7 +1003,7 @@ impl DisplayPane {
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
                 connector: output.connector.clone(),
-                label: output.label.clone(),
+                label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),
                 placement: Placement::new(x, y, width, height),
                 primary: resolved.primary,
@@ -977,7 +1032,7 @@ impl DisplayPane {
     fn build_brightness_card(&self) -> El {
         let automatic_brightness = if self.ambient_sensor_available {
             setting_row(
-                "Automatic brightness",
+                &t("display-auto-brightness"),
                 Box::new(
                     Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
                         .with_id("display.auto_brightness")
@@ -989,13 +1044,13 @@ impl DisplayPane {
                 ),
             )
         } else {
-            value_row("Automatic brightness", "No ambient-light sensor detected")
+            value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
         card(
-            "Brightness",
+            &t("display-brightness"),
             rows(vec![
                 setting_row(
-                    "Brightness",
+                    &t("display-brightness"),
                     Box::new(
                         Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
                             .with_id("display.brightness")
@@ -1007,7 +1062,7 @@ impl DisplayPane {
                 ),
                 automatic_brightness,
                 setting_row(
-                    "Night light",
+                    &t("display-night-light"),
                     Box::new(
                         Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
                             .with_id("display.night_light")
@@ -1018,8 +1073,8 @@ impl DisplayPane {
                     ),
                 ),
                 setting_row_described(
-                    "Sunset to sunrise",
-                    "Turn Night Light on and off on the Appearance day and night schedule",
+                    &t("display-night-light-schedule"),
+                    &t("display-night-light-schedule-desc"),
                     Box::new(
                         Toggle::new(
                             "settings.display.night_light_schedule",
@@ -1034,13 +1089,10 @@ impl DisplayPane {
                     ),
                 ),
                 choice_row(
-                    "Night light warmth",
+                    &t("display-night-light-warmth"),
                     Box::new(
                         Dropdown::new(
-                            NIGHT_LIGHT_TEMPERATURES
-                                .iter()
-                                .map(|(label, _)| (*label).to_string())
-                                .collect(),
+                            temperature_options(),
                             NIGHT_LIGHT_TEMPERATURE_KEY,
                         )
                         .with_id("display.night_light_temperature")
@@ -1050,14 +1102,12 @@ impl DisplayPane {
                                     "Night Light warmth is part of the static resource contract",
                                 ),
                         )
-                        .with_placeholder(temperature_label(
+                        .with_placeholder(&temperature_label(
                             self.initial_prefs.night_light_temperature,
                         )),
                     ),
                 ),
-                caption(
-                    "Night Light applies a whole-desktop colour transform. Automatic brightness follows the kernel ambient-light sensor with smoothing and a deadband.",
-                ),
+                caption(&t("display-night-light-caption")),
             ]),
         )
     }
@@ -1100,7 +1150,7 @@ impl DisplayPane {
         output_rows.extend(Self::build_output_primary_rows(output, connected, &config));
         output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
         output_rows.extend(Self::build_output_capability_rows(output, &config));
-        card(&output.label, rows(output_rows))
+        card(&output_title(output), rows(output_rows))
     }
 
     /// Enable/primary toggles + scale/position/mirroring dropdowns.
@@ -1274,29 +1324,22 @@ impl DisplayPane {
                 ),
             ));
         }
+        let rotation = transform_options();
+        let rotation_current = transform_label(config.transform);
         out_rows.push(choice_row(
-            "Rotation",
+            &t("display-rotation"),
             Box::new(
-                Dropdown::new(
-                    TRANSFORMS
-                        .iter()
-                        .map(|(label, _)| (*label).into())
-                        .collect(),
-                    &transform_key,
-                )
-                .with_id(&transform_key)
-                .on_action(
-                    crate::actions::display_output_choice_binding(
-                        "transform",
-                        output.connector.clone(),
-                        TRANSFORMS
-                            .iter()
-                            .map(|(label, _)| (*label).into())
-                            .collect(),
+                Dropdown::new(rotation.clone(), &transform_key)
+                    .with_id(&transform_key)
+                    .on_action(
+                        crate::actions::display_output_choice_binding(
+                            "transform",
+                            output.connector.clone(),
+                            rotation,
+                        )
+                        .expect("output transform action is part of the resource contract"),
                     )
-                    .expect("output transform action is part of the resource contract"),
-                )
-                .with_placeholder(transform_label(config.transform)),
+                    .with_placeholder(&rotation_current),
             ),
         ));
         out_rows
