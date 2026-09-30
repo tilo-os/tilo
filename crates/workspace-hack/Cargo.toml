@@ -162,7 +162,7 @@ resvg = { version = "0.47" }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
@@ -377,7 +377,7 @@ resvg = { version = "0.47" }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
@@ -465,7 +465,7 @@ rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 strict-num = { version = "0.1" }
@@ -506,7 +506,7 @@ rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 strict-num = { version = "0.1" }
@@ -547,7 +547,7 @@ rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 strict-num = { version = "0.1" }
@@ -588,7 +588,7 @@ rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand_chacha-274715c4dabd11b0 = { package = "rand_chacha", version = "0.9", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "system", "termios", "time"] }
+rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "termios", "time"] }
 scopeguard = { version = "1" }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 strict-num = { version = "0.1" }

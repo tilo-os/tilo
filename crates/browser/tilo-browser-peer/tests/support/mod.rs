@@ -248,6 +248,46 @@ pub fn route() -> DocumentRoute {
     }
 }
 
+/// An HTTPS client that counts the `/events` answers the host sent.
+pub struct Recording {
+    pub inner: Arc<https::DevHttps>,
+    /// Largest single answer.
+    pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every answer's bytes together.
+    pub total: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Recording {
+    pub fn new(inner: Arc<https::DevHttps>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            largest_page: Arc::default(),
+            total: Arc::default(),
+        })
+    }
+}
+
+impl tilo_browser_peer::HttpClient for Recording {
+    fn post(
+        &self,
+        path: &str,
+        session: Option<&str>,
+        body: Vec<u8>,
+    ) -> tilo_browser_peer::HttpFuture<'_> {
+        use std::sync::atomic::Ordering;
+        let events = path.ends_with("/events");
+        let answer = self.inner.post(path, session, body);
+        Box::pin(async move {
+            let answer = answer.await;
+            if events && let Ok((_, bytes)) = &answer {
+                self.largest_page.fetch_max(bytes.len(), Ordering::Relaxed);
+                self.total.fetch_add(bytes.len(), Ordering::Relaxed);
+            }
+            answer
+        })
+    }
+}
+
 /// Wait for the next document event on `peer` and return its mutation.
 pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
     wait_for("a document", || {
