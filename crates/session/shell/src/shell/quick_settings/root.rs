@@ -1273,7 +1273,9 @@ impl QuickSettingsRoot {
         let stops = self.root_stops(state);
         let last = stops.len().saturating_sub(1);
         match (self.root_focus_index(&stops), backwards) {
-            (None | Some(0), true) => true,
+            // No selection is not a wrap: Super+Q then Shift+Tab must land
+            // on Power. The card only intercepts wrap off a real first stop.
+            (Some(0), true) => true,
             (Some(i), false) => i >= last,
             _ => false,
         }
