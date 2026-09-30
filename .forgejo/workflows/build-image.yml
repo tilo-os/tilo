@@ -2879,7 +2879,9 @@ jobs:
   # installation; it intentionally has no mutable upgrade channel yet.
   # A board's dev image, the board layer on this commit's aarch64 dev image:
   # a job of its own, so a broken board layer is visible without holding back
-  # the generic dev images, which the build-and-push lanes publish first.
+  # the generic dev images, which the build-and-push lanes publish first. It
+  # keeps the dev image's labels (revision, base, trust), so dev-disk.yml
+  # takes its digest as dev_image and installs it to a flashable disk.
   board-lenovo-83ed:
     name: "board: lenovo-83ed"
     needs: [plan, build-and-push]
@@ -2967,6 +2969,10 @@ jobs:
           set -euo pipefail
           started=$(date +%s)
           image="registry.tilo.so/tilo/tilo-vm:$SERIES-lenovo-83ed"
+          # Main also moves tilo-vm:lenovo-83ed, which an installed laptop's
+          # `bootc upgrade` follows.
+          names="$image"
+          [[ $GITHUB_REF != refs/heads/main ]] || names="$names,registry.tilo.so/tilo/tilo-vm:lenovo-83ed"
           metadata="$(mktemp "${RUNNER_TEMP:?}/tilo-board-build.XXXXXX")"
           docker buildx build --builder "$BUILDER_NAME" --provenance=false \
             -f os/Containerfile.board \
@@ -2975,10 +2981,8 @@ jobs:
             --build-arg TILO_HARDWARE_PROFILE=lenovo-83ed \
             --build-arg TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:lenovo-83ed-dev \
             --label "org.opencontainers.image.version=$SERIES-lenovo-83ed" \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --label "org.opencontainers.image.base.name=$BOARD_BASE" \
             --metadata-file "$metadata" \
-            --output "type=image,name=$image,push=true,compression=zstd,compression-level=1" \
+            --output "type=image,\"name=$names\",push=true,compression=zstd,compression-level=1" \
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::Lenovo 83ED dev image in $(( $(date +%s) - started ))s: $image ($digest)"
