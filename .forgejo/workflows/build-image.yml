@@ -1503,6 +1503,47 @@ jobs:
           # (run 49176) for a next build that hardly ever has the same sources.
           # The steps below take its results from this builder.
 
+      # Build / OS dev: the dev binaries compile on the Fedora bootc base
+      # (os/Containerfile.dev's dev-builder), which needs nothing from this
+      # lane's image, so they compile in this builder while the rootfs and the
+      # image assemble, which is mostly I/O. The dev image step below takes the
+      # result from the builder's cache. Started after the production compile,
+      # so the two compiles never share the builder's memory.
+      - name: Start the dev binaries compile
+        if: steps.release-mode.outputs.dev-fast == 'true' && steps.compile-stages.outcome == 'success'
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
+        run: |
+          set -euo pipefail
+          cache=()
+          if [[ $COMPILER_CACHE == shared ]]; then
+            cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                   --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+          fi
+          export TILO_DEV_COMPILE_LOG="$RUNNER_TEMP/tilo-dev-compile.log"
+          rm -f "$TILO_DEV_COMPILE_LOG" "$TILO_DEV_COMPILE_LOG.status"
+          echo "TILO_DEV_COMPILE_LOG=$TILO_DEV_COMPILE_LOG" >> "$GITHUB_ENV"
+          # Detached, so it outlives this step; the dev image step waits for
+          # its status file.
+          setsid nohup bash -c '
+            started=$(date +%s)
+            docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+              -f os/Containerfile.dev --target dev-builder \
+              --build-arg "RPMS_REF=$RPMS_REF" \
+              --build-arg "BASE_REF=$BASE_REF" \
+              --build-arg TILO_CARGO_FRESHNESS=clean \
+              --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
+              --build-arg TILO_DEV_RUST_LTO=off \
+              --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+              "$@" --output type=cacheonly .
+            status=$?
+            echo "dev binaries compiled in $(( $(date +%s) - started ))s (exit $status)"
+            echo "$status" > "$TILO_DEV_COMPILE_LOG.status"' \
+            tilo-dev-compile "${cache[@]}" > "$TILO_DEV_COMPILE_LOG" 2>&1 < /dev/null &
+          echo "$!" > "$TILO_DEV_COMPILE_LOG.pid"
+          echo "::notice::dev binaries compiling in the background ($TILO_DEV_COMPILE_LOG)"
+
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
       # the image build below adds the build outputs on top of it.
@@ -2010,6 +2051,18 @@ jobs:
         run: |
           set -euo pipefail
           started=$(date +%s)
+          # The background compile of the dev binaries: this build takes its
+          # result from the builder's cache, or compiles them itself if it failed.
+          if [[ -n ${TILO_DEV_COMPILE_LOG:-} ]]; then
+            while [[ ! -s $TILO_DEV_COMPILE_LOG.status ]] && kill -0 "$(cat "$TILO_DEV_COMPILE_LOG.pid")" 2>/dev/null; do
+              sleep 5
+            done
+            [[ -s $TILO_DEV_COMPILE_LOG.status ]] || echo 1 > "$TILO_DEV_COMPILE_LOG.status"
+            grep -E 'TILO_BUILD_TIMING|dev binaries compiled|ERROR' "$TILO_DEV_COMPILE_LOG" || true
+            [[ $(cat "$TILO_DEV_COMPILE_LOG.status") == 0 ]] \
+              || { echo "::warning::the background dev compile failed; compiling here"; tail -40 "$TILO_DEV_COMPILE_LOG"; }
+            echo "::notice::waited $(( $(date +%s) - started ))s for the dev binaries"
+          fi
           base="registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST"
           # tilo-vm refuses a base older than the VM's; its config carries
           # the fixed dev epoch, so the commit time orders dev bases.
