@@ -4249,10 +4249,15 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let (fs_group, maximize) = {
+        let (fs_group, maximize, single) = {
             let st = chrome.borrow();
             let client = st.fullscreen_group();
-            (client.or_else(|| st.maximized_group()), client.is_none())
+            let single = st.single_strip().then(|| st.active_strip_id()).flatten();
+            (
+                client.or_else(|| st.maximized_group()),
+                client.is_none(),
+                single,
+            )
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4269,7 +4274,7 @@ impl ShellOverlayHost {
         // rebuilding while this still says `true` leaves the sidebar node at
         // `display:none`, with no later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
-        for &row_ptr in self.group_row_ptrs.values() {
+        for (&strip, &row_ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
             // tree, the host outlives the content, and `&mut self` gives us
@@ -4283,7 +4288,7 @@ impl ShellOverlayHost {
                     row.set_fullscreen(Some(gid), false);
                 }
                 Some(_) if owned => row.set_fullscreen(None, true),
-                _ => row.set_fullscreen(None, false),
+                _ => row.set_fullscreen(None, single.is_some_and(|single| single != strip)),
             }
         }
     }
@@ -6858,6 +6863,10 @@ impl ShellOverlayHost {
     fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
+        if tilo_desktop::launchpad::take_open_app(doc, root) {
+            self.open_app_launcher(doc, root);
+            return true;
+        }
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
@@ -6878,6 +6887,22 @@ impl ShellOverlayHost {
             | LaunchpadAction::Meet => {}
         }
         true
+    }
+
+    /// The app launcher Super+N and the empty workspace's "Open an app"
+    /// open: the palette over everything, opening beside the focus.
+    fn open_app_launcher(&mut self, doc: &AutoCommit, root: &ObjId) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
     }
 
     fn open_launchpad_app(
@@ -11867,21 +11892,9 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
-                if repeat {
-                    *handled = true;
-                    return true;
+                if !repeat {
+                    self.open_app_launcher(state, path);
                 }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
-                    st.bump();
-                }
-                self.palette_visible = true;
-                self.palette.set_focus(true);
-                self.palette.set_query("");
-                self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-                self.refresh_search_results(state, path);
                 *handled = true;
                 true
             }
