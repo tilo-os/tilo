@@ -197,6 +197,10 @@ pub struct NewAppRequest {
     /// Commit of the SDK repository. `None` pins the commit this CLI was
     /// built from.
     pub sdk_rev: Option<String>,
+    /// Build a standalone app on the published SDK: `tilo-app` at this
+    /// version requirement from the registry, with no `[patch]`. An empty
+    /// string means the version this CLI was built with.
+    pub sdk_version: Option<String>,
     pub dry_run: bool,
 }
 
@@ -207,10 +211,17 @@ enum SdkRequest {
         url: Option<String>,
         rev: Option<String>,
     },
+    Registry(Option<String>),
 }
 
 impl NewAppRequest {
     fn sdk_request(&self) -> SdkRequest {
+        if self.ui_path.is_none()
+            && let Some(version) = &self.sdk_version
+        {
+            let version = version.trim();
+            return SdkRequest::Registry((!version.is_empty()).then(|| version.to_owned()));
+        }
         match (&self.ui_path, &self.sdk_git, &self.sdk_rev) {
             (Some(ui), _, _) => SdkRequest::Checkout(ui.clone()),
             (None, None, None) => SdkRequest::Discover,
@@ -7543,10 +7554,13 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<
                         format!("{url}{}", pin.as_deref().unwrap_or(" (default branch)")),
                     )
                 }
-                None => (
-                    DoctorStatus::Warning,
-                    "non-path tilo-app dependency; SDK source could not be verified".to_string(),
-                ),
+                None => match ui.get("version").and_then(toml::Value::as_str) {
+                    Some(version) => (DoctorStatus::Pass, format!("tilo-app {version} from the registry")),
+                    None => (
+                        DoctorStatus::Warning,
+                        "non-path tilo-app dependency; SDK source could not be verified".into(),
+                    ),
+                },
             },
             (Some(package), _) => (
                 DoctorStatus::Fail,
@@ -8331,6 +8345,16 @@ struct AppSpec {
     template: Template,
 }
 
+impl AppSpec {
+    /// Whether the app offers the `thin` build against the toolkit dylib.
+    fn links_toolkit_dylib(&self) -> bool {
+        match &self.sdk {
+            AppSdk::Workspace { .. } => true,
+            AppSdk::Standalone(standalone) => !standalone.source.is_registry(),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum AppSdk {
     /// A member of the Tilo workspace, with the path from the app to `ui-core`.
@@ -8450,6 +8474,7 @@ fn create_app_interactive_from(
     let choose_sdk = request.ui_path.is_none()
         && request.sdk_git.is_none()
         && request.sdk_rev.is_none()
+        && request.sdk_version.is_none()
         && repo.is_none();
     if choose_sdk && interactive {
         prompt_sdk(current_dir, &mut request, input, output)?;
@@ -8459,6 +8484,17 @@ fn create_app_interactive_from(
         SdkRequest::Discover if discover_ui_dir(current_dir, repo.as_deref()).is_none() => {
             git_sdk_source(None, None).describe()
         }
+        SdkRequest::Registry(version) => standalone::SdkSource::Registry {
+            version: version
+                .or_else(|| {
+                    standalone::Baseline::embedded()
+                        .ok()?
+                        .sdk_version()
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default(),
+        }
+        .describe(),
         SdkRequest::Discover | SdkRequest::Checkout(_) => {
             resolve_ui_dir(current_dir, repo.as_deref(), request.ui_path.as_deref())?
                 .display()
@@ -8656,7 +8692,7 @@ fn resolve_standalone_sdk(
             .map(|_| resolve_ui_dir(current_dir, repo, None))
             .transpose()?,
         SdkRequest::Checkout(ui) => Some(resolve_ui_dir(current_dir, repo, Some(ui))?),
-        SdkRequest::Git { .. } => None,
+        SdkRequest::Git { .. } | SdkRequest::Registry(_) => None,
     };
     if let Some(ui_dir) = checkout_ui {
         let root = checkout_root_for_ui(&ui_dir).to_path_buf();
@@ -8668,9 +8704,23 @@ fn resolve_standalone_sdk(
             baseline: standalone::Baseline::from_checkout(&root)?,
         });
     }
+    if let SdkRequest::Registry(version) = request {
+        let baseline = standalone::Baseline::embedded()?;
+        let version = match version {
+            Some(version) => version.clone(),
+            None => baseline
+                .sdk_version()
+                .context("this tilo-app does not know its SDK version; pass --sdk-version")?
+                .to_owned(),
+        };
+        return Ok(standalone::Standalone {
+            source: standalone::SdkSource::Registry { version },
+            baseline,
+        });
+    }
     let (url, rev) = match request {
         SdkRequest::Git { url, rev } => (url.clone(), rev.clone()),
-        SdkRequest::Discover | SdkRequest::Checkout(_) => (None, None),
+        SdkRequest::Discover | SdkRequest::Checkout(_) | SdkRequest::Registry(_) => (None, None),
     };
     Ok(standalone::Standalone {
         source: git_sdk_source(url, rev),
@@ -9313,8 +9363,15 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         AppSdk::Workspace { .. } => "license.workspace = true\n",
         AppSdk::Standalone(_) => "license = \"AGPL-3.0-only\"\n",
     };
+    // The shared toolkit dylib ships with the OS and is built from a Tilo
+    // tree, so an app on the published SDK always links statically.
+    let features = if spec.links_toolkit_dylib() {
+        "[features]\nthin = [\"dep:runtime-dylib\"]\n\n"
+    } else {
+        ""
+    };
     let mut manifest = format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\n",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n{features}[dependencies]\n",
         name = spec.package_name,
         crate_name = spec.crate_name,
     );
@@ -9343,6 +9400,11 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         }
         AppSdk::Standalone(standalone) => {
             manifest.push_str(&standalone.dependencies());
+            if !spec.links_toolkit_dylib() {
+                manifest.push_str(
+                    "\n# `ui::dev_reload_entry!` expands code for a `thin` build, which this app has not.\n[lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(feature, values(\"thin\"))'] }\n",
+                );
+            }
             manifest.push_str(&standalone.manifest_tail()?);
         }
     }
@@ -9392,8 +9454,13 @@ fn app_lib(spec: &AppSpec) -> String {
 }
 
 fn app_main(spec: &AppSpec) -> String {
+    let thin = if spec.links_toolkit_dylib() {
+        "#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\n"
+    } else {
+        ""
+    };
     format!(
-        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nui::main!({crate_name}::App);\n",
+        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n{thin}ui::main!({crate_name}::App);\n",
         crate_name = spec.crate_name,
     )
 }

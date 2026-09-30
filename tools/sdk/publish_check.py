@@ -4,8 +4,8 @@
 The SDK crate set is every workspace crate in the dependency closure of
 `tilo-app` and `tilo-browser-runtime`,
 including the forks the SDK depends on under their own names (tilo-winit,
-tilo-accesskit-winit, tilo-vello*). For each one this prints what publishing
-still needs:
+tilo-accesskit-winit, tilo-vello*, tilo-automerge-fork). For each one this
+prints what publishing still needs:
 
 - `publish = false` (the workspace default);
 - a missing `description`, `license` or `repository`;
@@ -20,15 +20,15 @@ Crates marked `publish = true` must have no blockers, and are then packaged
 together with `cargo publish --dry-run` (Cargo's local overlay registry
 resolves their dependencies on each other): manifests, files and dependency
 resolution against crates.io. `--verify` also builds every package from its
-packaged sources, against crates.io; `--report-only` skips the dry run.
+packaged sources, in dependency order, against crates.io and the packages
+before it; `--report-only` skips the dry run. The packaged `.crate` files stay
+in `target/package/tmp-registry/`, where tools/sdk/local_registry.py builds a
+registry from them.
 
-Names another owner holds on crates.io (TAKEN_ON_CRATES_IO) are reported
-separately: a dry run cannot see ownership, and each needs a `tilo-` package
-name before a real publish. `--check-names` asks crates.io again. Where the
-other owner also published our version (SAME_VERSION_ON_CRATES_IO), `--verify`
-resolves their crate instead of ours for every dependent, so verification
-stops at the first crate that builds on one (tilo-host, on `tts`) until the
-rename.
+A dry run cannot see ownership, and a name another owner holds on crates.io
+would resolve to their crate wherever they published our version. The SDK's
+names are all `tilo-` names or free (2026-09-28); `--check-names` asks
+crates.io again and fails on a taken one.
 """
 
 from __future__ import annotations
@@ -94,11 +94,15 @@ UPSTREAM_SUFFICES = {
     "libspa-sys": "Fedora 44 PipeWire header fix; only the optional `pipewire` feature builds it",
     "rustls-native-certs": "Tilo OS's single trust bundle; the original's discovery is right elsewhere",
     "wayland-backend": "a compositor (server) fix; SDK apps are Wayland clients",
+    "web-transport-quinn": "adds a server entry point for the host's shared HTTP/3 endpoint "
+    "and follows the workspace's kio; tilo-net's client uses neither",
     "wgpu": "a lost device is reported from `poll` instead of panicking; an app on the "
     "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
     "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
     "set; SDK apps use none of them",
+    "workspace-hack": "hakari's feature union for this workspace; crates.io's "
+    "workspace-hack 0.1.0 is its empty placeholder",
 }
 
 # The forks the SDK depends on under their own names. They sit outside the
@@ -111,31 +115,8 @@ FORKS = (
     "vendor/vello",
     "vendor/vello_encoding",
     "vendor/vello_shaders",
+    "vendor/automerge",
 )
-
-# Of those, the ones whose owner also published 0.1.0, our version.
-SAME_VERSION_ON_CRATES_IO = {
-    "advisory-lock",
-    "app-state",
-    "atomic-file",
-    "sandbox-core",
-    "spellcheck",
-    "tts",
-}
-
-# Crate names held by other owners on crates.io (checked 2026-09-27).
-TAKEN_ON_CRATES_IO = {
-    "advisory-lock",
-    "app-state",
-    "atomic-file",
-    "cli",
-    "fs",
-    "sandbox-core",
-    "spellcheck",
-    "thumbnail",
-    "tts",
-    "xdg-paths",
-}
 
 
 def blockers(package: dict, patched: set[str], local: set[str]) -> list[str]:
@@ -255,18 +236,13 @@ def main() -> int:
             print(f"  {name}: {UPSTREAM_SUFFICES[name]}")
     if unlisted:
         print(f"Patched crates the SDK needs as published forks: {', '.join(unlisted)}")
-    taken = taken_names(sorted(sdk)) if args.check_names else TAKEN_ON_CRATES_IO & set(sdk)
+    taken = taken_names(sorted(sdk)) if args.check_names else set()
     if taken:
+        failing.extend(sorted(taken))
         print(
             f"Names taken on crates.io, to publish as tilo-* first ({len(taken)}): "
             + ", ".join(sorted(taken))
         )
-        clashing = sorted(SAME_VERSION_ON_CRATES_IO & taken)
-        if clashing and args.verify:
-            print(
-                "note: crates.io also has these at our version, so --verify builds "
-                "dependents on the other owner's crate: " + ", ".join(clashing)
-            )
     if failing:
         # A report lists what blocks publication; only a publishing run fails on it.
         level = "note" if args.report_only else "error"

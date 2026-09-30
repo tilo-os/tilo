@@ -87,3 +87,67 @@ fn read_text_pages_the_committed_document_for_an_agent() {
         "a cursor from before an edit is refused: {stale:?}"
     );
 }
+
+fn invoke(
+    app: &mut TestApp<WordProcessorApp>,
+    action: &str,
+    arguments: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    fn address(
+        resources: &[tilo_actions::Resource],
+        id: &str,
+    ) -> Option<tilo_actions::ActionAddress> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .map(|action| tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id))
+                .or_else(|| address(&resource.children, id))
+        })
+    }
+    let harness = app.harness();
+    let address = BoundActionAddress {
+        instance_id: INSTANCE,
+        address: address(&harness.resources(), action).expect("the action is published"),
+    };
+    harness
+        .invoke_bound_action(&address, arguments.as_object().unwrap())
+        .unwrap()
+        .completed()
+        .and_then(|output| output.value)
+}
+
+#[test]
+fn an_edit_answers_with_the_blocks_it_changed() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("Draft");
+    invoke(&mut app, "select-all", &serde_json::json!({}));
+    let pasted = invoke(
+        &mut app,
+        "paste",
+        &serde_json::json!({"markdown": "# Standup\n\nMaya is out\n"}),
+    );
+    let summary = pasted
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        summary.starts_with("2 changed:\n# Standup {#") && summary.contains("\nMaya is out {#"),
+        "{pasted:?}"
+    );
+    let styled = invoke(
+        &mut app,
+        "set-paragraph-style",
+        &serde_json::json!({"kind": "heading", "level": 2}),
+    );
+    assert!(
+        styled
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .is_some_and(|summary| summary.starts_with("1 changed:\n## ")
+                && summary.matches(" {#").count() == 1),
+        "{styled:?}"
+    );
+}
