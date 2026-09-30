@@ -286,6 +286,25 @@ fn hosted_pump_inbound_event_refreshes_remote_document_state() {
 }
 
 #[test]
+fn idle_nearby_snapshot_reply_does_not_request_a_hosted_pump() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture
+        .events
+        .borrow_mut()
+        .push(CollabEvent::NearbyTransferCommandResult {
+            request_id: 1,
+            result: Ok(crate::collaboration::NearbyTransferReply::Snapshot {
+                snapshot: crate::collaboration::NearbyTransferSnapshot::default(),
+            }),
+        });
+    assert!(
+        !fixture.app.pump_collab_presence(),
+        "an unchanged Nearby snapshot must not keep requesting frames"
+    );
+    fixture.assert_idle();
+}
+
+#[test]
 fn hosted_pump_invocation_advances_and_publishes_then_idles() {
     let scope = crate::wake::WakeScope::new();
     let mut app = App::from_scoped_parts_with_controlled_inputs(
