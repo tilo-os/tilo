@@ -311,7 +311,6 @@ fn open_quick_settings(
     {
         let mut state = chrome.borrow_mut();
         state.overlays.quick_settings = true;
-        state.quick_settings.brightness_available = true;
         state.quick_settings.radios.wifi_available = true;
         state.quick_settings.bluetooth_available = true;
         state.bump();
@@ -336,7 +335,6 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings.brightness_available = true;
             st.bump();
         }
         host.force_quick_settings_settled();
@@ -363,7 +361,6 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings.brightness_available = true;
             st.bump();
         }
         host.force_quick_settings_settled();
@@ -660,7 +657,6 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings.brightness_available = true;
             st.quick_settings.radios.wifi_available = true;
             st.bump();
         }
@@ -692,7 +688,6 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings.brightness_available = true;
             st.quick_settings.radios.wifi_available = true;
             st.quick_settings.bluetooth_available = true;
             st.bump();
@@ -721,7 +716,6 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
         {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
-            st.quick_settings.brightness_available = true;
             st.bump();
         }
         host.force_quick_settings_settled();

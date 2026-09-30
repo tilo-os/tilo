@@ -2338,6 +2338,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+S detaches the workspace wheel from the strip's left
+            // edge and places it at this point. `null` means docked. The
+            // disc's `test_id` is always `wheel_disc`, so a harness that
+            // only diffs target names cannot see the summon.
+            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
+                "x": p.x,
+                "y": p.y,
+            })),
             // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
@@ -12844,6 +12852,29 @@ mod tests {
     }
 
     // state_dump
+
+    #[test]
+    fn state_dump_chrome_includes_wheel_summon() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        assert_eq!(
+            state.chrome_state_json().get("wheel_summon"),
+            Some(&serde_json::Value::Null),
+            "the wheel starts docked"
+        );
+
+        fb.chrome_handle()
+            .borrow_mut()
+            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
+        let summoned = &state.chrome_state_json()["wheel_summon"];
+        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
+        assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
 
     #[test]
     #[allow(

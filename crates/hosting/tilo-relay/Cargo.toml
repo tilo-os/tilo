@@ -67,7 +67,6 @@ path = "src/home_peer_control.rs"
 [dependencies]
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
