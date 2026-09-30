@@ -536,8 +536,12 @@ where
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
+                // Prefer an already-readable inbound frame over the periodic
+                // membership audit. After a live revoke the audit and a refused
+                // delta can become ready together; the delta must win so the
+                // peer still receives NotAuthorised rather than a bare close.
                 tokio::select! {
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    biased;
                     frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
@@ -551,6 +555,7 @@ where
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
+                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
                 }
             };
             match frame {
@@ -1761,6 +1766,9 @@ async fn handle_envelope(
             handle_compaction(peer, session, subscribed, env).await;
             Ok(None)
         }
+        env @ (Envelope::VoiceCall { .. }
+        | Envelope::VoiceJoin { .. }
+        | Envelope::VoiceLeave { .. }) => handle_voice(peer, session, subscribed, env).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -1772,7 +1780,10 @@ async fn handle_envelope(
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
         | Envelope::LiveMember { .. }
-        | Envelope::Position { .. } => Ok(None),
+        | Envelope::Position { .. }
+        | Envelope::VoiceCallResult { .. }
+        | Envelope::VoiceGranted { .. }
+        | Envelope::VoiceRefused { .. } => Ok(None),
     }
 }
 
@@ -4279,6 +4290,31 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+/// Admit `envelope`, authored by this host's own device, through the
+/// workspace's ordered persistence owner, as a device's commit is admitted.
+/// Resolves with its host order once it is durable and published.
+pub(crate) async fn admit_host_state(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    metrics: Arc<crate::metrics::Metrics>,
+) -> Result<u64, String> {
+    let admitted = Box::pin(enqueue_state_inner(
+        workspace,
+        envelope,
+        None,
+        crate::auth::PeerRole::Device,
+        metrics,
+        false,
+    ))
+    .await
+    .map_err(|error| error.to_string())?;
+    admitted
+        .completion
+        .await
+        .map_err(|_| "the workspace owner stopped before the commit was durable".to_owned())?
+        .map_err(|error| error.to_string())?;
+    Ok(admitted.sequence.load(std::sync::atomic::Ordering::SeqCst))
+}
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
     envelope: Envelope,
@@ -4946,6 +4982,13 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        // A live revoke already pushed NotAuthorised and dropped this
+        // subscriber; a follow-up write must close rather than refuse twice.
+        if !current_session(&*ws.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "workspace membership changed".into(),
@@ -4959,7 +5002,19 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
+    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+        let Envelope::Delta { delta, .. } = &env else {
+            return None;
+        };
+        match crate::coedit::CoeditPayload::decode(delta)? {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. }
+            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
+        }
+    });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    if let Some((tap, body)) = governor {
+        let _ = tap.try_send((peer.device_public_key, body));
+    }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
     }
@@ -5209,6 +5264,90 @@ async fn handle_live_join(
     Ok(None)
 }
 
+/// Handle a call envelope for a subscribed workspace whose room this relay
+/// governs; see [`crate::rooms`].
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn handle_voice(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let workspace_id = match &env {
+        Envelope::VoiceCall { workspace_id, .. }
+        | Envelope::VoiceJoin { workspace_id, .. }
+        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id,
+        _ => return Ok(None),
+    };
+    let authority = if subscribed.contains(&workspace_id) {
+        let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+        match ws {
+            Some(ws) => ws.lock().await.room_authority.clone(),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let rooms = authority
+        .as_ref()
+        .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())));
+    let refusal = "calls require a subscription to a room this host governs";
+    Ok(match env {
+        Envelope::VoiceCall {
+            request, operation, ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => rooms.voice_call(room, peer, &operation).await,
+                None => Err(refusal.into()),
+            };
+            Some(Envelope::VoiceCallResult {
+                workspace_id,
+                request,
+                result,
+            })
+        }
+        Envelope::VoiceJoin {
+            call,
+            participation,
+            ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => {
+                    rooms
+                        .voice_join(room, peer, call, participation, session.outbound.clone())
+                        .await
+                }
+                None => Err(refusal.into()),
+            };
+            Some(match result {
+                Ok(grant) => Envelope::VoiceGranted {
+                    workspace_id,
+                    grant: Box::new(grant),
+                },
+                Err(reason) => Envelope::VoiceRefused {
+                    workspace_id,
+                    call,
+                    reason,
+                },
+            })
+        }
+        Envelope::VoiceLeave {
+            call,
+            participation,
+            ..
+        } => {
+            if let Some((rooms, _)) = &rooms {
+                rooms.voice_leave(peer, call, participation);
+            }
+            None
+        }
+        _ => None,
+    })
+}
+
 /// Handle `LiveLeave`.
 #[allow(
     clippy::significant_drop_tightening,
@@ -5301,6 +5440,11 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        if !current_session(&*workspace.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
             reason: "workspace membership changed".into(),
@@ -5784,6 +5928,17 @@ fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedP
         || wr.admitted_users.contains(&peer.user_public_key)
 }
 
+fn unavailable_target(
+    wr: &crate::workspace::WorkspaceRuntime,
+    target: &[u8; 32],
+) -> UnavailableReason {
+    if wr.membership.contains(target) {
+        UnavailableReason::Offline
+    } else {
+        UnavailableReason::NotAuthorised
+    }
+}
+
 fn current_session(
     wr: &crate::workspace::WorkspaceRuntime,
     peer: &AuthenticatedPeer,
@@ -6034,7 +6189,7 @@ async fn route_private(
         return Ok(Some(U::NotAuthorised));
     }
     let Some(sub) = wr.subscribers.get(&action.target) else {
-        return Ok(Some(U::Offline));
+        return Ok(Some(unavailable_target(&wr, &action.target)));
     };
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
