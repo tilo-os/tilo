@@ -24,11 +24,12 @@ pub fn render(segments: &[Segment]) -> String {
     let mut index = 0;
     while let Some(segment) = segments.get(index) {
         if segment.kind == "cell" {
-            let run = segments[index..]
+            let rest = segments.get(index..).unwrap_or_default();
+            let run = rest
                 .iter()
                 .take_while(|cell| cell.kind == "cell" && cell.shape.table == segment.shape.table)
                 .count();
-            table(&mut out, &segments[index..index + run]);
+            table(&mut out, rest.get(..run).unwrap_or_default());
             index += run;
             continue;
         }
