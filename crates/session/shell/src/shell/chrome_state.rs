@@ -673,6 +673,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// Whether the active strip alone fills the work area, the others
+    /// collapsed: while agents drive this compositor, so the strip an agent
+    /// works in is the whole screen it sees and clicks. NOT persisted.
+    single_strip: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -839,6 +843,7 @@ impl ChromeState {
             fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -1068,6 +1073,31 @@ impl ChromeState {
 
     pub fn maximized_group(&self) -> Option<u64> {
         self.maximized_group
+    }
+
+    #[must_use]
+    pub fn single_strip(&self) -> bool {
+        self.single_strip
+    }
+
+    pub fn set_single_strip(&mut self, single: bool) {
+        if self.single_strip != single {
+            self.single_strip = single;
+            self.bump();
+        }
+    }
+
+    /// The active workspace's focused strip, or its first.
+    #[must_use]
+    pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        tree.desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))
     }
 
     /// Idempotent, so cheap to call every frame from the compositor's

@@ -31,7 +31,7 @@
 let
   # A fixed-output vendor path can remain cached after Cargo.lock changes.
   # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "7d79b2f50c6e8ff0011d5890bf4eb2f7224fad1535bef5c866600bb73b63b37d";
+  expectedCargoLockSha256 = "077b3fdc5c8b9f7cd062c3a49d12a62625b4060bba5bab3d79acd03baee49841";
 in
 assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
   "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
@@ -47,7 +47,7 @@ rustPlatform.buildRustPackage rec {
 
   # One fixed-output vendor closure avoids scheduling and copying each of the
   # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = "sha256-u9qbxT7sXspJb9QKYw/VWqM9DKRxRJDUZ7Yk2mMyorM=";
+  cargoHash = "sha256-+hHFjyMcnI0DXqWEW55rpwhJJDKEPBE8eMSCq3nkLZI=";
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
@@ -142,6 +142,8 @@ rustPlatform.buildRustPackage rec {
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
+
+  passthru.providedSessions = [ "tilo" ];
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
