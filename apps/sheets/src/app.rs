@@ -5671,7 +5671,7 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
 /// How an imported sheet remembers its file: the resolved path, so every
 /// spelling of one file finds the sheets it already became.
 fn import_source(path: &std::path::Path) -> String {
-    std::fs::canonicalize(path)
+    tilo_files::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned()
