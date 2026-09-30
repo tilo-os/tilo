@@ -793,6 +793,64 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
+/// Serve the shell's own file choosers when apps have no portal to reach: no
+/// session bus, as on a provider's headless guest. `attended` says whether an
+/// agent is driving the screen; an unattended session (one that saves into
+/// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
+fn start_chooser_service(
+    portal: Option<&PortalBackend>,
+    attended: Arc<AtomicBool>,
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::compositor::chooser_service::ChooserService> {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
+        return None;
+    }
+    let portal = portal?;
+    let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from);
+    let unattended = save_directory.is_some();
+    let context = crate::compositor::chooser_service::ChooserContext {
+        grants: portal.media_grants.clone(),
+        pickers: Arc::new(portal.pickers.clone()),
+        presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
+        save_directory,
+        wake,
+    };
+    match crate::compositor::chooser_service::ChooserService::start(context) {
+        Ok(service) => {
+            tracing::info!("serving the shell's file choosers to apps without a portal");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Open the files apps asked the chooser service to open, each in the app
+/// that owns its type, in the asking app's workspace.
+fn pump_chooser_opens(
+    service: &crate::compositor::chooser_service::ChooserService,
+    chrome: &crate::shell::chrome_state::Chrome,
+) {
+    for open in service.drain_opens() {
+        let active = chrome.borrow().tree().desktop.active;
+        let outcome = if open.caller.workspace_id == active {
+            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+        } else {
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
+        }
+        let _ = open.reply.send(outcome);
+    }
+}
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -2205,6 +2263,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
+                "power_menu": self.fb.host().power_menu_open(),
             },
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
@@ -2338,6 +2397,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+S detaches the workspace wheel from the strip's left
+            // edge and places it at this point. `null` means docked. The
+            // disc's `test_id` is always `wheel_disc`, so a harness that
+            // only diffs target names cannot see the summon.
+            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
+                "x": p.x,
+                "y": p.y,
+            })),
             // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
@@ -5756,6 +5823,9 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     media_grants: crate::portal::GrantStoreHandle,
     media_prompts: crate::portal::PromptQueueHandle,
+    /// The on-screen file chooser's queue, shared with the chooser service
+    /// that apps without a portal reach.
+    pickers: crate::portal::FilePickerQueue,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -6072,7 +6142,7 @@ fn start_portal_backend(
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
     frame_builder
         .host_mut()
-        .set_portal_queues(prompts.clone(), pickers);
+        .set_portal_queues(prompts.clone(), pickers.clone());
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -6086,6 +6156,7 @@ fn start_portal_backend(
     Some(PortalBackend {
         media_grants: grants,
         media_prompts: prompts,
+        pickers,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -6943,6 +7014,12 @@ pub fn run() {
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
+    let chooser_attended = Arc::new(AtomicBool::new(false));
+    let chooser_service = start_chooser_service(
+        portal_backend.as_ref(),
+        Arc::clone(&chooser_attended),
+        Arc::clone(&session_wake),
+    );
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -7483,6 +7560,9 @@ pub fn run() {
             && pump_floating_toplevel_events(service, &mut state)
         {
             force_first_paint = true;
+        }
+        if let Some(service) = chooser_service.as_ref() {
+            pump_chooser_opens(service, &frame_builder.chrome_handle());
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
@@ -9534,7 +9614,7 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due,
+            apps: apps_changed || widget_deadline_due || foreign::frame_callbacks_waiting(&state),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -10288,6 +10368,9 @@ pub fn run() {
         {
             injected_redraw_pending = true;
         }
+        // An agent driving the screen answers the shell's choosers; a viewer
+        // only watching cannot click one.
+        chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
             if conn.closed
                 && let Some(token) = conn.wake.take()
@@ -12846,6 +12929,29 @@ mod tests {
     // state_dump
 
     #[test]
+    fn state_dump_chrome_includes_wheel_summon() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        assert_eq!(
+            state.chrome_state_json().get("wheel_summon"),
+            Some(&serde_json::Value::Null),
+            "the wheel starts docked"
+        );
+
+        fb.chrome_handle()
+            .borrow_mut()
+            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
+        let summoned = &state.chrome_state_json()["wheel_summon"];
+        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
+        assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -13626,11 +13732,16 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// The full-screen chord: the focused Wayland client enters or leaves
-/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
-/// protocol fullscreen, so its window group maximizes instead.
+/// Super+F on a Tilo window covers the output, including the wheel.
+/// Hosted Tilo apps are xdg clients too; sending them a protocol
+/// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
+/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;
+    if frame.host_mut().toggle_focused_group_fullscreen() {
+        return;
+    }
     let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
         state
             .xdg_shell_state
@@ -13643,7 +13754,6 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_fullscreen();
         return;
     };
     if state

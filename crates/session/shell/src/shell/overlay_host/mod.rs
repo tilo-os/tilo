@@ -517,6 +517,9 @@ pub struct ShellOverlayHost {
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
+    /// One-shot driver so a workspace switch requests a run of frames
+    /// instead of painting once and idling (W16).
+    workspace_switch: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -1062,6 +1065,7 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
+const WORKSPACE_SWITCH_MS: u64 = 400;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
 /// starts, and the top of the band the room-activity sheet, the
@@ -1446,6 +1450,7 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
+                workspace_switch: self.workspace_switch.is_animating(now),
                 quick_settings: self.qs_transition.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
@@ -1987,6 +1992,7 @@ impl ShellOverlayHost {
             transition_started: None,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
+            workspace_switch: ui::Transition::closed(),
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_px: (
@@ -3011,6 +3017,32 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
+    /// Latch overview progress during `update`, before the compositor
+    /// samples animation demand. Draw also ticks; starting only there
+    /// left Super+Tab as a one-frame jump (W16).
+    fn latch_overview_transition(&mut self) {
+        let open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.overview);
+        // Do not read `ui::host::environment()` here: that is a process
+        // input, and fixture pumps forbid ambient starts. Draw snaps
+        // with `theme.reduce_motion`.
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
+    }
+
+    /// Keep the compositor painting for the switch's duration. The
+    /// desktop content is already swapped; this is the frame run, not a
+    /// second slide implementation. Draw snaps this when motion is reduced.
+    fn start_workspace_switch_frames(&mut self) {
+        self.workspace_switch = ui::Transition::closed();
+        self.workspace_switch.set_open(
+            true,
+            Duration::from_millis(WORKSPACE_SWITCH_MS),
+            ui::Curve::EaseOut,
+        );
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
@@ -3652,7 +3684,11 @@ impl ShellOverlayHost {
             }
             tree.clone()
         };
-        self.rebuild_workspace_content(&chrome, &snapshot)
+        let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
+        if swapped {
+            self.start_workspace_switch_frames();
+        }
+        swapped
     }
 
     /// Rebuilds the desktop surface for `snapshot` and replaces the row
@@ -5921,6 +5957,11 @@ impl ShellOverlayHost {
 
     /// The switcher as `state-dump` reports it: its windows, which is
     /// selected, and whether each card shows a live preview.
+    /// Whether the power menu is open, for `state_dump`.
+    pub fn power_menu_open(&self) -> bool {
+        self.layers.power_menu.is_open()
+    }
+
     pub fn window_switcher_state_json(&self) -> serde_json::Value {
         self.layers
             .window_switcher
@@ -11945,7 +11986,12 @@ impl ShellOverlayHost {
                     let mut st = chrome.borrow_mut();
                     let next = match st.wheel_summon() {
                         Some(_) => None,
-                        None => self.last_cursor,
+                        // A session with no pointer yet (headless, first
+                        // frame, a VM that has not moved the cursor) still
+                        // has to put the wheel somewhere a shot and
+                        // state-dump can see. The host rect is the
+                        // display; its centre is on screen.
+                        None => Some(self.last_cursor.unwrap_or_else(|| self.rect.center())),
                     };
                     st.set_wheel_summon(next);
                     *handled = true;
@@ -15758,6 +15804,7 @@ impl Widget for ShellOverlayHost {
         }
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
+        self.latch_overview_transition();
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -18273,6 +18320,7 @@ impl ShellOverlayHost {
             .and_then(|chrome| chrome.borrow().osd)
             .is_some_and(|osd| osd.needs_animation_frame_at(now));
         self.transition_started.is_some()
+            || self.workspace_switch.is_animating(now)
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
@@ -18657,6 +18705,10 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if theme.reduce_motion {
+            self.workspace_switch
+                .set_open(true, Duration::ZERO, ui::Curve::EaseOut);
+        }
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Sidebar wheel: above desktop content, below every overlay
@@ -20731,7 +20783,14 @@ impl ShellOverlayHost {
                 let state = c.borrow();
                 let tree = state.tree();
                 match tree.desktop.workspaces.get(idx) {
-                    Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
+                    // Chrome already holds the session identity. Do not
+                    // call `local_user_id()` here: latching the overview
+                    // during update means the first paint can draw the
+                    // panel, and fixtures forbid that ambient start.
+                    Some(ws) => tilo_desktop::collaborators::roster_colors_with_local_user(
+                        &ws.collaborators,
+                        &state.local_user_id,
+                    ),
                     None => std::collections::HashMap::default(),
                 }
             }

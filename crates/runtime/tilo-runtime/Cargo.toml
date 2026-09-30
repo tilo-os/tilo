@@ -100,9 +100,10 @@ tilo-secrets = { path = "../../platform/tilo-secrets" }
 [dev-dependencies]
 # The steward channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
-# A real durable host a runtime joins rooms of.
+# The join protocol a runtime joins rooms over.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
+# The governor whose rooms a runtime joins.
+tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path verifies.
 ed25519-dalek.workspace = true
 tempfile.workspace = true
