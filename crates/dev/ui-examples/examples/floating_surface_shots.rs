@@ -212,7 +212,7 @@ fn stamp(window: &mut dyn Widget, theme: &Theme, tr: &mut TextRenderer, scene: &
 pub fn run(_: &[String]) {
     let light = std::env::var("TILO_SHOTS_THEME").is_ok_and(|v| v == "light");
     let theme = if light { Theme::light() } else { Theme::dark() }.with_reduce_motion(true);
-    let out = std::env::var("QUICK_UI_SNAPSHOT_OUT")
+    let out = tilo_ui::env::var("TILO_UI_SNAPSHOT_OUT")
         .unwrap_or_else(|_| "/tmp/tilo-floating-surfaces.png".into());
     let mut renderer = OffscreenRenderer::new(1280, 720);
     let mut scene = Scene::new();

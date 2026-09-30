@@ -2,73 +2,74 @@
 name = "tilo-host"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Host services a Tilo UI process borrows from whatever hosts it."
 
 # Host services: the clock, background work, clipboard, file choosers, URI
 # handlers, speech, notifications, media sessions, location and screen
-# capture a UI process borrows from its host, and their native desktop
-# backends. It knows nothing about widgets, layout or documents; `tilo-ui`
+# capture a UI process borrows from its host. The user-mediated services'
+# traits and backends live in their platform crates (`tilo-clipboard`, …);
+# `HostServices` is the per-app registry of them. It knows nothing about widgets, layout or documents; `tilo-ui`
 # re-exports it under the same module paths.
 
 [features]
-# The native desktop backends (`native`): the Wayland/X11 clipboard and the
-# OS URI handler. Without it the crate is the host vocabulary only, and a host
-# installs its own `host::HostServices`.
 # Thread-local chooser and URI backends a test selects for scoped requests.
-test-support = []
-native = ["dep:arboard", "dep:open", "dep:smithay-clipboard", "dep:smithay-client-toolkit", "dep:jni", "dep:ndk-context"]
-# Host-native file open/save, OpenURI, location and screen capture through
-# the XDG Desktop Portal on Unix and the Common Item Dialogs on Windows. The
-# request vocabulary always compiles, so a build without it degrades to a
-# clean `PortalOutcome::Failed`.
-portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_guess"]
-# Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) on the Unix
-# session bus. zbus runs on the workspace's tokio backend; the server lives on
-# its own thread with a private runtime.
-mpris = ["native", "dep:zbus"]
-# Windows toast notifications.
-notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
+test-support = ["tilo-dialogs/test-support"]
+# The native desktop services (`native::services`): each platform crate's
+# system backend, speech, and the backends below. Without it the crate is the
+# host vocabulary only, and a host installs its own `host::HostServices`.
+native = ["dep:tokio", "dep:jni", "dep:ndk-context"]
+# Screen capture through the XDG Desktop Portal. Linux only: the native
+# runner turns it on for Linux targets, and it enables nothing elsewhere.
+# File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
+# `tilo-location`), selected per target without a feature.
+portal = ["native", "dep:ashpd"]
+# Desktop media integration: the system's now-playing controls on macOS,
+# MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
+# runs on the workspace's tokio backend; the server lives on its own thread
+# with a private runtime.
+mpris = ["native", "dep:zbus", "dep:tilo-media"]
+# Kept for compatibility: `tilo-notify` selects each target's notifications
+# without a feature.
+notifications = ["native"]
 
 [dependencies]
 hex.workspace = true
 image = { workspace = true, features = ["png"] }
-libc.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-tts = { path = "../../system/tts" }
-unic-langid.workspace = true
-# Parses the portal's returned file URIs. Non-optional: `portal::to_local_path`
-# is the file-access rule — a URI naming a remote host must not resolve to a
-# local path — and must be testable in every build configuration.
-url.workspace = true
-# `time` clock types. On targets with a native clock it re-exports `std::time`
-# unchanged; it keeps the host seam buildable where `std` has none.
-web-time = "1"
-winit.workspace = true
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
-# Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
-# through `smithay-clipboard` below; `arboard`'s Wayland path needs the
-# data-control manager protocol Tilo withholds from sandboxed apps.
-arboard = { workspace = true, features = ["image-data"], optional = true }
-# The URI opener for builds without the XDG portal path (Windows, or Unix
-# without the `portal` feature). Unix builds with `portal` hand URIs to the
-# OpenURI portal instead.
-open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
-
-# The app runtime and full tokio the native backends run on. The browser
-# (wasm32) build has neither; it installs its own host services.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tilo-rt.workspace = true
-tokio = { workspace = true, features = ["full"] }
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
+# Only the native backends run futures on tokio.
+tokio = { workspace = true, optional = true, features = ["full"] }
+# The `time` module: the clock types and reads on every target.
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tracing.workspace = true
+tilo-tts = { version = "0.1.0", path = "../../system/tts" }
+unic-langid.workspace = true
+winit.workspace = true
+# The clipboard vocabulary and each target's clipboard.
+tilo-clipboard.workspace = true
+# File choosers and URI opening, with each target's backend.
+tilo-dialogs.workspace = true
+# User notifications, with each target's backend.
+tilo-notify.workspace = true
+# Device location, with each target's backend.
+tilo-location.workspace = true
+# The system's now-playing controls where the platform has its own (macOS).
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", optional = true }
+# App-scoped secrets, with each target's store.
+tilo-secrets.workspace = true
 
-# The browser has no sockets, processes or signals: tokio's `net` pulls mio,
-# which refuses to build for wasm32-unknown-unknown.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+# MPRIS needs a Unix session bus; p2p supports hermetic tests.
+zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { workspace = true, optional = true, features = ["screencast"] }
+
+[lints]
+workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 # The Android backends call the framework through the activity's JVM, which
@@ -78,30 +79,6 @@ ndk-context = { version = "0.1.1", optional = true }
 # winit's Android backend refuses to compile without an activity flavour.
 winit = { workspace = true, features = ["android-native-activity"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# `smithay-clipboard` speaks Wayland protocols and does not compile on native
-# Windows/macOS targets.
-smithay-clipboard = { version = "0.7", optional = true }
-# The image source uses the regular focus-gated wl_data_device protocol. The
-# text-only smithay-clipboard facade cannot advertise binary MIME payloads,
-# while data-control would bypass Tilo's focus/privilege boundary.
-smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional = true }
-
-[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
-# MPRIS needs a Unix session bus; p2p supports hermetic tests.
-zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
-ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast", "wallpaper"] }
-# Drives the location portal's update stream (`native::location`).
-futures-util = { workspace = true, optional = true }
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
-mime_guess = { workspace = true, optional = true }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
-
-[dev-dependencies]
-tempfile.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
-
-[lints]
-workspace = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

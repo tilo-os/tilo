@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Require every Forgejo workflow job to declare a positive timeout.
+"""Require every Forgejo workflow job to declare a timeout of at most three hours.
+
+A job that needs longer is a job to split or fix, not to wait for.
 
 A job that calls a local reusable workflow cannot declare one; the called
 workflow's own jobs are audited instead.
@@ -16,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo" / "workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
+MAX_MINUTES = 180
+# The OS release build still exceeds the limit.
+LONGER = {"build-image.yml"}
 LOCAL_CALL = re.compile(r"^    uses:\s*\./\.forgejo/workflows/([A-Za-z0-9_.-]+\.ya?ml)\s*$")
 
 
@@ -25,7 +30,8 @@ class Violation:
     job: str
 
     def __str__(self) -> str:
-        return f"{self.workflow}: job {self.job!r} has no positive timeout-minutes"
+        return (f"{self.workflow}: job {self.job!r} needs a timeout-minutes between 1 "
+                f"and {MAX_MINUTES}")
 
 
 def jobs_without_timeouts(path: Path) -> list[str]:
@@ -51,7 +57,8 @@ def jobs_without_timeouts(path: Path) -> list[str]:
 
         timeout_match = TIMEOUT.match(line)
         if current_job is not None and timeout_match:
-            jobs[current_job] = int(timeout_match.group(1)) > 0
+            minutes = int(timeout_match.group(1))
+            jobs[current_job] = 0 < minutes and (minutes <= MAX_MINUTES or path.name in LONGER)
         call_match = LOCAL_CALL.match(line)
         if current_job is not None and call_match:
             jobs[current_job] = (path.parent / call_match.group(1)).is_file()

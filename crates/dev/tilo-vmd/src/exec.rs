@@ -64,6 +64,30 @@ pub fn session_env(environ: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Add the compositor's `WAYLAND_DISPLAY` to a session's `env`. The display is
+/// named after the session process started, so that process's environment
+/// never has it; the compositor publishes it under the runtime directory.
+pub fn add_published_wayland_display(env: &mut Vec<(String, String)>) {
+    if env.iter().any(|(key, _)| key == "WAYLAND_DISPLAY") {
+        return;
+    }
+    let Some(runtime) = env
+        .iter()
+        .find(|(key, _)| key == "XDG_RUNTIME_DIR")
+        .map(|(_, value)| std::path::PathBuf::from(value))
+    else {
+        return;
+    };
+    let Ok(published) = std::fs::read_to_string(runtime.join("tilo-session/wayland-display"))
+    else {
+        return;
+    };
+    let name = published.trim();
+    if !name.is_empty() {
+        env.push(("WAYLAND_DISPLAY".to_owned(), name.to_owned()));
+    }
+}
+
 /// The command that runs `args` as `user` inside the mount namespace of
 /// process `pid`, with that session's `env` (see [`session_env`]) in place
 /// of the daemon's.
@@ -76,10 +100,12 @@ pub fn in_session(pid: u32, user: &str, env: &[(String, String)], args: &[String
     for key in SESSION_ENV {
         command.arg(format!("--unset={key}"));
     }
+    // `env` ends its options at the first assignment, so `--` must precede them.
+    command.arg("--");
     for (key, value) in env {
         command.arg(format!("{key}={value}"));
     }
-    command.arg("--").args(args);
+    command.args(args);
     command
 }
 
@@ -198,6 +224,82 @@ mod tests {
         command
     }
 
+    fn env_runs_the_command_with_the_session_environment() {
+        // Through the real `env`: an argv's shape cannot show where `env` stops parsing options.
+        let command = in_session(
+            4242,
+            "tds-a",
+            &[("XDG_RUNTIME_DIR".to_owned(), "/run/user/1001".to_owned())],
+            &[
+                "sh".into(),
+                "-c".into(),
+                "printf %s \"$XDG_RUNTIME_DIR\"".into(),
+            ],
+        );
+        let args: Vec<_> = command.get_args().collect();
+        let after_env = args
+            .iter()
+            .position(|arg| *arg == "env")
+            .and_then(|at| at.checked_add(1))
+            .expect("in_session runs env");
+        let output = Command::new("env")
+            .args(args.get(after_env..).expect("env has arguments"))
+            .env("XDG_RUNTIME_DIR", "/run/user/0")
+            .output()
+            .expect("run env");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"/run/user/1001");
+    }
+
+    #[test]
+    fn a_session_without_wayland_display_takes_the_published_one() {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
+        std::fs::write(
+            runtime.path().join("tilo-session/wayland-display"),
+            "wayland-1\n",
+        )
+        .unwrap();
+        let runtime_env = (
+            "XDG_RUNTIME_DIR".to_owned(),
+            runtime.path().display().to_string(),
+        );
+        // Phase `the_published_name_fills_the_gap`.
+        {
+            let mut env = vec![runtime_env.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(
+                env,
+                [
+                    runtime_env.clone(),
+                    ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned())
+                ]
+            );
+        }
+        // Phase `a_display_already_in_the_environment_is_kept`.
+        {
+            let own = ("WAYLAND_DISPLAY".to_owned(), "wayland-7".to_owned());
+            let mut env = vec![runtime_env.clone(), own.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(env, [runtime_env, own]);
+        }
+        // Phase `nothing_published_adds_nothing`.
+        {
+            let empty = tempfile::tempdir().unwrap();
+            let bare = (
+                "XDG_RUNTIME_DIR".to_owned(),
+                empty.path().display().to_string(),
+            );
+            let mut env = vec![bare.clone()];
+            add_published_wayland_display(&mut env);
+            assert_eq!(env, [bare]);
+        }
+    }
+
     #[test]
     fn exec_runs_in_the_session_as_the_slot_user_bounded_and_streamed() {
         // Phase `the_command_joins_the_session_namespace_as_the_slot_user`.
@@ -240,15 +342,17 @@ mod tests {
                 .map(str::to_owned)
                 .chain(SESSION_ENV.iter().map(|key| format!("--unset={key}")))
                 .chain([
+                    "--".to_owned(),
                     "XDG_RUNTIME_DIR=/run/user/1001".to_owned(),
                     "WAYLAND_DISPLAY=wayland-1".to_owned(),
-                    "--".to_owned(),
                     "sha256sum".to_owned(),
                     "/usr/bin/shell".to_owned(),
                 ])
                 .collect::<Vec<_>>()
             );
         }
+        // Phase `env_runs_the_command_with_the_session_environment`.
+        env_runs_the_command_with_the_session_environment();
         // Phase `output_streams_and_the_exit_status_passes_through`.
         {
             let (out, err) = (Sink::default(), Sink::default());

@@ -36,7 +36,10 @@ struct ConsumedEnrollment {
 }
 
 impl DeviceFleet {
-    fn new(identity_id: String) -> Self {
+    /// An empty fleet of `identity_id`: no certificates, revocations or
+    /// consumed enrollments.
+    #[must_use]
+    pub fn new(identity_id: String) -> Self {
         Self {
             schema_version: FLEET_SCHEMA_VERSION,
             identity_id,
@@ -181,9 +184,8 @@ impl DeviceFleetStore {
         expires_at_ns: u64,
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
-        let device =
-            tilo_user_identity::persist::read_device_key(&self.identity_paths.device_privkey)
-                .map_err(|error| io::Error::other(error.to_string()))?;
+        let device = tilo_user_identity::persist::load_device_key(&self.identity_paths)
+            .map_err(|error| io::Error::other(error.to_string()))?;
         let cert_path = self
             .identity_paths
             .device_cert_for_user(&profile.user_public_key);

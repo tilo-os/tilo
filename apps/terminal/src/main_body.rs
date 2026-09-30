@@ -2919,6 +2919,9 @@ impl Widget for TerminalWidget {
     fn name(&self) -> &'static str {
         "Terminal"
     }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -5269,6 +5272,11 @@ impl TerminalWidget {
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
                 Self::map_alt_char(c.as_str())
             }
+            // Hardware Space arrives as `Named(Space)` (often with no `text`).
+            // Control-socket `type` sends `Character` glyphs whose `text` may
+            // also be empty. Both used to fall through, so App/Frame treated
+            // unconsumed Space/Enter as Activate and the PTY never saw them.
+            Key::Character(c) if !ctrl && !alt && !mods.super_key() => Some(c.as_bytes().to_vec()),
             _ => None,
         }
     }
@@ -5329,6 +5337,7 @@ impl TerminalWidget {
     ) -> Option<Vec<u8>> {
         match named {
             NamedKey::Enter => Some(vec![b'\r']),
+            NamedKey::Space => Some(vec![b' ']),
             NamedKey::Backspace => Some(vec![127]),
             // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
             NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),
@@ -6155,10 +6164,19 @@ impl TerminalPerformer<'_> {
             return;
         }
         let screen_top = len.saturating_sub(self.height);
+        let cursor_y = self.absolute_y().min(len - 1);
+        // The cursor's own row is erased only up to or from the cursor, as
+        // `EL` would; blanking it whole wipes a prompt drawn before the cursor.
         let range: Vec<usize> = match mode {
-            0 => (self.absolute_y()..len).collect(), // cursor → end
-            1 => (screen_top..=self.absolute_y().min(len - 1)).collect(), // start → cursor
-            2 | 3 => (screen_top..len).collect(),    // whole screen
+            0 => {
+                self.erase_line(0);
+                (cursor_y + 1..len).collect()
+            }
+            1 => {
+                self.erase_line(1);
+                (screen_top..cursor_y).collect()
+            }
+            2 | 3 => (screen_top..len).collect(), // whole screen
             _ => return,
         };
         for abs_y in range {

@@ -413,13 +413,13 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
-    fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
+    pub(super) fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if let Some(&id) = self.focusable_order.get(idx) {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
-                    let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
+                    let _ =
+                        self.mutate_node(id, |widget| crate::undo::set_state(widget, &metadata));
                     self.focus_history.stable_metadata = Some(metadata);
                 }
                 self.focus_history.stable_focus_idx = Some(idx);
@@ -581,7 +581,7 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = self.root_widget.take_commit_context();
+        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
@@ -592,7 +592,7 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.get_state())
+            self.inspect_node(id, |widget| crate::undo::get_state(widget))
                 .ok()
                 .flatten()
         });
@@ -968,28 +968,37 @@ impl App {
         let Some(address) = Self::find_resource_action(&resources, target) else {
             return false;
         };
-        if self
-            .invoke_history_address_local(&address, argument)
-            .is_some()
-        {
-            return true;
+        self.invoke_local_address(&address, argument);
+        true
+    }
+
+    /// The local actor's door onto one action: host services first, then an
+    /// action that asks for confirmation through the palette, then the app's
+    /// own. Assistive technology and host chrome both enter here.
+    pub(super) fn invoke_local_address(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> bool {
+        if let Some(result) = self.invoke_history_address_local(address, argument) {
+            return result.is_ok();
         }
-        let confirmation = tilo_actions::door::resolve(&resources, &address)
+        let resources = self.collect_declared_resources();
+        let confirmation = tilo_actions::door::resolve(&resources, address)
             .map(|spec| spec.confirmation_for_argument(argument))
             .unwrap_or_default();
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
-            let _ = self.open_action_palette_at(&address);
-            return true;
+            return self.open_action_palette_at(address);
         }
         let actor = self.collaboration.local_author.0.clone();
-        if self
-            .invoke_resource_action(ResourceInvocation::new(&address, &actor).argument(argument))
-            .is_ok()
-        {
+        let accepted = self
+            .invoke_resource_action(ResourceInvocation::new(address, &actor).argument(argument))
+            .is_ok();
+        if accepted {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
-        true
+        accepted
     }
 
     /// Resolves both retained AccessKit nodes and synthetic semantic children

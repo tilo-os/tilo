@@ -179,7 +179,6 @@ pub use usb::UsbBackend;
 #[cfg(target_os = "linux")]
 pub use wallpaper::WallpaperBackend;
 
-#[cfg(any(test, target_os = "linux"))]
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 

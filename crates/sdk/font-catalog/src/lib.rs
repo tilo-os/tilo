@@ -19,8 +19,10 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 mod tests;
 
-/// The manifest this build was made against.
-pub const MANIFEST: &str = include_str!("../../ui-core/assets/fonts/manifest.toml");
+/// The manifest this build was made against: a copy of the checkout
+/// catalog's `manifest.toml` inside this crate, so a published crate carries
+/// it. `the_checkout_holds_the_pinned_catalog` keeps the two identical.
+pub const MANIFEST: &str = include_str!("../manifest.toml");
 
 /// Where the OS image installs the catalog's product fonts. It sits inside
 /// the system font directory, so fontconfig and fontdb discover it without

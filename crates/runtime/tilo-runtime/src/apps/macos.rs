@@ -11,6 +11,7 @@
 use super::{Apps, Launch, Sockets};
 use crate::unix::{ServiceConnections, ServiceSockets};
 use std::ffi::OsString;
+use std::os::fd::AsRawFd as _;
 use tilo_installed_apps::InstalledApp;
 
 pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Result<Launch, String> {
@@ -55,6 +56,30 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             app.package_id
         )
     })?;
+    let chooser = Chooser::start(&app.package_id)
+        .map_err(|error| format!("could not give {} a file chooser: {error}", app.package_id))?;
+    let capture = Capture::start(apps, app, &manifest.sandbox.portals).map_err(|error| {
+        format!(
+            "could not give {} its capture broker: {error}",
+            app.package_id
+        )
+    })?;
+    let mut inherit_fds = services.fds();
+    inherit_fds.push(chooser.app_end.as_raw_fd());
+    inherit_fds.push(capture.app_end.as_raw_fd());
+    let mut env: Vec<(OsString, OsString)> = services
+        .env(&app.package_id, &apps.room)
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect();
+    env.push((
+        OsString::from(tilo_dialogs::confined::PICKER_FD_ENV),
+        OsString::from(chooser.app_end.as_raw_fd().to_string()),
+    ));
+    env.push((
+        OsString::from(tilo_capture::broker::CAPTURE_FD_ENV),
+        OsString::from(capture.app_end.as_raw_fd().to_string()),
+    ));
     let request = launcher_macos::LaunchRequest {
         package_id: app.package_id.clone(),
         executable: app.payload_root.join(executable),
@@ -68,21 +93,106 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             &manifest.sandbox.net.hosts,
             &[],
         ),
-        gate_socket: None,
-        inherit_fds: services.fds(),
-        env: services
-            .env(&app.package_id, &apps.room)
-            .into_iter()
-            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
-            .collect(),
+        inherit_fds,
+        env,
         trust: launcher_macos::TrustRequirement::DeveloperId,
     };
     let launched = launcher_macos::launch(&request).map_err(|error| error.to_string())?;
     // The app holds its own descriptors now; this process's copies go.
     drop(services);
+    drop(chooser.app_end);
+    drop(capture.app_end);
     let pid = u32::try_from(launched.pid())
         .map_err(|_| format!("{} started with an invalid pid", app.package_id))?;
     Ok(Launch { pid, app: launched })
+}
+
+/// The file chooser a confined app asks for over its end of a socket pair:
+/// this runtime shows every panel, outside the app's sandbox, and grants the
+/// app exactly what the person picked (`tilo_dialogs::confined`).
+struct Chooser {
+    app_end: std::os::unix::net::UnixStream,
+}
+
+impl Chooser {
+    /// Serve `package_id`'s chooser requests until the app closes its end.
+    fn start(package_id: &str) -> std::io::Result<Self> {
+        let (app_end, runtime_end) = std::os::unix::net::UnixStream::pair()?;
+        let exe = std::env::current_exe()?;
+        let package = package_id.to_owned();
+        std::thread::Builder::new()
+            .name("tilo-app-chooser".into())
+            .spawn(move || {
+                let shown = tilo_dialogs::confined::serve(runtime_end, |request| {
+                    let mut helper = std::process::Command::new(&exe);
+                    helper.arg(crate::cli::CHOOSER_HELPER_ARG);
+                    tilo_dialogs::confined::show_in_helper(helper, request)
+                });
+                if let Err(error) = shown {
+                    tracing::warn!(%package, %error, "the app's file chooser stopped");
+                }
+            })?;
+        Ok(Self { app_end })
+    }
+}
+
+/// The camera and microphone a confined app asks for over its end of a
+/// socket pair: this runtime, which holds the TCC permission, captures on its
+/// behalf once the person consents, and only the devices the app declares
+/// (`[sandbox.portals] camera` / `microphone` = `"via-host"`)
+/// (`tilo_capture::broker`).
+struct Capture {
+    app_end: std::os::unix::net::UnixDatagram,
+}
+
+impl Capture {
+    fn start(
+        apps: &Apps,
+        app: &InstalledApp,
+        portals: &std::collections::BTreeMap<String, launcher::manifest::PortalPolicy>,
+    ) -> std::io::Result<Self> {
+        use tilo_capture::DeviceKind;
+        use tilo_capture::broker::{Policy, Sources, SystemSources};
+        let declared = portals
+            .iter()
+            .filter(|(_, policy)| matches!(policy, launcher::manifest::PortalPolicy::ViaHost))
+            .filter_map(|(name, _)| DeviceKind::from_name(name))
+            .collect();
+        let (app_end, runtime_end) = std::os::unix::net::UnixDatagram::pair()?;
+        let exe = std::env::current_exe()?;
+        let name = app.display_name.clone();
+        let ask = move |device: DeviceKind| {
+            let args = crate::i18n::device_args(&name, device);
+            tilo_dialogs::confined::Consent {
+                message: crate::i18n::t_args("device-consent-question", &args),
+                detail: crate::i18n::t_args("device-consent-detail", &args),
+                allow: crate::i18n::t("device-consent-allow"),
+                deny: crate::i18n::t("device-consent-deny"),
+            }
+        };
+        let policy: std::sync::Arc<dyn Policy> =
+            std::sync::Arc::new(tilo_capture::grants::GrantPolicy {
+                grants: apps.device_grants()?,
+                room: apps.room.clone(),
+                app: app.package_id.clone(),
+                declared,
+                consent: move |device: DeviceKind| {
+                    let mut helper = std::process::Command::new(&exe);
+                    helper.arg(crate::cli::CONSENT_HELPER_ARG);
+                    tilo_dialogs::confined::ask_consent_in_helper(helper, &ask(device))
+                },
+            });
+        let sources: std::sync::Arc<dyn Sources> = std::sync::Arc::new(SystemSources);
+        let package = app.package_id.clone();
+        std::thread::Builder::new()
+            .name("tilo-app-capture".into())
+            .spawn(move || {
+                if let Err(error) = tilo_capture::broker::serve(&runtime_end, &policy, &sources) {
+                    tracing::warn!(%package, %error, "the app's capture broker stopped");
+                }
+            })?;
+        Ok(Self { app_end })
+    }
 }
 
 /// Prove the installed package behind `app` is still the one that was

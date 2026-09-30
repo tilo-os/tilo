@@ -673,6 +673,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// Whether the active strip alone fills the work area, the others
+    /// collapsed: while agents drive this compositor, so the strip an agent
+    /// works in is the whole screen it sees and clicks. NOT persisted.
+    single_strip: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -712,6 +716,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Window-management operations an action asked for. The overlay host
+    /// drains them on its next update and runs each exactly as its chord
+    /// would, since the focused group's widgets live there.
+    shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -835,6 +843,7 @@ impl ChromeState {
             fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -850,6 +859,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1024,6 +1034,19 @@ impl ChromeState {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
+    /// Run `action` as if its chord had been pressed once, on the overlay
+    /// host's next update.
+    pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        self.shortcut_action_requests.push(action);
+        self.bump();
+    }
+
+    pub fn take_shortcut_action_requests(
+        &mut self,
+    ) -> Vec<settings_store::hardware::ShortcutAction> {
+        std::mem::take(&mut self.shortcut_action_requests)
+    }
+
     pub fn request_input_source(&mut self, index: usize) {
         self.input_source_request = Some(index);
         self.bump();
@@ -1050,6 +1073,31 @@ impl ChromeState {
 
     pub fn maximized_group(&self) -> Option<u64> {
         self.maximized_group
+    }
+
+    #[must_use]
+    pub fn single_strip(&self) -> bool {
+        self.single_strip
+    }
+
+    pub fn set_single_strip(&mut self, single: bool) {
+        if self.single_strip != single {
+            self.single_strip = single;
+            self.bump();
+        }
+    }
+
+    /// The active workspace's focused strip, or its first.
+    #[must_use]
+    pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        tree.desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))
     }
 
     /// Idempotent, so cheap to call every frame from the compositor's

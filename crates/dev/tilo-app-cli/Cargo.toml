@@ -28,10 +28,13 @@ libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-caps = { path = "../../sdk/tilo-caps" }
+sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }
-atomic-file = { path = "../../system/atomic-file" }
-# serde comes in through serde_json. A direct dependency is unused and fails machete.
+tilo-atomic-file = { path = "../../system/atomic-file" }
+# The portability rules table deserializes into typed rules.
+serde.workspace = true
 serde_json.workspace = true
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"
@@ -40,6 +43,8 @@ tempfile.workspace = true
 toml.workspace = true
 tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
+# The registry's web artifact is a zip of the immutable version.
+zip.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

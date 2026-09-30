@@ -3,56 +3,66 @@ autotests = false
 name = "tilo-app"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo application SDK: one app source for Linux, macOS and the web."
 
+# The SDK selects the platform here, and only here: the runner is a
+# target-scoped dependency, so an app's `ui = { package = "tilo-app", … }`
+# builds for Linux, macOS and wasm32 unchanged. With resolver 2 the features
+# below that name the native runner enable nothing on wasm32, where that
+# dependency does not exist.
 [features]
 # Every OS affordance is on by default: the native runner, collaboration over
-# the broker, host file choosers and URI opening (XDG portal / Windows
-# dialogs), desktop media controls (MPRIS), notifications and GPU video
-# frames. An app depends on `tilo-app` and gets all of them; it never picks
-# features to get the affordances.
+# the broker, desktop media controls, notifications and GPU video frames. An
+# app depends on `tilo-app` and gets all of them; it never picks features to
+# get the affordances. On the web the native runner is not linked and these
+# select nothing: the platform crates choose each target's backends.
 #
 # A headless tool that wants only the toolkit opts out with
 # `default-features = false` and names what it keeps.
 default = ["native", "broker-transport", "portal", "mpris", "notifications", "gpu-video"]
-# The native desktop runner and host services; see `tilo-ui`'s `native`.
-native = ["ui-core/native"]
+# The native desktop runner and host services; see `tilo-runner-native`.
+native = ["dep:tilo-runner-native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
-# `broker-transport`.
-broker-transport = ["ui-core/broker-transport"]
-# Host-native file open/save, OpenURI, location and screen capture.
-portal = ["ui-core/portal"]
-# Desktop media controls on the session bus for players.
-mpris = ["ui-core/mpris"]
-# Host notifications (Windows toasts; a no-op elsewhere).
-notifications = ["ui-core/notifications"]
-# Painting hardware-decoded video frames, zero-copy where the GPU allows.
-gpu-video = ["ui-core/gpu-video"]
-dmabuf-import = ["ui-core/dmabuf-import"]
+# `broker-transport`. Native only.
+broker-transport = ["tilo-runner-native?/broker-transport"]
 test-support = ["ui-core/test-support"]
-# WebView engines. WPE needs the WPE WebKit libraries, which the workspace
-# does not build by default; ad blocking is the browser's filter-list
-# compiler.
-webview-adblock = ["ui-core/webview-adblock"]
-webview-wpe = ["ui-core/webview-wpe"]
+# Backend features of the native runner; on wasm32 they have no effect.
+# `portal` and `notifications` select nothing any more: the platform crates
+# choose each target's file choosers and notifications, and the native runner
+# turns the XDG portals on for Linux itself.
+webview-adblock = ["tilo-runner-native?/webview-adblock"]
+webview-wpe = ["tilo-runner-native?/webview-wpe"]
 # A web view; the SDK picks the engine (WPE WebKit on Linux).
 webview = ["webview-wpe"]
+dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
+gpu-video = ["tilo-runner-native?/gpu-video"]
+mpris = ["tilo-runner-native?/mpris"]
+portal = []
+notifications = []
 # The session's priority contacts over the desktop bus.
-priority-contacts = ["ui-core/priority-contacts"]
+priority-contacts = ["tilo-runner-native?/priority-contacts"]
 # Optional native presentation diagnostics shared by app entrypoints.
-presentation-feedback = ["ui-core/presentation-feedback"]
+presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
+# The Windows DX12 shader cache; see `tilo-ui`. Like `presentation-feedback`,
+# it builds only against the workspace's patched wgpu-hal.
+dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
-ui-core = { package = "tilo-ui", path = "../ui-core", default-features = false }
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false }
 # The resource layer the framework binds views to; re-exported so the
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.
-tilo-resource = { path = "../tilo-resource" }
-tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # The default search provider over a resource's entries.
-tilo-search = { path = "../search" }
+tilo-search = { version = "0.1.0", path = "../search" }
 # Merging a collaborator's change in tests, the way sync does.
 tilo-automerge.workspace = true
+# Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
@@ -60,6 +70,12 @@ tracing.workspace = true
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+tilo-runner-web = { version = "0.1.0", path = "../runner-web" }
 
 [lints]
 workspace = true

@@ -12,7 +12,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const REPOSITORY_DIR: &str = ".tilo-backups";
@@ -151,7 +151,7 @@ pub fn create_snapshot(
     let (source, destination) = validate_paths(source, destination)?;
     let snapshots = prepare_repository(&destination)?.join(SNAPSHOTS_DIR);
     fs::create_dir_all(&snapshots)?;
-    let now = SystemTime::now()
+    let now = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| BackupError::InvalidSnapshot("System clock is before 1970".into()))?
         .as_secs();

@@ -163,16 +163,30 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     }
 }
 
-fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
+    let display_name = &app.display_name;
+    let (resource_kind, description) = if app.unconfined {
+        (
+            "applications.host-app",
+            "Launch this unconfined host application into the current workspace. It runs \
+             outside every Tilo sandbox with the user's own files and publishes no typed \
+             actions: drive its window with the computer tool",
+        )
+    } else {
+        (
+            "applications.app",
+            "Launch this application into the current workspace",
+        )
+    };
     ActionDescriptor {
         address: ActionAddress::new(
-            format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
+            format!("{APPLICATION_RESOURCE_PREFIX}{}", app.package_id),
             APPLICATION_OPEN_ACTION,
         ),
-        resource_kind: "applications.app".into(),
-        resource_label: display_name.to_string(),
+        resource_kind: resource_kind.into(),
+        resource_label: display_name.clone(),
         action_label: format!("Open {display_name}"),
-        description: Some("Launch this application into the current workspace".into()),
+        description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
         contract: tilo_actions::ActionContract::default(),
@@ -626,7 +640,7 @@ impl CapnpBrokerState {
                             action_row(
                                 workspace_provider(&room),
                                 &app.package_id,
-                                app_open_descriptor(&app.package_id, &app.display_name),
+                                app_open_descriptor(&app),
                             )
                         }),
                 );
@@ -2297,6 +2311,7 @@ mod app_close_tests {
             vec![crate::services::LaunchableApplication {
                 package_id: "so.tilo.word-processor".into(),
                 display_name: "Writer".into(),
+                unconfined: false,
             }]
         }
         fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {

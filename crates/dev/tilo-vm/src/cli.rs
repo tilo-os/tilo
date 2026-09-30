@@ -664,7 +664,7 @@ pub enum VmCommand {
     },
     /// Move the VM onto another dev image with bootc and reboot into it; slots survive in /var, and the previous image stays for rollback-image.
     #[command(
-        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or elsewhere\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks, then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
+        after_help = "Examples:\n  tilo-vm vm upgrade                          # the newest build of the image the VM follows\n  tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-1a2b3c4\n  tilo-vm vm upgrade --image target/tilo-vm/image  # what tilo-vm image build wrote, here or elsewhere\n  tilo-vm vm upgrade --from local             # build this worktree's dev image (cached steps skipped), move onto it\n  tilo-vm vm upgrade --from sha:1a2b3c4       # a CI build of main: no local OS build\n  tilo-vm vm upgrade --from local --rebuild-base\n  tilo-vm vm upgrade --from local:localhost/tilo-vm:mine   # an image already built, no build\n  tilo-vm vm upgrade --from local --no-reboot  # stage only; it takes effect at the next boot\n  tilo-vm vm rollback-image                   # back to the image before\n\n--from local runs os/dev/build-dev-image.sh (TILO_DEV_DISK=0), rebuilds the\nproduction base localhost/tilo:latest only when its inputs changed, sends only\nthe layers the VM lacks (TILO_LOCAL_TAG replaces latest in both image names), then bootc switch and a reboot. --from ci:<tag> or\nsha:<commit> switches to CI's published dev image of that build, or builds one\nhere FROM its integration image (tilo-ci). For Containerfile, unit, /etc and\npackage changes: tilo-vm guide images."
     )]
     Upgrade(UpgradeArgs),
     /// Boot the VM's previous image again (bootc rollback) and reboot; slots survive in /var.
@@ -825,8 +825,9 @@ pub struct UpgradeArgs {
     /// or an OCI layout directory `tilo-vm image build` wrote (target/tilo-vm/image).
     #[arg(long, conflicts_with = "from")]
     pub image: Option<String>,
-    /// `local`: build this worktree's dev image (localhost/tilo-vm:latest) and
-    /// move onto it. `local:<image>`: an image already in podman's storage.
+    /// `local`: build this worktree's dev image (localhost/tilo-vm:latest, the
+    /// tag from `TILO_LOCAL_TAG` when set) and move onto it. `local:<image>`:
+    /// an image already in podman's storage.
     /// `ci:<tag>` or `sha:<commit>`: a CI build of main (tag `main-<sha7>`): its
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]
@@ -850,7 +851,7 @@ pub struct UpgradeArgs {
 pub enum SlotCommand {
     /// Create a slot (default: named after your branch) and start its session.
     #[command(
-        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
+        after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful\n  tilo-vm slot create apps --headful --identity\n  tilo-vm slot create dual --headful --outputs 2560x1600@2,1920x1080@1\n\n--identity mints a throwaway test identity inside the new session, through\na control op only dev-image shells carry, and restarts the session with no\ndesktop layout, so apps open at once. It never replaces a real identity.\n\n--outputs gives a headful slot one virtual monitor per entry, left to right,\ntop-aligned, the first one primary. Each is WIDTHxHEIGHT[@SCALE]. Like a\nmonitor without an EDID, a vkms output offers the standard VESA (DMT) 60 Hz\nmodes, e.g. 1280x800, 1920x1080, 1920x1200, 2560x1600, 4096x2160; a size it\ndoes not offer fails with the list it does. SCALE is 0.5 to 4 (default 1). The mode and scale go\nthrough the display settings exactly as a confirmed change in Settings does,\nand are remembered for that set of monitors. Outputs are fixed when the slot\nis created; rerunning the same create applies the layout again.\n\ntilo-vm input move X Y then takes desktop coordinates in logical pixels:\nwith 2560x1600@2,1920x1080 the first monitor is x 0-1279, the second\nx 1280-3199."
     )]
     Create {
         /// The slot (default: your slot).
@@ -873,6 +874,11 @@ pub enum SlotCommand {
             num_args = 1
         )]
         outputs: Vec<tilo_vm_protocol::OutputSpec>,
+        /// Give the slot's user a throwaway test identity, so apps open
+        /// without the first-login flow, and start the session with fresh
+        /// desktop state. Needs a dev image's shell.
+        #[arg(long)]
+        identity: bool,
     },
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
@@ -986,6 +992,25 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn slot_create_takes_an_opt_in_identity() {
+        let identity = |args: &[&str]| {
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Some(Command::Slot(SlotCommand::Create { identity, .. })) = cli.command else {
+                panic!("slot create did not parse");
+            };
+            identity
+        };
+        assert!(identity(&[
+            "tilo-vm",
+            "slot",
+            "create",
+            "--headful",
+            "--identity"
+        ]));
+        assert!(!identity(&["tilo-vm", "slot", "create", "--headful"]));
+    }
 
     #[test]
     fn outputs_need_a_headful_slot_and_parse_left_to_right() {

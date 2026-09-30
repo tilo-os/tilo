@@ -386,7 +386,7 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq "'brew install --cask tilo-imager' 'brew install tilo-imager'" \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" \
-    "$repo/.forgejo/workflows/monitor-winget.yml" \
+    "$repo/.forgejo/workflows/release-imager-winget.yml" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
@@ -614,7 +614,7 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
   && ok 'tag promotion is serialized while stale branch validation is superseded' \
   || bad 'release promotion can regress or stale validation can block the current commit'
 
-winget_monitor="$repo/.forgejo/workflows/monitor-winget.yml"
+winget_monitor="$repo/.forgejo/workflows/release-imager-winget.yml"
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
   && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" "$winget_monitor" \

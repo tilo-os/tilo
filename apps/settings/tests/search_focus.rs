@@ -270,7 +270,7 @@ impl Harness {
         let prev_state = self
             .focused
             .and_then(|id| self.node_map.get(&id).copied())
-            .and_then(|w| unsafe { (*w).get_state() });
+            .and_then(|w| unsafe { ui::undo::get_state(&(*w)) });
         // The old node ids are about to be invalidated (fresh taffy tree).
         self.focused = None;
         self.layout();
@@ -281,7 +281,7 @@ impl Harness {
             if let Some(s) = &prev_state
                 && let Some(&w) = self.node_map.get(&id)
             {
-                unsafe { (*w).set_state(s) };
+                unsafe { ui::undo::set_state(&mut (*w), s) };
             }
         }
     }

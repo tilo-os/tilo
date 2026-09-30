@@ -147,8 +147,9 @@ struct SecretServiceRegistry {
     latest_snapshot: BTreeMap<[u8; 16], MlsSnapshotReceipt>,
 }
 
-/// Production provider backed by the session's freedesktop Secret Service.
-/// Only opaque registry identifiers and ciphertext are written to disk.
+/// Production provider backed by the system secret store (the freedesktop
+/// Secret Service on Linux, the Keychain on macOS). Only opaque registry
+/// identifiers and ciphertext are written to disk.
 pub struct SecretServiceMlsVault {
     root: PathBuf,
     master_key: Zeroizing<[u8; 32]>,
@@ -190,16 +191,16 @@ impl SecretServiceMlsVault {
     pub(crate) fn channel_state_key(&self) -> VaultKey {
         let mut hash = Sha256::new();
         hash.update(b"tilo.channel-state-key.v1");
-        hash.update(self.master_key.as_ref());
+        hash.update(self.master_key.as_slice());
         VaultKey::new(hash.finalize().into())
     }
 
-    /// Open the provider, creating its master key in Secret Service if this is
+    /// Open the provider, creating its master key in the secret store if this is
     /// the first use. There is intentionally no file-key fallback.
     ///
     /// # Errors
     ///
-    /// Returns unavailable if Secret Service is absent/locked, or persistence
+    /// Returns unavailable if the secret store is absent/locked, or persistence
     /// errors for an invalid registry.
     pub fn open(root: PathBuf) -> Result<Self, MlsAuthorityError> {
         fs::create_dir_all(&root).map_err(io_error)?;
@@ -221,9 +222,9 @@ impl SecretServiceMlsVault {
                 rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), bytes.as_mut());
                 secret_service_store(&locator, bytes.as_ref())?;
                 let verified = secret_service_load(&locator)?;
-                if verified.as_ref() != bytes.as_ref() {
+                if verified.as_slice() != bytes.as_slice() {
                     return Err(MlsAuthorityError::VaultUnavailable(
-                        "Secret Service did not return the newly stored MLS key".into(),
+                        "the secret store did not return the newly stored MLS key".into(),
                     ));
                 }
                 verified
@@ -396,8 +397,8 @@ impl MlsVaultProvider for SecretServiceMlsVault {
             MlsAuthorityError::VaultUnavailable("unregistered vault capability".into())
         })?;
         let signer_bytes = secret_service_load(&record.signer_locator)?;
-        let signer_array: [u8; 32] = signer_bytes.as_ref().try_into().map_err(|_| {
-            MlsAuthorityError::VaultUnavailable("Secret Service signer has invalid length".into())
+        let signer_array: [u8; 32] = signer_bytes.as_slice().try_into().map_err(|_| {
+            MlsAuthorityError::VaultUnavailable("stored MLS signer has invalid length".into())
         })?;
         let group = ChannelGroup::load_sealed(
             &self.root.join(&record.state_file),
@@ -497,49 +498,59 @@ fn random_capability() -> [u8; 32] {
     bytes
 }
 
+/// The secret-store namespace holding the MLS master and signer keys.
+const MLS_SECRETS_APP: &str = "so.tilo.collaboration.mls";
+
+/// The system secret store: the Secret Service on Linux, the login Keychain
+/// on macOS.
+fn mls_secrets() -> tilo_secrets::SecretStore {
+    tilo_secrets::SecretStore::for_app(MLS_SECRETS_APP)
+}
+
 fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthorityError> {
-    let encoded = Zeroizing::new(hex::encode(secret));
-    let output = bounded_command::run(
-        "secret-tool",
-        &[
-            "store",
-            "--label=Tilo MLS key",
-            "tilo-purpose",
-            "mls",
-            "tilo-mls-key",
-            locator,
-        ],
-        Some(encoded.as_bytes()),
-        64 * 1024,
-        Duration::from_secs(10),
-    )
-    .map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS storage unavailable".into())
-    })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(MlsAuthorityError::VaultUnavailable(
-            "Secret Service refused MLS key storage".into(),
-        ))
-    }
+    let options = tilo_secrets::PutOptions {
+        label: Some("Tilo MLS key".into()),
+    };
+    mls_secrets()
+        .put_blocking(locator, secret, options)
+        .map_err(|error| {
+            MlsAuthorityError::VaultUnavailable(format!("MLS key storage refused: {error}"))
+        })
 }
 
 fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorityError> {
-    let output = bounded_command::run(
+    let stored = mls_secrets().get_blocking(locator).map_err(|error| {
+        MlsAuthorityError::VaultUnavailable(format!("MLS key lookup unavailable: {error}"))
+    })?;
+    let bytes = if let Some(secret) = stored {
+        Zeroizing::new(secret.expose().to_vec())
+    } else {
+        let legacy = legacy_secret_tool_load(locator)?
+            .ok_or_else(|| MlsAuthorityError::VaultUnavailable("MLS key unavailable".into()))?;
+        secret_service_store(locator, &legacy)?;
+        legacy
+    };
+    let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        MlsAuthorityError::VaultUnavailable("stored MLS key has invalid length".into())
+    })?;
+    Ok(Zeroizing::new(key))
+}
+
+/// A key stored by earlier builds through `secret-tool` under their own
+/// attributes; `None` when there is none (or no `secret-tool`). The caller
+/// moves it into the system store.
+fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, MlsAuthorityError> {
+    let Ok(output) = bounded_command::run(
         "secret-tool",
         &["lookup", "tilo-purpose", "mls", "tilo-mls-key", locator],
         None,
         64 * 1024,
         Duration::from_secs(10),
-    )
-    .map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS lookup unavailable".into())
-    })?;
+    ) else {
+        return Ok(None);
+    };
     if !output.status.success() {
-        return Err(MlsAuthorityError::VaultUnavailable(
-            "Secret Service MLS key unavailable".into(),
-        ));
+        return Ok(None);
     }
     let stdout = Zeroizing::new(output.stdout);
     let decoded = Zeroizing::new(
@@ -547,10 +558,7 @@ fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorit
             MlsAuthorityError::VaultUnavailable("Secret Service returned malformed MLS key".into())
         })?,
     );
-    let bytes: [u8; 32] = decoded.as_slice().try_into().map_err(|_| {
-        MlsAuthorityError::VaultUnavailable("Secret Service MLS key has invalid length".into())
-    })?;
-    Ok(Zeroizing::new(bytes))
+    Ok(Some(decoded))
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

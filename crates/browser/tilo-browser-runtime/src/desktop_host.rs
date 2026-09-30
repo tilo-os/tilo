@@ -1355,7 +1355,7 @@ impl DesktopRoot {
                         &self.resolver.host.routes,
                     )
                     .ok()?;
-                    (checkout.id.as_str() == target.id && checkout.kind.as_str() == target.kind)
+                    (checkout.id.as_str() == target.id && checkout.kind.names(&target.kind))
                         .then_some((group, tab.id))
                 });
             if let Some((group, tab)) = destination {
@@ -2390,7 +2390,10 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -2635,6 +2638,9 @@ impl Widget for DesktopRoot {
     fn wants_pointer_capture(&self) -> bool {
         self.surface.wants_pointer_capture()
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for DesktopRoot {
     fn close_components(&mut self) -> Vec<ComponentCloseReport> {
         self.close_activity(crate::desktop_activity::ActivityCloseReason::Disposed);
         self.reports.extend(self.surface.close_components());

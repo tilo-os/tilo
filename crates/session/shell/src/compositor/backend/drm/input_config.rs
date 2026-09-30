@@ -90,6 +90,12 @@ impl KeyboardSettings {
     /// The person-facing name of source `index` — XKB's own description
     /// ("English (US)", "German (no dead keys)") — falling back to the
     /// source id when the keymap cannot be compiled.
+    #[cfg(not(target_os = "linux"))]
+    pub fn source_label(&self, index: usize) -> String {
+        self.source_ids.get(index).cloned().unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
     pub fn source_label(&self, index: usize) -> String {
         use smithay::input::keyboard::xkb;
         let fallback = || self.source_ids.get(index).cloned().unwrap_or_default();
@@ -523,6 +529,11 @@ impl SettingsWatch {
         self.last = mtime;
         // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
         moved && !first_look
+    }
+
+    /// Let the next [`Self::changed`] look regardless of the rate limit — for when a file-change notification says there is something to see.
+    pub fn check_now(&mut self) {
+        self.next_check = None;
     }
 }
 
@@ -1477,6 +1488,14 @@ mod tests {
             assert!(
                 !w.changed(now),
                 "a second call inside the interval must not even look"
+            );
+            // Phase `a_notified_write_is_seen_inside_the_interval`.
+            // An idle compositor wakes only for the notification; waiting out the interval would drop the write until unrelated input arrived.
+            w.check_now();
+            assert!(w.changed(now), "the removal must be seen on demand");
+            assert!(
+                !w.changed(now),
+                "and the rate limit resumes after the forced look"
             );
         }
         // Phase `a_watch_with_no_settings_path_never_reports_a_change`.

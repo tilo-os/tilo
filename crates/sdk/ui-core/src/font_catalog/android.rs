@@ -1,9 +1,10 @@
 //! The font catalog on Android.
 //!
-//! `build-apk.sh` packs the catalog into the APK's `assets/tilo/fonts`. Font
-//! files inside an APK have no path fontdb could map, so the first start of
-//! each catalog version copies them into the app's files directory; loading
-//! then verifies that copy like any installed catalog. Android has no
+//! `tilo-app build --platform android` packs the catalog into the APK's
+//! `assets/tilo/fonts`. Font files inside an APK have no path fontdb could
+//! map, so the first start of each catalog version copies them into the app's
+//! files directory; loading then verifies that copy like any installed
+//! catalog. Android has no
 //! fontconfig: the device's own faces, which cover scripts the catalog does
 //! not, are read from `/system/fonts`.
 
@@ -44,7 +45,7 @@ pub(crate) fn android_font_system(locale: String) -> Option<FontSystem> {
 /// The catalog's directory under `$XDG_DATA_HOME`, copied out of the APK if
 /// this version is not there yet.
 fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
-    let data = xdg_paths::data_dir()
+    let data = tilo_paths::data_dir()
         .ok_or_else(|| FontCatalogError::at("XDG_DATA_HOME", "no app data directory"))?;
     let versions = data.join("tilo/fonts");
     let root = versions.join(tilo_font_catalog::manifest_sha256());

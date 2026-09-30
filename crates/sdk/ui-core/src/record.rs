@@ -20,6 +20,7 @@
 //! in each frame. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
+pub mod capability;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::portable_storage::PortableStorage;
@@ -162,6 +163,14 @@ impl RecordId {
     /// beside it could only drift.
     pub fn for_tab(tab: u64) -> Self {
         Self(format!("tab:{tab:016x}"))
+    }
+
+    /// The record an app opens in a room when nothing names another one:
+    /// the first window of the app on any device of the room, native or
+    /// browser, so they all meet on one document. Constant, so every
+    /// device derives the same id without asking; the room scopes it.
+    pub fn room_default() -> Self {
+        Self::derived("default", &Self::for_tab(0))
     }
 
     /// Identity of the record that plays `role` for `of` — "the annotations
@@ -393,9 +402,24 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordKind(String);
 
+/// Kinds records were once stamped with, as the kind they are now. Writer's
+/// documents were `document` until its native app and its hosted and browser
+/// renderers settled on the rich-text resource kind they share.
+const FORMER_KINDS: [(&str, &str); 1] = [("document", "qdoc.rich-text")];
+
 impl RecordKind {
+    /// A kind by name; a former name is the kind it became.
     pub fn new(kind: impl Into<String>) -> Self {
-        Self(kind.into())
+        let kind = kind.into();
+        match FORMER_KINDS.iter().find(|(former, _)| *former == kind) {
+            Some((_, current)) => Self((*current).to_owned()),
+            None => Self(kind),
+        }
+    }
+
+    /// Whether a stored kind name, current or former, names this kind.
+    pub fn names(&self, stored: &str) -> bool {
+        Self::new(stored) == *self
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -640,7 +664,7 @@ pub fn init_scoped(
     let existing_refs = object_at(doc, &m, "refs", ObjType::List);
     if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
         || matches!(&existing_id, StringAt::Invalid)
-        || matches!(&existing_kind, StringAt::String(existing) if existing != kind.as_str())
+        || matches!(&existing_kind, StringAt::String(existing) if !kind.names(existing))
         || matches!(&existing_kind, StringAt::Invalid)
         || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
         || matches!(&existing_home, StringAt::Invalid)
@@ -1013,6 +1037,7 @@ pub mod room {
                 // re-opening a record is not itself an edit.
                 match string_at(doc, &object, "kind") {
                     StringAt::String(existing) if existing == kind.as_str() => {}
+                    // Renamed: the index follows the kind's current name.
                     StringAt::String(_) => {
                         let _ = doc.put(&object, "kind", kind.as_str());
                     }
@@ -2097,6 +2122,12 @@ impl RecordSet {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
+impl RecordStore {
+    pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
+        Self(owner)
+    }
+}
+
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
@@ -2612,6 +2643,12 @@ impl RecordStore {
     /// Whether the store can be read now: no caller holds it mutably.
     pub(crate) fn readable(&self) -> bool {
         self.0.try_borrow().is_ok()
+    }
+    /// The package and home workspace (room) this store's records belong
+    /// to, which name their replication route.
+    pub fn package_and_home(&self) -> (String, String) {
+        let set = self.0.borrow();
+        (set.package_id.clone(), set.home.clone())
     }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.
@@ -3191,16 +3228,33 @@ impl RecordStore {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
-            let mut candidate = local.clone();
+            let mut candidate;
             let observed = match mutation {
                 collab_types::DocumentMutation::Snapshot(bytes) => {
                     let mut incoming =
                         AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
                     identity.validate(&incoming)?;
                     let heads = incoming.get_heads();
-                    candidate
-                        .merge_incoming(&mut incoming)
-                        .map_err(|error| error.to_string())?;
+                    // Merging copies every change the receiving side lacks, so
+                    // the local changes go into the snapshot rather than the
+                    // other way round: a late joiner's replica is a few
+                    // changes next to a room's checkpoint. Every ancestor of
+                    // the heads both sides know is already in the snapshot.
+                    let shared: Vec<automerge::ChangeHash> = heads
+                        .iter()
+                        .copied()
+                        .filter(|head| local.get_change_by_hash(head).is_some())
+                        .collect();
+                    if shared.len() == heads.len() {
+                        candidate = local.clone();
+                    } else {
+                        let unshared = local.save_after(&shared);
+                        incoming.set_actor(local.get_actor().clone());
+                        incoming
+                            .load_incoming(&unshared)
+                            .map_err(|error| error.to_string())?;
+                        candidate = incoming;
+                    }
                     heads
                 }
                 collab_types::DocumentMutation::Incremental(bytes) => {
@@ -3216,13 +3270,17 @@ impl RecordStore {
                         Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
                         Err(error) => return Err(error.to_string()),
                     }
+                    candidate = local.clone();
                     candidate
                         .load_incoming(&bytes)
                         .map_err(|error| error.to_string())?;
+                    // The new heads stand for every change the payload added:
+                    // listing each one re-encodes them all, which costs as
+                    // much as applying them on a long history.
                     candidate
-                        .get_changes(&before)
-                        .iter()
-                        .map(automerge::Change::hash)
+                        .get_heads()
+                        .into_iter()
+                        .filter(|head| !before.contains(head))
                         .collect()
                 }
             };
@@ -3256,6 +3314,54 @@ impl RecordStore {
     ) -> Result<bool, String> {
         self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
             .map(|(changed, _)| changed)
+    }
+
+    /// Changes to the open record `id` that `frontier` has not covered, for a
+    /// host replicating open records itself (a browser page over the relay).
+    /// The pending action is committed first, as for a save. Advance the
+    /// frontier with the returned heads only once the delta was accepted.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn replication_delta(
+        &self,
+        id: &RecordId,
+        frontier: &mut crate::state::DocumentFrontier,
+    ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            frontier.pending_delta(doc)
+        })
+    }
+
+    /// The open record `id` as a whole-document snapshot with its heads, for
+    /// a replica's first publication.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn replication_snapshot(
+        &self,
+        id: &RecordId,
+    ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            (doc.save(), doc.get_heads())
+        })
+    }
+
+    /// Merge a replica's mutation into the open record, validating the
+    /// record's identity on a private copy first; local undo stays local.
+    /// Returns whether the document changed and the change hashes the
+    /// mutation carried, for the replicating frontier's `observe`.
+    ///
+    /// # Errors
+    /// The bytes are not a valid mutation of this record, or it is not open.
+    pub fn merge_replica(
+        &self,
+        checkout: &RecordCheckout,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        self.merge_remote_document(checkout, mutation)
     }
 
     /// Do something with a record's document. `None` if the record is not open here.
@@ -3473,7 +3579,7 @@ pub fn tick(
     room: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
 ) -> Option<RecordCheckout> {
-    let want = widget.record_intent()?;
+    let want = crate::record::capability::record_intent(widget)?;
     set.checkout(state, room, &want).then_some(want)
 }
 
@@ -3483,6 +3589,29 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Writer record stamped `document` before the kind was renamed opens
+    /// as the rich-text kind, and opening it rewrites nothing.
+    #[test]
+    fn a_record_stamped_with_a_former_kind_opens_as_the_current_one() {
+        let current = RecordKind::new("qdoc.rich-text");
+        assert_eq!(RecordKind::new("document"), current);
+        assert!(current.names("document") && current.names("qdoc.rich-text"));
+        let id = RecordId::for_tab(7);
+        let mut doc = AutoCommit::new();
+        init(&mut doc, &id, &current, "room");
+        let meta = meta_obj(&mut doc).unwrap();
+        doc.put(&meta, "kind", "document").unwrap();
+        doc.commit();
+        let heads = doc.get_heads();
+        assert_eq!(
+            identity(&doc),
+            Some(RecordCheckout::new(id.clone(), current.clone()))
+        );
+        assert!(init_scoped(&mut doc, &id, &current, "room", None));
+        doc.commit();
+        assert_eq!(doc.get_heads(), heads);
+    }
 
     /// Two members of a room each create the record the room derives for
     /// them, before either has heard of the other's: the same record, from

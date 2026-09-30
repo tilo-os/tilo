@@ -80,7 +80,7 @@ use winit::event::WindowEvent;
 
 use super::{
     EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
-    PrimaryScrollResult, ResourceOperationStart, Widget, WindowCloseAdmission,
+    PrimaryScrollResult, ResourceOperationStart, Widget,
 };
 use crate::dnd::DragPayload;
 use crate::presence::PresenceCtx;
@@ -139,38 +139,6 @@ pub trait Decorator {
         path: &ModelPath,
     ) -> Option<serde_json::Value> {
         self.inner().native_input_snapshot(state, path)
-    }
-
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        self.inner_mut().on_window_close_requested()
-    }
-
-    fn take_window_close_intent(&mut self) -> bool {
-        self.inner_mut().take_window_close_intent()
-    }
-
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.inner().unsaved_documents(doc)
-    }
-
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        self.inner_mut().checkpoint_components()
-    }
-
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().finish_admitted_close()
-    }
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        self.inner_mut().try_flush_owned_persistence()
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().close_components()
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().take_component_close_reports()
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -451,26 +419,6 @@ pub trait Decorator {
         self.inner().opening()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner().needs_commit()
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.inner_mut().take_commit_context()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner_mut().on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.inner().get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.inner_mut().set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner().text_review()
     }
@@ -488,20 +436,12 @@ pub trait Decorator {
         self.inner_mut().on_nav_gesture(dir, state, path)
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.inner().nav_availability()
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         self.inner_mut().take_focus_reset()
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.inner().record_intent()
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        self.inner().view_state()
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        self.inner_mut().restore_view_state(view);
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -518,10 +458,6 @@ pub trait Decorator {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.inner_mut().set_motion_reduced(reduced);
-    }
-
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        self.inner_mut().set_record_scope(record);
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -674,10 +610,6 @@ pub trait Decorator {
         self.inner().primary_vertical_scroll()
     }
 
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        self.inner_mut().release_record_scope()
-    }
-
     fn semantic_readers(
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
@@ -742,38 +674,6 @@ impl<T: Decorator> Widget for T {
         path: &ModelPath,
     ) -> Option<serde_json::Value> {
         Decorator::native_input_snapshot(self, state, path)
-    }
-
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        Decorator::on_window_close_requested(self)
-    }
-
-    fn take_window_close_intent(&mut self) -> bool {
-        Decorator::take_window_close_intent(self)
-    }
-
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        Decorator::unsaved_documents(self, doc)
-    }
-
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        Decorator::checkpoint_components(self)
-    }
-
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::finish_admitted_close(self)
-    }
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        Decorator::try_flush_owned_persistence(self)
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::close_components(self)
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::take_component_close_reports(self)
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -1050,26 +950,6 @@ impl<T: Decorator> Widget for T {
         Decorator::opening(self)
     }
 
-    fn needs_commit(&self) -> bool {
-        Decorator::needs_commit(self)
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Decorator::take_commit_context(self)
-    }
-
-    fn on_commit(&mut self) {
-        Decorator::on_commit(self);
-    }
-
-    fn get_state(&self) -> Option<String> {
-        Decorator::get_state(self)
-    }
-
-    fn set_state(&mut self, state: &str) {
-        Decorator::set_state(self, state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         Decorator::text_review(self)
     }
@@ -1087,20 +967,12 @@ impl<T: Decorator> Widget for T {
         Decorator::on_nav_gesture(self, dir, state, path)
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        Decorator::nav_availability(self)
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         Decorator::take_focus_reset(self)
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        Decorator::record_intent(self)
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        Decorator::view_state(self)
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        Decorator::restore_view_state(self, view);
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -1117,10 +989,6 @@ impl<T: Decorator> Widget for T {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         Decorator::set_motion_reduced(self, reduced);
-    }
-
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        Decorator::set_record_scope(self, record);
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1270,10 +1138,6 @@ impl<T: Decorator> Widget for T {
 
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         Decorator::primary_vertical_scroll(self)
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        Decorator::release_record_scope(self)
     }
 
     fn semantic_readers(

@@ -134,6 +134,41 @@ pub fn configured_font_system() -> FontSystem {
     crate::font_catalog::fixture_font_system()
 }
 
+thread_local! {
+    static LAYOUT_RENDERERS: std::cell::RefCell<Vec<TextRenderer>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with a layout-only renderer at `text_scale`, for widgets that
+/// must measure in `apply_layout`, which is handed no renderer. Building one
+/// loads every installed font (tens of milliseconds) and layout runs every
+/// frame an animation is live, so renderers are pooled per thread; a nested
+/// call takes its own from the pool rather than borrowing the outer one.
+pub fn with_layout_renderer<R>(text_scale: f32, f: impl FnOnce(&mut TextRenderer) -> R) -> R {
+    let mut renderer = LAYOUT_RENDERERS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    renderer.set_text_scale(text_scale);
+    let out = f(&mut renderer);
+    LAYOUT_RENDERERS.with(|pool| pool.borrow_mut().push(renderer));
+    out
+}
+
+/// The font database a host built for this process, when its fonts do not
+/// come from the system: a browser page has no system fonts, so a renderer
+/// made without one would shape with none. Set by
+/// [`TextRenderer::with_browser_font_system`] and each optional font it
+/// installs.
+static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb::Database)>> =
+    std::sync::RwLock::new(None);
+
+fn share_host_font_database(font_system: &FontSystem) {
+    *HOST_FONT_DATABASE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((font_system.locale().to_owned(), font_system.db().clone()));
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
@@ -153,6 +188,13 @@ pub fn configured_font_system() -> FontSystem {
         crate::font_catalog::android_font_system(crate::i18n::I18nManager::current_locale())
     {
         return font_system;
+    }
+    let host = HOST_FONT_DATABASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((locale, database)) = host {
+        return crate::font_catalog::system_over(locale, database);
     }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
@@ -1531,7 +1573,7 @@ pub struct TextRenderer {
     /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, ShapedText>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
+    /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
     /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,
@@ -1653,6 +1695,7 @@ impl TextRenderer {
 
     /// Construct a renderer over the verified browser startup catalog.
     pub fn with_browser_font_system(font_system: FontSystem) -> Self {
+        share_host_font_database(&font_system);
         let mut renderer = Self::with_font_system(font_system);
         renderer.browser_font_demands = Some(BTreeSet::new());
         renderer
@@ -1689,6 +1732,7 @@ impl TextRenderer {
         let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
         self.browser_font_assets.insert(name.to_owned());
         if changed {
+            share_host_font_database(&self.font_system);
             self.bump_generation();
         }
         Ok(changed)
@@ -1883,9 +1927,11 @@ impl TextRenderer {
     ) -> Option<f32> {
         let width = max_width?;
         // Balance and hyphenation consult the wrap width even when the natural
-        // line would fit; keep those keys distinct.
+        // line would fit; keep those keys distinct. So does drawing a centred
+        // or end-aligned line: its glyphs sit inside the width.
         if style.wrap_mode == TextWrapMode::Balance
             || !matches!(style.hyphenation, Hyphenation::None)
+            || (warm_shape && matches!(style.align, ParagraphAlign::Center | ParagraphAlign::End))
         {
             return Some(width);
         }
@@ -3023,6 +3069,33 @@ pub(crate) fn rich_run_outside_clip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A short centred line drawn in a wide box sits in the middle of the
+    /// box, and an end-aligned one at its end: the draw keeps the width even
+    /// though the line fits without wrapping.
+    #[test]
+    fn a_line_that_fits_is_drawn_where_its_alignment_puts_it() {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
+            let style = TextStyle::new(16.0).with_align(align);
+            let width = renderer.collapse_unused_max_width("New note", Some(400.0), &style, true);
+            let runs = renderer.shaped_runs("New note", width, &style);
+            runs.iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let start = first_x(&mut renderer, ParagraphAlign::Start);
+        let center = first_x(&mut renderer, ParagraphAlign::Center);
+        let end = first_x(&mut renderer, ParagraphAlign::End);
+        let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
+        assert!(start.abs() < 1.0, "{start}");
+        assert!(
+            (center - (400.0 - natural) / 2.0).abs() < 2.0,
+            "{center} of {natural}"
+        );
+        assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
+    }
 
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
@@ -4302,3 +4375,37 @@ mod tests {
 
 #[cfg(test)]
 mod renderer_regressions;
+
+#[cfg(test)]
+mod layout_renderer_pool {
+    use super::*;
+
+    #[test]
+    fn layout_passes_reuse_pooled_renderers_instead_of_reloading_fonts() {
+        let constructions = || FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get);
+        FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+        for _ in 0..8 {
+            with_layout_renderer(1.0, |tr| {
+                tr.measure("Files", 14.0, None);
+            });
+        }
+        assert_eq!(
+            constructions(),
+            1,
+            "a repeated layout pass loads fonts once"
+        );
+
+        let scales = with_layout_renderer(2.0, |outer| {
+            let inner = with_layout_renderer(1.5, |inner| inner.text_scale());
+            (outer.text_scale(), inner)
+        });
+        assert_eq!(
+            scales,
+            (2.0, 1.5),
+            "a nested pass has its own renderer and scale"
+        );
+        assert_eq!(constructions(), 2, "nesting adds one renderer to the pool");
+        with_layout_renderer(1.0, |_| with_layout_renderer(1.0, |_| ()));
+        assert_eq!(constructions(), 2, "and later nested passes reuse it");
+    }
+}

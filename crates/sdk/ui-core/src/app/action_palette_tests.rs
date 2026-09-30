@@ -528,7 +528,7 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
     assert_eq!(app.focused_node, Some(editor));
     assert_eq!(
-        app.inspect_node(editor, |widget| widget.get_state())
+        app.inspect_node(editor, |widget| crate::undo::get_state(widget))
             .unwrap(),
         Some("0:b:1".into()),
         "Shift+Left extends the editor selection instead of moving host focus"
@@ -562,7 +562,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
                 let target = if open_search {
                     layout.search.unwrap()
                 } else {
-                    layout.toolbar
+                    layout.toolbar.unwrap()
                 };
                 app.set_focused_node(None);
                 let mut tab = synth_enter();
@@ -874,4 +874,111 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             "Ctrl+K reaches the real retained control"
         );
     }
+}
+
+#[test]
+fn host_commands_present_host_services_and_enter_the_palette_door() {
+    use crate::host_chrome::model::{CommandGroup, HostCommand};
+    use crate::platform::HostShortcut;
+    let find = |commands: &[HostCommand], group: CommandGroup, action: &str| {
+        commands
+            .iter()
+            .find(|command| command.group == group && command.binding.address().action == action)
+            .cloned()
+            .unwrap_or_else(|| panic!("{group:?} {action} is presented"))
+    };
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+    app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+    for title in ["first", "second"] {
+        app.state.doc.put(ROOT, "title", title).unwrap();
+        app.state.commit_action(None, None);
+    }
+    app.enable_document_history_chrome();
+    app.init_layout();
+    let platform = app.input.platform;
+
+    let commands = app.host_commands(true);
+    assert!(find(&commands, CommandGroup::Undo, "undo").enabled);
+    assert!(!find(&commands, CommandGroup::Undo, "redo").enabled);
+    let search = find(&commands, CommandGroup::Search, "open");
+    assert!(search.enabled);
+    assert_eq!(
+        search.shortcut,
+        Some(HostShortcut::Search.shortcut(platform))
+    );
+    let flip = find(&commands, CommandGroup::AppActions, "flip");
+    assert_eq!(flip.label, "Flip it");
+    let show = find(&commands, CommandGroup::History, "open");
+    assert_eq!(show.label, "Show History");
+    assert!(show.enabled);
+    assert_eq!(
+        show.shortcut,
+        Some(HostShortcut::History.shortcut(platform))
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| command.binding.address().action == "compare"),
+        "nothing to compare before History opens"
+    );
+    let recent: Vec<_> = commands
+        .iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .cloned()
+        .collect();
+    assert_eq!(recent.len(), 2);
+    assert!(
+        recent
+            .iter()
+            .all(|command| command.enabled && command.label.contains(" · "))
+    );
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.binding.address().resource != "tilo.history"),
+        "the broker History door is the History menu, not a second copy"
+    );
+
+    // An app action enters the same door as the palette and is undoable
+    // from the Edit command.
+    assert!(app.invoke_host_command(&flip.invocation().unwrap()));
+    assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_some());
+
+    // Show History opens the pane; the item becomes Hide History, and
+    // Compare waits for two selected changes.
+    assert!(app.invoke_host_command(&show.invocation().unwrap()));
+    assert!(app.document_history.is_open());
+    let commands = app.host_commands(false);
+    let hide = find(&commands, CommandGroup::History, "hide");
+    assert_eq!(hide.label, "Hide History");
+    assert!(!find(&commands, CommandGroup::History, "compare").enabled);
+    assert!(app.invoke_host_command(&hide.invocation().unwrap()));
+    assert!(!app.document_history.is_open());
+
+    // A recent change opens History at that change: the newest is the flip.
+    let newest = app
+        .host_commands(true)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::RecentChanges)
+        .unwrap();
+    assert!(app.invoke_host_command(&newest.invocation().unwrap()));
+    let snapshot = app.document_history_snapshot().unwrap().unwrap();
+    assert_eq!(
+        snapshot.selection,
+        vec![snapshot.entries.last().unwrap().id]
+    );
+
+    // The keyboard shortcut is the same command.
+    assert!(app.invoke_host_shortcut(HostShortcut::History));
+    assert!(!app.document_history.is_open());
+
+    // Undo through the Edit command reverts the flip.
+    let undo = find(&app.host_commands(false), CommandGroup::Undo, "undo");
+    assert!(app.invoke_host_command(&undo.invocation().unwrap()));
+    assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_none());
+
+    // While the palette is open its own shortcut closes it, so the Search
+    // command steps aside.
+    app.open_action_palette();
+    assert!(!find(&app.host_commands(false), CommandGroup::Search, "open").enabled);
 }

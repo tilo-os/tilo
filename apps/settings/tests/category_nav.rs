@@ -104,7 +104,7 @@ fn row_rect(app: &SettingsApp, label: &str) -> Option<Rect> {
 fn row_is_active(app: &SettingsApp, label: &str) -> bool {
     fn walk(w: &dyn Widget, label: &str, out: &mut bool) {
         if w.name() == "SidebarRow" && w.test_id() == Some(label) {
-            *out = w.get_state().as_deref() == Some("active");
+            *out = ui::undo::get_state(w).as_deref() == Some("active");
         }
         for c in w.children() {
             walk(c, label, out);
@@ -139,7 +139,7 @@ fn renders_something(app: &mut SettingsApp) -> bool {
 /// navigation exactly one row — the target — must be active.
 fn active_row_count(app: &SettingsApp) -> usize {
     fn walk(w: &dyn Widget, n: &mut usize) {
-        if w.name() == "SidebarRow" && w.get_state().as_deref() == Some("active") {
+        if w.name() == "SidebarRow" && ui::undo::get_state(w).as_deref() == Some("active") {
             *n = n.saturating_add(1);
         }
         for c in w.children() {
@@ -170,7 +170,7 @@ fn click_navigates_to(target: Category) {
     }
 
     let rect =
-        row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
+        row_rect(&app, &target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
         rect.width() > 0.0 && rect.height() > 0.0,
         "row {target:?} has a real rect"
@@ -203,11 +203,11 @@ fn click_navigates_to(target: Category) {
 
     // The rebuilt sidebar highlights the clicked category and ONLY it.
     assert!(
-        row_is_active(&app, target.label()),
+        row_is_active(&app, &target.label()),
         "the {target:?} row must be active after navigating to it"
     );
     assert!(
-        !row_is_active(&app, Category::DEFAULT.label()),
+        !row_is_active(&app, &Category::DEFAULT.label()),
         "the previously-active default row must no longer be highlighted after navigating to {target:?}"
     );
     assert_eq!(
@@ -295,7 +295,7 @@ fn two_consecutive_clicks_navigate() {
     let mut app = lay_out(config.app());
 
     let click = |app: &mut Framed<SettingsApp>, target: Category| {
-        let rect = row_rect(app, target.label()).expect("row exists");
+        let rect = row_rect(app, &target.label()).expect("row exists");
         assert!(
             rect.y0 >= 0.0 && rect.y1 <= f64::from(H),
             "navigation fixture must show {target:?}: {rect:?}"
@@ -312,6 +312,6 @@ fn two_consecutive_clicks_navigate() {
     click(&mut app, Category::Permissions);
     assert_eq!(app.selected(), Category::Permissions);
     rebuild(&mut app);
-    assert!(row_is_active(&app, Category::Permissions.label()));
-    assert!(!row_is_active(&app, Category::Displays.label()));
+    assert!(row_is_active(&app, &Category::Permissions.label()));
+    assert!(!row_is_active(&app, &Category::Displays.label()));
 }

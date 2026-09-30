@@ -1161,6 +1161,7 @@ pub(crate) fn held_poll_test_request_with_deadline(
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         HeldPollTestClient {
             _response: response_rx,
@@ -1607,6 +1608,7 @@ fn descriptor_discovery_reply_rejects_capacity_over_24_kib() {
         cancelled,
         response,
         lease: ingress.reserve(0, Lane::Control).unwrap(),
+        admission: Admission::unwatched(),
     };
     let mut body =
         Vec::with_capacity(tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES + 1);
@@ -1667,6 +1669,7 @@ pub(crate) fn data_test_request(
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         HeldPollTestClient {
             _response: response_rx,
@@ -1761,4 +1764,87 @@ async fn accepted_https_sockets_disable_nagle() {
     prepare_accepted(&socket);
     assert!(socket.nodelay().unwrap());
     drop(client.await.unwrap().unwrap());
+}
+
+/// A request the front waits on, as `buffered` builds it.
+fn watched_request(
+    ingress: &Ingress,
+    route: Route,
+) -> (
+    BufferedRequest,
+    AdmissionFront,
+    oneshot::Receiver<Reply>,
+    watch::Sender<bool>,
+) {
+    let (response, response_rx) = oneshot::channel();
+    let (cancel, cancelled) = watch::channel(false);
+    let (admission, front) = Admission::new();
+    (
+        BufferedRequest {
+            method: Method::POST,
+            target: "/peer/v3/snapshot".into(),
+            body: Bytes::new(),
+            proof: None,
+            route,
+            deadline: Instant::now() + DEADLINE,
+            cancelled,
+            response,
+            lease: ingress.reserve(0, Lane::Data).unwrap(),
+            admission,
+        },
+        front,
+        response_rx,
+        cancel,
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_started_request_slower_than_the_deadline_gets_its_answer() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::Snapshot);
+    let deadline = request.deadline();
+    let waiting = tokio::spawn(front.reply(deadline, response));
+    assert!(request.start());
+    // The service works on it for several deadlines (a snapshot's turns on a
+    // slow disk); the front neither answers 503 nor cancels the request.
+    tokio::time::sleep(DEADLINE * 3).await;
+    assert!(!waiting.is_finished());
+    assert!(!request.is_cancelled());
+    request.respond(StatusCode::OK, b"pinned".to_vec()).unwrap();
+    let reply = waiting.await.unwrap().expect("the service's own answer");
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(&reply.body[..], b"pinned");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_still_queued_at_its_deadline_is_refused_without_effect() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::State);
+    let reply = front.reply(request.deadline(), response).await;
+    assert!(reply.is_none(), "the retryable 503");
+    // The service dequeues it late: it must not start, so it has no effect.
+    assert!(request.is_cancelled());
+    assert!(!request.start());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_started_request_that_stops_progressing_is_still_bounded() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::Acks);
+    let waiting = tokio::spawn(front.reply(request.deadline(), response));
+    assert!(request.start());
+    let budget = tilo_action_broker::owner_turn::STALL_BUDGET;
+    // Progress renews the bound past one whole budget.
+    tokio::time::sleep(budget - Duration::from_secs(1)).await;
+    request.advance();
+    tokio::time::sleep(budget - Duration::from_secs(1)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a progressing request is not stalled"
+    );
+    // Then it hangs: the front gives up after a budget without progress.
+    let began = Instant::now();
+    assert!(waiting.await.unwrap().is_none());
+    assert!(began.elapsed() <= budget);
+    drop(request);
 }

@@ -35,7 +35,6 @@
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -2194,6 +2193,13 @@ impl ForeignFrameStore {
         })
     }
 
+    /// Forget the size last sent, so the next [`Self::take_pending_configure`]
+    /// sends the tab size again even though the layout did not change: the
+    /// client was configured to something else in between.
+    pub fn resend_configure(&self, id: SurfaceId) {
+        self.with_entry(id, |e| e.configured = None);
+    }
+
     /// Whether this surface has something worth putting on screen, and
     /// latch the answer once it does. Read by
     /// [`ForeignSurfaceWidget::presented`], the predicate deciding when a launched window turns up.
@@ -2333,6 +2339,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl ForeignSurfaceWidget {
@@ -2349,6 +2356,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            last_draw: None,
         }
     }
 
@@ -2431,6 +2439,18 @@ impl ForeignSurfaceWidget {
     /// unmapped.
     pub fn is_mapped(&self) -> bool {
         store().frame_size(self.surface_id).is_some()
+    }
+
+    /// Why this tile is asking for frames, for the paint-stats diagnostic.
+    pub(crate) fn animation_detail(&self) -> String {
+        format!(
+            "seq={} cached_seq={} cached={} presented={} drawn_ms_ago={:?}",
+            store().frame_seq(self.surface_id),
+            self.cached_seq,
+            self.cached.is_some(),
+            store().is_presented(self.surface_id),
+            self.last_draw.map(|at| at.elapsed().as_millis()),
+        )
     }
 
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
@@ -2699,6 +2719,7 @@ impl Widget for ForeignSurfaceWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.last_draw = Some(std::time::Instant::now());
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -2818,6 +2839,10 @@ impl Widget for ForeignSurfaceWidget {
 
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -3077,6 +3102,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    // A fullscreen client is sized to its output by the fullscreen overlay;
+    // its promoted tile still lays out underneath and must not resize it.
+    let fullscreen = state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .map(|target| target.surface_id);
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
@@ -3103,6 +3135,9 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
@@ -3192,12 +3227,12 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Wayland clients that draw on demand wait for `wl_surface.frame` before
 /// their next buffer; without this pass a client renders one frame and
-/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen.
+/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
+/// and for a window the compositor asked to close, whose tab is already gone.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
     for toplevel in toplevels {
@@ -3207,20 +3242,14 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
             let tree = state.workspace_tree.read();
             is_visible_tab(&tree, store().sheet_root(id))
         };
-        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
+        if !visible_tab
+            && state.osk_surface != Some(id)
+            && !state.is_floating_toplevel(id)
+            && !state.is_closing_toplevel(id)
+        {
             continue;
         }
-        let mut fired = false;
-        smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<smithay::wayland::compositor::SurfaceAttributes>();
-            for callback in attrs.current().frame_callbacks.drain(..) {
-                callback.done(time_ms);
-                fired = true;
-            }
-        });
-        if fired {
+        if state.release_frame_callbacks(surface) {
             signalled = signalled.saturating_add(1);
         }
     }

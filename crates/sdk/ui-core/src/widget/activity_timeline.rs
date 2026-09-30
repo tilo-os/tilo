@@ -144,26 +144,26 @@ impl ChipKind {
         ChipKind::Deletes,
     ];
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDITS",
-            ChipKind::Comments => "COMMENTS",
-            ChipKind::Governance => "GOVERNANCE",
-            ChipKind::Deletes => "DELETES",
-        }
+    pub fn label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits",
+            ChipKind::Comments => "history-chip-comments",
+            ChipKind::Governance => "history-chip-access",
+            ChipKind::Deletes => "history-chip-deletions",
+        })
     }
 
     /// Used when the full label set will not fit; every chip switches
     /// together, or mixed lengths would read as a rendering accident.
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDIT",
-            ChipKind::Comments => "NOTE",
-            ChipKind::Governance => "GOV",
-            ChipKind::Deletes => "DEL",
-        }
+    pub fn short_label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits-short",
+            ChipKind::Comments => "history-chip-comments-short",
+            ChipKind::Governance => "history-chip-access-short",
+            ChipKind::Deletes => "history-chip-deletions-short",
+        })
     }
 
     /// `All` is empty because "no op-class filter" is how [`HistoryFilter`]
@@ -601,10 +601,16 @@ impl ActivityTimeline {
     pub fn active_filter_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.active_chip != ChipKind::All {
-            parts.push(self.active_chip.label().to_string());
+            parts.push(self.active_chip.label());
         }
-        for op in &self.filter.op_classes {
-            let label = format!("{op:?}").to_uppercase();
+        let chip_classes = self.active_chip.op_classes();
+        for op in self
+            .filter
+            .op_classes
+            .iter()
+            .filter(|op| !chip_classes.contains(op))
+        {
+            let label = crate::history_source::op_class_label(*op);
             if !parts.contains(&label) {
                 parts.push(label);
             }
@@ -1780,6 +1786,16 @@ struct FilterStripPaint {
     idle_text: Color,
 }
 
+/// When a row's change was made; empty for the genesis, which no one made
+/// at any time worth naming.
+fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
+    if entry.is_genesis() {
+        String::new()
+    } else {
+        format_relative_time(entry.timestamp, now)
+    }
+}
+
 impl ActivityTimeline {
     fn draw_row(
         &self,
@@ -1793,7 +1809,12 @@ impl ActivityTimeline {
 
         let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        let dot_x = Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry);
+        // A genesis row names no one: no avatar, no author, no time.
+        let dot_x = if entry.is_genesis() {
+            row.x0 + 8.0 + AVATAR_DIAM / 2.0
+        } else {
+            Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry)
+        };
 
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
@@ -1812,7 +1833,9 @@ impl ActivityTimeline {
                 0.0
             },
         };
-        self.draw_row_author(ctx, &layout, entry, dot_x);
+        if !entry.is_genesis() {
+            self.draw_row_author(ctx, &layout, entry, dot_x);
+        }
         self.draw_row_body(ctx, &layout, entry, now);
         self.draw_row_trailing(ctx, &layout, entry, now);
     }
@@ -2090,7 +2113,7 @@ impl ActivityTimeline {
         } = layout;
         let rel = fit_text(
             text_renderer,
-            &format_relative_time(entry.timestamp, now),
+            &row_time(entry, now),
             text_size,
             self.time_slot_w(),
         );
@@ -2562,7 +2585,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
+                total += f64::from(tr.measure(&l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
             }
             total
         };
@@ -2607,7 +2630,7 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = text_renderer.measure(&label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = f64::midpoint(strip.y0, strip.y1);
@@ -2624,10 +2647,10 @@ impl ActivityTimeline {
             let text_color = if active { active_text } else { idle_text };
             let edge = (!active).then(|| crate::surface::edge_on(body));
             crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
+            let (lw, lh) = text_renderer.measure(&label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 chip_text_size,
                 text_color,
                 translated(
@@ -2745,11 +2768,16 @@ impl ActivityTimeline {
             Some(NameTarget::Selection)
         );
 
-        let clear_w = 54.0_f64;
+        let clear_label = crate::i18n!("history-selection-clear");
+        let name_label = crate::i18n!("history-selection-name");
+        let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
+            (f64::from(tr.measure(label, size, None).0) + 20.0).max(min)
+        };
+        let clear_w = chip_w(tr, &clear_label, 54.0);
         let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
             0.0
         } else {
-            96.0_f64
+            chip_w(tr, &name_label, 96.0)
         };
         let clear = Rect::new(
             bar.x1 - 8.0 - clear_w,
@@ -2758,9 +2786,9 @@ impl ActivityTimeline {
             bar.center().y + 11.0,
         );
         self.clear_selection_rect = clear;
-        draw_chip(scene, transform, tr, theme, clear, "Clear", false);
+        draw_chip(scene, transform, tr, theme, clear, &clear_label, false);
 
-        let label = format!("{n} change{} selected", if n == 1 { "" } else { "s" });
+        let label = crate::i18n!("history-selection-count", "count" => n);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, size, label_budget);
         let label_top = text_top(tr, size, bar.center().y);
@@ -2795,7 +2823,7 @@ impl ActivityTimeline {
             );
             if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
                 self.name_selection_rect = action;
-                draw_chip(scene, transform, tr, theme, action, "Name these", true);
+                draw_chip(scene, transform, tr, theme, action, &name_label, true);
             }
         }
     }
@@ -2998,21 +3026,29 @@ impl Widget for ActivityTimeline {
                     VisualRow::Entry(entry, depth) => {
                         let item = self.entries.get(*entry)?;
                         let id = crate::widget::history_group::hex16(&item.id);
+                        let said = if item.is_genesis() {
+                            item.summary.clone()
+                        } else {
+                            format!("{}: {}", item.author.name, item.summary)
+                        };
                         let name = Self::entry_breadcrumb(item).map_or_else(
-                            || format!("{}: {}", item.author.name, item.summary),
-                            |breadcrumb| {
-                                format!("{breadcrumb}: {}: {}", item.author.name, item.summary)
-                            },
+                            || said.clone(),
+                            |breadcrumb| format!("{breadcrumb}: {said}"),
                         );
                         Some(
                             AccessNode::new(Role::ListItem)
                                 .with_action_target(format!("timeline-entry:{id}"))
                                 .with_name(name)
-                                .with_description(format!(
-                                    "{} · {}",
-                                    op_class_glyph(item.op_class),
-                                    format_relative_time(item.timestamp, self.now())
-                                ))
+                                .with_description(
+                                    [
+                                        op_class_glyph(item.op_class).to_owned(),
+                                        row_time(item, self.now()),
+                                    ]
+                                    .into_iter()
+                                    .filter(|part| !part.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                )
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(depth.saturating_add(1))
                                 .with_bounds(bounds)
@@ -3892,6 +3928,41 @@ mod tests {
     }
 
     #[test]
+    fn a_genesis_row_names_no_author_and_no_time() {
+        use crate::a11y::Role;
+        let mut genesis = entry(OpClass::EditMeta, "Unknown participant", 0, 1);
+        genesis.summary = "Created".into();
+        genesis.context = Some(tilo_actions::ActionContext {
+            facets: vec![crate::widget::history::genesis_facet()],
+            ..tilo_actions::ActionContext::default()
+        });
+        let entries = vec![genesis, entry(OpClass::Splice, "Alice", 10, 2)];
+        let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+        let semantics = Widget::accessibility(&t).expect("timeline semantics");
+        let rows: Vec<_> = semantics
+            .children
+            .iter()
+            .filter(|node| node.role == Role::ListItem)
+            .map(|node| (node.name.clone(), node.description.clone()))
+            .collect();
+        assert_eq!(
+            rows[0],
+            (
+                Some("Created".to_owned()),
+                Some(op_class_glyph(OpClass::EditMeta).to_owned())
+            ),
+            "the version the document was created as, by no one at no time"
+        );
+        assert_eq!(rows[1].0.as_deref(), Some("Alice: op 2 by Alice"));
+        assert!(
+            rows[1]
+                .1
+                .as_deref()
+                .is_some_and(|text| text.contains(" · "))
+        );
+    }
+
+    #[test]
     fn timeline_rows_are_accessible_keyboard_and_hover_targets() {
         fn accessibility_reports_list_role_name_and_count() {
             use crate::a11y::Role;
@@ -4089,7 +4160,7 @@ mod tests {
                 detail.contains("2 hidden"),
                 "counts what it is hiding: {detail}"
             );
-            assert!(detail.contains("COMMENTS"), "names the filter: {detail}");
+            assert!(detail.contains("Comments"), "names the filter: {detail}");
         }
 
         fn a_host_time_range_is_named_in_the_explanation() {

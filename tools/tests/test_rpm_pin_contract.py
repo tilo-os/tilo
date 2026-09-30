@@ -28,7 +28,7 @@ class RpmResolveContractTests(unittest.TestCase):
         self.assertIn('Resolve RPMS_REF (frozen package snapshot)', workflow)
         self.assertIn('verify-rpm-snapshot-buildkit.py "$RPMS_REF"', workflow)
         self.assertIn('Resolve the exact signed RPM snapshot fingerprint', workflow)
-        self.assertNotIn('uses: ./.forgejo/workflows/snapshot-rpms.yml', workflow)
+        self.assertNotIn('uses: ./.forgejo/workflows/build-rpms.yml', workflow)
 
 
 if __name__ == "__main__":

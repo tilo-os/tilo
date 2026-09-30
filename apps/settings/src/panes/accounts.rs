@@ -140,7 +140,7 @@ struct AccountDraft {
 
 struct ProbeJob {
     receiver: std::sync::mpsc::Receiver<Result<String, String>>,
-    deadline: std::time::Instant,
+    deadline: ui::time::Instant,
 }
 
 impl ProbeJob {
@@ -149,7 +149,7 @@ impl ProbeJob {
     fn new(receiver: std::sync::mpsc::Receiver<Result<String, String>>) -> Self {
         Self {
             receiver,
-            deadline: std::time::Instant::now() + Self::DEADLINE,
+            deadline: ui::time::now() + Self::DEADLINE,
         }
     }
 
@@ -157,9 +157,7 @@ impl ProbeJob {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(stopped.into())),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-                if std::time::Instant::now() >= self.deadline =>
-            {
+            Err(std::sync::mpsc::TryRecvError::Empty) if ui::time::now() >= self.deadline => {
                 Some(Err("connection check timed out".into()))
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -358,8 +356,8 @@ impl AccountsPane {
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> bool {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
-        while self.form_open() && std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
+        while self.form_open() && ui::time::now() < deadline {
             self.sync(state, root);
             if self.form_open() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1855,7 +1853,9 @@ impl AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = tilo_clock::unix_now_i64();
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => "just now".into(),
@@ -2120,16 +2120,13 @@ mod tests {
     /// Drive the host's polling until the pending account probe reports,
     /// however long the probe thread takes to be scheduled.
     fn settle_probes(pane: &mut AccountsPane, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
         loop {
             pane.sync(doc, &automerge::ROOT);
             if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
                 return;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "account probe never reported"
-            );
+            assert!(ui::time::now() < deadline, "account probe never reported");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }

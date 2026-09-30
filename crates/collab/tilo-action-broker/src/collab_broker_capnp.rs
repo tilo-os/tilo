@@ -2391,6 +2391,9 @@ pub struct CapnpBrokerState {
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
+    /// Wakes the broker loop to adopt a newly admitted local worker at once
+    /// rather than on its next housekeeping tick.
+    worker_admitted: tokio::sync::Notify,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
     enrolled: crate::enrolled_dispatch::EnrolledRegistry,
@@ -2677,6 +2680,7 @@ impl CapnpBrokerState {
             },
         });
         drop(workers);
+        self.worker_admitted.notify_one();
         Ok(client)
     }
 
@@ -3038,6 +3042,7 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
+                worker_admitted: tokio::sync::Notify::new(),
                 host_workers: Mutex::new(HashMap::new()),
                 enrolled: crate::enrolled_dispatch::EnrolledRegistry::default(),
                 #[cfg(test)]
@@ -5789,6 +5794,9 @@ impl collab_service::Server for CapnpCollabService {
             );
             state.retain_host_worker(peer_id, &verified_identity)?;
             state.ensure_channel(&channel_id);
+            state
+                .publisher()
+                .local_route(&crate::route::CrdtRoute::from_channel_key(&channel_id));
 
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -10123,6 +10131,7 @@ pub(super) fn spawn_configured(
                             continue;
                         },
                         conn = listener.accept() => conn,
+                        () = state.worker_admitted.notified() => continue,
                     };
                     let (stream, _) = match stream {
                         Ok(s) => s,
@@ -13257,6 +13266,7 @@ pub mod tests {
                 vec![crate::services::LaunchableApplication {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
+                    unconfined: false,
                 }]
             }
             fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {

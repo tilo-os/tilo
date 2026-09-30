@@ -14,7 +14,7 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertIn('cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}', workflow)
             self.assertIn("if: matrix.test_packages != ''", workflow)
             self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
-            self.assertIn('needs: [builder, select, security, test, test-archive, test-partition, check, clippy, android, wasm, suites, pins]', workflow)
+            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]', workflow)
             self.assertIn('test "$BUILDER_RESULT" = success', workflow)
             self.assertIn('*:true:success)', workflow)
             self.assertIn('pull_request:false:skipped)', workflow)
@@ -28,7 +28,7 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertNotIn('package-desktop-release', selection)
             self.assertNotIn('arm64-platform-support', workflow)
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
-            workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
+            workflow = (ROOT / '.forgejo/workflows/ci-nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
             self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
             self.assertIn('runs-on: ${{ matrix.runner }}', workflow)

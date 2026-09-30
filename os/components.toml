@@ -317,7 +317,7 @@ packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
   "music/audio", "music/live", "video-player/decode",
-  "camera/live-capture", "tube/live", "tube/media",
+  "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
   "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
   "video-editor/gst",
 ]
@@ -336,7 +336,7 @@ files = [
 name = "fs"
 kind = "userspace"
 scope = "vm"
-packages = ["fs"]
+packages = ["tilo-fs"]
 bins = ["fs"]
 units = ["fs.service", "tilo-fs-replica.service"]
 user_units = ["tilo-fs-recipient.service", "tilo-fs-cloud.service"]

@@ -18,7 +18,6 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
@@ -28,10 +27,11 @@ tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 tilo-content = { path = "../../crates/system/content" }
 # The shared preview pipeline behind the library grid.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -43,7 +43,6 @@ taffy.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -62,3 +61,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

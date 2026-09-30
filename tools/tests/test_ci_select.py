@@ -254,6 +254,36 @@ class SelectorTests(unittest.TestCase):
              "wasm_required=false", "wasm_packages="],
         )
 
+    def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
+        self.setUp()
+        self.metadata["packages"].append({
+            "name": "example-counter",
+            "manifest_path": str(self.root / "examples/apps/counter/Cargo.toml"),
+            "targets": [{"name": "example-counter"}],
+            "dependencies": [{"name": "base", "path": str(self.root / "base")}],
+        })
+        def plan(changes):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2)
+        reached = plan(["base/src/lib.rs"])
+        self.assertTrue(reached["wasm_required"])
+        self.assertEqual(reached["wasm"], [])
+        self.assertEqual(reached["web_examples"], ["example-counter"])
+        unrelated = plan(["qdoc/src/lib.rs"])
+        self.assertFalse(unrelated["wasm_required"])
+        self.assertEqual(unrelated["web_examples"], [])
+        build = plan(["crates/browser/tilo-browser-runtime/scripts/build.sh"])
+        self.assertTrue(build["wasm_required"])
+        self.assertEqual(build["web_examples"], ["example-counter"])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(reached, output)
+            ci_select.emit_github(unrelated, output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("web_examples=")],
+            ["web_examples=example-counter", "web_examples="],
+        )
+
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()
@@ -421,15 +451,16 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("fs", "tilo-cloud-host", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-cloud-host", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone fs and the Cloud host would share the lighter shard.
-            seconds = {"tilo-action-broker": 900, "fs": 100, "tilo-cloud-host": 100, "light": 1}
+            # By time alone tilo-fs and the Cloud host would share the lighter
+            # shard. Placement breaks equal weights by name, so theirs differ.
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-cloud-host": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
             self.assertIn({"tilo-cloud-host", "tilo-action-broker"}, placed)
-            self.assertTrue(any("fs" in names for names in placed))
+            self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
                                         ci_select.TEST_SHARD_APART)
@@ -475,77 +506,28 @@ class SelectorTests(unittest.TestCase):
             finally:
                 ci_select.MAX_TEST_SHARDS = original
             self.assertEqual(capped["test_shard_count"], 1)
-        with self.subTest(phase='a package too heavy for one job runs partitioned on its own shards'):
+        with self.subTest(phase='a package too heavy to share a job gets its own shard'):
             self.setUp()
             changes = ["base/src/lib.rs"]
             packages, _ = ci_select.package_maps(self.metadata, self.root)
-            heavy = ci_select.TEST_PARTITION_WEIGHT  # seconds, so twice the target weight
+            heavy = ci_select.DEDICATED_TEST_WEIGHT  # seconds, so twice the target weight
             seconds = {"base": heavy, "middle": 100, "qdoc": 150, "pkg": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
-            self.assertEqual(plan["shard_count"], 1)
-            partitions = plan["partition_matrix"]["include"]
-            whole_rows = plan["matrix"]["include"]
-            rows = partitions + whole_rows
-            room = ci_select.TEST_PARTITION_WEIGHT - ci_select.package_cost(packages["base"])
-            count = min(ci_select.MAX_TEST_PARTITIONS,
-                        -(-ci_select.TEST_SECOND_WEIGHT * heavy // room))
-            self.assertGreater(count, 1)
-            # Partitions come first, one dedicated shard each, then the rest.
-            self.assertTrue(plan["partitions_required"])
-            self.assertEqual([row["partition"] for row in partitions],
-                             [f"count:{index}/{count}" for index in range(1, count + 1)])
-            self.assertEqual({row["test_packages"] for row in partitions}, {"-p base"})
-            self.assertEqual({row["scoped_tests"] for row in partitions}, {""})
-            self.assertEqual({row["partition"] for row in whole_rows}, {""})
+            rows = plan["matrix"]["include"]
+            # The dedicated shard comes first and holds only the heavy package.
+            self.assertEqual(rows[0]["test_packages"], "-p base")
+            self.assertEqual(rows[0]["scoped_tests"], "")
             self.assertEqual([row["shard"] for row in rows], list(range(1, len(rows) + 1)))
-            whole = [name for row in whole_rows for name in row["test_packages"].split()[1::2]]
-            self.assertEqual(sorted(whole + ["base"]), plan["tested"])
+            others = [name for row in rows[1:] for name in row["test_packages"].split()[1::2]]
+            self.assertNotIn("base", others)
+            self.assertEqual(sorted(others + ["base"]), plan["tested"])
             self.assertEqual(plan["test_shard_count"], len(rows))
-            # The package's tests are built once per architecture, on the
-            # larger x86 slot, into the archive its partitions run from.
-            self.assertEqual(plan["archive_matrix"]["include"], [{
-                "arch": "x86_64", "runner": "runner-large", "package": "base",
-                "test_packages": "-p base", "partitions": count,
-                "archive": "nextest-archive-x86_64-base"}])
-            self.assertEqual({row["archive"] for row in partitions}, {"nextest-archive-x86_64-base"})
-            full = ci_select.make_plan(self.metadata, self.root, changes, 2, force_full=True,
-                                       test_seconds={**seconds, **{name: 0 for name in packages
-                                                                   if name != "base"}})
-            self.assertEqual([(row["arch"], row["runner"]) for row in full["archive_matrix"]["include"]],
-                             [("x86_64", "runner-large"), ("aarch64", "runner-arm64")])
-            self.assertEqual({(row["arch"], row["archive"]) for row in full["partition_matrix"]["include"]},
-                             {(arch, f"nextest-archive-{arch}-base") for arch in ("x86_64", "aarch64")})
-            # Every package partitioned still leaves one inert whole shard, so
-            # the test job's result stays applicable.
-            original_always = ci_select.ALWAYS_PACKAGES
-            try:
-                ci_select.ALWAYS_PACKAGES = set()
-                only = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2,
-                                           test_seconds={"leaf": heavy})
-            finally:
-                ci_select.ALWAYS_PACKAGES = original_always
-            self.assertEqual(only["tested"], ["leaf"])
-            self.assertTrue(only["partitions_required"])
-            inert = only["matrix"]["include"]
-            self.assertEqual([(row["test_packages"], row["scoped_tests"]) for row in inert], [("", "")])
-            self.assertEqual(inert[0]["shard"], len(only["partition_matrix"]["include"]) + 1)
-            # Type-check shards are unaffected.
-            self.assertNotIn("partition", plan["clippy_matrix"]["include"][0])
-            # A package whose build alone exceeds the target gains nothing from
-            # partitions, and packages without recorded time are never split.
-            self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {"base": count})
-            original = ci_select.TEST_PARTITION_WEIGHT
-            try:
-                ci_select.TEST_PARTITION_WEIGHT = ci_select.package_cost(packages["base"])
-                self.assertEqual(ci_select.test_partitions({"base"}, packages, seconds), {})
-            finally:
-                ci_select.TEST_PARTITION_WEIGHT = original
-            self.assertEqual(ci_select.test_partitions(set(packages), packages, {}), {})
-            unsplit = ci_select.make_plan(self.metadata, self.root, changes, 2)
-            self.assertEqual({row["partition"] for row in unsplit["matrix"]["include"]}, {""})
-            self.assertFalse(unsplit["partitions_required"])
-            self.assertEqual(unsplit["partition_matrix"]["include"], [])
-            self.assertEqual(unsplit["archive_matrix"]["include"], [])
+            self.assertNotIn("partition_matrix", plan)
+            # A package whose build alone exceeds the target also gets one; one
+            # without recorded time shares a shard.
+            self.assertEqual(ci_select.dedicated_test_shards({"base"}, packages, seconds)[0]["packages"],
+                             "-p base")
+            self.assertEqual(ci_select.dedicated_test_shards(set(packages) - {"base"}, packages, {}), [])
         with self.subTest(phase='recorded test time never changes selection or budgets'):
             self.setUp()
             changes = ["leaf/src/lib.rs"]
@@ -943,7 +925,7 @@ class SelectorTests(unittest.TestCase):
             # Rust packages even though every change was CI orchestration or its test.
             changes = [
                 ".forgejo/workflows/check.yml",
-                ".forgejo/workflows/legacy-app-e2e.yml",
+                ".forgejo/workflows/ci-legacy-apps.yml",
                 ".forgejo/workflows/release-relay.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
@@ -983,7 +965,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             for path in (
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
                 "tools/ci/verify-native-mold.sh",
@@ -996,7 +978,7 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
@@ -1012,7 +994,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "tools/tests/test_cargo_download_cache_action.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -1022,7 +1004,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "os/tests/release_pipeline_invariants.sh",
                 "os/tests/workflow_dependency_invariants.sh",
@@ -1120,7 +1102,7 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/external-assets/github-assets.tsv",
                 "os/tests/test_builder_candidate_workflow.py",

@@ -790,8 +790,8 @@ mod tests {
              SELECT sum(x) FROM n",
         );
             let mut requested = false;
-            let deadline = std::time::Instant::now() + HANG_BOUND;
-            while std::time::Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 if s.cancel_in_flight_query() {
                     requested = true;
                     break;

@@ -105,6 +105,7 @@ async fn main() {
                 store: None,
             },
             allowed_origins,
+            plain_listen: None,
         })
         .await
         .expect("serve browsers");

@@ -115,6 +115,10 @@ pub enum PermissionProfileMutationError {
 pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
 pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
 pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
+/// Governance action letting one application use another's action.
+pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
+/// Governance action taking such a grant back.
+pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
 
 /// A role's stable name, as a collaborator row records it
 /// ([`crate::Collaborator::role_id`]). Surfaces translate it for display

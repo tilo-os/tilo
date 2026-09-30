@@ -34,7 +34,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
@@ -576,9 +576,14 @@ impl TypstApp {
     /// Queue a fresh compile of the current source. (Syntax highlighting now
     /// lives in the shared editor widget, so there is nothing to re-tokenize
     /// here.)
+    /// Compile `source` on the worker, or here when no worker could start
+    /// (the browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
         if let Some(w) = self.worker.as_mut() {
             w.request(source.to_string(), PPP);
+        } else {
+            let out = compile::compile_source(&self.parts, source, PPP);
+            self.apply_output(out);
         }
         self.last_source = source.to_string();
     }
@@ -596,8 +601,8 @@ impl TypstApp {
         if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
             return Some(PathBuf::from(dir));
         }
-        xdg_paths::document_dir()
-            .or_else(xdg_paths::data_dir)
+        tilo_paths::document_dir()
+            .or_else(tilo_paths::data_dir)
             .map(|d| d.join("typst_editor"))
     }
 
@@ -620,7 +625,7 @@ impl TypstApp {
     /// and tests drive it against a real file.
     fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
-        match std::fs::write(path, src) {
+        match save_file(path, src.as_bytes()) {
             Ok(()) => {
                 self.set_flash(format!("Saved {}", path.display()));
                 // Adopt the chosen filename for the current document so a later
@@ -676,10 +681,12 @@ impl TypstApp {
                 "could not build PDF".to_string()
             }
         })?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, bytes).map_err(|e| e.to_string())
+        tilo_files::file_at(path)
+            .and_then(|(dir, name)| {
+                tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
+                tilo_files::blocking::save_document(&dir, &name, &bytes)
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Compile the current source to a PDF and write it into `dir`, named after
@@ -718,7 +725,7 @@ impl TypstApp {
         doc: &mut AutoCommit,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        let src = match std::fs::read_to_string(path) {
+        let src = match read_text(path) {
             Ok(s) => s,
             Err(e) => {
                 self.set_flash(format!("Open failed: {e}"));
@@ -820,25 +827,31 @@ impl TypstApp {
 
     /// Read every `.typ` file in `dir` into a `Document` list (name-sorted).
     fn scan_dir(dir: &std::path::Path) -> Vec<Document> {
-        let mut docs = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            let mut entries: Vec<_> = rd
-                .flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "typ"))
-                .collect();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for e in entries {
-                let name = e.file_name().to_string_lossy().to_string();
-                if let Ok(src) = std::fs::read_to_string(e.path()) {
-                    docs.push(Document {
-                        name,
-                        source: src,
-                        from_disk: true,
-                    });
-                }
-            }
-        }
-        docs
+        let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
+        else {
+            return Vec::new();
+        };
+        let entries =
+            tilo_files::blocking::list(&folder, &tilo_files::VPath::root()).unwrap_or_default();
+        // Listings are sorted by name.
+        entries
+            .into_iter()
+            .filter(|entry| {
+                entry.kind == tilo_files::Kind::File
+                    && std::path::Path::new(&entry.name)
+                        .extension()
+                        .is_some_and(|x| x == "typ")
+            })
+            .filter_map(|entry| {
+                let name = tilo_files::VPath::new(&entry.name).ok()?;
+                let bytes = tilo_files::blocking::read(&folder, &name).ok()?;
+                Some(Document {
+                    name: entry.name,
+                    source: String::from_utf8(bytes).ok()?,
+                    from_disk: true,
+                })
+            })
+            .collect()
     }
 
     fn next_doc(&mut self, doc: &mut AutoCommit) {
@@ -945,7 +958,7 @@ impl TypstApp {
     }
 
     fn set_flash(&mut self, msg: String) {
-        self.flash = Some((msg, Instant::now()));
+        self.flash = Some((msg, ui::time::now()));
     }
 
     fn flash_text(&self) -> Option<&str> {
@@ -1742,7 +1755,9 @@ impl TypstApp {
     /// leading dot.
     fn status_right_label(&self, theme: &Theme) -> (String, Color) {
         let c = &theme.tokens.colors;
-        if self.compiling() {
+        if *self.parts.fonts() == compile::Fonts::Loading {
+            ("Loading fonts…".to_string(), c.semantic.info)
+        } else if self.compiling() {
             ("Compiling…".to_string(), c.semantic.info)
         } else if self.err_count > 0 {
             (
@@ -1791,7 +1806,7 @@ impl TypstApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let (left_zone, right_zone) = self.status_zones();
         let text_size = 12.0f32;
         let margin = 14.0;
@@ -1876,7 +1891,7 @@ impl TypstApp {
     /// frame captures the floating pills.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        let now = Instant::now();
+        let now = ui::time::now();
         self.status_bubble_left.poke(now);
         self.status_bubble_right.poke(now);
     }
@@ -1901,7 +1916,8 @@ impl Widget for TypstApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2008,6 +2024,18 @@ impl Widget for TypstApp {
         // Bind the shared editor to the source object and pull its content.
         self.editor.bind(src_id.clone(), doc);
         let source = doc.text(&src_id).unwrap_or_default();
+
+        // In the browser the fonts arrive after the editor opens; compile
+        // once they have, with parts built from them.
+        if *self.parts.fonts() == compile::Fonts::Loading {
+            if WorldParts::fonts_loading() {
+                self.source_cache = source;
+                return;
+            }
+            self.parts = WorldParts::new();
+            self.worker = None;
+            self.initialized = false;
+        }
 
         if !self.initialized {
             // First frame: compile synchronously so the very first paint
@@ -2273,10 +2301,51 @@ impl Widget for TypstApp {
         }
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
+            return None;
+        }
+        // Poll completed work independently of animation preferences. Repeated
+        // queries retain the same deadline until sync consumes it.
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            ui::time::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(ui::time::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the App pumping frames while: the editor caret is blinking,
+        // a compile is in flight (so `draw` can consume its result), a
+        // transient toast is still fading, or either floating status bubble is
+        // lingering / fading (so it hides itself without a stray pointer event).
+        let now = ui::time::now();
+        self.editor.wants_animation()
+            || self.compiling()
+            || self.flash_text().is_some()
+            || self.status_bubble_left.needs_frame(now)
+            || self.status_bubble_right.needs_frame(now)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // Pointer *moves* are only repainted when `needs_redraw` is true (the
+        // host gates them to avoid hover spam). A live drag or a hover change
+        // sets `dirty`, so divider drags, preview text-selection, and inline
+        // diagnostic tooltips all repaint smoothly.
+        self.dirty
+    }
+}
+
+impl ui::undo::UndoPoints for TypstApp {
     fn needs_commit(&self) -> bool {
         self.native_edit_pending
     }
-
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         self.native_edit_pending.then(|| {
             let document = self
@@ -2293,49 +2362,8 @@ impl Widget for TypstApp {
             .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
         })
     }
-
     fn on_commit(&mut self) {
         self.native_edit_pending = false;
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
-            return None;
-        }
-        // Poll completed work independently of animation preferences. Repeated
-        // queries retain the same deadline until sync consumes it.
-        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            Instant::now()
-                .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
-        });
-        self.background_poll_deadline.set(Some(deadline));
-        Some(deadline)
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), a
-        // transient toast is still fading, or either floating status bubble is
-        // lingering / fading (so it hides itself without a stray pointer event).
-        let now = Instant::now();
-        self.editor.wants_animation()
-            || self.compiling()
-            || self.flash_text().is_some()
-            || self.status_bubble_left.needs_frame(now)
-            || self.status_bubble_right.needs_frame(now)
-    }
-
-    fn needs_redraw(&self) -> bool {
-        // Pointer *moves* are only repainted when `needs_redraw` is true (the
-        // host gates them to avoid hover spam). A live drag or a hover change
-        // sets `dirty`, so divider drags, preview text-selection, and inline
-        // diagnostic tooltips all repaint smoothly.
-        self.dirty
     }
 }
 
@@ -2743,6 +2771,20 @@ impl TypstApp {
     }
 }
 
+/// A text file a chooser or the command line named.
+fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    String::from_utf8(tilo_files::blocking::read(&dir, &name)?)
+        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+}
+
+/// Save `bytes` as the file a chooser named, keeping an existing file's
+/// link and permissions.
+fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    tilo_files::blocking::save_document(&dir, &name, bytes)
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -2954,9 +2996,9 @@ mod tests {
 
             assert!(send(&mut app, &mut doc, &char_press("x")));
             assert_ne!(app.read_source(&doc), before, "the source really changed");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
 
-            let context = app.take_commit_context().expect("native edit provenance");
+            let context = ui::undo::take_commit_context(&mut app).expect("native edit provenance");
             assert_eq!(context.action_label, "Edit source");
             assert_eq!(
                 context.app.as_ref().map(|app| app.id.as_str()),
@@ -2970,9 +3012,9 @@ mod tests {
                 Some("typst.document")
             );
 
-            app.on_commit();
+            ui::undo::on_commit(&mut app);
             assert!(
-                !app.needs_commit(),
+                !ui::undo::needs_commit(&app),
                 "commit acknowledgement clears the latch"
             );
         }
@@ -3005,7 +3047,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(app.read_source(&doc), "= Accessible edit");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
         }
     }
 
@@ -3079,7 +3121,7 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let now = std::time::Instant::now();
+            let now = ui::time::now();
 
             // First draw composes both labels (differing from the empty caches) and
             // pokes each bubble → both are visible.
@@ -3107,7 +3149,7 @@ mod tests {
             app.status_bubble_right.poke(past);
             app.mouse = Point::new(5.0, 5.0);
             app.draw_status_bubbles(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let after = std::time::Instant::now();
+            let after = ui::time::now();
             assert!(
                 !app.status_bubble_left.is_visible(after),
                 "left bubble hides after its linger"
@@ -3313,8 +3355,8 @@ mod tests {
             let dir = std::env::temp_dir().join(format!(
                 "typst_editor_lib_{}_{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
@@ -3335,8 +3377,8 @@ mod tests {
             let dir = std::env::temp_dir().join(format!(
                 "typst_editor_empty_{}_{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
@@ -3419,8 +3461,8 @@ mod tests {
         std::env::temp_dir().join(format!(
             "typst_editor_{tag}_{}_{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ))

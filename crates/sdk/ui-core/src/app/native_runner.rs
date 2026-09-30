@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod linux_header;
+
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
@@ -46,6 +49,7 @@ struct AppHandler {
     /// hidden); lazy, so the hot path pays nothing with no screen reader
     /// running.
     a11y_adapter: Option<PrimaryA11yAdapter>,
+    /// Also carries host-chrome requests back into the loop.
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
@@ -78,6 +82,106 @@ struct AppHandler {
     /// The reload library this process runs. The dev loop stages the first one
     /// from the build that produced this host, so it starts as the running code.
     dev_loaded_library: Option<std::path::PathBuf>,
+    /// The last in-place reload, until its first frame is submitted.
+    dev_reload_timing: Option<super::DevReloadTiming>,
+    /// The menu bar and title-bar search field, when the host draws them.
+    #[cfg(target_os = "macos")]
+    host_chrome: Option<crate::host_chrome::macos::MacChrome>,
+    /// The menu bar and Jump List, when the host draws them.
+    #[cfg(windows)]
+    host_chrome: Option<crate::host_chrome::windows::WindowsChrome>,
+    /// What the host chrome last presented, to skip unchanged refreshes.
+    #[cfg(any(target_os = "macos", windows))]
+    host_commands_key: Option<super::host_commands::HostCommandsKey>,
+    /// Who decorates the window, and the header bar when the app does.
+    #[cfg(target_os = "linux")]
+    decorations: linux_header::Decorations,
+    /// The host OS's appearance, for a standalone app outside Tilo OS.
+    host_appearance: Option<crate::host_appearance::Source>,
+}
+
+#[cfg(target_os = "macos")]
+impl AppHandler {
+    /// Put History, Search and Undo into the menu bar and title bar.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let proxy = self.a11y_proxy.clone();
+        let chrome = crate::host_chrome::macos::MacChrome::new(mtm, move |request| {
+            let _ = proxy.send_event(match request {
+                crate::host_chrome::macos::ChromeRequest::Command(invocation) => {
+                    UserEvent::HostCommand(invocation)
+                }
+                crate::host_chrome::macos::ChromeRequest::Search(query) => {
+                    UserEvent::HostSearch(query)
+                }
+            });
+        });
+        chrome.install(&objc2_app_kit::NSApplication::sharedApplication(mtm));
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+        {
+            // SAFETY: winit hands out the live NSView of a window it owns, on
+            // the main thread, for at least the duration of this call.
+            let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+            chrome.attach_toolbar(view);
+        }
+        self.host_chrome = Some(chrome);
+        self.host_commands_key = None;
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl AppHandler {
+    /// Hand the host chrome fresh commands when anything they show changed.
+    fn refresh_host_chrome(&mut self) {
+        if let Some(chrome) = &self.host_chrome {
+            let key = self.app.host_commands_key();
+            if self.host_commands_key != Some(key) {
+                self.host_commands_key = Some(key);
+                chrome.update(self.app.host_commands(true));
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl AppHandler {
+    /// Put History, Search and Undo into the window's menu bar and the Jump
+    /// List, and run the command a Jump List task launched this process with.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let proxy = self.a11y_proxy.clone();
+        if let Some(invocation) = crate::host_chrome::windows::take_startup_command() {
+            let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+        }
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+        self.host_chrome = Some(crate::host_chrome::windows::WindowsChrome::install(
+            hwnd,
+            move |invocation| {
+                let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+            },
+        ));
+        self.host_commands_key = None;
+    }
 }
 
 /// The reload library the dev session currently points at.
@@ -371,7 +475,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
             // faster on a device; the default remains the GPU pipeline.
-            use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+            use_cpu: crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
             // Every frame below renders with `AaConfig::Area`. Advertising
             // 8x/16x MSAA as well only compiles and retains shader variants
             // this framework never selects, increasing startup and GPU
@@ -383,7 +487,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();
     Ok(renderer)
 }
@@ -828,6 +932,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
@@ -1248,6 +1353,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
@@ -1473,6 +1579,8 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
+        #[cfg(target_os = "linux")]
+        self.decorations.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1531,7 +1639,7 @@ impl AppHandler {
             floating_content_changed = true;
             full_redraw_required = true;
         }
-        if app.root_widget.take_window_close_intent() {
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -1625,6 +1733,11 @@ impl AppHandler {
         crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        #[cfg(target_os = "linux")]
+        {
+            self.decorations.draw(app, &mut scene, transform);
+            full_redraw_required |= self.decorations.take_repaint();
+        }
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -1820,6 +1933,11 @@ impl AppHandler {
             base_color: app.theme.bg_app,
             damage_regions,
             full_redraw: full_redraw_required,
+            on_present: self.dev_reload_timing.take().map(|timing| {
+                let submitted = crate::time::wall();
+                Box::new(move |presented| timing.record(submitted, presented))
+                    as crate::render_thread::PresentHook
+            }),
         };
         record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
         if let Some((origin, entered)) = native_redraw_entry {
@@ -2043,11 +2161,15 @@ impl AppHandler {
                         ..
                     },
                     ..
-                } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app
-                        .input
-                        .platform
-                        .command_modifier_down(app.input.modifiers.state())
+                } if app
+                    .input
+                    .platform
+                    .command_modifier_down(app.input.modifiers.state())
+                    && crate::platform::HostShortcut::resolve(
+                        app.input.platform,
+                        c,
+                        app.input.modifiers.state().shift_key(),
+                    ) == Some(crate::platform::HostShortcut::Search)
             );
             if !is_ctrl_k
                 && matches!(
@@ -2126,81 +2248,33 @@ impl AppHandler {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
-            let history_request = crate::undo::shortcut(c, true, shift);
-            if let Some(request) = history_request {
-                if crate::undo::handle_local_undo_request(app.root_widget.as_mut(), request) {
-                    app.needs_sync = true;
-                    window.request_redraw();
-                } else {
-                    // Otherwise round-tripping document undo/redo loses caret
-                    // position.
-                    let current_meta = app.root_widget.get_state();
-                    let current_focus_idx = app
-                        .focused_node
-                        .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let binding = app
-                        .focused_node
-                        .and_then(|node| app.bindings.binding_for(node))
-                        .or_else(|| app.root_widget.callback_binding());
-                    let owned_target = binding.is_some()
-                        || app
-                            .focused_node
-                            .is_some_and(|node| app.bindings.owns_document(node));
-                    let entry = if let Some(binding) = binding {
-                        binding
-                            .history_request(&mut app.state.doc, request)
-                            .ok()
-                            .flatten()
-                    } else if let Some(owner) = app
-                        .focused_node
-                        .and_then(|node| app.bindings.legacy_for(node))
-                    {
-                        crate::bound_dispatch::legacy_history_request(
-                            &owner,
-                            request,
-                            &app.permission_ctx,
-                            &app.collaboration.local_author,
-                        )
-                        .ok()
-                        .flatten()
+            match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
+                Some(crate::platform::HostShortcut::Undo) => {
+                    app.perform_undo_request(crate::undo::UndoRequest::Undo);
+                    is_undo_redo = true;
+                    handled = true;
+                }
+                Some(crate::platform::HostShortcut::Redo) => {
+                    app.perform_undo_request(crate::undo::UndoRequest::Redo);
+                    is_undo_redo = true;
+                    handled = true;
+                }
+                // A second press closes the palette.
+                Some(crate::platform::HostShortcut::Search) => {
+                    if app.actions.action_palette.is_some() {
+                        app.close_action_palette();
                     } else {
-                        match request {
-                            crate::undo::UndoRequest::Undo => app.state.undo_as(
-                                Some(&app.collaboration.local_author),
-                                current_focus_idx,
-                                current_meta,
-                            ),
-                            crate::undo::UndoRequest::Redo => app.state.redo_as(
-                                Some(&app.collaboration.local_author),
-                                current_focus_idx,
-                                current_meta,
-                            ),
-                        }
-                    };
-                    if let Some(entry) = entry {
-                        if owned_target {
-                            app.needs_sync = true;
-                            app.layout.layout_dirty = true;
-                        } else {
-                            app.apply_undo_entry(entry);
-                        }
+                        app.open_action_palette();
                     }
+                    handled = true;
                 }
-                is_undo_redo = true;
-                handled = true;
-            } else {
-                match c.as_str() {
-                    // A second Ctrl+K closes the palette.
-                    "k" | "K" => {
-                        if app.actions.action_palette.is_some() {
-                            app.close_action_palette();
-                        } else {
-                            app.open_action_palette();
-                        }
-                        handled = true;
-                    }
-                    _ => {}
+                Some(crate::platform::HostShortcut::History) => {
+                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
                 }
+                None => {}
+            }
+            if handled {
+                window.request_redraw();
             }
         }
 
@@ -2562,8 +2636,11 @@ impl AppHandler {
             }
             return;
         };
+        let received = crate::time::wall();
+        let started = crate::time::now();
         let _ = super::write_dev_checkpoint(&self.app, &session);
         let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
+        let checkpointed = started.elapsed();
         let slots = windows
             .iter()
             .map(|(id, _)| super::DevWindowSlot {
@@ -2575,6 +2652,7 @@ impl AppHandler {
                     .unwrap_or_else(|| checkpoint.clone()),
             })
             .collect::<Vec<_>>();
+        let loading = crate::time::now();
         let reloaded = match super::reload_from_library(&library, &slots) {
             Ok(reloaded) => reloaded,
             Err(error) => {
@@ -2582,6 +2660,8 @@ impl AppHandler {
                 return;
             }
         };
+        let loaded = loading.elapsed();
+        let installing = crate::time::now();
         if let Some(root) = reloaded.root {
             if !self.app.install_reloaded_view(root) {
                 eprintln!(
@@ -2591,6 +2671,14 @@ impl AppHandler {
             }
             self.app.init_layout();
         }
+        self.dev_reload_timing = Some(super::DevReloadTiming {
+            library: library.clone(),
+            received,
+            checkpoint: checkpointed,
+            load: reloaded.load,
+            handoff: loaded.saturating_sub(reloaded.load),
+            install: installing.elapsed(),
+        });
         self.dev_loaded_library = Some(library);
         self.dev_window_state = reloaded
             .windows
@@ -2763,6 +2851,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            UserEvent::HostCommand(invocation) => {
+                self.app.invoke_host_command(&invocation);
+                self.app.needs_sync = true;
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+            UserEvent::HostSearch(query) => {
+                if self
+                    .app
+                    .invoke_host_shortcut(crate::platform::HostShortcut::Search)
+                    && let Some(palette) = self.app.actions.action_palette.as_mut()
+                {
+                    palette.set_query(&query);
+                }
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
             #[cfg(target_os = "android")]
             UserEvent::PlatformTextInput => {
                 for op in super::android_text_input::bridge::drain() {
@@ -2855,10 +2960,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        #[cfg(target_os = "linux")]
-        {
-            crate::host::native::attach_display(event_loop);
-        }
+        crate::host::native::attach_display(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -2964,12 +3066,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
+        if let Some(host) = self.host_appearance.as_mut() {
+            host.note_window_theme(window.theme());
+        }
+        self.apply_host_appearance(false);
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
             event_loop.exit();
             return;
         }
+        #[cfg(any(target_os = "macos", windows))]
+        self.install_host_chrome(&window);
         // Honour system/presentation roots before the first visible configure.
         // The normal reconcile path still owns output selection and later changes.
         self.app.reconcile_fullscreen(&window);
@@ -3055,6 +3163,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        self.note_host_appearance_event(&event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3073,6 +3182,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        #[cfg(any(target_os = "macos", windows))]
+        self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
         // Conservative shared-root fallback: hidden primary work may stay at
@@ -3262,8 +3373,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Run both: Settings' open Appearance pane may intentionally override
         // the file-level base with its richer live accessibility intent.
         let configured_changed = app.reconcile_configured_theme();
+        // A settings change re-themes from the file; outside Tilo OS the host
+        // appearance takes over again.
+        let host_changed = self
+            .host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(configured_changed))
+            .is_some_and(|appearance| app.apply_host_appearance(appearance));
         let appearance_changed = app.reconcile_appearance();
-        if configured_changed || appearance_changed {
+        if configured_changed || host_changed || appearance_changed {
             app.needs_sync = true;
             request_primary_redraw();
         }
@@ -3486,6 +3604,16 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let routed = self.decorations.route(&mut self.app, window, &event);
+            if routed.close {
+                self.close_primary_window(event_loop, window);
+            }
+            if routed.consumed {
+                return;
+            }
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
@@ -3517,7 +3645,7 @@ impl AppHandler {
     }
 
     fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
-        match self.app.root_widget.on_window_close_requested() {
+        match crate::component_lifecycle::on_window_close_requested(self.app.root_widget.as_mut()) {
             crate::widget::WindowCloseAdmission::Allow => {
                 if self.app.admit_native_close_request() {
                     event_loop.exit();
@@ -3635,7 +3763,9 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        self.prepare_native_presentation();
+        self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
+            self.input.platform,
+        ));
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
@@ -3658,6 +3788,7 @@ impl App {
             );
         }
         let event_loop = event_loop_builder.build().unwrap();
+        tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]
@@ -3683,11 +3814,14 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        {
+        let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
             self.init_layout();
-        }
+            self.watch_system_settings
+                .then(crate::host_appearance::Source::start)
+                .flatten()
+        };
 
         let mut handler = AppHandler {
             app: self,
@@ -3723,6 +3857,14 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
+            dev_reload_timing: None,
+            #[cfg(any(target_os = "macos", windows))]
+            host_chrome: None,
+            #[cfg(any(target_os = "macos", windows))]
+            host_commands_key: None,
+            #[cfg(target_os = "linux")]
+            decorations: linux_header::Decorations::Unsettled,
+            host_appearance,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3733,6 +3875,29 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+    }
+}
+
+impl AppHandler {
+    fn note_host_appearance_event(&mut self, event: &WindowEvent) {
+        let Some(host) = self.host_appearance.as_mut() else {
+            return;
+        };
+        match event {
+            WindowEvent::ThemeChanged(theme) => {
+                host.note_window_theme(Some(*theme));
+                host.refresh();
+            }
+            WindowEvent::Focused(true) => host.refresh(),
+            _ => {}
+        }
+    }
+
+    fn apply_host_appearance(&mut self, force: bool) -> bool {
+        self.host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(force))
+            .is_some_and(|appearance| self.app.apply_host_appearance(appearance))
     }
 }
 

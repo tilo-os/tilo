@@ -85,6 +85,9 @@ Both surfaces share one overlay component + the per-type result renderers; only
 scope + aggregation differ. Fuzzy match over label + description + resource
 content.
 
+What the palette shows for an empty query, how rows rank and group, and what a
+row may say are in [search-and-history-views.md](../search-and-history-views.md).
+
 ## Bundle model
 
 - **As a qapp** (on Tilo): the search UI lives in the **shell**, not the bundle.
@@ -99,6 +102,13 @@ content.
 - **App providers** implement `ui::search::SearchProvider` and are exposed by
   the app widget. Providers return bounded, paged results with stable resource
   addresses and activation data.
+- **Shared desktop search** lives in `crates/session/desktop-search`: the
+  result kinds, the per-provider field scores on the shared ranker, the
+  cross-provider merge and kind grouping, portable providers (applications
+  from the manifest registry, open windows, application actions and search
+  providers, recent choices, host commands) and the palette session over the
+  toolkit's `CommandPalette`. The browser desktop (`tilo-desktop-surface`)
+  presents it; the native shell ranks and groups with the same code.
 - **Shell aggregation** lives in `crates/session/shell/src/shell/search/`. Built-in providers
   cover applications, files, editor state, notes, actions, and records; the
   live-app provider obtains registered resources and actions through the

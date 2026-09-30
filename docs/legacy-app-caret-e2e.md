@@ -48,7 +48,7 @@ skips, because a silently reduced matrix would make this gate misleading.
 
 ## CI policy
 
-`.forgejo/workflows/legacy-app-e2e.yml` is required on pull requests that
+`.forgejo/workflows/ci-legacy-apps.yml` is required on pull requests that
 touch compositor input, legacy collaboration/streaming, peer-view input, the
 harness, or its build environment. The same path filter runs after direct
 pushes to `main`. A daily scheduled run catches regressions caused by builder

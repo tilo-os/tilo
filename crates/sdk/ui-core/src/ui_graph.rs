@@ -293,25 +293,47 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
                 let router = router.clone();
+                // A published view action, so the palette, agents and the
+                // native audit reach navigation as they reach any control. A
+                // button that also writes a document path keeps that path.
+                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
+                    if on_click_path.is_some() {
+                        button.on_click(move || navigate())
+                    } else {
+                        button.on_view(move || navigate())
+                    }
+                };
                 button = match navigation {
                     UiNavigation::Push { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.push(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.push(route.clone());
+                            }),
+                        )
                     }
                     UiNavigation::Replace { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.replace(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.replace(route.clone());
+                            }),
+                        )
                     }
-                    UiNavigation::Back => button.on_click(move || {
-                        let _ = router.back();
-                    }),
-                    UiNavigation::Forward => button.on_click(move || {
-                        let _ = router.forward();
-                    }),
+                    UiNavigation::Back => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.back();
+                        }),
+                    ),
+                    UiNavigation::Forward => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.forward();
+                        }),
+                    ),
                     UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
                 };
             }
@@ -594,7 +616,7 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), widget.get_state());
+            states.insert(id.to_owned(), crate::undo::get_state(widget));
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -606,7 +628,7 @@ fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Optio
     if let Some(id) = widget.test_id().map(str::to_owned)
         && let Some(Some(state)) = states.get(&id)
     {
-        widget.set_state(state);
+        crate::undo::set_state(widget, state);
     }
     for child in widget.children_mut() {
         restore_widget_states(child, states);
@@ -1135,7 +1157,7 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    atomic_file::write(path, json.as_bytes())
+    tilo_files::native::atomic::write(path, json.as_bytes())
         .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
@@ -1362,7 +1384,10 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1454,14 +1479,6 @@ impl Widget for LiveUi {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own | self.child.take_structure_dirty()
@@ -1522,6 +1539,15 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for LiveUi {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -1637,7 +1663,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), widget.get_state()));
+        return Some((id.to_owned(), crate::undo::get_state(widget)));
     }
     widget
         .children()
@@ -1649,7 +1675,7 @@ fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) 
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
         if let Some(state) = state {
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
         }
         return true;
     }
@@ -3032,7 +3058,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::undo::LocalUndo);
+    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -3128,14 +3154,6 @@ impl Widget for UiGraphEditor {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.child.take_structure_dirty()
     }
@@ -3164,6 +3182,15 @@ impl Widget for UiGraphEditor {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for UiGraphEditor {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -3471,7 +3498,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_graph_buttons_drive_history_and_back_without_document_mutations() {
+    fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
         fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
             UiDocument::new(UiNode::Column {
                 id: id.into(),
@@ -3559,6 +3586,20 @@ mod tests {
             .perform_named("back-home", &Action::Activate)
             .unwrap();
         assert_eq!(handle.current(), "home");
+        assert_eq!(driver.dump_json(), document_before);
+
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{:?}", audit.issues);
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new("tilo.control:open-settings", "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(handle.current(), "settings");
+        assert!(driver.native_app_audit().is_certified());
         assert_eq!(driver.dump_json(), document_before);
     }
 
@@ -3683,7 +3724,7 @@ mod tests {
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
         if widget.test_id() == Some(id) {
             widget.set_focus(true);
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
             return true;
         }
         widget
@@ -3694,7 +3735,7 @@ mod tests {
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
         if widget.test_id() == Some(id) {
-            return widget.get_state();
+            return crate::undo::get_state(widget);
         }
         widget
             .children()

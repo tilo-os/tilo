@@ -50,7 +50,7 @@ pub use authors::{
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
-pub use facets::HistoryFacetIndex;
+pub use facets::{HistoryFacetIndex, op_class_label};
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,
@@ -124,6 +124,7 @@ pub struct HistorySource {
     artifact_kind: ArtifactKind,
     max_entries: usize,
     record_genesis: bool,
+    field_paths: bool,
 }
 
 impl Default for HistorySource {
@@ -140,7 +141,18 @@ impl HistorySource {
             artifact_kind: ArtifactKind::File,
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
+            field_paths: true,
         }
+    }
+
+    /// Describe a change that edited a document's fields by how many it
+    /// edited, never by their paths. A document's own history names the
+    /// fields for whoever inspects it; a feed read by people shows no
+    /// storage keys.
+    #[must_use]
+    pub fn without_field_paths(mut self) -> Self {
+        self.field_paths = false;
+        self
     }
 
     /// Leave out a record's genesis: the change that created it with its
@@ -197,10 +209,7 @@ impl HistorySource {
             return Vec::new();
         }
         let start = versions.len().saturating_sub(self.max_entries);
-        let genesis = (!self.record_genesis)
-            .then(|| crate::record::genesis_actor(doc))
-            .flatten()
-            .map(|actor| actor.to_hex_string());
+        let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
 
         // Plus the one before the window — the patch path diffs between
         // consecutive frontiers.
@@ -229,7 +238,7 @@ impl HistorySource {
             let after = heads.get(&index).cloned().unwrap_or_default();
             let (structural_summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
                 (Some(prev), Some(cur)) => structural_summary(prev, cur),
-                _ => patch_summary(doc, &before, &after),
+                _ => patch_summary(doc, &before, &after, self.field_paths),
             };
             prev_snapshot = cur_snapshot;
 
@@ -239,13 +248,16 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            // A record's genesis is the same kind of change, when the caller
-            // leaves it out; so is a package-primary document's, which holds
-            // no identity to derive its actor from.
-            if qdoc::model::is_schema_genesis(v)
-                || genesis.as_deref() == Some(v.actor.as_str())
-                || (!self.record_genesis && is_store_genesis(doc, v))
-            {
+            if qdoc::model::is_schema_genesis(v) {
+                continue;
+            }
+            // A record's genesis is the same kind of change; so is a
+            // package-primary document's, which holds no identity to derive
+            // its actor from. The document's own history keeps it, marked,
+            // as the version to restore to.
+            let genesis =
+                genesis_actor.as_deref() == Some(v.actor.as_str()) || is_store_genesis(doc, v);
+            if genesis && !self.record_genesis {
                 continue;
             }
 
@@ -260,10 +272,13 @@ impl HistorySource {
                 }
             }
 
-            let context = v
-                .message
-                .as_deref()
-                .and_then(tilo_actions::ActionContext::from_change_message);
+            let context = if genesis {
+                Some(genesis_context())
+            } else {
+                v.message
+                    .as_deref()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+            };
             let summary = context
                 .as_ref()
                 .and_then(tilo_actions::ActionContext::summary)
@@ -287,6 +302,16 @@ impl HistorySource {
             });
         }
         out
+    }
+}
+
+/// What a genesis row says: the document was created, by no one in
+/// particular.
+fn genesis_context() -> tilo_actions::ActionContext {
+    tilo_actions::ActionContext {
+        action_label: crate::i18n::I18nManager::lookup_plain("history-genesis"),
+        facets: vec![crate::widget::history::genesis_facet()],
+        ..tilo_actions::ActionContext::default()
     }
 }
 
@@ -547,15 +572,17 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
     {
         return summary;
     }
-    patch_summary(doc, from, to).0
+    patch_summary(doc, from, to, true).0
 }
 
 /// Describe a change by reading its own patch set. The fallback for documents
-/// that don't carry the qdoc schema.
+/// that don't carry the qdoc schema. With `paths`, edited fields are named by
+/// their document paths; without, counted.
 fn patch_summary(
     doc: &mut AutoCommit,
     before: &[ChangeHash],
     after: &[ChangeHash],
+    paths: bool,
 ) -> (String, OpClass, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
     // A change that only named a version or recorded a run reports as
@@ -636,11 +663,12 @@ fn patch_summary(
         } else {
             OpClass::EditMeta
         };
-        return (
-            edited_fields_label(first, rest.len(), removed),
-            class,
-            delta,
-        );
+        let label = if paths {
+            edited_fields_label(first, rest.len(), removed)
+        } else {
+            counted_fields_label(field_paths.len(), removed)
+        };
+        return (label, class, delta);
     }
     if fields > 0 {
         return (plural(fields, "field"), OpClass::EditMeta, delta);
@@ -686,6 +714,18 @@ fn edited_fields_label(path: &str, more: usize, removed: bool) -> String {
             "history-edited-field"
         },
         &[("path", path.into()), ("more", more.into())],
+    )
+}
+
+/// "Edited 3 fields", or "Removed …" when the change only deleted entries.
+fn counted_fields_label(count: usize, removed: bool) -> String {
+    crate::i18n::I18nManager::format(
+        if removed {
+            "history-removed-fields"
+        } else {
+            "history-edited-fields"
+        },
+        &[("count", count.into())],
     )
 }
 

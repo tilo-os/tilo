@@ -64,8 +64,8 @@ jobs:
           push: true
           tags: registry.tilo.so/tilo/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: BASE_REF=${{ env.BASE_REF }}
-          cache-from: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/wine-tools-buildcache:x86_64
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/wine-tools-buildcache:x86_64,mode=max,ignore-error=true
+          cache-from: type=gha,scope=wine-tools-x86_64
+          cache-to: type=gha,scope=wine-tools-x86_64,mode=max,ignore-error=true
           provenance: false
 
       - name: Acquire and authenticate the pinned Wine source
@@ -98,7 +98,7 @@ jobs:
   build:
     needs: native-inputs
     runs-on: runner
-    timeout-minutes: 360
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       max-parallel: 1

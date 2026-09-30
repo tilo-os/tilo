@@ -6,6 +6,7 @@
 //! directly removes the `yt-dlp`/Python subprocess from the trusted OS while
 //! retaining the full-track path.
 
+#[cfg(any(feature = "live", test))]
 use crate::backend::ResolvedStream;
 
 #[cfg(feature = "live")]
@@ -14,16 +15,19 @@ const PLAYER_ENDPOINT: &str = "https://www.youtube.com/youtubei/v1/player?pretty
 const CLIENT_NAME: &str = "28";
 #[cfg(feature = "live")]
 const CLIENT_VERSION: &str = "1.65.10";
+#[cfg(feature = "live")]
 pub(crate) const USER_AGENT: &str = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
 #[cfg(feature = "live")]
 const MAX_PLAYER_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
+#[cfg(any(feature = "live", test))]
 fn numeric_field(value: &serde_json::Value, name: &str) -> Option<u64> {
     value
         .get(name)
         .and_then(|field| field.as_u64().or_else(|| field.as_str()?.parse().ok()))
 }
 
+#[cfg(any(feature = "live", test))]
 fn parse_player_response(video_id: &str, bytes: &[u8]) -> Option<ResolvedStream> {
     let response: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     if response

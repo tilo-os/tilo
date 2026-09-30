@@ -12,7 +12,7 @@
 //! something, and asserts the contracts a screenshot cannot: every
 //! video-player control reachable through accessibility is at least the
 //! minimum pointer target, and all of them sit on one centre line. With
-//! `QUICK_UI_SCREENSHOT_DIR` set, the frames are also written under
+//! `TILO_UI_SCREENSHOT_DIR` set, the frames are also written under
 //! `immersive_widget_geometry/` there for a reviewer to open.
 
 #![allow(

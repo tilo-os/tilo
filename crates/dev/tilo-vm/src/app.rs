@@ -2210,6 +2210,7 @@ impl App {
     fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
         let started = Instant::now();
         let root = self.checkout()?;
+        let local_image = imageup::local_dev_image()?;
         let layout = if layout.is_absolute() {
             layout.to_path_buf()
         } else {
@@ -2238,7 +2239,7 @@ impl App {
             .parent()
             .map_or_else(|| root.clone(), Path::to_path_buf);
         let scratch = build_scratch(&out);
-        let import = imageup::import_layout_command(&layout, imageup::LOCAL_DEV_IMAGE);
+        let import = imageup::import_layout_command(&layout, &local_image);
         let runner = &mut self.runner;
         let imported = self.receipt.phase("import", || runner.output(&import))?;
         if !imported.success {
@@ -2248,7 +2249,7 @@ impl App {
                 stderr: imported.stderr.trim().to_owned(),
             });
         }
-        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &scratch);
+        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &local_image, &scratch);
         self.runner.cwd = Some(root);
         let runner = &mut self.runner;
         let written = self
@@ -2307,10 +2308,10 @@ impl App {
         if self.worktree.is_none() && std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
             self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct))".into());
         }
-        let command = image_build_command(&script, disk, &scratch);
+        let local_image = imageup::local_dev_image()?;
+        let command = image_build_command(&script, &local_image, disk, &scratch);
         eprintln!(
-            "tilo-vm: building {} ({}); cached steps are skipped",
-            imageup::LOCAL_DEV_IMAGE,
+            "tilo-vm: building {local_image} ({}); cached steps are skipped",
             if disk { "and its disk" } else { "no disk" }
         );
         self.runner.cwd = Some(root);
@@ -2328,16 +2329,16 @@ impl App {
         }
         let layout = out.join(imageup::BUILT_LAYOUT);
         let runner = &mut self.runner;
-        let digest = self.receipt.phase("export", || {
-            export_layout(runner, imageup::LOCAL_DEV_IMAGE, &layout)
-        })?;
+        let digest = self
+            .receipt
+            .phase("export", || export_layout(runner, &local_image, &layout))?;
         let runner = &mut self.runner;
-        let facts_text = self.receipt.phase("check", || {
-            image_facts_text(runner, imageup::LOCAL_DEV_IMAGE)
-        })?;
+        let facts_text = self
+            .receipt
+            .phase("check", || image_facts_text(runner, &local_image))?;
         let (image, facts) =
             imageup::parse_layout_facts(&facts_text).map_err(|detail| CliError::CommandFailed {
-                command: imageup::inspect_command(imageup::LOCAL_DEV_IMAGE).display(),
+                command: imageup::inspect_command(&local_image).display(),
                 status: "unreadable output".into(),
                 stderr: detail,
             })?;
@@ -2691,9 +2692,12 @@ impl App {
         if let Some(base) = base {
             command = command.env("TILO_DEV_BASE", base);
         }
+        let base_name = match base {
+            Some(base) => base.to_owned(),
+            None => imageup::local_base()?,
+        };
         eprintln!(
-            "tilo-vm: building {image} FROM {} ({}); podman's layer cache skips unchanged steps",
-            base.unwrap_or(imageup::LOCAL_BASE),
+            "tilo-vm: building {image} FROM {base_name} ({}); podman's layer cache skips unchanged steps",
             match base_build {
                 "1" => "rebuilding the base first",
                 "0" => "the base as it is",
@@ -3043,6 +3047,7 @@ impl App {
                 headless: _,
                 headful,
                 outputs,
+                identity,
                 ..
             } => {
                 let name = self.slot_name(name)?;
@@ -3062,7 +3067,15 @@ impl App {
                     kind,
                     owner,
                     outputs,
+                    identity,
                 })?;
+                if identity && result.identity.is_none() {
+                    return Err(CliError::Unsupported {
+                        what: "slot create --identity by this VM's tilo-vmd".into(),
+                        alternative:
+                            "tilo-vm vm upgrade --from local, or tilo-vm swap vmd --slot vm".into(),
+                    });
+                }
                 let text = slot_created_text(&name, kind, &result);
                 self.receipt.set("slot", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
@@ -4170,19 +4183,19 @@ fn checkout_root(dir: &Path) -> Option<PathBuf> {
 
 /// What `image build` runs: `--from local`'s build, the base rebuilt only
 /// when its inputs changed, with or without the disk step.
-fn image_build_command(script: &Path, disk: bool, scratch: &Path) -> CommandLine {
+fn image_build_command(script: &Path, image: &str, disk: bool, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
         .env("TILO_DEV_DISK", if disk { "1" } else { "0" })
-        .env("TILO_DEV_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_DEV_IMAGE", image)
         .env("TILO_DEV_BASE_BUILD", "auto")
         .env("TILO_OUTPUT", scratch.display().to_string())
 }
 
 /// What `image disk` runs: the build's disk step for an image already in
 /// podman's storage.
-fn image_disk_command(script: &Path, scratch: &Path) -> CommandLine {
+fn image_disk_command(script: &Path, image: &str, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
-        .env("TILO_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_IMAGE", image)
         .env("TILO_SKIP_BUILD", "1")
         .env("TILO_OUTPUT", scratch.display().to_string())
         // The size os/dev/build-dev-image.sh and the published dev disks use.
@@ -4739,9 +4752,17 @@ fn slot_created_text(
         tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
         _ => None,
     });
+    // The restart that gives a new identity fresh desktop state is not a
+    // start of a stopped session.
     let started = result
         .actions
         .iter()
+        .take_while(|action| {
+            !matches!(
+                action,
+                tilo_vm_protocol::Action::ProvisionTestIdentity { .. }
+            )
+        })
         .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
     let text = if result.created {
         format!(
@@ -4754,6 +4775,17 @@ fn slot_created_text(
         format!("slot {name} already exists and its session is running")
     } else {
         format!("slot {name} already exists and its session is running; nothing to do")
+    };
+    let text = match &result.identity {
+        Some(identity) if identity.created => format!(
+            "{text}\nthrowaway test identity \"{}\" minted; the session restarted with fresh desktop state",
+            identity.display_name
+        ),
+        Some(identity) => format!(
+            "{text}\nits user keeps throwaway test identity \"{}\"",
+            identity.display_name
+        ),
+        None => text,
     };
     match set_outputs {
         Some(outputs) => format!(
@@ -5431,6 +5463,7 @@ mod tests {
     fn image_build_runs_the_local_build_into_its_own_directory() {
         let command = image_build_command(
             Path::new("/w/os/dev/build-dev-image.sh"),
+            "localhost/tilo-vm:mine",
             true,
             Path::new("/w/target/tilo-vm-build"),
         );
@@ -5443,10 +5476,15 @@ mod tests {
                 .map(|(_, v)| v.as_str())
         };
         assert_eq!(env("TILO_DEV_DISK"), Some("1"));
-        assert_eq!(env("TILO_DEV_IMAGE"), Some(imageup::LOCAL_DEV_IMAGE));
+        assert_eq!(env("TILO_DEV_IMAGE"), Some("localhost/tilo-vm:mine"));
         assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
         assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
-        let no_disk = image_build_command(Path::new("/s"), false, Path::new("/o"));
+        let no_disk = image_build_command(
+            Path::new("/s"),
+            "localhost/tilo-vm:x",
+            false,
+            Path::new("/o"),
+        );
         assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
 
         assert_eq!(
@@ -5457,6 +5495,7 @@ mod tests {
         // image disk: the build's own disk step, on the layout imported into podman.
         let disk = image_disk_command(
             Path::new("/w/os/dev/build-image.sh"),
+            "localhost/tilo-vm:mine",
             Path::new("/w/target/tilo-vm-build"),
         );
         assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
@@ -5468,7 +5507,7 @@ mod tests {
         )));
         assert!(
             disk.env
-                .contains(&("TILO_IMAGE".into(), imageup::LOCAL_DEV_IMAGE.into()))
+                .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))
         );
         assert_eq!(
             imageup::import_layout_command(

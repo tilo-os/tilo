@@ -114,7 +114,8 @@ impl Widget for Probe {
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
     );
 
     crate::testing::inert_widget_methods!(
@@ -124,12 +125,6 @@ impl Widget for Probe {
         get_rect,
         name = "Controlled owner"
     );
-    fn needs_commit(&self) -> bool {
-        self.commit.get()
-    }
-    fn on_commit(&mut self) {
-        self.commit.set(false);
-    }
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for child in self.children.borrow().iter() {
             visitor(child.as_ref());
@@ -215,6 +210,15 @@ impl Widget for Probe {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::undo::UndoPoints for Probe {
+    fn needs_commit(&self) -> bool {
+        self.commit.get()
+    }
+    fn on_commit(&mut self) {
+        self.commit.set(false);
     }
 }
 
@@ -496,7 +500,16 @@ fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {
     )
     .unwrap();
     assert!(outcome.changed);
-    assert_eq!(outcome.envelope.actor, Some(b"fixture-user".to_vec()));
+    // The author's handle, then this device's part (`device_actor`).
+    assert!(
+        outcome
+            .envelope
+            .actor
+            .as_deref()
+            .is_some_and(|actor| actor.starts_with(b"fixture-user\x1f")),
+        "{:?}",
+        outcome.envelope.actor
+    );
     assert_eq!(
         outcome.envelope.base_change_hashes(),
         *a_probe.ack_heads.borrow()
@@ -860,7 +873,7 @@ fn legacy_route_closed_rebound_busy_and_exhausted_owners_never_fall_back() {
     store
         .with_action_state(&id, |_, _, state| state.generation = before.2)
         .unwrap();
-    f.tile.close_components();
+    crate::component_lifecycle::close_components(&mut f.tile);
     assert!(
         invoke(
             &mut f.tile,
@@ -1236,7 +1249,7 @@ pub(crate) fn independent_batch_fixture(
     }
     match case {
         "closed" => {
-            b.tile.close_components();
+            crate::component_lifecycle::close_components(&mut b.tile);
             assert!(b.tile.history_owner().is_none());
         }
         "unavailable" => {
