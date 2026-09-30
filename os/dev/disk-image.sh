@@ -319,12 +319,13 @@ elif [ "$COMPOSEFS" = no ] && [ "$WANTS_SYSTEMD_BOOT" = yes ]; then
 fi
 
 # bib's implicit kargs, which nothing in the image supplies: `rw` because bootc
-# mounts the root read-only otherwise, and the two consoles because that is how
+# mounts the root read-only otherwise, and the framebuffer and architecture's
+# serial consoles because that is how
 # a headless boot leaves a log the VM toolkit can read (os/dev/vm.sh serial).
 # A sealed image cannot take kargs here at all, so for that layout they have to
 # be in the image's own kargs.d — the message below says so.
 if [ ${#KARGS[@]} -eq 0 ] && [ "$HAS_UKI" = no ] && [ "$DEFAULT_KARGS" = yes ]; then
-  KARGS=(--karg rw --karg console=tty0 --karg console=ttyS0)
+  KARGS=(--karg rw --karg console=tty0 --karg console=ttyAMA0 --karg console=ttyS0)
 fi
 
 if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
