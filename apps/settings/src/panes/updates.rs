@@ -60,7 +60,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::codec_pack::{CodecAction, CodecPackStatus, PackState};
+use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
+use crate::i18n::{t, t_args};
 use crate::prefs::{SystemPrefs, UpdatePrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
@@ -105,10 +106,32 @@ fn helper_diagnostic(bytes: &[u8]) -> String {
 }
 
 fn operation_button(control_id: &str, label: &str, action_id: &str) -> Button {
-    Button::new(control_id, label, None).on_action(
-        crate::actions::updates_unit_binding(action_id)
-            .unwrap_or_else(|| panic!("Updates action {action_id} must be published")),
-    )
+    Button::new(control_id, label, None)
+        .content_sized()
+        .on_action(
+            crate::actions::updates_unit_binding(action_id)
+                .unwrap_or_else(|| panic!("Updates action {action_id} must be published")),
+        )
+}
+
+fn schedule_shown(id: &str) -> String {
+    match id {
+        "Daily" => t("upd-schedule-daily"),
+        "Weekly" => t("upd-schedule-weekly"),
+        _ => t("upd-schedule-system"),
+    }
+}
+
+fn schedule_from_label(label: &str) -> String {
+    if label == "Daily" || label == t("upd-schedule-daily") {
+        "Daily".into()
+    } else if label == "Weekly" || label == t("upd-schedule-weekly") {
+        "Weekly".into()
+    } else if label == "System schedule" || label == t("upd-schedule-system") {
+        "System schedule".into()
+    } else {
+        label.to_string()
+    }
 }
 
 /// The system-derived part of the update state: the current image and any
@@ -166,12 +189,10 @@ impl UpdateDetails {
             )
         });
         let rollback_health = Some(match (protection_enabled, rollback_target) {
-            (true, Some(target)) => format!("Protected · fallback available: {target}"),
-            (true, None) => "Boot confirmation active · no previous image retained yet".into(),
-            (false, Some(target)) => {
-                format!("Fallback available ({target}); automatic confirmation not reported")
-            }
-            (false, None) => "Rollback protection state is not reported".into(),
+            (true, Some(target)) => t_args("upd-health-protected", &[("target", target.into())]),
+            (true, None) => t("upd-health-confirm"),
+            (false, Some(target)) => t_args("upd-health-fallback", &[("target", target.into())]),
+            (false, None) => t("upd-health-unknown"),
         });
         Self {
             history,
@@ -282,7 +303,7 @@ pub fn parse_bootc_staged(json: &str) -> Option<String> {
     {
         return Some(img.to_string());
     }
-    Some("Update staged for next boot".to_string())
+    Some(t("upd-staged-generic"))
 }
 
 /// Side-effect interface for applying a staged update by rebooting. Tests
@@ -367,35 +388,27 @@ pub trait UpdateControl: Send + Sync {
 /// The words on the rollback card. Constants because they are the pane's
 /// promise to the user and a test asserts on exactly these, on the production
 /// path — a copy in a test would drift the first time somebody reworded one.
-const ROLLBACK_CARD_TITLE: &str = "Go back to the previous image";
-const NO_ROLLBACK_CAPTION: &str = "One appears after the first update. Until then the only way back is a \
-     reinstall, which is why this says so instead of showing a control that \
-     would fail.";
-const ROLLBACK_INTRO_CAPTION: &str = "Rolling back makes the previous image the one this machine boots. Nothing \
-     is deleted \u{2014} the image you are on now stays on the disk and in the \
-     boot menu.";
+fn rollback_card_title() -> String {
+    t("upd-rollback-title")
+}
+
+fn no_rollback_caption() -> String {
+    t("upd-no-rollback-caption")
+}
+
+fn rollback_intro_caption() -> String {
+    t("upd-rollback-intro")
+}
+
 /// What a rollback does not undo. Shown before the button that performs it, in
 /// this order, because the second and third are the ones that surprise people.
-const ROLLBACK_CAVEATS: &[&str] = &[
-    "The system image reverts \u{2014} its programs, the compositor, the apps \
-     that ship with it.",
-    "Your files and app data do NOT revert. Workspaces, documents, keys and \
-     downloads are shared by every image on this disk, so a rollback neither \
-     restores them nor loses them.",
-    "Apps you installed yourself do NOT revert either, and one built for a \
-     newer system can stop launching until you reinstall it or roll forward \
-     again.",
-];
-/// The "How updates work" note. The second line is the part a person cannot
-/// discover by looking at the machine, which is the reason it is written down.
-const HOW_UPDATES_WORK: &[&str] = &[
-    "Tilo updates are atomic: a new image is staged and applied on restart, so \
-     an update never half-installs.",
-    "If a new image fails to reach a login screen three times in a row, this \
-     machine goes back to the previous one by itself. If there is nothing to \
-     go back to, it starts in Repair Mode instead of leaving you at a black \
-     screen \u{2014} choose it from the boot menu at any time.",
-];
+fn rollback_caveats() -> [String; 3] {
+    [
+        t("upd-caveat-image"),
+        t("upd-caveat-files"),
+        t("upd-caveat-apps"),
+    ]
+}
 
 /// The unit that pulls and applies images. Named once.
 const UPDATE_TIMER: &str = "bootc-fetch-apply-updates.timer";
@@ -653,12 +666,13 @@ pub type CodecRunner = Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sy
 /// Reads the codec-pack helper's status file (a fixture in tests).
 pub type CodecStatusProvider = Arc<dyn Fn() -> CodecPackStatus + Send + Sync>;
 
-const CODECS_CARD_TITLE: &str = "Additional codecs";
-const CODECS_EXPLANATION: &str = "H.264, HEVC and other patented video and audio formats are not part \
-of Tilo. Installing them enables hardware video on AMD and Intel graphics and H.264/HEVC playback and \
-encoding for videos, screen sharing and calls. If you choose to install them, this device downloads them \
-directly from RPM Fusion and from Cisco (OpenH264), under those projects' own licences. Tilo does not \
-host or distribute these packages.";
+fn codecs_card_title() -> String {
+    t("upd-codecs")
+}
+
+fn codecs_explanation() -> String {
+    t("upd-codecs-explain")
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum FirmwareUiState {
@@ -957,12 +971,15 @@ impl UpdatesPane {
     /// The codec card's title and lines, in order, as the person reads them.
     pub fn codecs_card_lines(&self) -> Vec<String> {
         let mut out = vec![
-            CODECS_CARD_TITLE.to_string(),
-            CODECS_EXPLANATION.to_string(),
-            format!("Status: {}", self.codec_status_line()),
+            codecs_card_title(),
+            codecs_explanation(),
+            format!("{}: {}", t("upd-status"), self.codec_status_line()),
         ];
         if let Some(fraction) = self.codec_progress() {
-            out.push(format!("Progress: {:.0}%", fraction * 100.0));
+            out.push(t_args(
+                "upd-progress",
+                &[("percent", format!("{:.0}", fraction * 100.0).into())],
+            ));
         }
         if let Some(problem) = self.codec_status.refresh_problem() {
             out.push(problem);
@@ -991,14 +1008,68 @@ impl UpdatesPane {
 
     fn codec_status_line(&self) -> String {
         if self.codec_request_acknowledged() {
-            return self.codec_status.summary();
+            return self.codec_status_shown();
         }
         match self.codec_pending {
-            Some(CodecAction::Remove) => "Removing\u{2026}".into(),
+            Some(CodecAction::Remove) => t("upd-codecs-removing"),
             // A refresh of a working pack keeps it "installed" throughout.
-            Some(CodecAction::Refresh) => "Checking for the hardware driver\u{2026}".into(),
-            _ => "Starting\u{2026}".into(),
+            Some(CodecAction::Refresh) => t("upd-codecs-checking-driver"),
+            _ => t("upd-codecs-starting"),
         }
+    }
+
+    fn codec_status_shown(&self) -> String {
+        match (self.codec_status.state, self.codec_status.mesa) {
+            (PackState::NotInstalled, _) => t("upd-codecs-not-installed"),
+            (PackState::WaitingForNetwork, _) => t("upd-codecs-waiting"),
+            (PackState::Installing, _) => match &self.codec_status.progress {
+                Some(progress) if !progress.label.is_empty() => t_args(
+                    "upd-codecs-step",
+                    &[
+                        ("label", progress.label.as_str().into()),
+                        ("step", progress.step.to_string().into()),
+                        ("steps", progress.steps.to_string().into()),
+                    ],
+                ),
+                _ => t("upd-codecs-downloading"),
+            },
+            (PackState::Removing, _) => t("upd-codecs-removing"),
+            (PackState::Failed, _) if self.codec_status.last_error.is_empty() => {
+                t("upd-codecs-failed")
+            }
+            (PackState::Failed, _) => t_args(
+                "upd-codecs-failed-reason",
+                &[("error", self.codec_status.last_error.as_str().into())],
+            ),
+            (PackState::Installed, MesaState::Enabled) => t("upd-codecs-installed-hw"),
+            (PackState::Installed, MesaState::Waiting) => t("upd-codecs-installed-mesa"),
+            (PackState::Installed, MesaState::Off | MesaState::Unsupported) => {
+                t("upd-codecs-installed-sw")
+            }
+        }
+    }
+
+    fn codec_applies_shown(&self) -> Option<String> {
+        if self.codec_status.state != PackState::Installed {
+            return None;
+        }
+        Some(match self.codec_status.mesa {
+            MesaState::Enabled => t("upd-codecs-applies-hw"),
+            MesaState::Waiting | MesaState::Off | MesaState::Unsupported => {
+                t("upd-codecs-applies-sw")
+            }
+        })
+    }
+
+    fn codec_refresh_problem_shown(&self) -> Option<String> {
+        (self.codec_status.state == PackState::Installed
+            && !self.codec_status.last_error.is_empty())
+        .then(|| {
+            t_args(
+                "upd-codecs-refresh-failed",
+                &[("error", self.codec_status.last_error.as_str().into())],
+            )
+        })
     }
 
     /// The bar's fill while an install runs: the helper's step count, or an
@@ -1018,7 +1089,7 @@ impl UpdatesPane {
     }
 
     /// (label, control id, action id) of the buttons the card offers.
-    fn codec_buttons(&self) -> Vec<(&'static str, &'static str, &'static str)> {
+    fn codec_buttons(&self) -> Vec<(String, &'static str, &'static str)> {
         if self.codec_pending.is_some() {
             return Vec::new();
         }
@@ -1026,7 +1097,13 @@ impl UpdatesPane {
             .offered_actions()
             .into_iter()
             .map(|action| {
-                let label = self.codec_status.action_label(action);
+                let label = match (action, self.codec_status.state) {
+                    (CodecAction::Install, PackState::Failed) => t("upd-codecs-try-again"),
+                    (CodecAction::Install, _) => t("upd-codecs-install"),
+                    (CodecAction::Remove, PackState::WaitingForNetwork) => t("upd-codecs-cancel"),
+                    (CodecAction::Remove, _) => t("upd-codecs-remove"),
+                    (CodecAction::Refresh, _) => t("upd-codecs-refresh"),
+                };
                 match action {
                     CodecAction::Install => {
                         (label, "settings.updates.codecs.install", "install-codecs")
@@ -1044,29 +1121,29 @@ impl UpdatesPane {
 
     fn codecs_card(&self) -> El {
         let mut body = vec![
-            caption(CODECS_EXPLANATION),
-            value_row("Status", &self.codec_status_line()),
+            caption(&codecs_explanation()),
+            value_row(&t("upd-status"), &self.codec_status_line()),
         ];
         if let Some(fraction) = self.codec_progress() {
             body.push(Box::new(
-                ProgressBar::new(fraction).with_label("Installing media codecs"),
+                ProgressBar::new(fraction).with_label(&t("upd-installing-codecs")),
             ));
         }
-        if let Some(problem) = self.codec_status.refresh_problem() {
+        if let Some(problem) = self.codec_refresh_problem_shown() {
             body.push(caption(&problem));
         }
-        if let Some(applies) = self.codec_status.when_it_applies() {
-            body.push(caption(applies));
+        if let Some(applies) = self.codec_applies_shown() {
+            body.push(caption(&applies));
         }
         let buttons = self.codec_buttons();
         if !buttons.is_empty() {
             let mut row = Row::new();
             for (label, control_id, action_id) in buttons {
-                row = row.push(Box::new(operation_button(control_id, label, action_id)));
+                row = row.push(Box::new(operation_button(control_id, &label, action_id)));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
-        card(CODECS_CARD_TITLE, rows(body))
+        card(&codecs_card_title(), rows(body))
     }
 
     fn handle_codecs(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -1101,8 +1178,7 @@ impl UpdatesPane {
             })
             .is_err()
         {
-            self.notice =
-                Some("The codec pack could not be changed: worker could not start".into());
+            self.notice = Some(t("upd-notice-codecs-worker"));
             self.operation_failed(operation, "codec pack worker could not start");
         } else {
             self.notice = None;
@@ -1143,7 +1219,10 @@ impl UpdatesPane {
                 self.operation_succeeded(operation, "codec pack changed");
             }
             Err(error) => {
-                self.notice = Some(format!("The codec pack could not be changed: {error}"));
+                self.notice = Some(t_args(
+                    "upd-notice-codecs",
+                    &[("error", error.as_str().into())],
+                ));
                 self.operation_failed(
                     operation,
                     format!("The codec pack could not be changed: {error}"),
@@ -1356,25 +1435,27 @@ impl UpdatesPane {
     /// expose them — and asserting on a copy of the strings would prove
     /// nothing about what is rendered.
     pub fn rollback_card_lines(&self) -> Vec<String> {
-        let mut out = vec![ROLLBACK_CARD_TITLE.to_string()];
+        let mut out = vec![rollback_card_title()];
         match (&self.rollback_target, self.rollback_armed) {
             (None, _) => {
-                out.push("There is no previous image on this machine yet.".into());
-                out.push(NO_ROLLBACK_CAPTION.into());
+                out.push(t("upd-no-previous"));
+                out.push(no_rollback_caption());
             }
             (Some(target), false) => {
-                out.push(format!("Previous image: {target}"));
-                out.push(ROLLBACK_INTRO_CAPTION.into());
-                out.push("Roll back\u{2026}".into());
+                out.push(t_args(
+                    "upd-previous-image",
+                    &[("image", target.as_str().into())],
+                ));
+                out.push(rollback_intro_caption());
+                out.push(t("upd-roll-back"));
             }
             (Some(target), true) => {
-                out.push(format!("Roll back to {target}?"));
-                out.extend(
-                    ROLLBACK_CAVEATS
-                        .iter()
-                        .map(std::string::ToString::to_string),
-                );
-                out.push("Roll back and restart later".into());
+                out.push(t_args(
+                    "upd-roll-back-to",
+                    &[("image", target.as_str().into())],
+                ));
+                out.extend(rollback_caveats());
+                out.push(t("upd-roll-back-later"));
             }
         }
         out
@@ -1382,10 +1463,7 @@ impl UpdatesPane {
 
     /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
-        HOW_UPDATES_WORK
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect()
+        vec![t("upd-help-1"), t("upd-help-2")]
     }
 
     pub fn status(&self) -> &UpdateStatus {
@@ -1420,7 +1498,7 @@ impl UpdatesPane {
             all.insert(
                 0,
                 card(
-                    "That did not work",
+                    &t("upd-notice-title"),
                     rows(vec![Box::new(Text::new(msg).with_size(13.0))]),
                 ),
             );
@@ -1436,63 +1514,64 @@ impl UpdatesPane {
                     .with_no_padding()
                     .with_intrinsic_height()
                     .push(Box::new(
-                        Text::new(&format!("Update ready: {staged}")).with_size(13.0),
+                        Text::new(&t_args("upd-ready", &[("version", staged.as_str().into())]))
+                            .with_size(13.0),
                     ))
                     .push(Box::new(
-                        Text::new("Restart to apply the staged image.")
-                            .with_size(11.0)
-                            .dimmed(),
+                        Text::new(&t("upd-restart-apply")).with_size(11.0).dimmed(),
                     ))
                     .push(Box::new(
                         Row::new()
                             .push(Box::new(operation_button(
                                 "settings.updates.restart",
-                                "Restart & update",
+                                &t("upd-restart-update"),
                                 "restart",
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
             ),
-            None => Box::new(Text::new("Your system is up to date.").with_size(13.0)),
+            None => Box::new(Text::new(&t("upd-up-to-date")).with_size(13.0)),
         };
-        card("Software updates", action)
+        card(&t("upd-software"), action)
     }
 
     fn overview_card(&self) -> El {
-        let mut overview = vec![value_row(
-            "Operating system",
-            if self.status.staged_version.is_some() {
-                "Update staged · restart required"
-            } else {
-                "No staged update"
-            },
-        )];
+        let os_value = if self.status.staged_version.is_some() {
+            t("upd-os-staged")
+        } else {
+            t("upd-os-current")
+        };
+        let mut overview = vec![value_row(&t("upd-os"), &os_value)];
         if let Ok(updates) = &self.firmware_updates {
-            overview.push(value_row(
-                "Device firmware",
-                if updates.is_empty() {
-                    "Up to date"
-                } else {
-                    "Updates available"
-                },
-            ));
+            let fw_value = if updates.is_empty() {
+                t("upd-firmware-current")
+            } else {
+                t("upd-firmware-available")
+            };
+            overview.push(value_row(&t("upd-firmware"), &fw_value));
         }
-        card("Update overview", rows(overview))
+        card(&t("upd-overview"), rows(overview))
     }
 
     fn detail_card(&self) -> El {
+        let automatic = t("upd-automatic");
+        let unavailable = t("upd-unavailable");
+        let schedule_label = t("upd-schedule");
+        let check_label = if self.check_pending {
+            t("upd-checking")
+        } else {
+            t("upd-check")
+        };
+        let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
         card(
-            "Details",
+            &t("upd-details"),
             rows(vec![
-                value_row("Current version", &self.status.current_version),
-                value_row("Last checked", &self.prefs.last_checked),
-                value_row(
-                    "Release channel",
-                    "Managed by the installed bootc image reference",
-                ),
+                value_row(&t("upd-current-version"), &self.status.current_version),
+                value_row(&t("upd-last-checked"), &self.prefs.last_checked),
+                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
                     Some(_) => setting_row(
-                        "Automatic updates",
+                        &automatic,
                         Box::new(
                             Toggle::new("settings.updates.auto", AUTO_KEY)
                                 .with_id("updates.auto")
@@ -1504,14 +1583,14 @@ impl UpdatesPane {
                     // Not a switch stuck in one position: a switch that cannot
                     // reach the timer would report "off" for a machine that is
                     // updating itself, which is worse than saying so.
-                    None => value_row("Automatic updates", "unavailable on this machine"),
+                    None => value_row(&automatic, &unavailable),
                 },
-                match &self.schedule {
+                match &schedule_placeholder {
                     Some(schedule) => choice_row(
-                        "Download schedule",
+                        &schedule_label,
                         Box::new(
                             Dropdown::new(
-                                UPDATE_SCHEDULES.iter().map(ToString::to_string).collect(),
+                                UPDATE_SCHEDULES.iter().map(|id| schedule_shown(id)).collect(),
                                 SCHEDULE_KEY,
                             )
                             .on_action(crate::actions::updates_schedule_binding().expect(
@@ -1520,11 +1599,11 @@ impl UpdatesPane {
                             .with_placeholder(schedule),
                         ),
                     ),
-                    None => value_row("Download schedule", "unavailable on this machine"),
+                    None => value_row(&schedule_label, &unavailable),
                 },
                 match self.allow_metered {
                     Some(_) => setting_row(
-                        "Download on metered connections",
+                        &t("upd-metered"),
                         Box::new(
                             Toggle::new("settings.updates.metered", METERED_KEY)
                                 .with_id("updates.metered")
@@ -1533,17 +1612,13 @@ impl UpdatesPane {
                                 )),
                         ),
                     ),
-                    None => value_row("Metered connections", "policy service is unavailable"),
+                    None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
                 },
                 Box::new(
                     Row::new()
                         .push(Box::new(operation_button(
                             "settings.updates.check",
-                            if self.check_pending {
-                                "Checking for updates…"
-                            } else {
-                                "Check for updates"
-                            },
+                            &check_label,
                             "check",
                         )))
                         .push(Box::new(Spacer::new())),
@@ -1553,28 +1628,25 @@ impl UpdatesPane {
     }
 
     fn lifecycle_card(&self) -> El {
+        let not_reported = t("upd-not-reported");
+        let no_doc = t("upd-no-doc-url");
         let mut lifecycle_rows = vec![value_row(
-            "Rollback health",
+            &t("upd-rollback-health"),
             self.details
                 .rollback_health
                 .as_deref()
-                .unwrap_or("Not reported"),
+                .unwrap_or(&not_reported),
         )];
         lifecycle_rows.push(value_row(
-            "Release notes",
-            self.details
-                .release_notes
-                .as_deref()
-                .unwrap_or("The image does not publish a documentation URL"),
+            &t("upd-release-notes"),
+            self.details.release_notes.as_deref().unwrap_or(&no_doc),
         ));
         if self.details.history.is_empty() {
-            lifecycle_rows.push(caption(
-                "No bootc update-service history is available in the system journal.",
-            ));
+            lifecycle_rows.push(caption(&t("upd-no-bootc-history")));
         } else {
             lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
         }
-        card("History & recovery health", rows(lifecycle_rows))
+        card(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
     fn firmware_card(&self) -> El {
@@ -1583,22 +1655,23 @@ impl UpdatesPane {
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
-        card("Device firmware", body)
+        card(&t("upd-firmware"), body)
     }
 
     fn firmware_card_error(&self, error: &str) -> El {
+        let refresh_label = if self.firmware_refresh_pending {
+            t("upd-refreshing")
+        } else {
+            t("upd-try-again")
+        };
         rows(vec![
-            value_row("Status", "Firmware inventory could not be queried"),
-            caption(&format!("fwupd reported: {error}")),
+            value_row(&t("upd-fw-status"), &t("upd-fw-query-failed")),
+            caption(&t_args("upd-fwupd-reported", &[("error", error.into())])),
             Box::new(
                 Row::new()
                     .push(Box::new(operation_button(
                         "settings.updates.firmware.refresh",
-                        if self.firmware_refresh_pending {
-                            "Refreshing…"
-                        } else {
-                            "Try again"
-                        },
+                        &refresh_label,
                         "refresh-firmware",
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1607,31 +1680,32 @@ impl UpdatesPane {
     }
 
     fn firmware_card_up_to_date(&self) -> El {
-        let mut body = vec![value_row("Status", "Device firmware is up to date")];
+        let mut body = vec![value_row(&t("upd-fw-status"), &t("upd-fw-current-status"))];
         if matches!(
             self.firmware_state,
             FirmwareUiState::Complete { needs_reboot: true }
         ) {
-            body.push(value_row("Activation", "Restart required"));
+            body.push(value_row(&t("upd-activation"), &t("upd-restart-required")));
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(operation_button(
                         "settings.updates.firmware.restart",
-                        "Restart now",
+                        &t("upd-restart-now"),
                         "restart",
                     )))
                     .push(Box::new(Spacer::new())),
             ));
         } else {
+            let check_fw = if self.firmware_refresh_pending {
+                t("upd-checking-firmware")
+            } else {
+                t("upd-check-firmware")
+            };
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(operation_button(
                         "settings.updates.firmware.refresh",
-                        if self.firmware_refresh_pending {
-                            "Checking firmware…"
-                        } else {
-                            "Check firmware"
-                        },
+                        &check_fw,
                         "refresh-firmware",
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1646,8 +1720,8 @@ impl UpdatesPane {
             .map(|update| {
                 let version = match (&update.current_version, &update.new_version) {
                     (Some(from), Some(to)) => format!("{from} → {to}"),
-                    (_, Some(to)) => format!("Update to {to}"),
-                    _ => "Update available".to_string(),
+                    (_, Some(to)) => t_args("upd-update-to", &[("version", to.as_str().into())]),
+                    _ => t("upd-update-available"),
                 };
                 value_row(&update.device, &version)
             })
@@ -1657,44 +1731,40 @@ impl UpdatesPane {
                 items.push(caption(description));
             }
             if !update.problems.is_empty() {
-                items.push(caption(&format!(
-                    "Before installing: {}",
-                    update.problems.join(", ")
+                items.push(caption(&t_args(
+                    "upd-before-installing",
+                    &[("problems", update.problems.join(", ").into())],
                 )));
             }
         }
-        items.push(caption(
-            "Firmware is verified and installed by fwupd. Keep the device connected and do not suspend it while installation is active.",
-        ));
+        items.push(caption(&t("upd-fw-caption")));
         match &self.firmware_state {
             FirmwareUiState::Idle => items.push(Box::new(
                 Row::new()
                     .push(Box::new(operation_button(
                         "settings.updates.firmware.install",
-                        "Install firmware upgrades",
+                        &t("upd-install-firmware"),
                         "install-firmware",
                     )))
                     .push(Box::new(Spacer::new())),
             )),
             FirmwareUiState::Installing { percent, message } => {
                 items.push(Box::new(ProgressBar::new(f32::from(*percent) / 100.0)));
-                items.push(value_row("Installing", message));
+                items.push(value_row(&t("upd-installing"), message));
             }
             FirmwareUiState::Complete { needs_reboot } => {
-                items.push(value_row(
-                    "Installation",
-                    if *needs_reboot {
-                        "Installed · restart required"
-                    } else {
-                        "Installed successfully"
-                    },
-                ));
+                let installed = if *needs_reboot {
+                    t("upd-installed-reboot")
+                } else {
+                    t("upd-installed-ok")
+                };
+                items.push(value_row(&t("upd-installation"), &installed));
                 if *needs_reboot {
                     items.push(Box::new(
                         Row::new()
                             .push(Box::new(operation_button(
                                 "settings.updates.firmware.restart",
-                                "Restart now",
+                                &t("upd-restart-now"),
                                 "restart",
                             )))
                             .push(Box::new(Spacer::new())),
@@ -1707,10 +1777,9 @@ impl UpdatesPane {
 
     fn firmware_history_card(&self) -> El {
         match &self.firmware_history {
-            Ok(history) if history.is_empty() => card(
-                "Firmware history",
-                caption("fwupd has not recorded a firmware transaction on this device."),
-            ),
+            Ok(history) if history.is_empty() => {
+                card(&t("upd-fw-history"), caption(&t("upd-fw-history-empty")))
+            }
             Ok(history) => {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
@@ -1721,16 +1790,22 @@ impl UpdatesPane {
                     };
                     entries.push(value_row(&item.device, &versions));
                     if let Some(error) = &item.error {
-                        entries.push(caption(&format!("fwupd error: {error}")));
+                        entries.push(caption(&t_args(
+                            "upd-fwupd-error",
+                            &[("error", error.as_str().into())],
+                        )));
                     }
                 }
-                card("Firmware history", rows(entries))
+                card(&t("upd-fw-history"), rows(entries))
             }
             Err(error) => card(
-                "Firmware history",
+                &t("upd-fw-history"),
                 rows(vec![
-                    value_row("Status", "History could not be queried"),
-                    caption(&format!("fwupd reported: {error}")),
+                    value_row(&t("upd-fw-status"), &t("upd-history-query-failed")),
+                    caption(&t_args(
+                        "upd-fwupd-reported",
+                        &[("error", error.as_str().into())],
+                    )),
                 ]),
             ),
         }
@@ -1796,12 +1871,12 @@ impl UpdatesPane {
             // sooner than panic if that invariant is ever broken.
             _ => Box::new(Column::new()),
         };
-        card(ROLLBACK_CARD_TITLE, rollback_body)
+        card(&rollback_card_title(), rollback_body)
     }
 
     fn help_card(&self) -> El {
         card(
-            "How updates work",
+            &t("upd-help-title"),
             rows(self.help_lines().iter().map(|l| caption(l)).collect()),
         )
     }
@@ -1824,7 +1899,10 @@ impl UpdatesPane {
                     os_actions::FirmwareEvent::Started { total } => {
                         self.firmware_state = FirmwareUiState::Installing {
                             percent: 0,
-                            message: format!("Preparing {total} update(s)…"),
+                            message: t_args(
+                                "upd-fw-preparing",
+                                &[("total", total.to_string().into())],
+                            ),
                         };
                     }
                     os_actions::FirmwareEvent::Progress { percent, message } => {
@@ -1849,9 +1927,9 @@ impl UpdatesPane {
                             needs_reboot: outcome.needs_reboot,
                         };
                         self.notice = Some(if outcome.needs_reboot {
-                            "Firmware installation finished. Restart to activate the update.".into()
+                            t("upd-notice-fw-reboot")
                         } else {
-                            "Firmware installation finished successfully.".into()
+                            t("upd-notice-fw-ok")
                         });
                         self.firmware_updates = os_actions::get_firmware_updates();
                         self.firmware_history = os_actions::get_firmware_history();
@@ -1863,7 +1941,10 @@ impl UpdatesPane {
                     }
                     os_actions::FirmwareEvent::Failed(error) => {
                         self.firmware_state = FirmwareUiState::Idle;
-                        self.notice = Some(format!("Firmware installation failed: {error}"));
+                        self.notice = Some(t_args(
+                            "upd-notice-fw-failed",
+                            &[("error", error.as_str().into())],
+                        ));
                         self.operation_failed(
                             crate::actions::UpdateOperation::InstallFirmware,
                             format!("Firmware installation failed: {error}"),
@@ -1889,7 +1970,7 @@ impl UpdatesPane {
             Err(TryRecvError::Disconnected) => {
                 self.check_events = None;
                 self.check_pending = false;
-                self.notice = Some("Updates could not be checked: worker stopped".into());
+                self.notice = Some(t("upd-notice-check-stopped"));
                 self.operation_failed(
                     crate::actions::UpdateOperation::Check,
                     "update check worker stopped",
@@ -1915,7 +1996,10 @@ impl UpdatesPane {
                 );
             }
             Err(error) => {
-                self.notice = Some(format!("Updates could not be checked: {error}"));
+                self.notice = Some(t_args(
+                    "upd-notice-check",
+                    &[("error", error.as_str().into())],
+                ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::Check,
                     format!("Updates could not be checked: {error}"),
@@ -1938,7 +2022,10 @@ impl UpdatesPane {
                 let error = "firmware refresh worker stopped".to_string();
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+                self.notice = Some(t_args(
+                    "upd-notice-fw-refresh",
+                    &[("error", error.as_str().into())],
+                ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::RefreshFirmware,
                     format!("Firmware metadata could not be refreshed: {error}"),
@@ -1962,7 +2049,10 @@ impl UpdatesPane {
             Err(error) => {
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
-                self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+                self.notice = Some(t_args(
+                    "upd-notice-fw-refresh",
+                    &[("error", error.as_str().into())],
+                ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::RefreshFirmware,
                     format!("Firmware metadata could not be refreshed: {error}"),
@@ -2047,7 +2137,7 @@ impl UpdatesPane {
             })
             .is_err()
         {
-            self.notice = Some("Updates could not be checked: worker could not start".into());
+            self.notice = Some(t("upd-notice-check-worker"));
             self.operation_failed(
                 crate::actions::UpdateOperation::Check,
                 "update check worker could not start",
@@ -2111,7 +2201,7 @@ impl UpdatesPane {
             automerge::ScalarValue::Boolean(false),
         );
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
-            self.notice = Some("Firmware work is already in progress".into());
+            self.notice = Some(t("upd-notice-fw-busy"));
             self.operation_failed(
                 crate::actions::UpdateOperation::InstallFirmware,
                 "firmware work is already in progress",
@@ -2129,12 +2219,15 @@ impl UpdatesPane {
                 self.firmware_events = Some(events);
                 self.firmware_state = FirmwareUiState::Installing {
                     percent: 0,
-                    message: "Preparing firmware transaction…".into(),
+                    message: t("upd-fw-preparing-tx"),
                 };
                 self.notice = None;
             }
             Err(e) => {
-                self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
+                self.notice = Some(t_args(
+                    "upd-notice-fw-install",
+                    &[("error", e.as_str().into())],
+                ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::InstallFirmware,
                     format!("Firmware upgrades could not be installed: {e}"),
@@ -2154,7 +2247,10 @@ impl UpdatesPane {
             self.dispatched_restart = true;
             if let Err(e) = self.rebooter.reboot() {
                 warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
-                self.notice = Some(format!("Restarting into the staged update failed: {e}"));
+                self.notice = Some(t_args(
+                    "upd-notice-restart",
+                    &[("error", e.as_str().into())],
+                ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::Restart,
                     format!("Restarting into the staged update failed: {e}"),
@@ -2210,7 +2306,7 @@ impl UpdatesPane {
             }
             Err(e) => {
                 warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
-                self.notice = Some(format!("Automatic updates could not be changed: {e}"));
+                self.notice = Some(t_args("upd-notice-auto", &[("error", e.as_str().into())]));
                 // Put the switch back where the machine actually is.
                 self.timer_enabled = self.control.timer_enabled();
                 let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
@@ -2230,9 +2326,10 @@ impl UpdatesPane {
         let Some(current) = self.schedule.clone() else {
             return;
         };
-        let Some(requested) = read_str_or_text(state, root, SCHEDULE_KEY) else {
+        let Some(requested_raw) = read_str_or_text(state, root, SCHEDULE_KEY) else {
             return;
         };
+        let requested = schedule_from_label(&requested_raw);
         let operation = crate::actions::UpdateOperation::SetSchedule {
             schedule: requested.clone(),
         };
@@ -2254,7 +2351,10 @@ impl UpdatesPane {
                 self.operation_succeeded(operation, "update schedule changed");
             }
             Err(error) => {
-                self.notice = Some(format!("Download schedule could not be changed: {error}"));
+                self.notice = Some(t_args(
+                    "upd-notice-schedule",
+                    &[("error", error.as_str().into())],
+                ));
                 self.operation_failed(
                     operation,
                     format!("Download schedule could not be changed: {error}"),
@@ -2289,8 +2389,9 @@ impl UpdatesPane {
                 );
             }
             Err(error) => {
-                self.notice = Some(format!(
-                    "Metered-network policy could not be changed: {error}"
+                self.notice = Some(t_args(
+                    "upd-notice-metered",
+                    &[("error", error.as_str().into())],
                 ));
                 self.operation_failed(
                     crate::actions::UpdateOperation::SetMetered { allowed: requested },
@@ -2323,12 +2424,7 @@ impl UpdatesPane {
             match self.control.roll_back() {
                 Ok(()) => {
                     self.rollback_armed = false;
-                    self.notice = Some(
-                        "Done. The previous image is what this machine will boot \
-                         next. Restart when you are ready \u{2014} nothing has \
-                         been removed, so this is reversible."
-                            .to_string(),
-                    );
+                    self.notice = Some(t("upd-notice-rollback-ok"));
                     // The target moves once the order changes, so re-read it
                     // rather than showing the value from before the action.
                     self.rollback_target = self.control.rollback_target();
@@ -2339,7 +2435,10 @@ impl UpdatesPane {
                 }
                 Err(e) => {
                     warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
-                    self.notice = Some(format!("Rolling back failed: {e}"));
+                    self.notice = Some(t_args(
+                        "upd-notice-rollback",
+                        &[("error", e.as_str().into())],
+                    ));
                     self.operation_failed(
                         crate::actions::UpdateOperation::Rollback,
                         format!("Rolling back failed: {e}"),
@@ -2663,7 +2762,8 @@ mod tests {
                     .any(|line| line.starts_with("Status: ") && line.contains(status_line)),
                 "{json}: {lines:?}"
             );
-            let offered: Vec<&str> = pane.codec_buttons().iter().map(|b| b.0).collect();
+            let buttons = pane.codec_buttons();
+            let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
             assert_eq!(offered, controls, "{json}");
             // The card builds for every state.
             let _ = pane.codecs_card();
@@ -3161,7 +3261,7 @@ mod tests {
             );
             assert_eq!(
                 pane.rollback_card_lines()[0],
-                ROLLBACK_CARD_TITLE,
+                rollback_card_title(),
                 "the rollback control has to be on the pane, since the pane talks \
              about rolling back"
             );
