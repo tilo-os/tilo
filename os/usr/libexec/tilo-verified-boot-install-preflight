@@ -58,7 +58,7 @@ else
   count="$("$crypto_bin" efi-signature-count "$uki")"
   case "$count" in ''|*[!0-9]*|0) exit 1 ;; esac
 fi
-"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig" >/dev/null 2>&1
+"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig" >/dev/null 2>&1
 python3 - "$prediction" "$generation" "$pub" "$crypto_bin" <<'PY'
 import base64, json, os, struct, subprocess, sys, tempfile
 p, expected, public, crypto = sys.argv[1:]
