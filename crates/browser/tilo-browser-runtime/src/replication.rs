@@ -33,7 +33,7 @@ use std::sync::Arc;
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_browser_peer::{DocumentRoute, OpenedDocument, PeerEvent, PeerEvents, PeerHandle};
+use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
 use ui::automerge::{
     AutoCommit, ROOT, ReadDoc as _, ScalarValue, Value, transaction::Transactable as _,
 };
@@ -86,6 +86,9 @@ pub(crate) struct Room {
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
+    /// Routes a delivered document failed to apply to: this page never
+    /// answers a compaction request for them.
+    unapplied: HashSet<DocumentRoute>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -134,6 +137,7 @@ pub(crate) fn open(
         desktop_snapshotted: false,
         desktop_value: None,
         stored: BTreeSet::new(),
+        unapplied: HashSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -263,25 +267,69 @@ impl Room {
     }
 
     /// Apply inbound events; returns the mounts to wake.
+    ///
+    /// A late join or a reconnect delivers a route's retained checkpoint and
+    /// its whole tail at once. Each merge into an open record copies the
+    /// document, so the mutations of one route are coalesced first (see
+    /// [`tilo_browser_peer::coalesce`]) and merged once per run instead of once per change.
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
+        let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
+        let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                 }
+                PeerEvent::CompactionRequested { route, request }
+                    if route.cluster_id == self.uuid =>
+                {
+                    compactions.push((route, request));
+                }
                 PeerEvent::Document(document) if document.route.cluster_id == self.uuid => {
-                    if let Err(error) = self.apply(&document, &mut woken) {
+                    let Some(mutation) = document.mutation() else {
+                        self.unapplied.insert(document.route.clone());
                         warn(&format!(
-                            "{}/{}: {error}",
+                            "{}/{}: not a complete document mutation",
                             document.route.app_id, document.route.record
                         ));
+                        continue;
+                    };
+                    match batches
+                        .iter_mut()
+                        .find(|(route, _)| *route == document.route)
+                    {
+                        Some((_, mutations)) => mutations.push(mutation),
+                        None => batches.push((document.route.clone(), vec![mutation])),
                     }
                 }
                 PeerEvent::DocumentRejected(reason) => {
                     warn(&format!("dropped a document: {reason}"))
                 }
                 _ => {}
+            }
+        }
+        // Records first: a desktop naming a new tab's record finds it.
+        batches.sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
+        for (route, mutations) in batches {
+            if let Err(error) =
+                self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)
+            {
+                self.unapplied.insert(route.clone());
+                warn(&format!("{}/{}: {error}", route.app_id, route.record));
+            }
+        }
+        // Every document delivered before a request is applied by now.
+        for (route, request) in compactions {
+            match self.snapshot_of(&route) {
+                Ok(Some(snapshot)) => {
+                    let _ = self.peer.compact(request, snapshot);
+                }
+                Ok(None) => {}
+                Err(error) => warn(&format!(
+                    "{}/{}: no snapshot to compact: {error}",
+                    route.app_id, route.record
+                )),
             }
         }
         woken
@@ -294,15 +342,59 @@ impl Room {
             .collect()
     }
 
-    fn apply(&mut self, document: &OpenedDocument, woken: &mut HashSet<u64>) -> Result<(), String> {
-        let mutation = document
-            .mutation()
-            .ok_or("a segmented transfer is not reassembled yet")?;
-        if document.route.app_id == DESKTOP_APP {
-            return self.apply_desktop(mutation, woken);
+    /// The route's document as this page holds it, for a host compaction
+    /// request: an open record's replica, the desktop, or a record's stored
+    /// document. `None` when the page cannot vouch for every change it was
+    /// delivered for the route.
+    fn snapshot_of(&mut self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+        if self.unapplied.contains(route) {
+            return Ok(None);
         }
-        let app = document.route.app_id.clone();
-        let record = document.route.record.clone();
+        if route.app_id == DESKTOP_APP {
+            return Ok(Some(self.desktop.document_mut().save()));
+        }
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                {
+                    return store
+                        .replication_snapshot(&checkout.id)
+                        .map(|(bytes, _)| Some(bytes))
+                        .map_err(|error| error.to_string());
+                }
+            }
+        }
+        let Ok(key) = storage_key(&route.app_id, &self.uuid, &route.record) else {
+            return Ok(None);
+        };
+        Ok(self
+            .store
+            .read(&key)
+            .map_err(|error| error.to_string())?
+            .map(|stored| stored.bytes)
+            .filter(|bytes| !bytes.is_empty()))
+    }
+
+    fn apply(
+        &mut self,
+        route: &DocumentRoute,
+        mutations: Vec<DocumentMutation>,
+        woken: &mut HashSet<u64>,
+    ) -> Result<(), String> {
+        if route.app_id == DESKTOP_APP {
+            for mutation in mutations {
+                self.apply_desktop(mutation, woken)?;
+            }
+            return Ok(());
+        }
+        let app = route.app_id.clone();
+        let record = route.record.clone();
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -316,18 +408,19 @@ impl Room {
                 else {
                     continue;
                 };
-                let (changed, observed) = store.merge_replica(&checkout, mutation.clone())?;
-                mounted
+                let replica = mounted
                     .records
                     .entry((app.clone(), record.clone()))
                     .or_insert_with(|| Replica {
                         frontier: DocumentFrontier::default(),
                         snapshotted: false,
-                    })
-                    .frontier
-                    .observe(observed);
-                if changed {
-                    woken.insert(id);
+                    });
+                for mutation in &mutations {
+                    let (changed, observed) = store.merge_replica(&checkout, mutation.clone())?;
+                    replica.frontier.observe(observed);
+                    if changed {
+                        woken.insert(id);
+                    }
                 }
                 merged = true;
             }
@@ -335,7 +428,7 @@ impl Room {
         if merged {
             return Ok(());
         }
-        self.store_unopened(&app, &record, mutation)?;
+        self.store_unopened(&app, &record, mutations)?;
         self.stored.insert((app, record));
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
@@ -347,36 +440,74 @@ impl Room {
     }
 
     /// Merge into the record's stored document for whoever opens it next.
+    /// A snapshot into an empty store is kept as it came: opening the record
+    /// loads and checks it once, instead of loading, merging and saving it
+    /// here first.
     fn store_unopened(
         &self,
         app: &str,
         record: &str,
-        mutation: DocumentMutation,
+        mutations: Vec<DocumentMutation>,
     ) -> Result<(), String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
-        let mut doc = match &stored {
-            Some(stored) if !stored.bytes.is_empty() => {
-                AutoCommit::load(&stored.bytes).map_err(|error| error.to_string())?
+        let writer = stored.as_ref().and_then(|stored| stored.writer.clone());
+        let stored = stored
+            .map(|stored| stored.bytes)
+            .filter(|bytes| !bytes.is_empty());
+        let mut mutations = mutations.into_iter().peekable();
+        let fresh =
+            stored.is_none() && matches!(mutations.peek(), Some(DocumentMutation::Snapshot(_)));
+        let bytes = match (stored, mutations.peek()) {
+            (None, Some(DocumentMutation::Snapshot(_))) => {
+                let Some(DocumentMutation::Snapshot(snapshot)) = mutations.next() else {
+                    return Ok(());
+                };
+                if mutations.peek().is_none() {
+                    return self
+                        .store
+                        .write(&key, WriteOp::Replace(snapshot), writer.as_deref())
+                        .map(drop)
+                        .map_err(|error| error.to_string());
+                }
+                snapshot
             }
-            _ => AutoCommit::new(),
+            (stored, _) => stored.unwrap_or_default(),
+        };
+        let mut doc = if bytes.is_empty() {
+            AutoCommit::new()
+        } else {
+            AutoCommit::load(&bytes).map_err(|error| error.to_string())?
         };
         let before = doc.get_heads();
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => {
-                let mut incoming = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                doc.merge_incoming(&mut incoming)
-                    .map_err(|error| error.to_string())?;
-            }
-            DocumentMutation::Incremental(bytes) => {
-                doc.load_incoming(&bytes)
-                    .map_err(|error| error.to_string())?;
+        for mutation in mutations {
+            match mutation {
+                DocumentMutation::Snapshot(bytes) => {
+                    let mut incoming =
+                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    // Merge the side with fewer unshared changes into the
+                    // other, as `RecordStore::merge_replica` does.
+                    let shared: Vec<_> = incoming
+                        .get_heads()
+                        .into_iter()
+                        .filter(|head| doc.get_change_by_hash(head).is_some())
+                        .collect();
+                    if shared.len() < incoming.get_heads().len() {
+                        incoming
+                            .load_incoming(&doc.save_after(&shared))
+                            .map_err(|error| error.to_string())?;
+                        doc = incoming;
+                    }
+                }
+                DocumentMutation::Incremental(bytes) => {
+                    doc.load_incoming(&bytes)
+                        .map_err(|error| error.to_string())?;
+                }
             }
         }
-        if doc.get_heads() == before {
+        if doc.get_heads() == before && !fresh {
             return Ok(());
         }
-        let writer = stored.and_then(|stored| stored.writer);
         self.store
             .write(&key, WriteOp::Replace(doc.save()), writer.as_deref())
             .map(drop)
