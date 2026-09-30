@@ -3916,15 +3916,15 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn language_action_switches_the_live_catalogue() {
-        let config = tempfile::tempdir().expect("isolated settings");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", config.path());
         struct RestoreLocale;
         impl Drop for RestoreLocale {
             fn drop(&mut self) {
                 ui::i18n::I18nManager::set_locale("en-US");
             }
         }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
         let _restore = RestoreLocale;
 
         let provider = ActionsProvider::new();
