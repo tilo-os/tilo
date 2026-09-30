@@ -3128,7 +3128,7 @@ jobs:
           set -euo pipefail
           BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
             | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')" \
-            ./os/dev/publish-dev-disk-candidate.sh
+            bash ./os/dev/publish-dev-disk-candidate.sh
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
