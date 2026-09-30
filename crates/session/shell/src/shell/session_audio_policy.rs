@@ -44,7 +44,7 @@ fn graph_is_idle(stable_polls: u8) -> bool {
 
 /// Shell `pw-dump` only while the graph is still settling or Settings
 /// changed. An empty or volume-only graph is topology-stable: keep polling
-/// it and PipeWire stays in the R01 session budget.
+/// it and `PipeWire` stays in the R01 session budget.
 fn should_enumerate(stable_polls: u8, prefs_changed: bool) -> bool {
     prefs_changed || !graph_is_idle(stable_polls)
 }
