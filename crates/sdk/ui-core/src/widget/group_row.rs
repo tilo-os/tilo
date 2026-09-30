@@ -246,6 +246,9 @@ pub struct GroupRow {
     /// group; if it belongs to another strip, [`Self::hidden`] is set
     /// instead.
     fullscreen_group: Option<u64>,
+    /// Transient: the promoted group leaves its lane's leading gutter to the
+    /// workspace wheel, as a user maximize does; a client fullscreen covers it.
+    promotion_keeps_gutter: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
@@ -805,6 +808,7 @@ impl GroupRow {
             scroll_dirty: false,
             leading_inset: 0.0,
             fullscreen_group: None,
+            promotion_keeps_gutter: false,
             hidden: false,
             group_drag: None,
             group_reorder_target: None,
@@ -856,6 +860,16 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
+    /// lane's leading gutter (a maximize, beside the wheel) or covers it (a
+    /// client fullscreen).
+    pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
+        if self.promotion_keeps_gutter != keeps {
+            self.promotion_keeps_gutter = keeps;
+            self.structure_dirty = true;
+        }
     }
 
     /// Reserve a canvas-x gutter before the first group so it pans with
@@ -2651,6 +2665,13 @@ impl Widget for GroupRow {
                     style.size.width = Dimension::auto();
                     style.flex_grow = 1.0e6;
                     style.flex_basis = Dimension::length(0.0);
+                    if self.promotion_keeps_gutter
+                        && self.fullscreen_group.is_some()
+                        && self.fullscreen_idx() == Some(i)
+                    {
+                        style.margin.left =
+                            LengthPercentageAuto::length(f64_to_f32(self.pan_of_lane(lane).inset));
+                    }
                 } else {
                     style.display = Display::None;
                 }
