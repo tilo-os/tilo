@@ -2333,6 +2333,10 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
+            // Maximize is a different field (`workspace_tree` group.maximized).
+            "fullscreen_group": chrome.fullscreen_group(),
+            "fullscreen": chrome.is_fullscreen(),
         })
     }
 }
@@ -13626,7 +13630,7 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_maximized();
+        let _ = frame.host_mut().toggle_focused_group_fullscreen();
         return;
     };
     if state
