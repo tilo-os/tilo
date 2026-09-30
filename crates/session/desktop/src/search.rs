@@ -348,6 +348,10 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
     let verbs = Verbs::of(needle);
     let admit = |id: &str, named: bool| named || exact == id;
     let focused = focused_tab(tree, workspace);
+    // An empty listing is "windows to go back to"; a search names every
+    // matching window, including the one already focused. Otherwise
+    // searching for the open Terminal finds only close actions (S05).
+    let searching = !exact.is_empty();
     let multi_strip = workspace.strips.len() > 1;
     let mut rows = Vec::new();
     for strip in &workspace.strips {
@@ -355,7 +359,7 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
             let group_id = group.id;
             for tab in &group.tabs {
                 let id = tab_focus_id(group_id, tab.id);
-                if admit(&id, focused != Some(tab.id)) {
+                if admit(&id, searching || focused != Some(tab.id)) {
                     rows.push(WindowRow {
                         kind: WindowRowKind::Tab,
                         id,
