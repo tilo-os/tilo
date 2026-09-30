@@ -18,12 +18,31 @@ pub(crate) struct Navigation {
 
 /// Geometry excludes the current pan and animated positions. Text edits and
 /// intermediate animation frames must never restart a navigation animation.
-#[derive(PartialEq)]
+#[derive(Debug)]
 struct FrameKey {
     group: GroupId,
     viewport: f64,
     leading_inset: f64,
     widths: Vec<(GroupId, f64)>,
+}
+
+/// Widths are read off rects the pan has shifted, so they carry rounding
+/// noise while it moves; a sub-pixel difference is the same layout.
+const FRAME_KEY_TOLERANCE_PX: f64 = 0.5;
+
+impl PartialEq for FrameKey {
+    fn eq(&self, other: &Self) -> bool {
+        let near = |a: f64, b: f64| (a - b).abs() <= FRAME_KEY_TOLERANCE_PX;
+        self.group == other.group
+            && near(self.viewport, other.viewport)
+            && near(self.leading_inset, other.leading_inset)
+            && self.widths.len() == other.widths.len()
+            && self
+                .widths
+                .iter()
+                .zip(&other.widths)
+                .all(|((a, wa), (b, wb))| a == b && near(*wa, *wb))
+    }
 }
 
 impl Navigation {
@@ -283,5 +302,34 @@ impl DesktopSurface {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_key_treats_subpixel_width_jitter_as_the_same_layout() {
+        let a = FrameKey {
+            group: 1,
+            viewport: 800.0,
+            leading_inset: 48.0,
+            widths: vec![(1, 400.0), (2, 400.1)],
+        };
+        let b = FrameKey {
+            group: 1,
+            viewport: 800.0,
+            leading_inset: 48.0,
+            widths: vec![(1, 400.0), (2, 400.4)],
+        };
+        assert_eq!(a, b);
+        let other = FrameKey {
+            group: 1,
+            viewport: 800.0,
+            leading_inset: 48.0,
+            widths: vec![(1, 400.0), (2, 401.0)],
+        };
+        assert_ne!(a, other);
     }
 }

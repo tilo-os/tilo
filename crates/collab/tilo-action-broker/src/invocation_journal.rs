@@ -393,14 +393,9 @@ impl InvocationJournal {
                 "guarded invocation requires a sanitized failure or private terminal".into(),
             );
         }
-        let settled = update.is_terminal() && matches!(key.owner, InvocationOwner::Enrolled { .. });
         record.update = update;
         record.uncertain = uncertain;
         self.persist()?;
-        if settled {
-            // Wake the host's step owner: the parent can commit now.
-            crate::enrolled_dispatch::CHILD_SETTLED.notify_one();
-        }
         Ok(())
     }
 

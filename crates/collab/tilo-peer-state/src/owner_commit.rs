@@ -1,13 +1,7 @@
 //! Host-local durable handoff. This is not a neighbour message or a wire capability.
 //! A receipt binds the exact signed mutation/receipt basis, never queue admission.
 mod policy_basis;
-pub use policy_basis::PrivatePolicyBasis;
-mod agent;
-pub use agent::*;
-mod agent_runtime;
-pub use agent_runtime::*;
-#[cfg(test)]
-mod agent_runtime_tests;
+pub use policy_basis::{PrivatePolicyBasis, canonical_owner, governance_revision};
 
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
@@ -39,8 +33,9 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: crate::desktop_command::BoundCommand,
     },
-    /// Private agent runtime fact; only the typed live-evidence owner can authorize it.
-    AgentRuntime { change: Box<AgentRuntimeChange> },
+    /// Retired agent runtime fact. It keeps the variants after it at their
+    /// encoded positions, and every binding of it is refused.
+    RetiredAgentRuntime,
     /// A proposal to bring a whole document into the room, or the owner's
     /// answer to one. The broker supplies the caller from its authenticated
     /// durable admission, never from arguments.
@@ -55,7 +50,7 @@ pub enum CommitTarget {
     Document { app: String, record: String },
     EffectReceipt { invocation: uuid::Uuid },
     DesktopCommand { invocation: uuid::Uuid },
-    AgentRuntime { mutation: String },
+    RetiredAgentRuntime,
     DocumentImport { invocation: uuid::Uuid },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,14 +82,8 @@ impl OwnerCommitRequest {
             return Err("owner commit requires the exact canonical room UUID".into());
         }
         let (target, bytes) = match &self.operation {
-            CommitOperation::AgentRuntime { change } => {
-                change.validate()?;
-                (
-                    CommitTarget::AgentRuntime {
-                        mutation: change.mutation.clone(),
-                    },
-                    change.business_bytes()?,
-                )
+            CommitOperation::RetiredAgentRuntime => {
+                return Err("agent runtime owner commits are retired".into());
             }
             CommitOperation::DesktopCommand {
                 invocation,
@@ -155,11 +144,7 @@ impl OwnerCommitRequest {
                 )
             }
         };
-        let encoded = if matches!(self.operation, CommitOperation::AgentRuntime { .. }) {
-            postcard::to_allocvec(&(&self.room, &target, &bytes)).map_err(|e| e.to_string())?
-        } else {
-            postcard::to_allocvec(self).map_err(|e| e.to_string())?
-        };
+        let encoded = postcard::to_allocvec(self).map_err(|e| e.to_string())?;
         Ok(CommitBinding {
             room: self.room.clone(),
             target,
