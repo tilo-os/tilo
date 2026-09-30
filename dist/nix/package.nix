@@ -84,7 +84,7 @@ rustPlatform.buildRustPackage rec {
     runHook preInstall
     shell_bin=$(find target -type f -path '*/release/shell' -perm -0100 -print -quit)
     test -n "$shell_bin"
-    "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
+    bash "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
     p="$TMPDIR/tilo-payload"
     install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
