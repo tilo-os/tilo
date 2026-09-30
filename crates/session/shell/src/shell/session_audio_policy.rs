@@ -25,8 +25,8 @@ use settings_store::system_sounds::SystemSoundEvent;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1200);
 /// After the graph and preferences stay still, stop shelling `pw-dump`
-/// every 1.2 s. Hotplug still lands within this window; R01's empty
-/// desktop must not keep `pw-dump` / WirePlumber in the session budget.
+/// every 1.2 s. Hotplug still lands within this window; `R01`'s empty
+/// desktop must not keep `pw-dump` / `WirePlumber` in the session budget.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(8);
 const STABLE_POLLS_BEFORE_IDLE: u8 = 3;
 
