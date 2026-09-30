@@ -422,8 +422,10 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         }
     })
     .await;
-    for file in files_under(directory.path()) {
-        let bytes = std::fs::read(&file).unwrap();
+    publisher.close().await;
+    publisher_endpoint.close().await;
+    governing.relay.shutdown().await;
+    for (file, bytes) in settled_files(directory.path()) {
         assert!(
             !bytes
                 .windows(SECRET.len())
@@ -432,9 +434,6 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
             file.display()
         );
     }
-    publisher.close().await;
-    publisher_endpoint.close().await;
-    governing.relay.shutdown().await;
 }
 
 const SDK_TEST: &str = "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward";
@@ -566,10 +565,16 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         .unwrap()
         .and_then(|(value, _)| value.into_string().ok());
     assert_eq!(text.as_deref(), Some(SDK_WRITTEN));
+    tilo_rt::app()
+        .block_on(async {
+            publisher.close().await;
+            publisher_endpoint.close().await;
+            governing.relay.shutdown().await;
+        })
+        .unwrap();
     // Neither the runtime's profile nor the host keeps it in the clear.
     for root in [&profile, &governor_root] {
-        for file in files_under(root) {
-            let bytes = std::fs::read(&file).unwrap();
+        for (file, bytes) in settled_files(root) {
             assert!(
                 !bytes
                     .windows(SDK_WRITTEN.len())
@@ -579,13 +584,6 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
             );
         }
     }
-    tilo_rt::app()
-        .block_on(async {
-            publisher.close().await;
-            publisher_endpoint.close().await;
-            governing.relay.shutdown().await;
-        })
-        .unwrap();
 }
 
 /// The governor's steward of the room's encrypted channels: it admits every
@@ -685,23 +683,41 @@ impl GovernanceTransport for RelayGovernance<'_> {
     }
 }
 
-/// Every regular file under `root`: the host's relay store, the runtime's
-/// record. A service socket holds no data.
-fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.is_file() {
-                files.push(path);
+/// Every regular file under `root` with its contents: the host's relay store,
+/// the runtime's record. A service socket holds no data.
+///
+/// The relay's detached store work and the joined session's record
+/// replacement can outlive the services' shutdown, so an entry listed but
+/// gone when read was renamed over or discarded: the scan starts again until
+/// one pass reads every entry it lists.
+fn settled_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn scan(root: &std::path::Path) -> std::io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.is_file() {
+                    let bytes = std::fs::read(&path)?;
+                    files.push((path, bytes));
+                }
             }
         }
+        Ok(files)
     }
-    assert!(!files.is_empty());
-    files
+    for _ in 0..100 {
+        match scan(root) {
+            Ok(files) => {
+                assert!(!files.is_empty());
+                return files;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("reading {}: {error}", root.display()),
+        }
+    }
+    panic!("{} kept changing under every scan", root.display())
 }
 
 #[test]
