@@ -23,6 +23,9 @@ pub struct Segment {
     pub complete: bool,
     #[serde(flatten)]
     pub shape: Shape,
+    /// The inline marks over `text`, in its characters; Markdown renders them.
+    #[serde(skip)]
+    pub marks: Vec<qdoc::document::MarkSpan>,
 }
 /// Where a block sits in the document's structure: a heading's or list
 /// item's level, a list's numbering, a cell's table, row and column.
@@ -255,7 +258,8 @@ fn read_source(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text = source.object(&candidate.object, qdoc::schema::BLOCK_TEXT, ObjType::Text)?;
+        let text_object =
+            source.object(&candidate.object, qdoc::schema::BLOCK_TEXT, ObjType::Text)?;
         let previous = page.next.take();
         page.segments.push(Segment {
             block: candidate.id.clone(),
@@ -263,6 +267,7 @@ fn read_source(
             text: String::new(),
             complete: false,
             shape: shape(source, &candidate.object)?,
+            marks: Vec::new(),
         });
         let mut continuation = Cursor {
             basis: page.basis.fingerprint,
@@ -291,8 +296,9 @@ fn read_source(
             break;
         };
         let (text, next, complete) =
-            source.text_fragment(text.as_ref(), position, available, &work)?;
+            source.text_fragment(text_object.as_ref(), position, available, &work)?;
         let segment = page.segments.last_mut().ok_or(ReadError::Malformed)?;
+        segment.marks = source.fragment_marks(text_object.as_ref(), position, &text, &work)?;
         segment.text = text;
         segment.complete = complete;
         continuation.position = if complete {
