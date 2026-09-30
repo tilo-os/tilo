@@ -130,6 +130,15 @@ else
   fi
 fi
 
+# The installer copies the enrolled device key before this machine's
+# `tilo-identity` group exists, so the stored group id can be wrong. The
+# session reads that key as a member of this machine's group.
+key=/var/lib/tilo/device-private/keypair.bin
+if [ -f "$key" ] && [ ! -L "$key" ]; then
+  chgrp tilo-identity "$key"
+  chmod 0640 "$key"
+fi
+
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
 [ ! -f "$FULL_NAME_CONF" ] || shred -u -- "$FULL_NAME_CONF" 2>/dev/null || rm -f -- "$FULL_NAME_CONF"
