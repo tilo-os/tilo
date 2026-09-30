@@ -59,7 +59,7 @@ grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
 for policy in \
   'ProtectSystem=strict' \
   'ProtectHome=read-only' \
-  'ReadWritePaths=-%h/Shared -%h/.cache/tilo/received-files %t/tilo' \
+  'ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo' \
   'PrivateIPC=yes' \
   'ProtectKernelLogs=yes' \
   'ProtectClock=yes' \
