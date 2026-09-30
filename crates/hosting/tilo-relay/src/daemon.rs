@@ -27,7 +27,7 @@ use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
-use crate::config::{PeerRelayConfig, RelayConfig};
+use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
@@ -1379,41 +1379,51 @@ fn build_workspace_registry(
 ) -> Result<WorkspaceRegistry, RelayError> {
     let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
     for binding in &cfg.workspaces {
-        let mut rt = if require_durable_snapshot {
-            WorkspaceRuntime::open_with_required_snapshot(
-                &cfg.state_root,
-                binding.id,
-                binding.pin,
-                Membership::default(),
-            )
-            .map_err(|error| {
-                RelayError::Identity(format!(
-                    "interactive workspace owner requires a valid durable snapshot: {error}"
-                ))
-            })?
-        } else {
-            WorkspaceRuntime::open(
-                &cfg.state_root,
-                binding.id,
-                binding.pin,
-                Membership::default(),
-            )?
-        };
-        if let Some(authority) = &binding.shell_authority {
-            rt.store.bind_shell_authority(authority.clone())?;
-        }
-        rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
-        rt.admit_authenticated =
-            matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
-        rt.admitted_users = binding
-            .admitted_users
-            .iter()
-            .filter_map(|encoded| hex::decode(encoded).ok())
-            .filter_map(|bytes| bytes.try_into().ok())
-            .collect();
-        wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
+        let runtime = open_bound_workspace(cfg, binding, require_durable_snapshot)?;
+        wsmap.insert(binding.id, Arc::new(AsyncMutex::new(runtime)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
+}
+
+/// Open the runtime of one configured workspace binding.
+fn open_bound_workspace(
+    cfg: &RelayConfig,
+    binding: &WorkspaceBinding,
+    require_durable_snapshot: bool,
+) -> Result<WorkspaceRuntime, RelayError> {
+    let mut rt = if require_durable_snapshot {
+        WorkspaceRuntime::open_with_required_snapshot(
+            &cfg.state_root,
+            binding.id,
+            binding.pin,
+            Membership::default(),
+        )
+        .map_err(|error| {
+            RelayError::Identity(format!(
+                "interactive workspace owner requires a valid durable snapshot: {error}"
+            ))
+        })?
+    } else {
+        WorkspaceRuntime::open(
+            &cfg.state_root,
+            binding.id,
+            binding.pin,
+            Membership::default(),
+        )?
+    };
+    if let Some(authority) = &binding.shell_authority {
+        rt.store.bind_shell_authority(authority.clone())?;
+    }
+    rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
+    rt.admit_authenticated =
+        matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
+    rt.admitted_users = binding
+        .admitted_users
+        .iter()
+        .filter_map(|encoded| hex::decode(encoded).ok())
+        .filter_map(|bytes| bytes.try_into().ok())
+        .collect();
+    Ok(rt)
 }
 
 /// Spawn the revocation-refresh loop, the metrics-persist loop, and
@@ -1521,7 +1531,7 @@ fn persist_authority_high_water(
     let bytes = postcard::to_allocvec(&high_water)
         .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
     let path = authority_high_water_path(cache_dir);
-    atomic_file::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         .map_err(|error| format!("could not persist {}: {error}", path.display()))
 }
 
@@ -2064,7 +2074,7 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("home-peer-name"),
                     label.as_bytes(),
                     0o644,
@@ -2099,7 +2109,7 @@ impl ProtocolHandler for ManagementProtocol {
                         |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
                     )?;
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("decommissioned"),
                     b"decommissioned\n",
                     0o600,

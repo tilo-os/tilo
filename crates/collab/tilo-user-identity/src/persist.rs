@@ -424,7 +424,7 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    atomic_file::write(path, pubkey)
+    tilo_files::native::atomic::write(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -564,7 +564,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), 0o600)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
 /// Mode the device key is stored with: owner read/write, group read,
@@ -630,7 +630,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -734,7 +734,7 @@ fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
 
 /// Publish a complete device key exactly once.
 ///
-/// `atomic_file::write_with_mode` is intentionally not used here: its final
+/// `tilo_files::native::atomic::write_with_mode` is intentionally not used here: its final
 /// rename correctly replaces a file for ordinary updates, but device-key
 /// creation must never replace a key another first-login process just made.
 /// The candidate is fully written and synced under a unique same-directory
@@ -835,7 +835,7 @@ fn publish_identity_bytes_no_clobber(
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
             // survives a power loss after the no-clobber rename.
-            atomic_file::sync_directory(parent)?;
+            tilo_files::native::atomic::sync_directory(parent)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
@@ -967,7 +967,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     fs::create_dir_all(parent)?;
-    atomic_file::write(path, &bytes)?;
+    tilo_files::native::atomic::write(path, &bytes)?;
     Ok(())
 }
 

@@ -140,7 +140,7 @@ impl ComputeContentStore for FileComputeContentStore {
         if path.exists() {
             return self.get(digest).map(|_| ());
         }
-        atomic_file::write(&path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())
     }
 }
 

@@ -717,8 +717,8 @@ mod tests {
         }
         let reopened = WorkspaceStore::open(fixture.tmp.path(), 7, false).unwrap();
         assert_eq!(replay(&reopened, false), vec![old_envelope.clone()]);
-        let failed = atomic_file::test_support::with_failure(
-            atomic_file::test_support::Checkpoint::BeforePublish,
+        let failed = tilo_files::native::atomic::test_support::with_failure(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             || stage.promote(),
         );
         assert!(failed.is_err());

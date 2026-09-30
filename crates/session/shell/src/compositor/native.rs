@@ -1651,7 +1651,8 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
-    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+    match tilo_files::native::atomic::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600)
+    {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
             eprintln!("tilo compositor: publishing {}: {e}", path.display());
@@ -10570,7 +10571,8 @@ pub fn run() {
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
-            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+            && let Err(e) =
+                tilo_files::native::atomic::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
@@ -12579,7 +12581,8 @@ mod tests {
             let path = session_display_path(Some(dir.clone().into_os_string()))
                 .expect("absolute temp dir yields a path");
             std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-            atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            tilo_files::native::atomic::write_with_mode(&path, b"wayland-7", 0o600)
+                .expect("write display file");
 
             let read = std::fs::read_to_string(&path).expect("read back");
             assert_eq!(read, "wayland-7");

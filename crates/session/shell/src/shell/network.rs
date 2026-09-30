@@ -1060,10 +1060,12 @@ fn persist_device_fabric(path: &Path, fabric: &crate::shell::device_fabric::Devi
         .ok()
         .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
         .unwrap_or_else(|| bytes.clone());
-    if atomic_file::write_with_mode(&device_fabric_backup_path(path), &prior, 0o600).is_err() {
+    if tilo_files::native::atomic::write_with_mode(&device_fabric_backup_path(path), &prior, 0o600)
+        .is_err()
+    {
         return false;
     }
-    atomic_file::write_with_mode(path, &bytes, 0o600).is_ok()
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600).is_ok()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1136,13 +1138,15 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
         .ok()
         .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
         .unwrap_or_else(|| bytes.clone());
-    if let Err(error) =
-        atomic_file::write_with_mode(&personal_continuity_backup_path(path), &prior, 0o600)
-    {
+    if let Err(error) = tilo_files::native::atomic::write_with_mode(
+        &personal_continuity_backup_path(path),
+        &prior,
+        0o600,
+    ) {
         tracing::warn!(%error, path = %path.display(), "personal continuity backup failed");
         return false;
     }
-    if atomic_file::write_with_mode(path, &bytes, 0o600).is_err() {
+    if tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600).is_err() {
         tracing::warn!(path = %path.display(), "personal continuity persistence failed");
         return false;
     }
@@ -1175,7 +1179,7 @@ fn persist_pending_invitations(
     let Ok(bytes) = serde_json::to_vec_pretty(&rows) else {
         return;
     };
-    if let Err(error) = atomic_file::write_with_mode(path, &bytes, 0o600) {
+    if let Err(error) = tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600) {
         tracing::warn!(%error, path = %path.display(), "could not persist pending invitations");
     }
 }
@@ -2964,7 +2968,7 @@ impl ShellNetwork {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(bytes) = serde_json::to_vec(&ids) {
-            let _ = atomic_file::write(&path, &bytes);
+            let _ = tilo_files::native::atomic::write(&path, &bytes);
         }
     }
 

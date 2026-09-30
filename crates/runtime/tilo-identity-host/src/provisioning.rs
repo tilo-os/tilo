@@ -426,12 +426,12 @@ pub fn install_joined_device(
         [88, 101, 242],
         user_public_key,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_dir.join(format!("{record_id}.json")),
         &record,
         0o600,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_dir.join("active"),
         format!("{record_id}\n").as_bytes(),
         0o600,
@@ -572,7 +572,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    atomic_file::write(
+    tilo_files::native::atomic::write(
         dest,
         &serde_json::to_vec_pretty(&ids)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
@@ -664,7 +664,7 @@ fn copy_home_peers(
         if let Some(parent) = source.parent() {
             fs::create_dir_all(parent)?;
         }
-        atomic_file::write(source, &local_encoded)?;
+        tilo_files::native::atomic::write(source, &local_encoded)?;
     }
     let own: Vec<_> = entries
         .into_iter()
@@ -683,7 +683,7 @@ fn copy_home_peers(
             )
         })?;
     fs::create_dir_all(parent)?;
-    atomic_file::write(&parent.join("home-peers.json"), &encoded)?;
+    tilo_files::native::atomic::write(&parent.join("home-peers.json"), &encoded)?;
     remember_personal_device(
         &parent.join("personal-device-peers.json"),
         local_cert.device_public_key,
@@ -733,7 +733,7 @@ fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Res
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    atomic_file::write(path, &encoded)?;
+    tilo_files::native::atomic::write(path, &encoded)?;
     Ok(())
 }
 
