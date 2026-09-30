@@ -692,21 +692,71 @@ mod command_path_tests {
     #[cfg(unix)]
     #[test]
     fn idle_directory_refresh_does_not_request_frames() {
+        use std::collections::HashMap;
+        use taffy::prelude::*;
+        use ui::theme::Theme;
+        use vello::kurbo::Point;
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
+        let mut state = ui::State::new();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let theme = Theme::dark();
+        let lay_out = |widget: &mut FileExplorerWidget,
+                       state: &mut ui::State,
+                       tr: &mut ui::text_render::TextRenderer| {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            widget.sync(&mut state.doc, &state.root);
+            let node = widget.build_layout(&mut taffy, &theme, &mut nm);
+            let measure_map = nm.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    Size {
+                        width: AvailableSpace::Definite(1100.0),
+                        height: AvailableSpace::Definite(800.0),
+                    },
+                    |k, a, id, _, _| {
+                        if let Some(&p) = measure_map.get(&id) {
+                            unsafe { (*p).measure(k, a, tr) }
+                        } else {
+                            Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            widget.apply_layout(&taffy, node, Point::ORIGIN);
+        };
+        lay_out(&mut widget, &mut state, &mut tr);
+        if widget.take_structure_dirty() {
+            lay_out(&mut widget, &mut state, &mut tr);
+        }
+        ui::widget::Widget::mark_drawn(&mut widget);
+        let _ = widget.take_structure_dirty();
+
         widget.next_metadata_refresh = ui::time::now();
         let _ = widget.refresh_metadata_if_due(ui::time::now());
         widget.next_metadata_refresh = ui::time::now();
-        let animating = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
             !widget.refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
         );
-        assert_eq!(
-            ui::widget::Widget::needs_animation_frame(&widget),
-            animating
+
+        // Production AboutToWait: update + sync on the due deadline. Files
+        // stays `needs_redraw` after `mark_drawn`; the runner must ignore
+        // that bit. A model/structure/animation change is a real present.
+        ui::widget::Widget::mark_drawn(&mut widget);
+        let _ = widget.take_structure_dirty();
+        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
+        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
+        assert!(
+            !updated && !structure && !needs_animation,
+            "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
         );
     }
 

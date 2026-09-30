@@ -3439,7 +3439,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 updated,
                 structure,
                 app.layout.layout_dirty,
-                app.root_widget.needs_redraw(),
                 app.root_widget.needs_animation_frame(),
             ) {
                 request_primary_redraw();
@@ -3938,16 +3937,17 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
 }
 
 /// A due `next_wake_deadline` runs sync. Present only when that sync
-/// changed something; otherwise an idle Files metadata poll commits
-/// a buffer every 750ms and the shell paints at ~2 Hz.
+/// changed the model, the tree, or an in-flight animation. `needs_redraw`
+/// is not a reason: Files stays `needs_redraw` after `mark_drawn` (closed
+/// menus and other default leaves), so treating it as dirty recommits
+/// every 750ms metadata poll.
 fn present_after_deadline_sync(
     updated: bool,
     structure: bool,
     layout_dirty: bool,
-    needs_redraw: bool,
     needs_animation: bool,
 ) -> bool {
-    updated || structure || layout_dirty || needs_redraw || needs_animation
+    updated || structure || layout_dirty || needs_animation
 }
 
 #[cfg(test)]
@@ -3957,15 +3957,14 @@ mod deadline_present_tests {
     #[test]
     fn idle_scheduled_sync_does_not_request_frames() {
         assert!(
-            !present_after_deadline_sync(false, false, false, false, false),
+            !present_after_deadline_sync(false, false, false, false),
             "an idle scheduled poll must not keep requesting frames"
         );
-        assert!(
-            present_after_deadline_sync(false, false, false, true, false),
-            "a dirty tree after the poll still presents"
-        );
-        assert!(present_after_deadline_sync(
-            false, false, false, false, true
-        ));
+        // Sticky `needs_redraw` after mark_drawn is not an argument: the
+        // helper no longer takes that bit.
+        assert!(present_after_deadline_sync(false, false, false, true));
+        assert!(present_after_deadline_sync(true, false, false, false));
+        assert!(present_after_deadline_sync(false, true, false, false));
+        assert!(present_after_deadline_sync(false, false, true, false));
     }
 }
