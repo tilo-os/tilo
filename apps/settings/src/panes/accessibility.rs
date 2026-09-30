@@ -33,7 +33,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
+use crate::panes::appearance::{text_size_label, text_size_options, text_size_scale};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
@@ -183,10 +183,11 @@ impl AccessibilityPane {
 
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> Box<dyn Widget> {
-        let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
+        let size_opts = text_size_options();
+        let size_current = text_size_label(self.appearance.text_scale);
         let size = Self::choice(size_opts, TEXT_SIZE_KEY, "text-size")
             .with_id("a11y.text_size")
-            .with_placeholder(text_size_label(self.appearance.text_scale));
+            .with_placeholder(&size_current);
         card(
             "Vision",
             rows(vec![
@@ -561,8 +562,9 @@ impl AccessibilityPane {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(value));
             }
         }
+        let text_size = text_size_label(self.appearance.text_scale);
         for (key, value) in [
-            (TEXT_SIZE_KEY, text_size_label(self.appearance.text_scale)),
+            (TEXT_SIZE_KEY, text_size.as_str()),
             (
                 CURSOR_SIZE_KEY,
                 AccessibilityPrefs::cursor_size_label(self.access.cursor_size),

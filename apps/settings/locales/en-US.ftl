@@ -33,8 +33,7 @@ display-vrr-unsupported = Not supported by this display
 display-vrr-driver-unsupported = The graphics driver does not offer it for this display
 display-vrr-driver-rejected = The graphics driver refused to turn it on
 
-
-# Displays pane: night light, rotation, built-in name
+# Mouse & Keyboard pane: touchpad
 display-builtin = Built-in display
 display-brightness = Brightness
 display-auto-brightness = Automatic brightness
@@ -475,7 +474,7 @@ settings-category-updates-subtitle = Operating-system and firmware updates
 settings-category-about = About
 settings-category-about-subtitle = Device identity and transfer
 
-# Users pane
+# Appearance pane
 settings-users-error-title = Could not apply that change
 settings-users-add = Add user
 settings-users-empty-accounts = No regular login accounts found on this device.
@@ -724,3 +723,51 @@ continuity-app-continuations = App continuations
 continuity-all = All Continuity
 continuity-audit-allowed = { $subject } allowed · local record { $at }
 continuity-audit-stopped = { $subject } stopped · local record { $at }
+settings-appearance-theme-card = Theme
+settings-appearance-theme = Theme
+settings-appearance-ui-scale = UI scale
+settings-appearance-text-size = Text size
+settings-appearance-text-small = Small
+settings-appearance-text-default = Default
+settings-appearance-text-large = Large
+settings-appearance-text-larger = Larger
+settings-appearance-access-card = Accessibility
+settings-appearance-high-contrast = High contrast
+settings-appearance-high-contrast-desc = Maximise contrast for low-vision comfort
+settings-appearance-reduce-motion = Reduce motion
+settings-appearance-reduce-motion-desc = Skip animations and transitions
+settings-appearance-applied-card = Applied theme
+settings-appearance-active-theme = Active theme
+settings-appearance-text-scale = Text scale
+settings-appearance-reduced-motion = Reduced motion
+settings-appearance-on = On
+settings-appearance-off = Off
+settings-appearance-shared-card = Shared with your apps
+settings-appearance-shared-body = Your theme, contrast, motion, UI-scale, and text-size choices are read by the compositor and every Tilo app, so the whole system follows the look you pick here. UI scale grows the entire interface and composes with each display's own fractional scale; text size adjusts type on top.
+settings-appearance-wallpaper-card = Wallpaper
+settings-appearance-wallpaper-body = Pick a picture for the desktop. A workspace is who you work with, so a picture of its own shows at a glance which shared workspace you are in.
+settings-appearance-use-for = Use for
+settings-appearance-show-on = Show on
+settings-appearance-scope-workspace = This workspace
+settings-appearance-scope-all = Every workspace
+settings-appearance-target-desktop = Desktop
+settings-appearance-target-lock = Lock screen
+settings-appearance-target-both = Desktop and lock screen
+settings-appearance-choose-picture = Choose picture…
+settings-appearance-choose-wallpaper = Choose a wallpaper
+settings-appearance-choose = Choose
+settings-appearance-pictures = Pictures
+settings-appearance-confirm-preview = Confirm the preview to use it.
+settings-appearance-open-failed = Could not open the picture: { $error }
+settings-appearance-updated = Wallpaper updated.
+settings-appearance-unchanged = The wallpaper was not changed: { $error }
+settings-appearance-schedule = Schedule
+settings-appearance-schedule-sun = Sunset to sunrise
+settings-appearance-schedule-custom = Custom times
+settings-appearance-day-starts = Day starts
+settings-appearance-night-starts = Night starts
+settings-appearance-today = Today
+settings-appearance-today-value = Day from { $day }, night from { $night }
+settings-appearance-schedule-no-location = Your time zone gives no location, so day runs from the custom times. The Automatic theme and a scheduled Night Light follow this schedule.
+settings-appearance-schedule-follow = The Automatic theme and a scheduled Night Light follow this schedule.
+settings-appearance-day-night-card = Day and night
