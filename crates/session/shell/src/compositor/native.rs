@@ -793,6 +793,64 @@ fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
+/// Serve the shell's own file choosers when apps have no portal to reach: no
+/// session bus, as on a provider's headless guest. `attended` says whether an
+/// agent is driving the screen; an unattended session (one that saves into
+/// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
+fn start_chooser_service(
+    portal: Option<&PortalBackend>,
+    attended: Arc<AtomicBool>,
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::compositor::chooser_service::ChooserService> {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
+        return None;
+    }
+    let portal = portal?;
+    let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from);
+    let unattended = save_directory.is_some();
+    let context = crate::compositor::chooser_service::ChooserContext {
+        grants: portal.media_grants.clone(),
+        pickers: Arc::new(portal.pickers.clone()),
+        presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
+        save_directory,
+        wake,
+    };
+    match crate::compositor::chooser_service::ChooserService::start(context) {
+        Ok(service) => {
+            tracing::info!("serving the shell's file choosers to apps without a portal");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Open the files apps asked the chooser service to open, each in the app
+/// that owns its type, in the asking app's workspace.
+fn pump_chooser_opens(
+    service: &crate::compositor::chooser_service::ChooserService,
+    chrome: &crate::shell::chrome_state::Chrome,
+) {
+    for open in service.drain_opens() {
+        let active = chrome.borrow().tree().desktop.active;
+        let outcome = if open.caller.workspace_id == active {
+            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+        } else {
+            Err("the app's workspace is not the one on screen".to_owned())
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
+        }
+        let _ = open.reply.send(outcome);
+    }
+}
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -5765,6 +5823,9 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     media_grants: crate::portal::GrantStoreHandle,
     media_prompts: crate::portal::PromptQueueHandle,
+    /// The on-screen file chooser's queue, shared with the chooser service
+    /// that apps without a portal reach.
+    pickers: crate::portal::FilePickerQueue,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -6081,7 +6142,7 @@ fn start_portal_backend(
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
     frame_builder
         .host_mut()
-        .set_portal_queues(prompts.clone(), pickers);
+        .set_portal_queues(prompts.clone(), pickers.clone());
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -6095,6 +6156,7 @@ fn start_portal_backend(
     Some(PortalBackend {
         media_grants: grants,
         media_prompts: prompts,
+        pickers,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -6952,6 +7014,12 @@ pub fn run() {
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
+    let chooser_attended = Arc::new(AtomicBool::new(false));
+    let chooser_service = start_chooser_service(
+        portal_backend.as_ref(),
+        Arc::clone(&chooser_attended),
+        Arc::clone(&session_wake),
+    );
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -7492,6 +7560,9 @@ pub fn run() {
             && pump_floating_toplevel_events(service, &mut state)
         {
             force_first_paint = true;
+        }
+        if let Some(service) = chooser_service.as_ref() {
+            pump_chooser_opens(service, &frame_builder.chrome_handle());
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
@@ -10297,6 +10368,9 @@ pub fn run() {
         {
             injected_redraw_pending = true;
         }
+        // An agent driving the screen answers the shell's choosers; a viewer
+        // only watching cannot click one.
+        chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
             if conn.closed
                 && let Some(token) = conn.wake.take()
