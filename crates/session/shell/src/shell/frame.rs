@@ -3747,6 +3747,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn super_s_moves_the_wheel_disc_to_the_pointer() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let before = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the docked wheel is addressable");
+        let at = Point::new(1180.0, 450.0);
+        fb.host_mut().note_pointer(at);
+        let chord = Modifiers::from(ModifiersState::SUPER);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        assert!(
+            fb.dispatch_event(
+                &key_press(Key::Character("s".into())),
+                &chord,
+                &mut doc,
+                &root,
+                &mut focus
+            ),
+            "Super+S is handled by the shell"
+        );
+        let summoned = fb
+            .chrome()
+            .wheel_summon()
+            .expect("Super+S writes chrome.wheel_summon");
+        assert!(
+            (summoned.x - at.x).abs() < 1.0 && (summoned.y - at.y).abs() < 1.0,
+            "summon follows the pointer, got {summoned:?}"
+        );
+        let _ = fb.paint_settled();
+        let after = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the summoned wheel stays addressable");
+        assert!(
+            (after.x1 - at.x).abs() < 2.0,
+            "the rim's right edge sits on the pointer so a shot at that point sees the wheel; \
+             got x1={} for pointer x={}",
+            after.x1,
+            at.x
+        );
+        assert!(
+            (after.x0 - before.x0).abs() > 50.0,
+            "the disc actually moved: docked {before:?} summoned {after:?}"
+        );
+    }
+
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }
@@ -4479,9 +4529,35 @@ mod tests {
             );
         }
 
+        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
+        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        fn super_f_on_a_tilo_group_covers_the_wheel() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+            let during = fb.widget_registry();
+            let row = rect_named(&during, "GroupRow");
+            assert!(
+                row.width() >= fb.viewport().0 - 1.0,
+                "Super+F must cover the wheel; row width {} vs output {}",
+                row.width(),
+                fb.viewport().0,
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() <= 0.5,
+                "Super+F hides the top bar"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
+        super_f_on_a_tilo_group_covers_the_wheel();
     }
 
     /// Look up a widget's rect by its *last* path segment

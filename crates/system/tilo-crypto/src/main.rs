@@ -9,7 +9,11 @@ use std::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-const MAX_EFI_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+// ARM release UKIs include the kernel, initrd and board DTB. The Lenovo 83ED
+// image already reaches 273,856,512 bytes before signing, so the verifier and
+// broker output checks must accept more than 256 MiB.
+const MAX_EFI_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_OTHER_SIGNED_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PRIVATE_KEY_BYTES: u64 = 1024 * 1024;
 const MAX_CERTIFICATE_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 1024 * 1024;
@@ -516,7 +520,7 @@ fn sign_module_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> Re
     }
     let key = read_private_key(&key)?;
     let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
-    let module = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "kernel module")?;
+    let module = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "kernel module")?;
     let signed = tilo_crypto::sign_kernel_module(&key, &certificate, &module)?;
     write_new(&output, &signed, 0o644)
 }
@@ -528,7 +532,7 @@ fn verify_module_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> 
         return Err(usage());
     }
     let certificate = read_bounded(&certificate, MAX_CERTIFICATE_BYTES, "certificate")?;
-    let module = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "kernel module")?;
+    let module = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "kernel module")?;
     tilo_crypto::verify_kernel_module(&certificate, &module)
 }
 
@@ -706,7 +710,7 @@ fn sign_rsa_sha256_command(
         return Err(usage());
     }
     let key = read_private_key(&key)?;
-    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    let message = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "signed input")?;
     let signature = tilo_crypto::sign_rsa_sha256(&key, &message)?;
     write_new(&output, &signature, 0o600)
 }
@@ -760,7 +764,7 @@ fn verify_rsa_sha256_command(
         return Err(usage());
     }
     let key = read_text_bounded(&key, MAX_CERTIFICATE_BYTES, "public key")?;
-    let message = read_bounded(&input, MAX_EFI_IMAGE_BYTES, "signed input")?;
+    let message = read_bounded(&input, MAX_OTHER_SIGNED_INPUT_BYTES, "signed input")?;
     let signature = read_bounded(&signature, MAX_SIGNATURE_BYTES, "signature")?;
     tilo_crypto::verify_rsa_sha256(&key, &message, &signature)
 }

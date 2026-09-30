@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "id": "orangepi-3b-v2-1",
+  "architecture": "aarch64",
+  "devicetree": "rockchip/rk3566-orangepi-3b-v2.1.dtb",
+  "system_firmware": [],
+  "boot_modules": [
+    "sdhci-of-dwcmshc",
+    "mmc_block",
+    "pwrseq_simple",
+    "rk8xx-core",
+    "rk8xx-i2c",
+    "rk808-regulator",
+    "clk-rk808",
+    "io-domain",
+    "pinctrl-rockchip",
+    "gpio-rockchip"
+  ],
+  "firmware": {}
+}

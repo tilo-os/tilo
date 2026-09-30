@@ -26,11 +26,11 @@ mkdir -p "$TILO_CFS_RUN"
 
 # The digest install expects, out of the mismatch message.
 expected_digest() {
-  sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$1" | tail -1
+  composefs_expected_digest "$1"
 }
 # The digest the UKI actually carries, so both can be reported.
 sealed_digest() {
-  sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" | tail -1
+  composefs_sealed_digest "$1"
 }
 
 msg "pass 1: build generation $GEN with the digest bootc computes for the rootfs"
