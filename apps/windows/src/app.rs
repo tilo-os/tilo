@@ -12,8 +12,9 @@ use std::path::Path;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -1184,27 +1185,6 @@ impl WindowsApp {
             weight,
         );
     }
-    fn wrapped_text(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        t: Affine,
-        at: Point,
-        text: &str,
-        size: f32,
-        max_width: f32,
-        color: Color,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            text,
-            size,
-            color,
-            t * Affine::translate((at.x, at.y)),
-            Some(max_width.max(1.0)),
-            weight,
-        );
-    }
     fn line(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -1415,6 +1395,11 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "windows.launch",
@@ -1665,16 +1650,12 @@ impl Widget for WindowsApp {
                 TextWeight::Regular,
             );
             if let Some(detail) = &appliance.detail {
-                Self::wrapped_text(
-                    tr,
-                    scene,
-                    t,
-                    Point::new(sidebar.x0 + PAD, appliance_y + 50.0),
+                PaintCtx::new(scene, t, tr, theme).text(
                     detail,
-                    10.0,
-                    (sidebar.width() - PAD * 2.0) as f32,
+                    &TextStyle::new(10.0),
                     theme.text_dim,
-                    TextWeight::Regular,
+                    Point::new(sidebar.x0 + PAD, appliance_y + 50.0),
+                    Some(((sidebar.width() - PAD * 2.0) as f32).max(1.0)),
                 );
             }
             if appliance.is_provisioned() {
@@ -1726,16 +1707,12 @@ impl Widget for WindowsApp {
                     );
                 }
             }
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(sidebar.x0 + PAD, appliance_y + 132.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 &strings::t("windows-appliance-desktop-note"),
-                10.0,
-                (sidebar.width() - PAD * 2.0) as f32,
+                &TextStyle::new(10.0),
                 theme.text_dim,
-                TextWeight::Regular,
+                Point::new(sidebar.x0 + PAD, appliance_y + 132.0),
+                Some(((sidebar.width() - PAD * 2.0) as f32).max(1.0)),
             );
             if appliance.is_provisioned() {
                 let recovery = Rect::new(
@@ -2086,16 +2063,12 @@ impl Widget for WindowsApp {
             .as_deref()
             .filter(|_| !app.launch_available)
         {
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(launch.x0, status.y1 + 8.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 reason,
-                10.0,
-                (detail.x1 - launch.x0).max(120.0) as f32,
+                &TextStyle::new(10.0),
                 theme.text_dim,
-                TextWeight::Regular,
+                Point::new(launch.x0, status.y1 + 8.0),
+                Some(((detail.x1 - launch.x0).max(120.0) as f32).max(1.0)),
             );
         }
         if app.route == Route::Vm {
@@ -2157,27 +2130,19 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
-        Self::wrapped_text(
-            tr,
-            scene,
-            t,
-            Point::new(card.x0 + PAD, card.y0 + 44.0),
+        PaintCtx::new(scene, t, tr, theme).text(
             &app.reason,
-            13.0,
-            (card.width() - PAD * 2.0) as f32,
+            &TextStyle::new(13.0),
             theme.text_dim,
-            TextWeight::Regular,
+            Point::new(card.x0 + PAD, card.y0 + 44.0),
+            Some(((card.width() - PAD * 2.0) as f32).max(1.0)),
         );
-        Self::wrapped_text(
-            tr,
-            scene,
-            t,
-            Point::new(card.x0 + PAD, card.y0 + 74.0),
+        PaintCtx::new(scene, t, tr, theme).text(
             app.route.security_summary(),
-            12.0,
-            (card.width() - PAD * 2.0) as f32,
+            &TextStyle::new(12.0),
             theme.text_dim,
-            TextWeight::Regular,
+            Point::new(card.x0 + PAD, card.y0 + 74.0),
+            Some(((card.width() - PAD * 2.0) as f32).max(1.0)),
         );
         let routes_y = card.y1 + 22.0;
         Self::text(
@@ -2509,20 +2474,16 @@ impl Widget for WindowsApp {
             // transient error. Give it its own visible treatment and wrap it
             // inside the compact detail width so the required confirmation is
             // never silently truncated off-screen.
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(detail.x0, detail.y1 - 40.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 notice,
-                12.0,
-                detail.width() as f32,
+                &TextStyle::new(12.0),
                 if awaiting_confirmation {
                     theme.accent_primary
                 } else {
                     theme.status_success
                 },
-                TextWeight::Regular,
+                Point::new(detail.x0, detail.y1 - 40.0),
+                Some((detail.width() as f32).max(1.0)),
             );
         }
         if self.confirm_delete_data.as_deref() == Some(app.capsule.as_str()) {
@@ -2541,16 +2502,12 @@ impl Widget for WindowsApp {
             let layout = ModalFrame::layout(self.area, &spec, tr, theme);
             ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
             let (ink, dim) = ModalFrame::ink(theme);
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(layout.body.x0, layout.body.y0 + 4.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 &strings::t("windows-confirm-delete-body"),
-                13.0,
-                layout.body.width() as f32,
+                &TextStyle::new(13.0),
                 dim,
-                TextWeight::Regular,
+                Point::new(layout.body.x0, layout.body.y0 + 4.0),
+                Some((layout.body.width() as f32).max(1.0)),
             );
             Self::text(
                 tr,
@@ -2899,9 +2856,6 @@ impl Widget for WindowsApp {
     fn get_rect(&self) -> Rect {
         self.area
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        actions::provide_resources(&self.catalogue)
-    }
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
@@ -2953,9 +2907,6 @@ impl Widget for WindowsApp {
     }
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_control_invocation.take()
     }
     fn modal_capture(&self) -> Option<Rect> {
         self.delete_confirmation_layout
@@ -3119,6 +3070,18 @@ impl Widget for WindowsApp {
         children.push(&mut self.update_windows_button);
         children.push(&mut self.revoke_windows_connection_button);
         children
+    }
+}
+
+impl ui::resources::PublishesResources for WindowsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        actions::provide_resources(&self.catalogue)
+    }
+}
+
+impl ui::widget::controls::ActionControls for WindowsApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_control_invocation.take()
     }
 }
 

@@ -28,6 +28,8 @@ pub(crate) struct DevWindowSlot {
 pub(crate) struct DevReload {
     pub windows: Vec<DevWindowSlot>,
     pub root: Option<Box<dyn AppWidget>>,
+    /// `dlopen` and symbol lookup, before any of the library's code ran.
+    pub load: std::time::Duration,
 }
 
 /// Address of this copy of `ui`. A library linked to the same copy returns
@@ -75,6 +77,7 @@ pub(crate) fn reload_from_library(
     path: &Path,
     windows: &[DevWindowSlot],
 ) -> Result<DevReload, String> {
+    let started = crate::time::now();
     let bytes = path.as_os_str().as_encoded_bytes();
     let path =
         std::ffi::CString::new(bytes).map_err(|_| "library path contains a nul".to_owned())?;
@@ -91,6 +94,7 @@ pub(crate) fn reload_from_library(
     };
     let linked_ui = unsafe { load_symbol::<LinkedFn>(handle, b"tilo_dev_linked_ui\0") };
     let publish = unsafe { load_symbol::<PublishFn>(handle, b"tilo_dev_publish_root\0") };
+    let load = started.elapsed();
     match reload_with(
         &DevFns {
             apply,
@@ -101,7 +105,7 @@ pub(crate) fn reload_from_library(
     ) {
         Ok(reloaded) => {
             LOADED_LIBS.with(|libs| libs.borrow_mut().push(handle));
-            Ok(reloaded)
+            Ok(DevReload { load, ..reloaded })
         }
         Err(error) => {
             unsafe { libc::dlclose(handle) };
@@ -183,6 +187,7 @@ fn reload_with(fns: &DevFns, windows: &[DevWindowSlot]) -> Result<DevReload, Str
     Ok(DevReload {
         windows: next,
         root,
+        load: std::time::Duration::ZERO,
     })
 }
 

@@ -25,7 +25,7 @@ impl WorkspaceId {
 /// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
 /// random v4 uuid and carried rather than recomputed, so machines that
 /// have never met still agree on it. [`Self::nil`] is the unminted
-/// sentinel a pre-room state file loads as.
+/// sentinel.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]

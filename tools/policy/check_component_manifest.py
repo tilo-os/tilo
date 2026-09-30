@@ -295,7 +295,9 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                                  "set `layer` on the components that belong in it.")
                 consumed.setdefault(match.group(1), []).append(instruction.line)
             continue
-        if source_stage != "builder" or instruction.stage == PAYLOAD_STAGE:
+        # The image stages take build outputs from the payload stage, an exact
+        # copy of the builder's outputs.
+        if source_stage not in ("builder", PAYLOAD_STAGE) or instruction.stage == PAYLOAD_STAGE:
             continue
         for source, destination in pairs:
             key = (source.removeprefix("/out/") if source.startswith("/out/") else source, destination)
@@ -305,7 +307,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             output = key[0]
             report.error(
                 where,
-                f"COPY --from=builder {source} -> {destination} installs a Tilo build output outside "
+                f"COPY --from={source_stage} {source} -> {destination} installs a Tilo build output outside "
                 "os/components.toml",
                 f"delete this COPY and {snippet(Path(output.rstrip('/')).name or 'component', output, destination)}"
                 "      The component-files stage then installs it with its layer. Only outputs the build "
@@ -326,7 +328,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
             report.error(report.manifest_line(entry.component),
                          f"direct file {entry.to} (component {entry.component!r}) is never copied by "
                          f"{relative}",
-                         f"add `COPY --from=builder {source} {entry.to}` to the rootfs stage, or give the "
+                         f"add `COPY --from={PAYLOAD_STAGE} {source} {entry.to}` to the rootfs stage, or give the "
                          "entry a real layer so the installer places it.")
 
     install_runs = [i for i in parsed if i.stage == INSTALL_STAGE and i.words and i.words[0].upper() == "RUN"]

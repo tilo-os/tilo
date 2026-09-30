@@ -1107,6 +1107,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for PowerPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
         let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
@@ -1228,26 +1230,28 @@ impl Widget for PowerPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "power",
-            "Power",
-            "Change power preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "PowerPane"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for PowerPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "power",
+            "Power",
+            "Change power preferences",
+        )
     }
 }
 

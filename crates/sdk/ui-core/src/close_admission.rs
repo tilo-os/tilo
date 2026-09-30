@@ -135,7 +135,7 @@ impl Admission {
             .iter()
             .map(|action| ActionAddress::new(resource.id.as_str(), &action.id))
             .collect();
-        dialog.refresh_control_action_availability(&allowed);
+        crate::widget::controls::refresh_control_action_availability(&mut dialog, &allowed);
         self.dialog = Some(Box::new(dialog));
     }
     pub fn take_command(&self) -> Option<Command> {

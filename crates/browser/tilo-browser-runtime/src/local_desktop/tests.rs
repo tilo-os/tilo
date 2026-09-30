@@ -1,5 +1,5 @@
 use super::*;
-use crate::desktop_host::{DesktopHandle, DesktopRoot};
+use crate::desktop_host::{DesktopHandle, DesktopRoot, DesktopSources};
 use std::sync::Arc;
 use tilo_desktop_model::commands::CommandSource;
 use ui::portable_storage::PortableStorage;
@@ -25,15 +25,21 @@ fn tabs(tree: &DesktopTree, workspace: usize) -> Vec<(u64, String)> {
 fn room_of(tree: &DesktopTree, workspace: usize) -> String {
     tree.workspaces[workspace].room.to_string()
 }
+fn bound(room: String, command: DesktopCommand) -> BoundCommand {
+    BoundCommand {
+        source: CommandSource {
+            room,
+            heads: vec![[1; 32]],
+        },
+        command,
+    }
+}
 fn open(desktop: &mut LocalDesktop, room: String, app: &str) {
     desktop
-        .apply(&BoundCommand {
-            source: CommandSource {
-                room,
-                heads: vec![[1; 32]],
-            },
-            command: DesktopCommand::OpenApp { app: app.into() },
-        })
+        .apply(
+            &bound(room, DesktopCommand::OpenApp { app: app.into() }),
+            None,
+        )
         .unwrap();
 }
 
@@ -157,47 +163,115 @@ fn the_owner_reduces_opens_closes_and_renames_in_their_own_room() {
 
     let strip = after.tree.workspaces[1].strips[0].clone();
     let group = strip.window_groups[0].id;
+    let close = DesktopCommand::CloseTab {
+        location: tilo_desktop_model::commands::TabLocation {
+            strip: strip.id.0,
+            group,
+            tab,
+        },
+    };
+    assert_eq!(
+        desktop
+            .apply(
+                &bound(second.clone(), close.clone()),
+                Some("tab:00000000000000aa")
+            )
+            .unwrap_err(),
+        "only an open names a record",
+    );
+    desktop.apply(&bound(second.clone(), close), None).unwrap();
     desktop
-        .apply(&BoundCommand {
-            source: CommandSource {
-                room: second.clone(),
-                heads: vec![[1; 32]],
-            },
-            command: DesktopCommand::CloseTab {
-                location: tilo_desktop_model::commands::TabLocation {
-                    strip: strip.id.0,
-                    group,
-                    tab,
+        .apply(
+            &bound(
+                second.clone(),
+                DesktopCommand::RenameWorkspace {
+                    name: "Renamed".into(),
                 },
-            },
-        })
-        .unwrap();
-    desktop
-        .apply(&BoundCommand {
-            source: CommandSource {
-                room: second.clone(),
-                heads: vec![[1; 32]],
-            },
-            command: DesktopCommand::RenameWorkspace {
-                name: "Renamed".into(),
-            },
-        })
+            ),
+            None,
+        )
         .unwrap();
     let closed = desktop.admission().unwrap();
     assert!(tabs(&closed.tree, 1).is_empty());
     assert_eq!(closed.tree.workspaces[1].name, "Renamed");
     assert!(desktop.room(closed.tree.workspaces[1].room).is_some());
 
-    let refused = desktop.apply(&BoundCommand {
-        source: CommandSource {
-            room: second,
-            heads: vec![[1; 32]],
-        },
-        command: DesktopCommand::OpenApp {
-            app: "so.tilo.nope".into(),
-        },
-    });
+    let refused = desktop.apply(
+        &bound(
+            second,
+            DesktopCommand::OpenApp {
+                app: "so.tilo.nope".into(),
+            },
+        ),
+        None,
+    );
     assert_eq!(refused.unwrap_err(), "application cannot be opened here");
+}
+
+#[test]
+fn an_open_on_a_record_shows_that_record_in_a_new_selected_window() {
+    let mut desktop = LocalDesktop::new(ROOM, "Visitor", &Seed::default()).unwrap();
+    let room = room_of(&desktop.admission().unwrap().tree, 0);
+    let open = DesktopCommand::OpenApp {
+        app: "so.tilo.ebook".into(),
+    };
+    desktop
+        .apply(
+            &bound(room.clone(), open.clone()),
+            Some("tab:00000000000000aa"),
+        )
+        .unwrap();
+    let admission = desktop.admission().unwrap();
+    let (tab, app) = tabs(&admission.tree, 0)[0].clone();
+    assert_eq!(app, "so.tilo.ebook");
+    assert_eq!(admission.routes[&tab], "tab:00000000000000aa");
+    assert!(
+        !desktop.is_fresh(tab),
+        "the record exists; nothing creates it"
+    );
+    assert_eq!(desktop.take_focus(), Some(tab));
+    assert!(
+        admission
+            .required
+            .iter()
+            .any(|r| r.record_id == "tab:00000000000000aa")
+    );
+    assert_eq!(
+        desktop
+            .apply(&bound(room, open), Some("not a record"))
+            .unwrap_err(),
+        "invalid canonical ordinary record route"
+    );
+    assert_eq!(
+        tabs(&desktop.admission().unwrap().tree, 0).len(),
+        1,
+        "a refused open changes nothing"
+    );
+}
+
+#[test]
+fn every_room_change_carries_the_time_it_was_made() {
+    let before = web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut desktop = LocalDesktop::new(
+        ROOM,
+        "Visitor",
+        &seed(serde_json::json!({"workspaces": [{"strips": [{"windows": [window("so.tilo.notes")]}]}]})),
+    )
+    .unwrap();
+    let id = desktop.admission().unwrap().tree.workspaces[0].room;
+    open(&mut desktop, id.to_string(), "so.tilo.calculator");
+    let doc = desktop.room(id).unwrap();
+    let changes = doc.clone().get_changes(&[]);
+    assert!(changes.len() >= 2);
+    for change in changes {
+        assert!(
+            change.timestamp() >= before,
+            "a seeded or reduced change is stamped when it was committed, not at the epoch"
+        );
+    }
 }
 
 #[test]
@@ -244,16 +318,18 @@ fn mount(seed_json: serde_json::Value, storage: &PortableStorage) -> (DesktopRoo
         vec![],
     );
     let (root, handle) = DesktopRoot::new(
-        local.admission().unwrap(),
-        storage.clone(),
+        DesktopSources {
+            admission: local.admission().unwrap(),
+            storage: storage.clone(),
+            permissions,
+            content: None,
+            local: Some(local),
+        },
         ROOM,
         "device",
         "author",
         1,
-        permissions,
         Arc::new(|| {}),
-        None,
-        Some(local),
     )
     .unwrap();
     assert!(
@@ -333,6 +409,68 @@ fn the_real_desktop_creates_new_windows_records_and_opens_the_pages_own() {
             .any(|r| r.kind == "word_processor.document")
     );
     assert!(!resources.iter().any(|r| r.kind.starts_with("notes.")));
+
+    // Every window reports its app and record, so the page can mount the
+    // record elsewhere, and opens another window on it.
+    let snapshot = navigation(&handle);
+    let entries = snapshot["entries"].as_array().unwrap();
+    let writer_entry = entries
+        .iter()
+        .find(|e| e["app"] == "so.tilo.word-processor")
+        .unwrap();
+    assert_eq!(writer_entry["record"], record.id.as_str());
+    let notes_entry = entries
+        .iter()
+        .find(|e| e["app"] == "so.tilo.notes")
+        .unwrap();
+    assert!(
+        notes_entry["record"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty())
+    );
+    let generation = snapshot["generation"].as_str().unwrap().to_owned();
+    let opened = handle
+        .navigate(
+            &mut frame,
+            serde_json::from_value(serde_json::json!({"kind":"open","generation":generation,
+                "app":"so.tilo.word-processor","record":record.id.as_str()}))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(opened.is_some());
+    frame.poll_frame().unwrap();
+    let snapshot = navigation(&handle);
+    let windows = snapshot["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["record"] == record.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(windows.len(), 2, "a second window on the same record");
+    assert_eq!(
+        snapshot["active"], windows[1]["route"],
+        "and it is selected"
+    );
+    assert!(
+        handle.errors.borrow().is_empty(),
+        "{:?}",
+        handle.errors.borrow()
+    );
+    for record in ["", "not a record"] {
+        assert!(
+            handle
+                .navigate(
+                    &mut frame,
+                    serde_json::from_value(
+                        serde_json::json!({"kind":"open","generation":generation,
+                        "app":"so.tilo.word-processor","record":record})
+                    )
+                    .unwrap(),
+                )
+                .is_err(),
+            "{record:?}"
+        );
+    }
     frame.close_components();
     let _ = frame.take_component_close_reports();
 }

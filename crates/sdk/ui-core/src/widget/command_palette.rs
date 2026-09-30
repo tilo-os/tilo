@@ -18,9 +18,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
+use crate::paint::PaintCtx;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -407,6 +408,15 @@ struct ArgState {
 /// A predicate narrowing which [`CommandEntry`] rows are shown.
 type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 
+/// A filter chip's colours in one state: its body fill, an optional
+/// hairline edge, and its label ink.
+#[derive(Clone, Copy)]
+struct FilterChipLook {
+    body: Color,
+    edge: Option<Color>,
+    text: Color,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent, orthogonal display/behavior toggle \
@@ -491,7 +501,7 @@ impl CommandPalette {
             entries: Vec::new(),
             entry_index: ListIndex::default(),
             query: String::new(),
-            query_placeholder: "Search\u{2026}".to_string(),
+            query_placeholder: crate::i18n!("palette-placeholder"),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
             filter: None,
@@ -853,12 +863,6 @@ impl CommandPalette {
     /// full parameter list is the same key/state/path threading every other
     /// event handler in this file needs, so splitting it up would only
     /// fragment one cohesive state transition.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode key routing needs the raw event, the decoded \
-                  key and modifiers, and the CRDT handle to run the entry — \
-                  every parameter is independently load-bearing"
-    )]
     fn handle_arg_key(
         &mut self,
         event: &WindowEvent,
@@ -1248,12 +1252,13 @@ impl CommandPalette {
                 tx += f64::from(hw);
             }
             arg.composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &arg.buffer,
-                &arg.selection,
-                &arg.placeholder,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &arg.buffer,
+                    selection: &arg.selection,
+                    placeholder: &arg.placeholder,
+                    show_caret: self.is_focused,
+                },
                 Rect::new(
                     tx,
                     layout.input_rect.y0,
@@ -1261,27 +1266,20 @@ impl CommandPalette {
                     layout.input_rect.y1,
                 ),
                 &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
+                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
             );
         } else {
             self.query_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.query,
-                &self.query_selection,
-                &self.query_placeholder,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.query,
+                    selection: &self.query_selection,
+                    placeholder: &self.query_placeholder,
+                    show_caret: self.is_focused,
+                },
                 layout.input_rect,
                 &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
+                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
             );
         }
     }
@@ -1304,59 +1302,58 @@ impl CommandPalette {
         let strip = self.filter_strip_rect();
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
-        let active_fill = theme.tokens.colors.accent[5];
+        let active = FilterChipLook {
+            body: theme.tokens.colors.accent[5],
+            edge: None,
+            text: theme.tokens.colors.text_primary,
+        };
         // Idle scope chips are Selectors (HIG §9.5): no fill, outlined by a
         // hairline derived against the panel ground they sit on — a white
         // veneer disappeared on a light palette, and a base-relative lift
         // reads as a well on a panel ground darker than `raised`.
-        let idle_fill = Color::TRANSPARENT;
-        let idle_edge = Some(crate::surface::edge_on(crate::chrome::panel_ground(theme)));
-        let active_text = theme.tokens.colors.text_primary;
-        let idle_text = theme.tokens.colors.text_dim;
+        let idle = FilterChipLook {
+            body: Color::TRANSPARENT,
+            edge: Some(crate::surface::edge_on(crate::chrome::panel_ground(theme))),
+            text: theme.tokens.colors.text_dim,
+        };
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
 
         let mut x = strip.x0;
         for (scope, label) in [
             (SearchScope::Workspace, "WORKSPACE"),
             (SearchScope::All, "ALL"),
         ] {
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure(label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             let chip = Self::chip_rect(strip, x, chip_w);
-            let active = self.search_filter.scope == scope;
-            Self::draw_chip(
-                scene,
-                transform,
-                text_renderer,
-                chip,
-                label,
-                chip_text_size,
-                if active { active_fill } else { idle_fill },
-                if active { None } else { idle_edge },
-                if active { active_text } else { idle_text },
-            );
+            let look = if self.search_filter.scope == scope {
+                active
+            } else {
+                idle
+            };
+            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
             x += chip_w + 6.0;
         }
 
         let ft_label = "FULL TEXT";
-        let (ft_w, _) = text_renderer.measure(ft_label, chip_text_size, None);
+        let (ft_w, _) = ctx.text.measure(ft_label, chip_text_size, None);
         let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
         // "On" is a semantic state the theme defines (HIG §9.4), not a
         // Tailwind emerald that ignores the palette.
         let success = theme.tokens.colors.semantic.success;
-        let ft_active_fill = success.with_alpha_factor(0.2);
-        let ft_active_text = success;
+        let ft_active = FilterChipLook {
+            body: success.with_alpha_factor(0.2),
+            edge: None,
+            text: success,
+        };
         Self::draw_chip(
-            scene,
-            transform,
-            text_renderer,
+            &mut ctx,
             ft_chip,
             ft_label,
             chip_text_size,
-            if ft_on { ft_active_fill } else { idle_fill },
-            if ft_on { None } else { idle_edge },
-            if ft_on { ft_active_text } else { idle_text },
+            if ft_on { ft_active } else { idle },
         );
 
         // Filetype chips fill the gap up to 8 px before the full-text toggle.
@@ -1364,53 +1361,46 @@ impl CommandPalette {
         let max_x = ft_chip.x0 - 8.0;
         for ft in Filetype::ALL {
             let label = ft.label();
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = ctx.text.measure(label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             if fx + chip_w > max_x {
                 break;
             }
             let chip = Self::chip_rect(strip, fx, chip_w);
-            let active = self.search_filter.filetypes.contains(&ft);
-            Self::draw_chip(
-                scene,
-                transform,
-                text_renderer,
-                chip,
-                label,
-                chip_text_size,
-                if active { active_fill } else { idle_fill },
-                if active { None } else { idle_edge },
-                if active { active_text } else { idle_text },
-            );
+            let look = if self.search_filter.filetypes.contains(&ft) {
+                active
+            } else {
+                idle
+            };
+            Self::draw_chip(&mut ctx, chip, label, chip_text_size, look);
             fx += chip_w + 6.0;
         }
     }
 
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one paint-helper signature reused by every chip in the \
-                  strip; each parameter is an independently load-bearing \
-                  piece of what gets drawn"
-    )]
     fn draw_chip(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         chip: Rect,
         label: &str,
         text_size: f32,
-        body: Color,
-        edge: Option<Color>,
-        text_color: Color,
+        look: FilterChipLook,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            ..
+        } = ctx.reborrow();
         // `rounded-full` ≈ half-height radius.
         let radius = chip.height() / 2.0;
         let shape = RoundedRect::from_rect(chip, radius);
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
-        if let Some(edge) = edge {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            look.body,
+            None,
+            &shape,
+        );
+        if let Some(edge) = look.edge {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -1426,7 +1416,7 @@ impl CommandPalette {
             scene,
             label,
             text_size,
-            text_color,
+            look.text,
             transform.pre_translate(Vec2::new(tx, ty)),
             None,
         );
@@ -1467,19 +1457,16 @@ impl CommandPalette {
         let chip_h = (footer.height() - 12.0).max(13.0);
 
         let mut x = footer.x0 + 6.0;
-        let hints: &[(&str, &str)] = match self.mode {
-            PaletteMode::Search => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Open"),
-                ("Esc", "Close"),
-            ],
-            PaletteMode::Commands => &[
-                ("\u{2191}\u{2193}", "Navigate"),
-                ("\u{21b5}", "Run"),
-                ("Esc", "Close"),
-            ],
+        let activate = match self.mode {
+            PaletteMode::Search => "palette-hint-open",
+            PaletteMode::Commands => "palette-hint-run",
         };
-        for (key, label) in hints {
+        let hints = [
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!(activate)),
+            ("Esc", crate::i18n!("palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, size, None);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
@@ -1516,11 +1503,7 @@ impl CommandPalette {
 
         let n = self.result_total();
         if n > 0 {
-            let right = if n == 1 {
-                "1 result".to_string()
-            } else {
-                format!("{n} results")
-            };
+            let right = crate::i18n!("palette-result-count", "count" => n);
             let (sw, sh) = text_renderer.measure(&right, size, None);
             text_renderer.draw_text(
                 scene,
@@ -1545,8 +1528,6 @@ impl CommandPalette {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let label_size = theme.tokens.typography.scale.sm;
-        let desc_size = (theme.tokens.typography.scale.xs).max(10.0);
         let header_size = (theme.tokens.typography.scale.xs).max(9.0);
         let rh = self.row_height();
         let x0 = self.rect.x0 + PADDING;
@@ -1591,17 +1572,11 @@ impl CommandPalette {
                         .and_then(|&idx| self.entries.get(idx))
                     {
                         let selected = *entry_i == self.cursor;
-                        Self::draw_one_row(
-                            scene,
-                            transform,
-                            text_renderer,
-                            theme,
+                        self.draw_one_row(
+                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
                             row_rect,
                             entry,
                             selected,
-                            label_size,
-                            desc_size,
-                            self.platform,
                         );
                     }
                     y += rh;
@@ -1704,23 +1679,21 @@ impl CommandPalette {
     /// Paints the row's trailing decoration — a keybinding chip or an
     /// argument-entry cue, mutually exclusive — and returns the x the label
     /// text must stay clear of.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one paint-helper for the row's trailing decoration; each \
-                  parameter is independently load-bearing"
-    )]
     fn draw_row_trailing(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         row: Rect,
         entry: &CommandEntry,
-        colors: &crate::tokens::Colors,
-        label_size: f32,
         selected: bool,
-        platform: PlatformConventions,
     ) -> f64 {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let colors = &theme.tokens.colors;
+        let (label_size, _) = Self::row_text_sizes(theme);
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
         if let Some(badge) = &entry.badge {
@@ -1759,7 +1732,7 @@ impl CommandPalette {
                 None,
             );
             pill.x0 - 8.0
-        } else if let Some(labels) = entry.keycap_labels(platform) {
+        } else if let Some(labels) = entry.keycap_labels(self.platform) {
             let chip_w =
                 crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
             let chip_h = 26.0;
@@ -1804,26 +1777,27 @@ impl CommandPalette {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "standard immediate-mode paint-helper signature for this \
-                  vello renderer (scene + transform + text_renderer + theme, \
-                  plus this row's own content); every parameter is \
-                  independently load-bearing"
-    )]
+    /// Type sizes of a result row's title and of its description line.
+    fn row_text_sizes(theme: &Theme) -> (f32, f32) {
+        let scale = &theme.tokens.typography.scale;
+        (scale.sm, scale.xs.max(10.0))
+    }
+
     fn draw_one_row(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         row: Rect,
         entry: &CommandEntry,
         selected: bool,
-        label_size: f32,
-        desc_size: f32,
-        platform: PlatformConventions,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let colors = &theme.tokens.colors;
+        let (label_size, desc_size) = Self::row_text_sizes(theme);
         let row_ground = Self::row_ground(theme, selected);
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
@@ -1850,17 +1824,11 @@ impl CommandPalette {
             text_x = Self::draw_row_icon(scene, transform, row, icon, colors, selected);
         }
 
-        let text_right = Self::draw_row_trailing(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+        let text_right = self.draw_row_trailing(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             row,
             entry,
-            colors,
-            label_size,
             selected,
-            platform,
         );
         let avail = (text_right - text_x).max(0.0);
 
@@ -1947,7 +1915,8 @@ impl CommandPalette {
             None,
         );
         let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
-        let hint = "Try fewer words, or widen the scope";
+        let hint = crate::i18n!("palette-no-results-hint");
+        let hint = hint.as_str();
         let (hw, _) = text_renderer.measure(hint, hint_size, None);
         text_renderer.draw_text(
             scene,
@@ -1964,9 +1933,9 @@ impl CommandPalette {
 
     fn empty_results_title(&self) -> String {
         if self.query.is_empty() {
-            "Nothing to show".to_string()
+            crate::i18n!("palette-empty")
         } else {
-            format!("No results for “{}”", self.query)
+            crate::i18n!("palette-no-results", "query" => self.query.as_str())
         }
     }
 
@@ -2067,31 +2036,7 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        let _ = self.action_invocation.install(domain, attachment);
-    }
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.action_invocation.take()
-    }
-
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                entry
-                    .action_address
-                    .clone()
-                    .map(|address| crate::widget::ControlBindingMetadata {
-                        control_id: entry.id.clone(),
-                        kind: crate::widget::ControlBindingKind::Action(address),
-                    })
-            })
-            .collect()
-    }
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -2378,7 +2323,7 @@ impl Widget for CommandPalette {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
-            .with_name("Command palette")
+            .with_name(crate::i18n!("palette-name"))
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
@@ -2447,14 +2392,14 @@ impl Widget for CommandPalette {
             result_children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.empty_results_title())
-                    .with_description("Try fewer words, or widen the scope")
+                    .with_description(crate::i18n!("palette-no-results-hint"))
                     .with_bounds(self.empty_results_rect()),
             );
         }
         node = node.with_children(vec![
             query_node,
             AccessNode::new(Role::List)
-                .with_name("Results")
+                .with_name(crate::i18n!("palette-results"))
                 .with_bounds(Rect::new(
                     self.rect.x0 + PADDING,
                     self.list_top_y(),
@@ -2534,6 +2479,13 @@ impl Widget for CommandPalette {
                     self.is_focused = true;
                     true
                 }
+                // Assistive technology and agents set the query as a value,
+                // exactly as typing it would.
+                Action::SetValue(value) if self.arg_state.is_none() => {
+                    self.is_focused = true;
+                    self.set_query(value);
+                    true
+                }
                 _ => false,
             };
         }
@@ -2554,6 +2506,33 @@ impl Widget for CommandPalette {
             }
             _ => false,
         }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CommandPalette {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        let _ = self.action_invocation.install(domain, attachment);
+    }
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.action_invocation.take()
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .action_address
+                    .clone()
+                    .map(|address| crate::widget::ControlBindingMetadata {
+                        control_id: entry.id.clone(),
+                        kind: crate::widget::ControlBindingKind::Action(address),
+                    })
+            })
+            .collect()
     }
 }
 
@@ -2964,7 +2943,8 @@ mod tests {
             palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
 
             assert!(palette.take_outcome().is_none());
-            let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
             assert_eq!(invocation.address, ActionAddress::new("document:1", "save"));
             assert!(invocation.arguments.is_empty());
         }
@@ -2995,7 +2975,8 @@ mod tests {
             );
             assert!(handled);
             assert!(palette.take_outcome().is_none());
-            let invocation = Widget::take_control_invocation(&mut palette).unwrap();
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
             assert_eq!(
                 invocation.address,
                 ActionAddress::new("document:1", "rename")

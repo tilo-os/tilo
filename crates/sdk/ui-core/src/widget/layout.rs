@@ -392,7 +392,7 @@ impl CompositionFocus {
                     qualified_semantic: false,
                     binding: binding.clone(),
                     legacy: legacy.clone(),
-                    state: widget.get_state(),
+                    state: crate::undo::get_state(widget),
                 },
                 focused && !focused_ancestor,
             ));
@@ -554,7 +554,7 @@ impl CompositionFocus {
         if !focus.ambiguous {
             focus.state = unsafe {
                 crate::bound_dispatch::inspect_bound_node(bindings, nodes, state_node, |widget| {
-                    widget.get_state()
+                    crate::undo::get_state(widget)
                 })
             }
             .ok()
@@ -699,7 +699,7 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     widget.set_focus(true);
                     if let Some(state) = &self.state {
-                        widget.set_state(state);
+                        crate::undo::set_state(widget, state);
                     }
                 })
             };
@@ -710,7 +710,7 @@ impl CompositionFocus {
                 mutate_bound_node(bindings, nodes, node, |widget| {
                     widget.set_focus(true);
                     if let Some(state) = &self.state {
-                        widget.set_state(state);
+                        crate::undo::set_state(widget, state);
                     }
                 })
             };
@@ -739,6 +739,8 @@ impl AnonymousFocusProbe {
 }
 #[cfg(test)]
 impl Widget for AnonymousFocusProbe {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn name(&self) -> &str {
         "AnonymousFocusProbe"
     }
@@ -782,6 +784,10 @@ impl Widget for AnonymousFocusProbe {
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
     }
+}
+
+#[cfg(test)]
+impl crate::undo::UndoPoints for AnonymousFocusProbe {
     fn get_state(&self) -> Option<String> {
         Some(self.state.clone())
     }

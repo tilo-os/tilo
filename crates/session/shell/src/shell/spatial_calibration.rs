@@ -402,10 +402,6 @@ impl DeviceHealthTracker {
     }
 
     #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each input is an independent fact the caller already holds about the peer"
-    )]
     pub fn observation(
         &self,
         peer: &DeviceId,

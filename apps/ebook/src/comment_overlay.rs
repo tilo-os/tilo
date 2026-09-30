@@ -7,13 +7,13 @@
 use automerge::{AutoCommit, ObjId};
 use ui::theme::Theme;
 use uuid::Uuid;
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use std::collections::HashMap;
 use ui::ColorCompat;
 
 use tilo_rich_text::RichTextView;
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 
 use crate::input_controls::{InputEventCtx, NoteEditor};
@@ -358,23 +358,24 @@ impl CommentOverlay {
     /// Draws the card shadow/background/border and the "Highlight" header row
     /// (color swatch, label, delete-highlight trash); records their hits.
     /// Returns the y-coordinate immediately below the header.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The highlight header painter needs render context, cursor, card padding and height, highlight color, and the action group ID."
-    )]
     fn draw_card_and_header(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Point,
-        card: Rect,
-        pad: f64,
-        header_h: f64,
-        color: HiColor,
-        group: Uuid,
+        layout: &CommentCard<'_>,
     ) -> f64 {
+        let (t, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx {
+            scene, text: tr, ..
+        } = ctx;
+        let &CommentCard {
+            card,
+            pad,
+            header_h,
+            color,
+            group,
+            ..
+        } = layout;
         let colors = &theme.tokens.colors;
         // A floating Panel: elevation, ground and the derived Panel border.
         // The focus ring belongs to the control being edited, not the card.
@@ -422,26 +423,26 @@ impl CommentOverlay {
 
     /// Draws each comment row (text, delete/edit affordances) and records
     /// their hits. Returns the y-coordinate immediately below the last row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Comment rows share render context and cursor but carry premeasured row heights, text width, column bounds, and spacing."
-    )]
     fn draw_comment_rows(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Point,
-        ix0: f64,
-        ix1: f64,
+        layout: &CommentCard<'_>,
         mut y: f64,
-        comments: &[Annotation],
-        row_heights: &[f64],
-        text_w: f32,
-        gap: f64,
     ) -> f64 {
         use crate::chrome::rhythm;
+        let (t, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx {
+            scene, text: tr, ..
+        } = ctx;
+        let &CommentCard {
+            comments,
+            row_heights,
+            text_w,
+            gap,
+            ..
+        } = layout;
+        let (ix0, ix1) = (layout.ix0(), layout.ix1());
         let colors = &theme.tokens.colors;
         // The two row controls are full pointer targets, a sibling step from
         // each other and a tight step in from the row's edge.
@@ -533,24 +534,18 @@ impl CommentOverlay {
     }
 
     /// Draws the "Add comment" button and records its hit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The add-comment button uses render context, cursor, row bounds and height, plus the highlight group targeted by its hit action."
-    )]
     fn draw_add_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Point,
-        ix0: f64,
-        ix1: f64,
+        layout: &CommentCard<'_>,
         y: f64,
-        add_h: f64,
-        group: Uuid,
     ) {
-        let add = Rect::new(ix0, y, ix1, y + add_h - 4.0);
+        let (t, theme) = (ctx.transform, ctx.theme);
+        let PaintCtx {
+            scene, text: tr, ..
+        } = ctx;
+        let add = Rect::new(layout.ix0(), y, layout.ix1(), y + layout.add_h - 4.0);
         // The shared Neutral face (HIG §8): raised, derived edge, themed hover.
         ui::widget::Button::paint(
             scene,
@@ -564,19 +559,12 @@ impl CommentOverlay {
                 .weight(TextWeight::Semibold)
                 .hovered(add.contains(cursor)),
         );
-        self.push_hit(add, CommentAction::Add(group));
+        self.push_hit(add, CommentAction::Add(layout.group));
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The comment overlay combines render context with viewport, cursor, annotations, and the fallback highlight color."
-    )]
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         viewport: Rect,
         cursor: Point,
         annotations: &[Annotation],
@@ -594,8 +582,8 @@ impl CommentOverlay {
         let pad = 16.0;
         let inner_w = (cw - pad * 2.0) as f32;
         let text_w = inner_w - 52.0;
-        let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let row_heights = self.comment_row_heights(tr, theme, &comments, text_w);
+        let (_, excerpt_h) = ctx.text.measure(&excerpt, 12.0, Some(inner_w));
+        let row_heights = self.comment_row_heights(ctx.text, ctx.theme, &comments, text_w);
         self.views
             .retain(|id, _| comments.iter().any(|comment| comment.id == *id));
 
@@ -605,40 +593,34 @@ impl CommentOverlay {
         let comments_h = row_heights.iter().sum::<f64>() + gap * comments.len().max(1) as f64;
         let ch = pad + header_h + 8.0 + f64::from(excerpt_h) + 12.0 + comments_h + add_h + pad;
 
-        let card = self.card_rect(viewport, cw, ch);
-        let ix0 = card.x0 + pad;
-        let ix1 = card.x1 - pad;
+        let layout = CommentCard {
+            card: self.card_rect(viewport, cw, ch),
+            pad,
+            header_h,
+            gap,
+            add_h,
+            text_w,
+            color,
+            group,
+            comments: &comments,
+            row_heights: &row_heights,
+        };
 
-        let y = self.draw_card_and_header(
-            scene, t, tr, theme, cursor, card, pad, header_h, color, group,
-        );
+        let y = self.draw_card_and_header(ctx, cursor, &layout);
 
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             &excerpt,
             12.0,
-            theme.tokens.colors.text_dim,
-            t * Affine::translate((ix0, y)),
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform * Affine::translate((layout.ix0(), y)),
             Some(inner_w),
         );
         let y = y + f64::from(excerpt_h) + 12.0;
 
-        let y = self.draw_comment_rows(
-            scene,
-            t,
-            tr,
-            theme,
-            cursor,
-            ix0,
-            ix1,
-            y,
-            &comments,
-            &row_heights,
-            text_w,
-            gap,
-        );
+        let y = self.draw_comment_rows(ctx, cursor, &layout, y);
 
-        self.draw_add_button(scene, t, tr, theme, cursor, ix0, ix1, y, add_h, group);
+        self.draw_add_button(ctx, cursor, &layout, y);
     }
 
     #[cfg(test)]
@@ -648,6 +630,34 @@ impl CommentOverlay {
             .rev()
             .find(|h| pred(h.action))
             .map(|h| h.rect.center())
+    }
+}
+
+/// The measured comments card for one highlight group: its rect and
+/// spacing, the group's colour and id, and the comments listed in it with
+/// their measured row heights.
+struct CommentCard<'a> {
+    card: Rect,
+    pad: f64,
+    header_h: f64,
+    gap: f64,
+    add_h: f64,
+    text_w: f32,
+    color: HiColor,
+    group: Uuid,
+    comments: &'a [Annotation],
+    row_heights: &'a [f64],
+}
+
+impl CommentCard<'_> {
+    /// Left edge of the card's padded content.
+    fn ix0(&self) -> f64 {
+        self.card.x0 + self.pad
+    }
+
+    /// Right edge of the card's padded content.
+    fn ix1(&self) -> f64 {
+        self.card.x1 - self.pad
     }
 }
 
@@ -705,10 +715,7 @@ mod tests {
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             overlay.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
                 Rect::new(0.0, 0.0, 800.0, 700.0),
                 Point::ZERO,
                 &annotations,
@@ -737,10 +744,7 @@ mod tests {
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             overlay.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
                 Rect::new(0.0, 0.0, 600.0, 500.0),
                 Point::ZERO,
                 &annotations,

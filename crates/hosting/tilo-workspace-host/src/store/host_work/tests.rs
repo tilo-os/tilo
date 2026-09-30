@@ -300,7 +300,7 @@ fn host_work_unknown_entry_and_symlink_refuse_without_deleting_user_files() {
 
 #[test]
 fn host_work_special_fifo_refuses_without_blocking_shared_inventory() {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc};
     for suffix in ["data", "meta"] {
         let temp = tempfile::tempdir().unwrap();
         let store = crate::store::SessionStore::create(&temp.path().join("owner")).unwrap();
@@ -320,7 +320,9 @@ fn host_work_special_fifo_refuses_without_blocking_shared_inventory() {
             let result = store.staging_directory(&worker_inventory, 7).map(drop);
             send.send(result).unwrap();
         });
-        let timely = receive.recv_timeout(Duration::from_millis(500));
+        // A correct open refuses the FIFO however slow the host is; only a
+        // blocking open outlasts the hang bound.
+        let timely = receive.recv_timeout(tilo_test_env::hang_bound());
         let result = match timely {
             Ok(result) => (true, result),
             Err(mpsc::RecvTimeoutError::Timeout) => {

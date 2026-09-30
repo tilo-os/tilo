@@ -67,9 +67,11 @@ fn native_proof_admission_uses_owner_200_after_wall_rolls_back_to_50() {
         &f.current,
         &ingress.host_bytes(),
         OwnerDataOperation::Replay,
-        &proof,
-        &exact,
-        &request,
+        RequestEvidence {
+            proof: &proof,
+            exact: &exact,
+            original: &request,
+        },
     );
     let Err(error) = result else {
         panic!("HTTP proof expired at owner time 200 was admitted using a lower wall sample");
@@ -191,9 +193,11 @@ fn native_proof_admission_refuses_same_peer_with_a_different_owner_clock() {
                 &unrelated,
                 &ingress.host_bytes(),
                 OwnerDataOperation::Replay,
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request
+                }
             )
             .is_err(),
         "matching peer bytes cannot substitute a different owner clock origin"
@@ -205,9 +209,11 @@ fn native_proof_admission_refuses_same_peer_with_a_different_owner_clock() {
                 &f.current,
                 &ingress.host_bytes(),
                 OwnerDataOperation::Replay,
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request
+                }
             )
             .is_ok(),
         "foreign clock rejection must not consume the genuine proof nonce"
@@ -246,9 +252,11 @@ fn native_proof_admission_delayed_original_survives_progress_but_not_recovery_or
                 OwnerDataOperation::State {
                     input_len: exact.body().len(),
                 },
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request,
+                },
             )
             .unwrap();
         check.capture_continuation(&admitted, &request).unwrap()
@@ -315,9 +323,11 @@ fn current_operation_clock_rejection_advances_shared_high_water_after_authority_
             &f.current,
             &budget,
             OwnerDataOperation::Replay,
-            &proof,
-            &exact,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: &original,
+            },
             &clock,
         )
         .unwrap();
@@ -380,9 +390,11 @@ fn current_operation_rejects_original_byte_and_proof_substitution_without_consum
                     OwnerDataOperation::State {
                         input_len: request.body().len()
                     },
-                    candidate,
-                    request,
-                    &original,
+                    RequestEvidence {
+                        proof: candidate,
+                        exact: request,
+                        original: &original
+                    },
                     &clock
                 )
                 .is_err()
@@ -397,9 +409,11 @@ fn current_operation_rejects_original_byte_and_proof_substitution_without_consum
                 OwnerDataOperation::State {
                     input_len: exact.body().len()
                 },
-                &proof,
-                &exact,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &original
+                },
                 &clock
             )
             .is_ok()
@@ -423,9 +437,11 @@ fn current_operation_observes_sender_drop_cancel_deadline_and_session_expiry() {
                 &f.current,
                 &budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &exact,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &original,
+                },
                 &clock,
             )
             .unwrap();
@@ -466,9 +482,11 @@ fn current_poll_resume_requires_original_registry_entry_boot_descriptor_and_life
                 &f.current,
                 &budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &exact,
-                &original,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &original,
+                },
                 &clock,
             )
             .unwrap();
@@ -543,9 +561,11 @@ fn current_operation_uses_real_turn_and_revalidates_without_second_nonce_admissi
             &f.current,
             &budget,
             OwnerDataOperation::Replay,
-            &proof,
-            &exact,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: &original,
+            },
             &clock,
         )
         .expect("real current operation admission");
@@ -648,9 +668,11 @@ fn operation_continuation_captures_only_the_original_admitted_lifecycle() {
             OwnerDataOperation::State {
                 input_len: exact.body().len(),
             },
-            &proof,
-            &exact,
-            &original,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: &original,
+            },
             &clock,
         )
         .unwrap();
@@ -678,7 +700,16 @@ fn operation_continuation_revalidates_without_second_nonce_and_fences_entry_canc
         let clock = TestClock::new(f.now);
         let (admitted, check, turn) = registry
             .admit_revalidating_at(
-                &f.owner, &f.current, &budget, operation, &proof, &exact, &original, &clock,
+                &f.owner,
+                &f.current,
+                &budget,
+                operation,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &original,
+                },
+                &clock,
             )
             .unwrap();
         let ticket = check.capture_continuation(&admitted, &original).unwrap();
@@ -708,9 +739,11 @@ fn operation_continuation_revalidates_without_second_nonce_and_fences_entry_canc
                         &f.current,
                         &budget,
                         operation,
-                        &proof,
-                        &exact,
-                        pending.original(),
+                        RequestEvidence {
+                            proof: &proof,
+                            exact: &exact,
+                            original: pending.original()
+                        },
                         &clock
                     )
                     .is_err(),

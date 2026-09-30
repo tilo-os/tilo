@@ -14,6 +14,11 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
+
     crate::testing::inert_widget_methods!(
         unregistered_leaf_layout,
         apply_layout,
@@ -27,15 +32,21 @@ impl Widget for HostedPumpProbe {
             self.label = label;
         }
     }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE]
+    }
+}
+
+impl crate::undo::UndoPoints for HostedPumpProbe {
     fn needs_commit(&self) -> bool {
         self.commit.get()
     }
     fn on_commit(&mut self) {
         self.commit.set(false);
     }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[COUNTER_TYPE]
-    }
+}
+
+impl crate::resources::PublishesResources for HostedPumpProbe {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {
@@ -356,7 +367,9 @@ fn hosted_pump_policy_change_and_expiry_refresh() {
 
 #[test]
 fn hosted_pump_host_owner_permission_replacement_refreshes() {
-    use crate::application::{ApplicationDefinition, HostContext, LaunchTarget, RestoreInput};
+    use crate::application::{
+        ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
     let temp = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(temp.path().into());
     let records = owners
@@ -385,13 +398,15 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
     ));
     let context = HostContext::prepare(
         &definition,
-        records,
-        views,
-        "D".into(),
-        82,
-        permissions.clone(),
-        crate::permissions::UserId("fixture-user".into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records,
+            views,
+            device_id: "D".into(),
+            instance_id: 82,
+            permissions: permissions.clone(),
+            author: crate::permissions::UserId("fixture-user".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &LaunchTarget::New,
     )
     .unwrap();

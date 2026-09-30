@@ -364,7 +364,7 @@ pub struct MailApp {
     /// can emit several events, while successful IMAP writes emit none besides
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
-    background_poll_deadline: Cell<Option<std::time::Instant>>,
+    background_poll_deadline: Cell<Option<ui::time::Instant>>,
     pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
     /// The one refresh invocation currently owned by the resource-operation
     /// host.  It remains occupied until the host has polled its terminal
@@ -392,7 +392,7 @@ pub struct MailApp {
     /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
     /// on its own instead of lingering forever.
     toast_text: Option<String>,
-    toast_deadline: Option<std::time::Instant>,
+    toast_deadline: Option<ui::time::Instant>,
 
     overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
@@ -945,7 +945,7 @@ impl MailApp {
         if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
             return Err("selected destination is outside a regular folder".into());
         }
-        atomic_file::write(path, bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(path, bytes).map_err(|error| error.to_string())
     }
 
     fn attachment_save_busy(&self) -> bool {
@@ -2332,7 +2332,7 @@ impl MailApp {
     /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
     /// status once the deadline passes. Parameterised on `now` so the timing is
     /// unit-testable without a real sleep.
-    fn expire_toast_at(&mut self, now: std::time::Instant) {
+    fn expire_toast_at(&mut self, now: ui::time::Instant) {
         let current = self.shared.borrow().status.clone();
         if current != self.toast_text {
             // The status changed (or was cleared): (re)arm the timer.
@@ -3419,10 +3419,6 @@ impl MailApp {
 
     /// The autoconfig/validation hint line and the Save / Cancel / Remove
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the footer forwards the paint context, label column, pointer and sheet rect to its hint and button painters"
-    )]
     fn draw_setup_footer(
         &self,
         scene: &mut Scene,
@@ -4851,6 +4847,12 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::MAIL_OPERATION_TYPE]
     }
@@ -4873,7 +4875,7 @@ impl Widget for MailApp {
         self.drain_compose_attachment();
         self.compose.sync(state, path);
         // Fade out a transient status toast once its lifetime elapses.
-        self.expire_toast_at(std::time::Instant::now());
+        self.expire_toast_at(ui::time::now());
 
         let mem_seeded = self.shared.borrow().seeded;
         if mem_seeded {
@@ -4910,34 +4912,6 @@ impl Widget for MailApp {
             self.shared.borrow_mut().status = Some(error);
         }
         self.nav.sync(state, path);
-    }
-
-    /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn start_operation(
@@ -5001,39 +4975,6 @@ impl Widget for MailApp {
         } else {
             None
         }
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its mail action, so it records one undo boundary bracketing it (the same
-    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
-    /// cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the composer; everything else through
-        // Mail's own host. One event does one or the other.
-        let body = self.compose.take_committed_action();
-        let mail = self.shared.borrow_mut().take_committed_action();
-        body.or(mail)
-    }
-
-    /// Typing a word in the draft body is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.compose.keeps_undo_step_open()
-    }
-
-    /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
-    /// [`MailSearchProvider`](crate::search_provider::MailSearchProvider) makes
-    /// every already-loaded message findable there by subject / sender / body,
-    /// alongside the actions the app exports. The provider never touches the
-    /// IMAP engine, so a Ctrl+K query stays synchronous.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let search_refresh = {
-            let state = self.shared.borrow();
-            self.mail_search_provider.refresh(&state.mailbox)
-        };
-        if let Err(error) = search_refresh {
-            self.shared.borrow_mut().status = Some(error);
-        }
-        vec![Box::new(self.mail_search_provider.clone())]
     }
 
     fn build_layout(
@@ -5426,7 +5367,7 @@ impl Widget for MailApp {
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         // Worker and native-picker completions are not animation. Keep their
         // deadline fixed until sync consumes a tick, even with reduced motion.
         let pending = self.awaiting_engine
@@ -5435,9 +5376,10 @@ impl Widget for MailApp {
             || self.attachment_save_rx.is_some()
             || self.compose_attachment_rx.is_some();
         let background = pending.then(|| {
-            let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-                std::time::Instant::now() + std::time::Duration::from_millis(16)
-            });
+            let deadline = self
+                .background_poll_deadline
+                .get()
+                .unwrap_or_else(|| ui::time::now() + std::time::Duration::from_millis(16));
             self.background_poll_deadline.set(Some(deadline));
             deadline
         });
@@ -5469,6 +5411,70 @@ impl Widget for MailApp {
         for i in &mut self.setup_inputs {
             i.mark_drawn();
         }
+    }
+}
+
+impl ui::search::capability::SearchSource for MailApp {
+    /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
+    /// [`MailSearchProvider`](crate::search_provider::MailSearchProvider) makes
+    /// every already-loaded message findable there by subject / sender / body,
+    /// alongside the actions the app exports. The provider never touches the
+    /// IMAP engine, so a Ctrl+K query stays synchronous.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        let search_refresh = {
+            let state = self.shared.borrow();
+            self.mail_search_provider.refresh(&state.mailbox)
+        };
+        if let Err(error) = search_refresh {
+            self.shared.borrow_mut().status = Some(error);
+        }
+        vec![Box::new(self.mail_search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for MailApp {
+    /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::undo::CommittedActions for MailApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its mail action, so it records one undo boundary bracketing it (the same
+    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
+    /// cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // A body edit dispatches through the composer; everything else through
+        // Mail's own host. One event does one or the other.
+        let body = self.compose.take_committed_action();
+        let mail = self.shared.borrow_mut().take_committed_action();
+        body.or(mail)
+    }
+    /// Typing a word in the draft body is one undo step.
+    fn keeps_undo_step_open(&self) -> bool {
+        self.compose.keeps_undo_step_open()
     }
 }
 
@@ -6979,7 +6985,7 @@ mod tests {
                 "Open records no selection, folder, search, mode, or compose presentation state"
             );
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "mark-read remains a replayable collaborative action"
             );
         }
@@ -7132,7 +7138,7 @@ mod tests {
                 "unlike Open message, explicit preview never queues mark-read"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "a read-state-neutral preview creates no collaborative action"
             );
             let semantics = app.accessibility().expect("reader accessibility");
@@ -7179,7 +7185,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -8079,7 +8085,7 @@ mod tests {
         {
             // A "Synced N messages" toast must fade on its own, not linger forever.
             let (mut app, _doc) = app();
-            let t0 = std::time::Instant::now();
+            let t0 = ui::time::now();
             app.shared.borrow_mut().status = Some("Synced 3 messages".into());
             app.expire_toast_at(t0); // first observation arms the deadline
             assert!(
@@ -8271,7 +8277,7 @@ mod tests {
                 before + 1,
                 "'e' archived the selection"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
 
         // Phase `reader_shortcuts_reply_star_and_mark_unread_through_visible_paths`.
@@ -8290,11 +8296,11 @@ mod tests {
                 app.shared.borrow().mailbox.get(id).unwrap().starred,
                 !was_starred
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -8321,7 +8327,7 @@ mod tests {
                 before + 1,
                 "Delete moved the selection to Trash"
             );
-            assert!(app.take_committed_action().is_some());
+            assert!(ui::undo::take_committed_action(&mut app).is_some());
         }
     }
 

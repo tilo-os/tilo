@@ -8,6 +8,7 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
+use ui::paint::PaintCtx;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
@@ -171,24 +172,12 @@ impl HistoryPreview for ContactsPreview {
                 &c.initials(),
             );
             y += avatar + f64::from(sp.s3);
+            let ctx = &mut PaintCtx::new(scene, t, tr, theme);
+            crate::app::detail_field(ctx, x, x1, &mut y, "Name", &c.display_name());
+            crate::app::detail_field(ctx, x, x1, &mut y, "Title", &c.title);
+            crate::app::detail_field(ctx, x, x1, &mut y, "Company", &c.org);
             crate::app::detail_field(
-                scene,
-                t,
-                tr,
-                theme,
-                x,
-                x1,
-                &mut y,
-                "Name",
-                &c.display_name(),
-            );
-            crate::app::detail_field(scene, t, tr, theme, x, x1, &mut y, "Title", &c.title);
-            crate::app::detail_field(scene, t, tr, theme, x, x1, &mut y, "Company", &c.org);
-            crate::app::detail_field(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 x,
                 x1,
                 &mut y,
@@ -196,46 +185,24 @@ impl HistoryPreview for ContactsPreview {
                 if c.favorite { "Yes" } else { "No" },
             );
             for g in &c.groups {
-                crate::app::detail_field(scene, t, tr, theme, x, x1, &mut y, "Group", &g.value);
+                crate::app::detail_field(ctx, x, x1, &mut y, "Group", &g.value);
             }
             for (label, rows) in [("PHONE", &c.phones), ("EMAIL", &c.emails)] {
                 if !rows.is_empty() {
-                    crate::app::detail_section(scene, t, tr, theme, x, &mut y, label);
+                    crate::app::detail_section(ctx, x, &mut y, label);
                 }
                 for row in rows {
-                    crate::app::detail_field(
-                        scene, t, tr, theme, x, x1, &mut y, &row.label, &row.value,
-                    );
+                    crate::app::detail_field(ctx, x, x1, &mut y, &row.label, &row.value);
                 }
             }
             for a in &c.addresses {
-                crate::app::detail_field(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    x,
-                    x1,
-                    &mut y,
-                    &a.label,
-                    &a.one_line(),
-                );
+                crate::app::detail_field(ctx, x, x1, &mut y, &a.label, &a.one_line());
             }
             if let Some(b) = c.birthday {
-                crate::app::detail_field(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    x,
-                    x1,
-                    &mut y,
-                    "Birthday",
-                    &b.pretty(),
-                );
+                crate::app::detail_field(ctx, x, x1, &mut y, "Birthday", &b.pretty());
             }
-            crate::app::detail_field(scene, t, tr, theme, x, x1, &mut y, "Website", &c.website);
-            crate::app::detail_field(scene, t, tr, theme, x, x1, &mut y, "Notes", &c.notes);
+            crate::app::detail_field(ctx, x, x1, &mut y, "Website", &c.website);
+            crate::app::detail_field(ctx, x, x1, &mut y, "Notes", &c.notes);
         } else {
             tr.draw_text(
                 scene,

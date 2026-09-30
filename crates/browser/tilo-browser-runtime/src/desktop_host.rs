@@ -28,7 +28,8 @@ use ui::widget::{AppModel, ModelPath};
 use ui::{TextRenderer, Theme, presence::PresenceCtx};
 use ui::{
     application::{
-        ApplicationDefinition, ComponentCloseReport, HostContext, LaunchTarget, RestoreInput,
+        ApplicationDefinition, ComponentCloseReport, HostContext, HostContextInputs, LaunchTarget,
+        RestoreInput,
     },
     application_view::InstanceViewStore,
     portable_storage::{PortableStorage, StorageKey},
@@ -102,22 +103,27 @@ pub(crate) struct DesktopHandle {
 impl DesktopHandle {
     /// Hand a bound command to the room's topology owner: the local owner
     /// reduces it into the next admission at once; otherwise it is
-    /// speculated and queued for the peer.
+    /// speculated and queued for the peer. An open on an existing `record`
+    /// needs the local owner.
     fn submit(
         &self,
         tree: Option<&DesktopTree>,
         command: tilo_desktop_model::commands::BoundCommand,
+        record: Option<&str>,
     ) -> Result<(uuid::Uuid, bool), String> {
         let invocation = uuid::Uuid::new_v4();
         if let Some(local) = &self.local {
             let admission = {
                 let mut local = local.borrow_mut();
-                local.apply(&command)?;
+                local.apply(&command, record)?;
                 local.admission()?
             };
             let permissions = self.permissions.borrow().clone();
             *self.inbox.borrow_mut() = Some((admission, permissions));
             return Ok((invocation, false));
+        }
+        if record.is_some() {
+            return Err("only the page's own desktop opens a window on an existing record".into());
         }
         let mut queue = self.session_requests.borrow_mut();
         if queue.len() >= 32 {
@@ -366,31 +372,26 @@ impl Contexts {
             .open(app_id, &self.room)
             .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
         let checkout = self.checkout(definition, request)?;
-        let author = ui::permissions::UserId(self.author.clone());
-        let mut context = match create {
-            Some(new) if !new.id.is_package_primary() => HostContext::prepare_new_record(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                new.id.clone(),
-            )?,
-            _ => HostContext::prepare(
-                definition,
-                store.clone(),
-                self.views.clone(),
-                self.device.clone(),
-                request.tab.id,
-                self.permissions.clone(),
-                author,
-                tilo_actions::ActionContext::default(),
-                target,
-            )?,
+        let inputs = HostContextInputs {
+            records: store.clone(),
+            views: self.views.clone(),
+            device_id: self.device.clone(),
+            instance_id: request.tab.id,
+            permissions: self.permissions.clone(),
+            author: ui::permissions::UserId(self.author.clone()),
+            action_context: tilo_actions::ActionContext::default(),
         };
+        let mut context = match create {
+            Some(new) if !new.id.is_package_primary() => {
+                HostContext::prepare_new_record(definition, inputs, new.id.clone())?
+            }
+            _ => HostContext::prepare(definition, inputs, target)?,
+        };
+        // A local desktop's records are the page's, which its other mounts
+        // of the profile and device edit too.
+        if self.handle.local.is_some() {
+            context.write_as_author();
+        }
         if let Some(content) = &self.content {
             context.provide_content(content.clone());
         }
@@ -688,7 +689,9 @@ impl DesktopCommandSink for BrowserCommands<'_> {
         &mut self,
         command: tilo_desktop_model::commands::BoundCommand,
     ) -> Result<(), String> {
-        self.handle.submit(Some(self.tree), command).map(|_| ())
+        self.handle
+            .submit(Some(self.tree), command, None)
+            .map(|_| ())
     }
 }
 pub(crate) struct DesktopRoot {
@@ -732,6 +735,17 @@ pub(crate) struct DesktopRoot {
     /// The window the switcher settled on, focused during the next update.
     pending_switch: Option<tilo_desktop::window_switcher::WindowAddress>,
 }
+/// What a canonical desktop is built from: its admitted records, the storage
+/// they are cached in, the local permissions, and, for the page's own desktop,
+/// its content store and seeded local desktop.
+pub struct DesktopSources {
+    pub admission: Admission,
+    pub storage: PortableStorage,
+    pub permissions: ui::permissions::PermissionContext,
+    pub content: Option<tilo_content::ContentStore>,
+    pub local: Option<crate::local_desktop::LocalDesktop>,
+}
+
 impl DesktopRoot {
     /// LIVE_V1: record the laid-out window groups, the focused group and any
     /// window drag for the live overlay (rectangles only; no document reads).
@@ -740,6 +754,27 @@ impl DesktopRoot {
             covered: self.activity.is_some(),
             ..Default::default()
         };
+        // Tabs of an app this build cannot run: a legacy window, which the
+        // live overlay fills with the session's video of it.
+        let legacy_apps: BTreeMap<u64, String> = self
+            .handle
+            .tree
+            .try_borrow()
+            .map(|tree| {
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .filter_map(|tab| {
+                        let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
+                        crate::desktop::definition(&app)
+                            .is_none()
+                            .then_some((tab.id, app))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for strip in self.surface.strip_ids() {
             let Some(row) = self.surface.row(strip) else {
                 continue;
@@ -749,12 +784,16 @@ impl DesktopRoot {
                 if group.focused {
                     layout.focused_group = Some(group.id);
                 }
+                let tab = group.active_tab_id();
                 layout.groups.push(crate::live_view::LiveGroup {
                     id: group.id,
                     rect: group.get_rect(),
-                    tab: group.active_tab_id(),
+                    tab,
                     scroll: ui::Widget::primary_vertical_scroll(group)
                         .map(|region| region.metrics.offset),
+                    legacy: legacy_apps
+                        .get(&tab)
+                        .and_then(|app| Some((app.clone(), group.content_rect_for_tab(tab)?))),
                 });
             }
             if layout.drag.is_none() {
@@ -799,6 +838,14 @@ impl DesktopRoot {
                 .iter()
                 .find(|group| group.id == focused)
                 .map(|group| group.tab);
+            layout.window_presence = self
+                .surface
+                .strip_ids()
+                .into_iter()
+                .filter_map(|strip| self.surface.row(strip))
+                .find_map(|row| row.groups.iter().find(|group| group.id == focused))
+                .map(|group| ui::presence::capability::subtree_presence(group))
+                .unwrap_or_default();
         }
         let mut live = self.handle.live.borrow_mut();
         if *live != layout {
@@ -834,22 +881,21 @@ impl DesktopRoot {
         }
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub fn new(
-        admission: Admission,
-        storage: PortableStorage,
+        sources: DesktopSources,
         room: &str,
         device: &str,
         author: &str,
         instance: u64,
-        permissions: ui::permissions::PermissionContext,
         notify: Arc<dyn Fn() + Send + Sync>,
-        content: Option<tilo_content::ContentStore>,
-        local: Option<crate::local_desktop::LocalDesktop>,
     ) -> Result<(Self, DesktopHandle), String> {
+        let DesktopSources {
+            admission,
+            storage,
+            permissions,
+            content,
+            local,
+        } = sources;
         if !admission.complete() {
             return Err("required desktop records are not admitted".into());
         }
@@ -1127,16 +1173,18 @@ impl DesktopRoot {
         }
     }
     /// Queue a desktop command for the room's topology owner, rendering its
-    /// expected result on the next frame.
+    /// expected result on the next frame; an open with `record` shows that
+    /// existing record.
     fn enqueue_command(
         &mut self,
         command: tilo_desktop_model::commands::BoundCommand,
+        record: Option<&str>,
     ) -> Result<uuid::Uuid, String> {
         // Render the reorder on the next frame; the durable command
         // confirms (or snaps back) in the background.
         let submitted = match self.handle.tree.try_borrow() {
-            Ok(tree) => self.handle.submit(Some(&tree), command),
-            Err(_) => self.handle.submit(None, command),
+            Ok(tree) => self.handle.submit(Some(&tree), command, record),
+            Err(_) => self.handle.submit(None, command, record),
         };
         let (invocation, speculated) = submitted.inspect_err(|error| {
             self.handle.errors.borrow_mut().push(error.clone());
@@ -1161,13 +1209,16 @@ impl DesktopRoot {
         let result = match (action.app_target(), action) {
             (Some((app, _)), _) => match room {
                 Some(room) => self
-                    .enqueue_command(BoundCommand {
-                        source: CommandSource {
-                            room,
-                            heads: self.source_heads.clone(),
+                    .enqueue_command(
+                        BoundCommand {
+                            source: CommandSource {
+                                room,
+                                heads: self.source_heads.clone(),
+                            },
+                            command: DesktopCommand::OpenApp { app: app.into() },
                         },
-                        command: DesktopCommand::OpenApp { app: app.into() },
-                    })
+                        None,
+                    )
                     .map(|_| ()),
                 None => Err("No workspace is active".into()),
             },
@@ -1237,6 +1288,7 @@ impl DesktopRoot {
                     crate::desktop_activity::capture_records(
                         &self.required_records,
                         &self.handle.records.borrow(),
+                        &self.resolver.host.author,
                     ),
                     &self.unsupported_apps,
                 );
@@ -1283,6 +1335,7 @@ impl DesktopRoot {
         let records = crate::desktop_activity::capture_records(
             &self.required_records,
             &self.handle.records.borrow(),
+            &self.resolver.host.author,
         );
         let activity = self.activity.as_mut().unwrap();
         activity.refresh(records, &self.unsupported_apps);
@@ -1310,7 +1363,7 @@ impl DesktopRoot {
                         &self.resolver.host.routes,
                     )
                     .ok()?;
-                    (checkout.id.as_str() == target.id && checkout.kind.as_str() == target.kind)
+                    (checkout.id.as_str() == target.id && checkout.kind.names(&target.kind))
                         .then_some((group, tab.id))
                 });
             if let Some((group, tab)) = destination {
@@ -1386,7 +1439,20 @@ impl DesktopRoot {
             let tree = self.handle.tree.borrow();
             // Optimistic opens not yet committed are marked `opening`.
             let opening = &opening;
-            let entries: Vec<_> = tree.workspaces.iter().flat_map(|w| w.strips.iter().flat_map(move |s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| { let mut entry = json!({"route":{"workspace":w.id.0.to_string(),"strip":s.id.0.to_string(),"group":g.id.to_string(),"tab":t.id.to_string()},"label":t.title,"stripLabel":s.name,"workspaceLabel":w.name}); if opening.contains(&t.id) { entry["opening"] = json!(true); } entry })))).collect();
+            // Each window's app and the record it shows (null for an app's
+            // one package-primary document), for the page to mount elsewhere.
+            let routes = &self.resolver.host.routes;
+            let shows = move |t: &tilo_desktop_model::Tab| {
+                let app = tilo_desktop_model::apps::canonical_app_id(&t.tile);
+                let record = app
+                    .as_deref()
+                    .and_then(desktop::definition)
+                    .and_then(|definition| desktop::checkout(definition, t.id, routes).ok())
+                    .filter(|checkout| !checkout.id.is_package_primary())
+                    .map(|checkout| checkout.id.as_str().to_owned());
+                (app, record)
+            };
+            let entries: Vec<_> = tree.workspaces.iter().flat_map(|w| w.strips.iter().flat_map(move |s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| { let (app, record) = shows(t); let mut entry = json!({"route":{"workspace":w.id.0.to_string(),"strip":s.id.0.to_string(),"group":g.id.to_string(),"tab":t.id.to_string()},"label":t.title,"stripLabel":s.name,"workspaceLabel":w.name,"app":app,"record":record}); if opening.contains(&t.id) { entry["opening"] = json!(true); } entry })))).collect();
             let workspaces: Vec<_> = tree.workspaces.iter().map(|w| json!({"id":w.id.0.to_string(),"label":w.name,"room":w.room.to_string(),"owner":w.owner,"strips":w.strips.iter().map(|s| json!({"id":s.id.0.to_string(),"label":s.name})).collect::<Vec<_>>()})).collect();
             let group = active
                 .as_ref()
@@ -1509,7 +1575,7 @@ impl DesktopRoot {
         }
         let command: tilo_desktop_model::commands::BoundCommand =
             serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let invocation = self.enqueue_command(command)?;
+        let invocation = self.enqueue_command(command, None)?;
         Ok(Some(tilo_actions::ActionOutput {
             value: Some(serde_json::Value::String(invocation.to_string())),
             resources: vec![],
@@ -1592,10 +1658,16 @@ impl DesktopRoot {
             (self.notify)();
             return Ok((false, None));
         }
-        if let Command::Open { app, .. } = &command {
+        if let Command::Open { app, record, .. } = &command {
             let app = desktop::definition(app)
                 .ok_or("application cannot be opened here")?
                 .app_id;
+            if record
+                .as_deref()
+                .is_some_and(|record| ui::record::RecordId::parse(record).is_none())
+            {
+                return Err("invalid record".into());
+            }
             let room = self
                 .handle
                 .tree
@@ -1603,13 +1675,18 @@ impl DesktopRoot {
                 .active_workspace()
                 .map(|workspace| workspace.room.to_string())
                 .ok_or("No workspace is active")?;
-            let invocation = self.enqueue_command(tilo_desktop_model::commands::BoundCommand {
-                source: tilo_desktop_model::commands::CommandSource {
-                    room,
-                    heads: self.source_heads.clone(),
+            let invocation = self.enqueue_command(
+                tilo_desktop_model::commands::BoundCommand {
+                    source: tilo_desktop_model::commands::CommandSource {
+                        room,
+                        heads: self.source_heads.clone(),
+                    },
+                    command: tilo_desktop_model::commands::DesktopCommand::OpenApp {
+                        app: app.into(),
+                    },
                 },
-                command: tilo_desktop_model::commands::DesktopCommand::OpenApp { app: app.into() },
-            })?;
+                record.as_deref(),
+            )?;
             return Ok((false, Some(invocation.to_string())));
         }
         let request = match &command {
@@ -2321,30 +2398,16 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = self.resources(doc);
-        let mut views = tilo_actions::Resource::new(
-            activity::view_actions::RESOURCE_ID,
-            "desktop",
-            "Workspace views",
-        );
-        for descriptor in activity::view_actions::workspace_view_descriptors(
-            &self.handle.tree.borrow(),
-            self.activity_snapshot().is_ok(),
-        ) {
-            views = views.with_action(descriptor.action());
-        }
-        resources.push(views);
-        resources
-    }
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "tilo.desktop.request",
             activity::view_actions::OPERATION_TYPE,
         ]
-    }
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.resources_for_close(doc, None)
     }
 
     fn start_operation(
@@ -2364,17 +2427,6 @@ impl Widget for DesktopRoot {
             .map(ui::widget::ResourceOperationStart::Completed))
     }
 
-    /// Legacy adapter: offered to the desktop's own operations only.
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.run_desktop_operation(kind, type_id, payload)
-    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -2594,6 +2646,9 @@ impl Widget for DesktopRoot {
     fn wants_pointer_capture(&self) -> bool {
         self.surface.wants_pointer_capture()
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for DesktopRoot {
     fn close_components(&mut self) -> Vec<ComponentCloseReport> {
         self.close_activity(crate::desktop_activity::ActivityCloseReason::Disposed);
         self.reports.extend(self.surface.close_components());
@@ -2601,6 +2656,28 @@ impl Widget for DesktopRoot {
     }
     fn take_component_close_reports(&mut self) -> Vec<ComponentCloseReport> {
         self.surface.take_component_close_reports()
+    }
+}
+
+impl ui::resources::PublishesResources for DesktopRoot {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources_for_close(doc, None)
+    }
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = self.resources(doc);
+        let mut views = tilo_actions::Resource::new(
+            activity::view_actions::RESOURCE_ID,
+            "desktop",
+            "Workspace views",
+        );
+        for descriptor in activity::view_actions::workspace_view_descriptors(
+            &self.handle.tree.borrow(),
+            self.activity_snapshot().is_ok(),
+        ) {
+            views = views.with_action(descriptor.action());
+        }
+        resources.push(views);
+        resources
     }
 }
 

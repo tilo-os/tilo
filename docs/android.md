@@ -1,46 +1,151 @@
 # Android
 
-A Tilo app can run as a standalone Android app: the same `main.rs`, the same
+A Tilo app can run as a standalone Android app: the same code, the same
 toolkit and the same widgets, drawn with wgpu on Vulkan in a `NativeActivity`.
-Calculator and Notes opt in today. This is the app host only; the
-compositor, `fs`, sandboxing and collaboration are Linux services and do not
-exist on Android (see [Limits](#limits)).
+Every app `tilo-app new` scaffolds builds for Android with no Android code of
+its own. This is the app host only; the compositor, `fs`, sandboxing and
+collaboration are Linux services and do not exist on Android (see
+[Limits](#limits)).
 
-## Build, install and run
+## Commands
 
-`crates/sdk/ui-core/android/build-apk.sh` builds a debug APK without Gradle:
-
-```bash
-crates/sdk/ui-core/android/build-apk.sh calculator --abi x86_64   # emulator
-crates/sdk/ui-core/android/build-apk.sh notes                     # arm64-v8a and x86_64
-adb -s emulator-5554 install -r target/android/calculator/debug/calculator.apk
-adb -s emulator-5554 shell am start -n so.tilo.calculator/so.tilo.android.TiloActivity
-```
-
-The output is `target/android/<app>/<debug|release>/<app>.apk`, signed with a
-debug key the script generates once under `target/android/`; set
-`TILO_ANDROID_KEYSTORE`, `TILO_ANDROID_KEYSTORE_PASS` and
-`TILO_ANDROID_KEY_ALIAS` to sign with a real one. `--release` builds the
-release profile, `--label` and `--application-id` override the launcher name
-and the default `so.tilo.<app>` package. Run `build-apk.sh --help` for the
-full usage.
-
-The Rust library is built with `$CARGO`, by default `rcargo` and otherwise
-`cargo`; the Java classes are compiled with `javac` and packed with the SDK's
-build tools. [DEVELOPMENT.md](../DEVELOPMENT.md#android-app-host) lists what
-each needs. The APK requires API 29 and Vulkan 1.1
-(`AndroidManifest.xml.in`).
-
-Everything the toolkit writes to stdout and stderr, including `tracing` and
-panics, goes to logcat under the tag `tilo`:
+Android is one more `--platform` of the ordinary commands:
 
 ```bash
-adb -s emulator-5554 logcat -s tilo
+tilo-app doctor --platform android           # what the toolchain lacks, and each fix
+tilo-app setup android                       # install the SDK side of it
+tilo-app run --platform android              # build, install, start, stream the log
+tilo-app dev --platform android              # the same, again on every save
+tilo-app build --platform android --arch x86_64
+tilo-app package --platform android          # per architecture: signed .apk + .aab + a registry .tapp
+tilo-app check --platform android            # Clippy for aarch64-linux-android
 ```
 
-## Opting an app in
+`--arch` is `aarch64` (arm64-v8a) or `x86_64`. `build` and `check` default to
+`aarch64`; `run` and `dev` build for the device's own ABI; `package` builds
+both unless `--arch` picks one.
 
-An app needs three things, as `apps/calculator` shows:
+**Devices.** `run` and `dev` install on `--device SERIAL`, else
+`$ANDROID_SERIAL`, else the one device `adb devices` lists; with none or
+several they say what to connect or pick. The APK is installed with
+`adb install -r -d`, started with `am start`, and the app's logcat (tag
+`tilo`, plus crashes and native backtraces) streams until the app exits or
+Ctrl-C stops it. `run` does not forward arguments: an activity has no
+command line.
+
+**`dev` reloads by reinstalling.** A saved change rebuilds the library,
+repacks and reinstalls the APK and restarts the activity, so the app starts
+fresh each time. There is no in-place code swap on Android as there is on the
+desktop; a rebuild takes as long as an incremental `cargo build` of the app.
+
+**Output.** `build` writes
+`target/android/<app>/<profile>/<app>-<abi>.apk`, debuggable and signed with
+the per-user debug key. `package` writes, for each architecture,
+`dist/<app>-android-<arch>.tapp` and, beside it, `.apk` and `.aab` with the
+same name: a release build, signed as below. It checks every output before it
+builds either, and `--output` names one package, so it needs `--arch`. There
+is one APK per architecture rather than one universal APK because the registry
+lists one build per architecture and a device downloads only its own. The
+`.tapp` is what `tilo-app publish` uploads; the registry lists it under the
+`android` platform, and Tilo OS clients never install it.
+
+**Size.** An Android package answers to the registry's limit for a build that
+links the toolkit in, 64 MiB (`tilo_app_package::platform_size_limit`, the
+function the registry enforces), not to `[budget]`, which bounds the thin Tilo
+OS build. A release starter app is about 39 MiB, most of it the library and
+the font catalog.
+
+## The toolchain
+
+The build uses no Gradle. It needs:
+
+- the Android SDK at `$ANDROID_HOME` (or `$ANDROID_SDK_ROOT`, default
+  `~/Android/Sdk`) with `build-tools;36.1.0`, `platforms;android-36` and
+  `platform-tools` (for `adb`);
+- NDK r29, from `$ANDROID_NDK_HOME` or the SDK's `ndk/`, and the Rust targets
+  `aarch64-linux-android` and `x86_64-linux-android`. The CLI points Cargo at
+  the NDK's clang unless `CARGO_TARGET_*_LINUX_ANDROID_LINKER` is already set,
+  as it is in the builder image;
+- a JDK 17 or newer (`javac`, `keytool`, `jarsigner`) and `zip`/`unzip`;
+- optionally bundletool, for the `.aab`. Without it `package` makes the APK
+  only and says so; `--no-bundle` skips the bundle on purpose.
+
+`tilo-app doctor --platform android` checks each and prints the fix. For the
+JDK and the zip tools that is the one command for this system's family, read
+from `/etc/os-release` (every family's when it is none of them):
+
+| Family | Command |
+| --- | --- |
+| Fedora, RHEL (dnf) | `sudo dnf install -y java-21-openjdk-devel zip unzip` |
+| Debian, Ubuntu (apt) | `sudo apt-get install -y openjdk-17-jdk-headless zip unzip` |
+| macOS (brew) | `brew install openjdk@21 zip unzip` |
+
+`tilo-app setup android` fetches the command-line tools when `sdkmanager` is
+missing, installs the SDK packages (and the NDK when none is found), downloads
+bundletool into the SDK and adds the Rust targets; `--accept-licenses` accepts
+the SDK licences without prompting, for CI. It cannot install a JDK or the zip
+tools, so it prints the command above for whichever are missing, first and
+again at the end, and stops early without `unzip` when it must unpack the
+command-line tools.
+
+`crates/sdk/ui-core/android/build-apk.sh <app> [--abi ABI]... [--release]`
+remains as a thin wrapper over the same commands for apps in this checkout.
+
+## From `tilo-app.toml` to the APK
+
+| APK | Source |
+| --- | --- |
+| Application id | `[package] id`, with `-` as `_` (`so.tilo.pocket-notes` → `so.tilo.pocket_notes`) |
+| Launcher label | `[package] name`, else the id's last part, title-cased |
+| `versionName` | `[package] version` |
+| `versionCode` | `MAJOR × 1 000 000 + MINOR × 1 000 + PATCH` from the version; each part below 1000 |
+| Icon | `icon.png` in the app directory, else a generated coloured disc |
+| Permissions | `POST_NOTIFICATIONS` always (the notification service asks at runtime); `INTERNET` and `ACCESS_NETWORK_STATE` unless `[net] mode = "off"`; the `location`, `camera` and `microphone` portals map to `ACCESS_COARSE_LOCATION` + `ACCESS_FINE_LOCATION`, `CAMERA` and `RECORD_AUDIO`, unless their policy is `deny` |
+
+The APK requires API 29 and Vulkan 1.1, targets API 36, and packs the
+toolkit's font catalog into `assets/tilo/fonts`.
+
+## Signing
+
+- **Debug** (`build`, `run`, `dev`): `~/.android/debug.keystore`, the key
+  Android Studio uses, created with `keytool` if missing. Every debug build on
+  the machine can update every other.
+- **Release** (`package`): `--keystore PATH`, else `$TILO_ANDROID_KEYSTORE`,
+  with `$TILO_ANDROID_KEYSTORE_PASS`, `$TILO_ANDROID_KEY_ALIAS` (default
+  `tilo-release`) and `$TILO_ANDROID_KEY_PASS` (default the store's). Without
+  either, the release key is the one kept beside the publisher key,
+  `$XDG_CONFIG_HOME/tilo/android-release.keystore`, created on first use with
+  a random password in `android-release.keystore.pass` (mode 0600). Back it up
+  with the publisher key: Android refuses an update signed with another key.
+
+The APK is signed with `apksigner` (v2 and v3 schemes) after `zipalign`
+(16 KiB page-aligned libraries), the bundle with `jarsigner`.
+
+## CI
+
+`tilo-app add ci` adds an `android` `aarch64` build to the package matrix. It
+runs in the builder image on the forge's ordinary Linux x86_64 runner (for
+GitHub, `ubuntu-latest`): the image already carries the NDK and its linker
+variables, and the job installs a JDK and `zip` with `dnf`, then the SDK with
+`tilo-app setup android --accept-licenses`, cached between runs. The SDK and
+JDK are not in the image because Tilo's own CI never packages APKs and they
+would add about a gigabyte to every job that pulls it. Set the
+`TILO_ANDROID_KEYSTORE` secret (the keystore, base64) and
+`TILO_ANDROID_KEYSTORE_PASS` to sign releases with your own key; the `.apk`
+and `.aab` are uploaded as an artifact, and a tag publishes the `.tapp` with
+the others.
+
+## How an app enters
+
+A scaffolded app's `src/lib.rs` ends in `ui::dev_reload_entry!(App);`. Off
+Android that exports the desktop's hot-reload entry; on Android it also
+exports `android_main`, which runs `ui::framework::run::<App>()` through
+`ui::launch::android::run_main`. `build` compiles the library as a `cdylib`
+(`cargo rustc --lib --crate-type cdylib`), so the app's `Cargo.toml` needs
+nothing Android-specific.
+
+An app without that library, such as Calculator and Notes, opts in the older
+way instead:
 
 1. `ui::android_main!();` in its `main.rs`. It expands to nothing off Android.
 2. A `src/android.rs` that includes that `main.rs` as a module:
@@ -64,8 +169,12 @@ An app needs three things, as `apps/calculator` shows:
    android = []
    ```
 
-The example name is the contract: `build-apk.sh` builds `<app>-android`, and
-the CI lane below selects every affected app that declares one.
+When an app declares that example the CLI builds it with `--features
+android`; otherwise it builds the library. The CI lane below selects every
+affected app that declares the example.
+
+Everything the toolkit writes to stdout and stderr, including `tracing` and
+panics, goes to logcat under the tag `tilo`, which `run` streams.
 
 ## Architecture
 
@@ -132,7 +241,7 @@ auto-capitalisation.
 (`accesskit_android_adapter.rs`). The vendored winit leaves hover events
 unhandled so explore-by-touch reaches that view.
 
-**Fonts.** `build-apk.sh` packs the font catalog into `assets/tilo/fonts`.
+**Fonts.** `tilo-app build --platform android` packs the font catalog into `assets/tilo/fonts`.
 The first start of each catalog version copies it into the app's files
 directory, since fontdb cannot map a file inside an APK; the device's
 `/system/fonts` cover the scripts the catalog does not.
@@ -159,7 +268,7 @@ directory, since fontdb cannot map a file inside an APK; the device's
 - **No Tilo sandbox.** The app is not launched under Tilo's runtime host
   (`TILO_RUNTIME_STANDALONE=1`), so its Landlock and bubblewrap confinement
   does not apply; the app runs in Android's own per-app sandbox.
-- **Two apps.** Only Calculator and Notes declare an Android example.
+- **No in-place reload.** `dev` reinstalls and restarts the app on each change.
 - **TalkBack explore-by-touch is untested on a device.** The emulator image has
   no TalkBack and `adb` cannot inject hover events.
 - **Hardware Enter** does not reach text fields as Enter (seen with
@@ -179,9 +288,7 @@ emulator is for what only Android shows: the activity lifecycle, touch, the
 input method, choosers and insets. With an `x86_64` AVD running:
 
 ```bash
-crates/sdk/ui-core/android/build-apk.sh notes --abi x86_64
-adb -s emulator-5554 install -r target/android/notes/debug/notes.apk
-adb -s emulator-5554 shell am start -n so.tilo.notes/so.tilo.android.TiloActivity
+tilo-app run --platform android --device emulator-5554 apps/notes
 adb -s emulator-5554 shell input tap X Y            # physical pixels
 adb -s emulator-5554 exec-out screencap -p > shot.png
 ```

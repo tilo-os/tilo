@@ -7,7 +7,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use ui::{
-    application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput},
+    application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    },
     application_view::InstanceViewStore,
     headless::FrameHarness,
     permissions::{Actor, PermissionContext, Role, UserId},
@@ -23,6 +25,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use crate::desktop_host::DesktopSources;
 #[cfg(feature = "cloud")]
 use crate::peer as cloud_peer;
 /// Without `cloud` no certified peer exists, so a mount that names one fails.
@@ -88,6 +91,11 @@ struct Config {
     /// be an agent task participant (`agent-task:<task>`).
     #[serde(default)]
     agent: Option<String>,
+    /// A relay peer (`WasmPeer.id`, feature `relay`) whose joined room is
+    /// `room`: the mount runs as a local one, and its records replicate
+    /// through the peer.
+    #[serde(default)]
+    relay: Option<u32>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +172,12 @@ struct Mount {
     semantics: RefCell<crate::semantics_status::SemanticsGate>,
     peer_suspended: bool,
     peer: Option<u32>,
+    /// The relay peer whose room this mount's records replicate through.
+    #[cfg_attr(
+        not(feature = "relay"),
+        allow(dead_code, reason = "read by the relay feature")
+    )]
+    relay: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
     /// `record_version` of each record this mount shows (`record`, or its
@@ -599,7 +613,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let definition = crate::catalog::resolve_mount(&config.app).map_err(error)?;
     let agent =
         crate::mount_agent::mount_agent(&config.author, config.agent.as_deref()).map_err(error)?;
+    let author = config.author.clone();
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
+    attach_relay(&config, &storage)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -631,6 +647,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
+    // A local mount shares its records with the page's other mounts of the
+    // profile and device, so it writes as its author's own actor.
+    let shares_records = config.peer.is_none();
     let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
         cloud_peer::permissions(peer).map_err(error)?
     } else {
@@ -641,16 +660,21 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }));
     let mut context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        config.device.clone(),
-        config.instance,
-        permissions,
-        UserId(config.author),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: config.device.clone(),
+            instance_id: config.instance,
+            permissions,
+            author: UserId(config.author),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .map_err(error)?;
+    if shares_records {
+        context.write_as_author();
+    }
     context.provide_content(content_store(&config.profile, &config.device));
     let opening = match (config.open, open) {
         (Some(request), Some(bytes)) => {
@@ -685,6 +709,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     }
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
+    crate::page_authors::note_mount(
+        records
+            .read(&checkout.id, |doc| doc.get_actor().clone())
+            .as_ref(),
+        &author,
+        agent.as_ref().map(|(_, label)| label.as_str()),
+    );
     let record_versions = HashMap::from([(
         (
             definition.app_id.to_owned(),
@@ -746,6 +777,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
         peer: config.peer,
+        relay: config.relay,
         desktop: None,
         record: Some(crate::desktop_host::OwnedRecord {
             app: definition.app_id.into(),
@@ -800,12 +832,14 @@ fn begin_desktop(
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let permissions = crate::peer::permissions(peer).map_err(error)?;
     let desktop = DesktopMount {
-        admission,
-        storage,
-        permissions,
+        sources: DesktopSources {
+            admission,
+            storage,
+            permissions,
+            content: None,
+            local: None,
+        },
         peer: Some(peer),
-        content: None,
-        local: None,
     };
     begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
 }
@@ -823,27 +857,28 @@ fn begin_local_desktop(
     let seed = config.local.clone().unwrap_or_default();
     let local = crate::local_desktop::LocalDesktop::new(&config.room, &config.author, &seed)
         .map_err(error)?;
+    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
+    attach_relay(&config, &storage)?;
     let desktop = DesktopMount {
-        admission: local.admission().map_err(error)?,
-        storage: load_cache(&config.profile, &config.device, &hydrated)?,
-        permissions: PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Owner), &config.author),
-            vec![],
-        ),
+        sources: DesktopSources {
+            admission: local.admission().map_err(error)?,
+            storage,
+            permissions: PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Owner), &config.author),
+                vec![],
+            ),
+            content: Some(content_store(&config.profile, &config.device)),
+            local: Some(local),
+        },
         peer: None,
-        content: Some(content_store(&config.profile, &config.device)),
-        local: Some(local),
     };
     begin_desktop_root(event_loop, id, canvas, config, fonts, status, desktop)
 }
-/// What a canonical desktop mount is built from.
+/// What a canonical desktop mount is built from: the desktop's own sources,
+/// and the peer serving it when the room is hosted elsewhere.
 struct DesktopMount {
-    admission: crate::desktop::Admission,
-    storage: PortableStorage,
-    permissions: PermissionContext,
+    sources: DesktopSources,
     peer: Option<u32>,
-    content: Option<tilo_content::ContentStore>,
-    local: Option<crate::local_desktop::LocalDesktop>,
 }
 fn begin_desktop_root(
     event_loop: &ActiveEventLoop,
@@ -854,14 +889,8 @@ fn begin_desktop_root(
     status: Function,
     desktop: DesktopMount,
 ) -> Result<(), JsValue> {
-    let DesktopMount {
-        admission,
-        storage,
-        permissions,
-        peer,
-        content,
-        local,
-    } = desktop;
+    let DesktopMount { sources, peer } = desktop;
+    let storage = sources.storage.clone();
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -884,18 +913,14 @@ fn begin_desktop_root(
     let dpr = window.scale_factor();
     let wake = proxy()?;
     let (root, desktop) = crate::desktop_host::DesktopRoot::new(
-        admission,
-        storage.clone(),
+        sources,
         &config.room,
         &config.device,
         &config.author,
         config.instance,
-        permissions,
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
-        content,
-        local,
     )
     .map_err(error)?;
     let mut frame = FrameHarness::new_with_controlled_inputs(
@@ -924,6 +949,7 @@ fn begin_desktop_root(
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
         peer,
+        relay: config.relay,
         desktop: Some(desktop),
         record: None,
         record_versions: HashMap::new(),
@@ -1053,6 +1079,10 @@ fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec
     if changed.is_empty() {
         return Vec::new();
     }
+    #[cfg(feature = "relay")]
+    if let Some(relay) = mounts.get(&origin).and_then(|mount| mount.relay) {
+        crate::relay::publish_changes(relay);
+    }
     let mut resynced = Vec::new();
     for (&id, mount) in mounts.iter_mut().filter(|(id, mount)| {
         **id != origin && changed.iter().any(|changed| changed.shown_by(mount))
@@ -1065,6 +1095,46 @@ fn propagate_record_change(mounts: &mut HashMap<u64, Mount>, origin: u64) -> Vec
         resynced.push(id);
     }
     resynced
+}
+/// Before a mount on a relay room opens its records: the room's documents
+/// that arrived earlier go into the mount's cache first.
+fn attach_relay(config: &Config, storage: &PortableStorage) -> Result<(), JsValue> {
+    match config.relay {
+        #[cfg(feature = "relay")]
+        Some(relay) => crate::relay::attach_cache(relay, &config.room, storage).map_err(error),
+        #[cfg(not(feature = "relay"))]
+        Some(_) => {
+            let _ = storage;
+            Err(error(
+                "a relay mount requires a runtime built with the relay peer",
+            ))
+        }
+        None => Ok(()),
+    }
+}
+/// A peer's change reached records the relay mounts of `relay` may show:
+/// re-run their frame passes, as for another mount's change.
+#[cfg(feature = "relay")]
+pub(crate) fn wake_relay_mounts(relay: u32) {
+    // Replication may run while a mount is being created; that mount opens
+    // its records afresh anyway.
+    let ids = MOUNTS.with(|mounts| {
+        let Ok(mut mounts) = mounts.try_borrow_mut() else {
+            return Vec::new();
+        };
+        mounts
+            .iter_mut()
+            .filter(|(_, mount)| mount.relay == Some(relay))
+            .map(|(&id, mount)| {
+                let _ = mount.take_record_changes();
+                mount.frame.relayout();
+                mount.pending = true;
+                mount.window.request_redraw();
+                id
+            })
+            .collect::<Vec<_>>()
+    });
+    wake(ids);
 }
 /// A redraw requested outside Winit's dispatch (from a call the page made)
 /// waits for the next event; a proxy event per mount delivers it now.
@@ -2464,16 +2534,36 @@ thread_local! {
 }
 /// LIVE_V1: the local presence snapshot the overlay publishes and maps
 /// remote pointers with (focus record, window rectangles, editor anchors,
-/// window drag). `null` for a single-record mount.
+/// window drag). With the relay peer, a single-record mount reports its
+/// record and editor anchors only; otherwise it is `null`.
 #[wasm_bindgen]
 pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
         let Some(desktop) = &m.desktop else {
+            #[cfg(not(feature = "relay"))]
             return Ok("null".into());
+            #[cfg(feature = "relay")]
+            return Ok(m.record.as_ref().map_or_else(
+                || "null".into(),
+                |record| {
+                    crate::live_view::record_snapshot_json(
+                        &record.app,
+                        record.checkout.id.as_str(),
+                        crate::live_view::published_selection(
+                            m.frame.focus_presence_payload(),
+                            &ui::presence::capability::subtree_presence(m.frame.root_widget()),
+                        ),
+                    )
+                    .to_string()
+                },
+            ));
         };
-        let selection = m.frame.focus_presence_payload();
         let layout = desktop.live.borrow();
+        let selection = crate::live_view::published_selection(
+            m.frame.focus_presence_payload(),
+            &layout.window_presence,
+        );
         let records = desktop.tab_records.borrow();
         Ok(crate::live_view::snapshot_json(&layout, &records, selection).to_string())
     })

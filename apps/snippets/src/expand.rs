@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, EventCtx, TextInput, Widget};
 use vello::Scene;
@@ -157,28 +158,20 @@ impl ExpandModal {
         let c = &theme.tokens.colors;
         let mut y = panel.y0 + pad;
 
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "Fill in variables",
-            panel.x0 + pad,
-            y,
-            18.0,
+            &TextStyle::new(18.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            TextWeight::Bold,
+            Point::new(panel.x0 + pad, y),
+            None,
         );
         y += 24.0;
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &self.title,
-            panel.x0 + pad,
-            y,
-            13.0,
+            &TextStyle::new(13.0),
             c.text_dim,
-            TextWeight::Regular,
+            Point::new(panel.x0 + pad, y),
+            None,
         );
         y + 30.0
     }
@@ -186,10 +179,6 @@ impl ExpandModal {
     /// One labelled input row per placeholder, or a "no variables" note
     /// when the snippet has none. Records `field_rects` for hit-testing
     /// and returns the y cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Placeholder rows need render context, panel bounds, padding, and the incoming vertical cursor to place inputs and record their hits."
-    )]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -207,16 +196,12 @@ impl ExpandModal {
             let row_y = y;
             // Label as ${name}.
             let lbl = format!("${{{}}}", f.name);
-            draw::mono(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &lbl,
-                panel.x0 + pad,
-                row_y + 7.0,
-                13.0,
+                &draw::mono_style(13.0, TextWeight::Semibold),
                 c.accent[5],
-                TextWeight::Semibold,
+                Point::new(panel.x0 + pad, row_y + 7.0),
+                None,
             );
             // Input box.
             let input = Rect::new(
@@ -258,16 +243,12 @@ impl ExpandModal {
         }
 
         if self.fields.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "This snippet has no variables.",
-                panel.x0 + pad,
-                y,
-                13.0,
+                &TextStyle::new(13.0),
                 c.text_dim,
-                TextWeight::Regular,
+                Point::new(panel.x0 + pad, y),
+                None,
             );
             y += 30.0;
         }
@@ -275,10 +256,6 @@ impl ExpandModal {
     }
 
     /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The substituted snippet preview needs render context, panel bounds, padding, and the vertical cursor left by the variable fields."
-    )]
     fn draw_preview(
         &self,
         scene: &mut Scene,
@@ -292,16 +269,12 @@ impl ExpandModal {
         let c = &theme.tokens.colors;
         // Live preview header.
         y += 4.0;
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             "PREVIEW",
-            panel.x0 + pad,
-            y,
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
             c.text_dim,
-            TextWeight::Bold,
+            Point::new(panel.x0 + pad, y),
+            None,
         );
         y += 18.0;
 
@@ -323,16 +296,12 @@ impl ExpandModal {
             let mut sx = card.x0 + 14.0;
             for span in spans {
                 let color = theme.tokens.syntax.color(span.kind);
-                draw::mono(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     &span.text,
-                    sx,
-                    cy,
-                    13.0,
+                    &draw::mono_style(13.0, TextWeight::Regular),
                     color,
-                    TextWeight::Regular,
+                    Point::new(sx, cy),
+                    None,
                 );
                 sx += draw::mono_width(tr, &span.text, 13.0);
             }
@@ -609,12 +578,12 @@ impl ExpandModal {
     }
 
     pub fn needs_commit(&self) -> bool {
-        self.fields.iter().any(|f| f.input.needs_commit())
+        self.fields.iter().any(|f| ui::undo::needs_commit(&f.input))
     }
 
     pub fn on_commit(&mut self) {
         for field in &mut self.fields {
-            field.input.on_commit();
+            ui::undo::on_commit(&mut field.input);
         }
     }
 }

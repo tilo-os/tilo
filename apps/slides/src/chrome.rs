@@ -6,8 +6,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use ui::paint::PaintCtx;
 pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 /// A crisp 1 px horizontal rule covering the pixel row that starts at `y`.
@@ -59,10 +60,6 @@ pub fn est_width(label: &str, font: f64) -> f64 {
 }
 
 /// Draw a single line of text left-aligned at `pos` (top-left).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "weighted text painting passes scene, transform and renderer alongside content, position, size, color and weight"
-)]
 pub fn text(
     scene: &mut Scene,
     t: Affine,
@@ -85,59 +82,16 @@ pub fn text(
 }
 
 /// Draw a line of text centred inside `rect` (both axes).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "centered text painting passes render context and bounds alongside content, size, color and weight"
-)]
-pub fn text_centered(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    s: &str,
-    rect: Rect,
-    font: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    let (text_w, text_h) = tr.measure_weighted(s, font, None, weight);
+pub fn text_centered(ctx: &mut PaintCtx<'_>, s: &str, rect: Rect, style: &TextStyle, color: Color) {
+    let (text_w, text_h) = ctx.text.measure_style(s, None, style);
     let pos_x = rect.x0 + (rect.width() - f64::from(text_w)) / 2.0;
     let pos_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    tr.draw_text_weighted(
-        scene,
-        s,
-        font,
-        color,
-        t * Affine::translate((pos_x, pos_y)),
-        None,
-        weight,
-    );
+    ctx.text(s, style, color, Point::new(pos_x, pos_y), None);
 }
 
-/// Draw a line of text vertically centred, left-aligned at `left_x`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "vertically centered text painting passes render context, bounds and left inset alongside text styling"
-)]
-pub fn text_vcenter(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    s: &str,
-    rect: Rect,
-    left_x: f64,
-    font: f32,
-    color: Color,
-    weight: TextWeight,
-) {
-    let (_, text_h) = tr.measure_weighted(s, font, None, weight);
+/// Draw a line of text vertically centred in `rect`, left-aligned at its `x0`.
+pub fn text_vcenter(ctx: &mut PaintCtx<'_>, s: &str, rect: Rect, style: &TextStyle, color: Color) {
+    let (_, text_h) = ctx.text.measure_style(s, None, style);
     let pos_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    tr.draw_text_weighted(
-        scene,
-        s,
-        font,
-        color,
-        t * Affine::translate((left_x, pos_y)),
-        None,
-        weight,
-    );
+    ctx.text(s, style, color, Point::new(rect.x0, pos_y), None);
 }

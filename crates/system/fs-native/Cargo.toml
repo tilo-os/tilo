@@ -3,9 +3,11 @@ name = "fs-native"
 version = "0.1.0"
 edition = "2024"
 autotests = false
-publish.workspace = true
+publish = true
 license.workspace = true
-description = "Native local data plane: fanotify change journal, Btrfs capture epochs, incremental content manifests and pre-content placeholder hydration."
+description = "Native local data plane: fanotify change journal, Btrfs capture epochs, incremental FastCDC manifests and pre-content placeholder hydration."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "fs_native"
@@ -20,7 +22,7 @@ path = "src/bin/tilo-fs-native/main.rs"
 [dependencies]
 hex.workspace = true
 blake3.workspace = true
-fs-content = { path = "../fs-content" }
+fs-content = { version = "0.1.0", path = "../fs-content" }
 libc.workspace = true
 workspace-hack = { version = "0.1" }
 

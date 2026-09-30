@@ -1072,31 +1072,30 @@ pub fn delete_annotation_action(id: &str) -> PdfViewerAction {
     PdfViewerAction::DeleteAnnotation { id: id.to_string() }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the action payload carries every authored field explicitly"
-)]
-pub fn create_note_action(
-    anno_id: &str,
-    comment_id: &str,
-    page: usize,
-    x: f64,
-    y: f64,
-    color: Swatch,
-    author: &str,
-    created: i64,
-    body: &str,
-) -> PdfViewerAction {
+/// A sticky note being authored: the ids minted for its marker and its
+/// comment thread, its colour and author, the comment's creation ordinal,
+/// and its opening text.
+pub struct NoteDraft<'a> {
+    pub anno_id: &'a str,
+    pub comment_id: &'a str,
+    pub color: Swatch,
+    pub author: &'a str,
+    pub created: i64,
+    pub body: &'a str,
+}
+
+/// A note on `page` at page-point `(x, y)`.
+pub fn create_note_action(note: &NoteDraft<'_>, page: usize, x: f64, y: f64) -> PdfViewerAction {
     PdfViewerAction::CreateNote {
-        anno_id: anno_id.to_string(),
-        comment_id: comment_id.to_string(),
+        anno_id: note.anno_id.to_string(),
+        comment_id: note.comment_id.to_string(),
         page,
         x,
         y,
-        color: color.key(),
-        author: author.to_string(),
-        created,
-        body: body.to_string(),
+        color: note.color.key(),
+        author: note.author.to_string(),
+        created: note.created,
+        body: note.body.to_string(),
         page_id: None,
         user_space: false,
     }
@@ -1104,31 +1103,22 @@ pub fn create_note_action(
 
 /// A note anchored to page occurrence `page_id` at a point of its PDF user
 /// space.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the action payload carries every authored field explicitly"
-)]
 pub fn create_note_on_action(
-    anno_id: &str,
-    comment_id: &str,
+    note: &NoteDraft<'_>,
     page: usize,
     page_id: &str,
     at_user: (f64, f64),
-    color: Swatch,
-    author: &str,
-    created: i64,
-    body: &str,
 ) -> PdfViewerAction {
     PdfViewerAction::CreateNote {
-        anno_id: anno_id.to_string(),
-        comment_id: comment_id.to_string(),
+        anno_id: note.anno_id.to_string(),
+        comment_id: note.comment_id.to_string(),
         page,
         x: at_user.0,
         y: at_user.1,
-        color: color.key(),
-        author: author.to_string(),
-        created,
-        body: body.to_string(),
+        color: note.color.key(),
+        author: note.author.to_string(),
+        created: note.created,
+        body: note.body.to_string(),
         page_id: Some(page_id.to_string()),
         user_space: true,
     }
@@ -1760,15 +1750,17 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         ExecutionLocus::ClientLocal,
         move |text: &str| {
             encode(&create_note_action(
-                &Annotation::new_id(),
-                &Comment::new_id(),
+                &NoteDraft {
+                    anno_id: &Annotation::new_id(),
+                    comment_id: &Comment::new_id(),
+                    color: Swatch::Yellow,
+                    author: &author,
+                    created,
+                    body: text,
+                },
                 page,
                 MARGIN,
                 MARGIN,
-                Swatch::Yellow,
-                &author,
-                created,
-                text,
             ))
         },
     ));
@@ -2267,7 +2259,7 @@ mod tests {
     )]
     fn document_resources_publish_the_nested_tree_with_bounded_stable_children() {
         let (app, state) = open_with_markup();
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         assert_eq!(resources.len(), 1, "one open document");
         let document = &resources[0];
         assert_eq!(document.kind, "pdf.document");
@@ -2465,7 +2457,7 @@ mod tests {
         // The resource's typed signature is replayable and uses the prompted signer.
         let (app, mut state) = open_with_markup();
         let expected_page = app.pdf_resource_ctx().expect("open document").page;
-        let resources = Widget::resources(&app, &state.doc);
+        let resources = ui::resources::resources(&app, &state.doc);
         let action = resources[0]
             .actions
             .iter()

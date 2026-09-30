@@ -729,8 +729,9 @@ impl Daemon {
             .apply
             .session_pid(&record.name)
             .ok_or_else(|| DaemonError::SessionStopped(record.name.clone()))?;
+        let env = self.apply.session_environment(&record.name);
         crate::exec::run_bounded(
-            crate::exec::in_session(pid, &user, args),
+            crate::exec::in_session(pid, &user, &env, args),
             timeout,
             max_bytes,
             std::io::stdout(),

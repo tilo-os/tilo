@@ -65,25 +65,28 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
             /usr/libexec/tilo/native-atspi-smoke.sh \
             /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
             /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
+            /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
             /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
 done
 require_file /etc/fuse.conf
-require_file /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf
+for sleep_unit in systemd-suspend systemd-hibernate systemd-hybrid-sleep \
+                  systemd-suspend-then-hibernate; do
+  require_line "/etc/systemd/system/$sleep_unit.service.d/20-tilo-freeze-user-sessions.conf" \
+    "Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=1"
+done
 require_file /usr/lib/systemd/system/fs.service
 require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
 require_file /usr/lib/systemd/user/tilo-fs-recipient.service
 require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
 require_file /usr/lib/systemd/user/tilo-fs-cloud.service
-require_file /usr/lib/systemd/user/tilo-identity.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
 require_file /usr/share/wayland-sessions/shell-peer-sync.desktop
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
-require_line /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf "FreezeUserSessions=yes"
 
 # AccessKit's provider requests org.a11y.Bus from the session bus. Keep the
 # daemon package explicit: a tree-only smoke must never pass merely because a
@@ -100,7 +103,6 @@ require_link /etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
 require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.socket
 require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-cloud.service
-require_link /etc/systemd/user/graphical-session-pre.target.wants/tilo-identity.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.timer
 require_file /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
@@ -109,7 +111,7 @@ if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
   die "systemd-growfs-root.service is masked; its composefs layout drop-in cannot apply"
 fi
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ConditionPathIsMountPoint=/sysroot"
-require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot"
+require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "Unit=tilo-growfs-sysroot.service"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "OnBootSec=5s"
 require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf "ConditionPathIsMountPoint=!/sysroot"
@@ -141,12 +143,10 @@ require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files"
 require_line /usr/lib/systemd/user/tilo-fs-cloud.service "Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential"
-require_line /usr/lib/systemd/user/tilo-fs-recipient.service "Requires=tilo-identity.service"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "PartOf=graphical-session.target"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "ListenStream=%t/tilo/services/tilo-fs.sock"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "Service=tilo-fs-recipient.service"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
-require_line /usr/lib/systemd/user/tilo-identity.service "ExecStart=/usr/bin/shell --provision-identity"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "tilo_session_unit_file_t"
@@ -277,7 +277,6 @@ if [ "$mode" = runtime ]; then
   # graphical login has started its systemd --user manager.
   user_runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export XDG_RUNTIME_DIR="$user_runtime"
-  systemctl --user is-enabled --quiet tilo-identity.service || die "identity user unit is not enabled"
   systemctl --user is-enabled --quiet tilo-fs-recipient.socket || die "recipient socket is not enabled"
 
   # SSH is normally ready before greetd has finished the graphical login.
@@ -291,7 +290,6 @@ if [ "$mode" = runtime ]; then
     done
     die "$unit is not active after 60 seconds"
   }
-  await_user_active tilo-identity.service
   await_user_active tilo-fs-recipient.socket
   systemctl --user is-active --quiet tilo-graphical-session.target \
     || die "Tilo graphical-session lifecycle target is not active"

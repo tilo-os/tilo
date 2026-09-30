@@ -753,6 +753,12 @@ impl Text {
 }
 
 impl Widget for Text {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         self.observe_i18n_revision();
@@ -978,9 +984,6 @@ impl Widget for Text {
     fn is_focused(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        false
-    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -1000,20 +1003,6 @@ impl Widget for Text {
         Some(node)
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -1028,7 +1017,7 @@ impl Widget for Text {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -1041,12 +1030,36 @@ impl Widget for Text {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Text {
+    fn needs_commit(&self) -> bool {
+        false
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Text {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Text {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 
@@ -1842,31 +1855,25 @@ mod tests {
 
             // Same string, size (16 default), wrap width (401.0) and family → a hit.
             let _ = tr.take_shape_stats();
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                16.0,
                 theme.tokens.colors.text_primary,
                 Affine::IDENTITY,
                 Some(401.0),
-                TextWeight::Regular,
-                false,
-                &FontChoice::Named(fam),
+                &TextStyle::new(16.0).with_family(FontChoice::Named(fam)),
             );
             let (hits, _m, _ns) = tr.take_shape_stats();
             assert_eq!(hits, 1, "the label shaped its text in the named family");
 
             // Sans of the same string is a separate shape entry.
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                16.0,
                 theme.tokens.colors.text_primary,
                 Affine::IDENTITY,
                 Some(401.0),
-                TextWeight::Regular,
-                false,
-                &FontChoice::SansSerif,
+                &TextStyle::new(16.0).with_family(FontChoice::SansSerif),
             );
             let (_h, misses, _ns) = tr.take_shape_stats();
             assert_eq!(misses, 1, "sans is a separate shape from the named family");

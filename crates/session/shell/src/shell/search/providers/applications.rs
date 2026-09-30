@@ -44,7 +44,11 @@ const STORE_PACKAGE_ID: &str = "so.tilo.store";
 /// tinkerers without assuming they are developers. The group is a catalogue
 /// key, resolved where the subtitle is built.
 fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
-    match package_id {
+    // A local build publishes the same apps under `dev.tilo.`.
+    let canonical = package_id
+        .strip_prefix("dev.tilo.")
+        .map(|name| format!("so.tilo.{name}"));
+    match canonical.as_deref().unwrap_or(package_id) {
         "so.tilo.browser" => ("search-apps-group-start-here", 90),
         "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
         "so.tilo.notes" => ("search-apps-group-start-here", 88),
@@ -78,6 +82,14 @@ fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
         | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
         | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
+        "so.tilo.api-tester"
+        | "so.tilo.snippets"
+        | "so.tilo.diffmerge"
+        | "so.tilo.db-client"
+        | "so.tilo.containers"
+        | "so.tilo.hex-editor"
+        | "so.tilo.git-client"
+        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
         _ => ("search-apps-group-more-apps", 10),
     }
 }
@@ -411,17 +423,7 @@ impl ApplicationsProvider {
         apps: Vec<InstalledApp>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
-        let scores = test_scores(
-            needle,
-            apps.iter().map(|app| {
-                application_fields(
-                    &app.display_name,
-                    &app.package_id,
-                    app.category.as_deref(),
-                    None,
-                )
-            }),
-        );
+        let scores = test_scores(needle, apps.iter().map(installed_fields));
         self.installed_rows(needle, apps, &scores, open_target)
     }
 
@@ -460,7 +462,10 @@ impl ApplicationsProvider {
                 app.package_id.clone(),
                 t_args(
                     "search-apps-open",
-                    &[("app", app.display_name.as_str().into())],
+                    &[(
+                        "app",
+                        app.name_for(&crate::shell::i18n::current_locale()).into(),
+                    )],
                 ),
                 Some(subtitle),
                 presentation_score(needle, &app.package_id, score),
@@ -1044,6 +1049,24 @@ impl SearchProvider for ApplicationsProvider {
         self.revision()
     }
 
+    /// An address is looked up in the whole snapshot. An empty query's first
+    /// page holds [`SearchBudget::PALETTE`] rows, fewer than a desktop has
+    /// apps, so resolving through it left every later app unreachable by id.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Application) {
+            return None;
+        }
+        let snapshot = self.snapshot()?;
+        snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.is_addressed_by(id))
+            .find_map(|entry| {
+                self.entry_row(&ctx, &snapshot, entry, provider_score(0))
+                    .filter(|row| row.id == id)
+            })
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -1094,30 +1117,8 @@ impl SearchProvider for ApplicationsProvider {
                 considered = considered.saturating_add(1);
                 continue;
             };
-            let score = [Some(provider_score(hit.rank.unwrap_or(0)))];
-            let mut rows = match entry {
-                ApplicationEntry::Installed(app) => self.installed_rows(
-                    ctx.needle,
-                    vec![app.clone()],
-                    &score,
-                    ctx.chrome.open_target,
-                ),
-                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
-                    vec![record.clone()],
-                    &score,
-                    &snapshot.installed_ids,
-                    ctx.chrome.open_target,
-                ),
-                ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
-                    ctx.needle,
-                    vec![app.clone()],
-                    &score,
-                    &snapshot.installed_ids,
-                    &snapshot.host_app_ids,
-                    ctx.chrome.open_target,
-                ),
-            };
-            let Some(row) = rows.pop() else {
+            let score = provider_score(hit.rank.unwrap_or(0));
+            let Some(row) = self.entry_row(&ctx, &snapshot, entry, score) else {
                 considered = considered.saturating_add(1);
                 continue;
             };
@@ -1148,7 +1149,56 @@ impl SearchProvider for ApplicationsProvider {
     }
 }
 
+impl ApplicationEntry {
+    /// Whether the row this entry contributes is addressed by `id`, decided
+    /// without building the row.
+    fn is_addressed_by(&self, id: &str) -> bool {
+        match self {
+            Self::Installed(app) => app.package_id == id,
+            Self::Dynamic(record) => record.id == id,
+            Self::Catalogue(app) => id
+                .strip_prefix("app:")
+                .is_some_and(|package_id| package_id == app.package_id),
+        }
+    }
+}
+
 impl ApplicationsProvider {
+    /// The one row `entry` contributes to a page, built exactly as a search
+    /// would build it.
+    fn entry_row(
+        &self,
+        ctx: &SearchContext<'_>,
+        snapshot: &ApplicationsSnapshot,
+        entry: &ApplicationEntry,
+        score: i32,
+    ) -> Option<SearchResult> {
+        let score = [Some(score)];
+        let mut rows = match entry {
+            ApplicationEntry::Installed(app) => self.installed_rows(
+                ctx.needle,
+                vec![app.clone()],
+                &score,
+                ctx.chrome.open_target,
+            ),
+            ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
+                vec![record.clone()],
+                &score,
+                &snapshot.installed_ids,
+                ctx.chrome.open_target,
+            ),
+            ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
+                ctx.needle,
+                vec![app.clone()],
+                &score,
+                &snapshot.installed_ids,
+                &snapshot.host_app_ids,
+                ctx.chrome.open_target,
+            ),
+        };
+        rows.pop()
+    }
+
     fn revision(&self) -> String {
         let (installed, catalogue, host, dynamic) = self.source_generation();
         let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
@@ -1169,15 +1219,34 @@ const APPLICATION_MATCHING: Matching = Matching::LOOSE;
 /// Each app's provider score for `needle`, for tests building rows from a
 /// bare list.
 #[cfg(test)]
-fn test_scores<'a>(
-    needle: &str,
-    apps: impl Iterator<Item = [(&'a str, tilo_search::FieldWeight); 5]>,
-) -> Vec<Option<i32>> {
+fn test_scores<'a, Fields>(needle: &str, apps: impl Iterator<Item = Fields>) -> Vec<Option<i32>>
+where
+    Fields: IntoIterator<Item = (&'a str, tilo_search::FieldWeight)>,
+{
     ui::search::ListIndex::new(APPLICATION_MATCHING)
         .ranks(needle, apps)
         .into_iter()
         .map(|rank| rank.map(provider_score))
         .collect()
+}
+
+/// An installed app's [`application_fields`], plus its name in every
+/// language its manifest gives one, each weighed as the name itself: a
+/// German desktop types "Dateien", an English habit types "Files".
+fn installed_fields(app: &InstalledApp) -> Vec<(&str, tilo_search::FieldWeight)> {
+    let mut fields = application_fields(
+        &app.display_name,
+        &app.package_id,
+        app.category.as_deref(),
+        None,
+    )
+    .to_vec();
+    fields.extend(
+        app.localized_names
+            .values()
+            .map(|name| (name.as_str(), tilo_search::FieldWeight::TITLE)),
+    );
+    fields
 }
 
 /// Index each entry's [`application_fields`], keyed by position.
@@ -1199,13 +1268,11 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
     index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
         let document = Document::new(at as u64);
         match entry {
-            ApplicationEntry::Installed(app) => app_fields(
-                document,
-                &app.display_name,
-                &app.package_id,
-                app.category.as_deref(),
-                None,
-            ),
+            ApplicationEntry::Installed(app) => installed_fields(app)
+                .into_iter()
+                .fold(document, |document, (text, weight)| {
+                    document.field(text, weight)
+                }),
             ApplicationEntry::Dynamic(record) => {
                 app_fields(document, &record.name, &record.id, None, None)
             }
@@ -1226,6 +1293,8 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -1276,6 +1345,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name.to_string(),
+            localized_names: BTreeMap::default(),
             category: category.map(str::to_string),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
@@ -1715,14 +1785,24 @@ mod tests {
                     app("so.tilo.browser", "Browser"),
                     app("so.tilo.notes", "Notes"),
                     app("so.tilo.hello", "Hello"),
+                    app("so.tilo.api-tester", "API Tester"),
+                    app("dev.tilo.file-explorer", "Files"),
                 ],
                 OpenTarget::Beside,
             );
-            assert_eq!(out.len(), 4);
+            assert_eq!(out.len(), 6);
             let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
             assert!(score("so.tilo.browser") > score("so.tilo.notes"));
             assert!(score("so.tilo.notes") > score("so.tilo.monitor"));
             assert!(score("so.tilo.monitor") > score("so.tilo.hello"));
+            assert!(
+                score("so.tilo.hello") > score("so.tilo.api-tester"),
+                "developer tools never lead a fresh palette"
+            );
+            assert!(
+                score("dev.tilo.file-explorer") > score("so.tilo.notes"),
+                "a local build's apps keep their place"
+            );
             assert!(
                 out.iter()
                     .find(|row| row.id == "so.tilo.browser")
@@ -1874,6 +1954,44 @@ mod tests {
                     .is_some_and(|text| text.contains("verified"))
             );
         }
+    }
+
+    /// An app is found by its name in any language its manifest gives, so a
+    /// German desktop finds Files as "Dateien" and English still works.
+    #[test]
+    fn an_installed_app_is_found_by_its_localized_name_and_its_own() {
+        let mut files = app_in("so.tilo.file-explorer", "Files", Some("System"));
+        files.localized_names.insert("de".into(), "Dateien".into());
+        let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            vec![files.clone()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let c = chrome_rc();
+        let state = c.borrow();
+        let doc = AutoCommit::new();
+        for needle in ["Dateien", "dateien", "Files"] {
+            let ctx = SearchContext {
+                needle,
+                wanted: &[ResourceKind::Application],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            refresh_until_ready(&p, &ctx);
+            let results = p.query(ctx);
+            assert!(
+                results
+                    .iter()
+                    .any(|row| row.id.ends_with("so.tilo.file-explorer")),
+                "{needle:?} finds Files: {:?}",
+                results.iter().map(|row| &row.title).collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(files.name_for("de-DE"), "Dateien");
+        assert_eq!(files.name_for("de"), "Dateien");
+        assert_eq!(files.name_for("en-US"), "Files");
     }
 
     #[test]
@@ -2090,6 +2208,129 @@ mod tests {
         refresh_until_ready(&provider, &ctx);
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
         assert_ne!(provider.search_revision(&ctx), initial_revision);
+    }
+
+    #[test]
+    fn every_application_is_addressable_past_the_first_palette_page() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let count = SearchBudget::PALETTE.max_results + 12;
+        let installed = (0..count)
+            .map(|index| {
+                app(
+                    &format!("so.tilo.fixture-{index:03}"),
+                    &format!("Fixture {index:03}"),
+                )
+            })
+            .collect();
+        let source = ApplicationsTestSource::new(
+            installed,
+            vec![offered("so.tilo.store-only", "Store Only", None)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let provider = Rc::new(ApplicationsProvider::with_test_source(source));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                needle: "",
+                wanted: &[ResourceKind::Application],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            refresh_until_ready(&provider, &ctx);
+            assert!(
+                provider
+                    .query_page(ctx, None, SearchBudget::PALETTE)
+                    .results
+                    .len()
+                    < count,
+                "the fixture must not fit on the first page"
+            );
+        }
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let select = |id: &str| {
+            let resource = ResourceRef::new("applications", id);
+            ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string())
+        };
+        let last = format!("so.tilo.fixture-{:03}", count - 1);
+        assert_eq!(
+            select(&last).as_deref(),
+            Some(format!("Open Fixture {:03}", count - 1).as_str()),
+            "an installed app past the first page must still open by its address"
+        );
+        assert!(
+            select("app:so.tilo.store-only").is_some_and(|title| title.contains("Store Only")),
+            "a catalogue offer past the first page must still resolve"
+        );
+        assert_eq!(select("so.tilo.store-only"), None);
+        assert_eq!(select("so.tilo.missing"), None);
+    }
+
+    /// An agent's first request to a session is often an invocation, with no
+    /// search or palette before it to take in the index build.
+    #[test]
+    fn an_app_opens_by_its_address_without_any_search_first() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let source = ApplicationsTestSource::new(
+            vec![app("so.tilo.calculator", "Calculator")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(ApplicationsProvider::with_test_source(source)));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let resource = ResourceRef::new("applications", "so.tilo.calculator");
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        loop {
+            let opened = ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string());
+            if let Some(title) = opened {
+                assert_eq!(title, "Open Calculator");
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "invoking by address alone never takes in the finished index"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

@@ -211,7 +211,8 @@ activity-latest = Zuletzt · { $headline }
 activity-history-pending = Der Verlauf wartet auf laufende Bearbeitungen
 activity-caught-up = Du bist auf dem neuesten Stand
 activity-summary-on-device = Zusammenfassung auf dem Gerät
-activity-summary-glance = Auf einen Blick
+activity-session-move-newer = ↑  1 Aktion
+activity-session-move-older = 1 Aktion  ↓
 activity-more-sessions = Weitere Arbeitssitzungen…
 activity-first-sessions = Erste Arbeitssitzungen…
 activity-brief-underlying = { $count } { $count ->
@@ -373,6 +374,9 @@ activity-event-revoked-capabilities = { $count ->
         [one] Eine Berechtigung entzogen
        *[other] { $count } Berechtigungen entzogen
     }
+activity-event-created = Arbeitsbereich erstellt
+activity-event-created-named = Arbeitsbereich „{ $name }“ erstellt
+activity-event-updated = Arbeitsbereich aktualisiert
 activity-event-owner = Eigentümer des Arbeitsbereichs festgelegt
 activity-event-identity = Identität des Arbeitsbereichs zugewiesen
 activity-event-renamed = Arbeitsbereich umbenannt
@@ -440,16 +444,26 @@ search-provider-desktop-windows = Fenster auf dem Desktop
 search-badge-tab = Tab
 search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
-search-window-group-untitled = Fenstergruppe { $group }
+search-window-group-untitled = Unbenanntes Fenster
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
+search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
     [one] 1 Tab
    *[other] { $count } Tabs
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
+search-window-focus-place = Geöffnet in diesem Arbeitsbereich
+search-window-focus-place-strip = Geöffnet in der Leiste „{ $strip }“
+search-window-focus-detail-shared = { $place } · { $count ->
+    [one] 1 Tab
+   *[other] { $count } Tabs
+}
+# Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
+# Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
+search-window-verb-close = schließen beenden close quit
+search-window-verb-relocate = verschieben kopieren senden move copy send
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück

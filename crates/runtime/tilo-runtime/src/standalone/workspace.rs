@@ -77,6 +77,19 @@ impl ProfileWorkspace {
             .unwrap_or_default()
     }
 
+    /// The workspace's name, as people see it.
+    pub(super) fn name(&self) -> String {
+        self.tree
+            .read()
+            .ok()
+            .and_then(|tree| {
+                tree.workspaces
+                    .first()
+                    .map(|workspace| workspace.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// Give an unowned workspace to `actor` and persist this host's tree.
     pub(super) fn adopt(&self, actor: &str) -> io::Result<()> {
         let mut tree = self
@@ -192,7 +205,7 @@ impl AppActionGrants for ProfileGrants {
                     .iter()
                     .find(|workspace| workspace.room.to_string() == room)
                     .is_some_and(|workspace| {
-                        workspace.may_administer_at(&person.to_owned(), unix_now())
+                        workspace.may_administer_at(&person.to_owned(), tilo_clock::unix_now())
                     })
             })
     }
@@ -213,7 +226,7 @@ impl AppActionGrants for ProfileGrants {
             &request.action_label,
             answer.lifetime(),
         );
-        let now = unix_now();
+        let now = tilo_clock::unix_now();
         self.workspace.update(|tree| {
             let workspace = tree
                 .workspaces
@@ -244,12 +257,6 @@ impl AppActionGrants for ProfileGrants {
     }
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// Effect and task records the broker keeps in this host's own workspace.
 /// A profile adopted from the desktop session refuses them: its file is
 /// that host's to write.
@@ -262,7 +269,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
         context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {
-        let completed_at = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        let completed_at = tilo_clock::unix_now_i64();
         self.record(room, |tree, workspace| {
             // A retried invocation keeps its first receipt.
             tree.append_workspace_effect_receipt_at(
@@ -285,7 +292,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
         status: Option<WorkspaceTaskStatus>,
         summary: String,
     ) -> Result<(), String> {
-        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        let now = tilo_clock::unix_now_i64();
         self.record(room, |tree, workspace| {
             let workspace = tree
                 .workspaces

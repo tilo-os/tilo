@@ -395,7 +395,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
 
 fn engine_fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures")
         .join(name)
 }
 
@@ -414,7 +414,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = app.record_intent().expect("a markup record");
+        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
         ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
         app.sync(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -528,7 +528,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = app.record_intent().expect("a markup record");
+        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
         ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
         app.sync(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

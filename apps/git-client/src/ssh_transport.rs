@@ -142,8 +142,7 @@ impl Endpoint {
             configured_user
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
-                .or_else(|| std::env::var("USER").ok())
-                .or_else(|| std::env::var("USERNAME").ok())
+                .or_else(tilo_paths::session::user_name)
                 .context("SSH remote needs a username")?
         } else {
             user

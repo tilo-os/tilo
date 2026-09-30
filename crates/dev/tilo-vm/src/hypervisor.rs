@@ -460,9 +460,10 @@ pub fn domain_xml_with_uuid(
     </interface>
     <serial type='pty'/>
     <console type='pty'/>
+    <controller type='usb' model='qemu-xhci'/>
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
-    <graphics type='spice' autoport='yes'/>
+    <graphics type='spice' autoport='yes'/>{gl}
     <video>{video}</video>
     <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
   </devices>
@@ -477,6 +478,11 @@ pub fn domain_xml_with_uuid(
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
         video = video_model(vm.entry),
+        gl = if vm.entry.gl {
+            "\n    <graphics type='egl-headless'/>"
+        } else {
+            ""
+        },
         disk_boot = if vm.entry.boot_esp.is_some() {
             "\n      <boot order='2'/>"
         } else {
@@ -499,19 +505,33 @@ pub fn domain_xml_with_uuid(
     ))
 }
 
-/// libvirt's virtio-gpu: `heads` outputs, the first preferring `resolution`.
+/// libvirt's virtio-gpu: `heads` outputs, the first preferring `resolution`,
+/// with virgl when `gl`.
 fn video_model(entry: &VmEntry) -> String {
     let heads = entry
         .heads
         .filter(|&n| n > 1)
         .map_or_else(String::new, |n| format!(" heads='{n}'"));
-    match entry.resolution.as_deref().and_then(|r| r.split_once('x')) {
-        Some((x, y)) => format!(
-            "<model type='virtio'{heads}><resolution x='{}' y='{}'/></model>",
-            quick_xml::escape::escape(x),
-            quick_xml::escape::escape(y)
-        ),
-        None => format!("<model type='virtio'{heads}/>"),
+    let accel = if entry.gl {
+        "<acceleration accel3d='yes'/>"
+    } else {
+        ""
+    };
+    let resolution = entry
+        .resolution
+        .as_deref()
+        .and_then(|r| r.split_once('x'))
+        .map_or_else(String::new, |(x, y)| {
+            format!(
+                "<resolution x='{}' y='{}'/>",
+                quick_xml::escape::escape(x),
+                quick_xml::escape::escape(y)
+            )
+        });
+    if accel.is_empty() && resolution.is_empty() {
+        format!("<model type='virtio'{heads}/>")
+    } else {
+        format!("<model type='virtio'{heads}>{accel}{resolution}</model>")
     }
 }
 
@@ -1005,6 +1025,7 @@ impl Hypervisor for Whpx {
             .collect::<Vec<_>>()
             .join(" ");
         let pid = ps_quote(&Self::pid(vm));
+        let stderr = ps_quote(&whpx_file(disk, "stderr.log"));
         let script = format!(
             "$ErrorActionPreference='Stop'; \
              $free=([IO.DriveInfo]::new([IO.Path]::GetPathRoot({}))).AvailableFreeSpace; \
@@ -1012,9 +1033,9 @@ impl Hypervisor for Whpx {
              if (Test-Path -LiteralPath {pid}) {{ $old=[int](Get-Content -LiteralPath {pid}); \
              $oldProcess=Get-Process -Id $old -ErrorAction SilentlyContinue; \
              if ($oldProcess -and $oldProcess.ProcessName -eq 'qemu-system-aarch64') {{ throw 'WHPX VM is already running' }} }}; \
-             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden; \
+             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden -RedirectStandardError {stderr}; \
              Set-Content -LiteralPath {pid} -Value $p.Id; Start-Sleep -Seconds 1; \
-             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode) }}",
+             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode+'; see '+{stderr}) }}",
             ps_quote(disk),
             ps_quote(qemu),
             ps_quote(&args)
@@ -1283,6 +1304,7 @@ mod tests {
                     .contains("io.systemd.credential.binary")
             );
             assert!(start[0].args.last().unwrap().contains("15GB"));
+            assert!(start[0].args.last().unwrap().contains("stderr.log"));
             assert!(
                 Whpx.stop(&vm)[0]
                     .args
@@ -1433,6 +1455,12 @@ mod tests {
             assert!(xml.contains("<features><acpi/></features>"), "{xml}");
             assert!(!xml.contains("<apic/>"), "{xml}");
             assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+            // libvirt adds no USB controller to an aarch64 `virt` machine and then
+            // refuses the USB tablet and keyboard.
+            assert!(
+                xml.contains("<controller type='usb' model='qemu-xhci'/>"),
+                "{xml}"
+            );
         }
 
         // Phase: domain_xml_when_emulated_uses_tcg.
@@ -1985,6 +2013,35 @@ mod tests {
         assert!(
             xml.contains(
                 "<video><model type='virtio' heads='2'><resolution x='5120' y='2880'/></model></video>"
+            ),
+            "{xml}"
+        );
+        assert!(
+            !xml.contains("egl-headless") && !xml.contains("accel3d"),
+            "{xml}"
+        );
+        let gl = VmEntry {
+            gl: true,
+            resolution: Some("5120x2880".into()),
+            ..entry()
+        };
+        let xml = domain_xml(
+            &Vm {
+                name: "dev",
+                entry: &gl,
+            },
+            KEY,
+        )
+        .unwrap();
+        assert!(
+            xml.contains(
+                "<graphics type='spice' autoport='yes'/>\n    <graphics type='egl-headless'/>"
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                "<video><model type='virtio'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
             ),
             "{xml}"
         );

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -435,17 +436,11 @@ impl ThemeRow {
         );
         draw::fill_rrect(scene, t, pill, ph / 2.0, theme.accent_primary);
         draw::text_center(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             lab,
-            size,
+            &TextStyle::new(size).with_weight(TextWeight::Bold),
             on_accent(theme),
-            pill.x0,
-            pill.x1,
-            pill.y0,
-            pill.y1,
-            TextWeight::Bold,
+            pill,
         );
     }
 }

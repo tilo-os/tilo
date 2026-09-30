@@ -142,7 +142,7 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ParamType, PermissionRequirement, Resource, RiskLevel,
+        ActionArgs, ActionParam, ChangeKind, ParamType, PermissionRequirement, Resource, RiskLevel,
     };
 
     /// The default search entry of a record: all of its text, in one entry.

@@ -119,7 +119,8 @@ where
         self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
         self.child = (self.build)(&next, self.child_domain.as_ref());
         if let Some(domain) = &self.child_domain {
-            self.child.install_control_custody(
+            crate::widget::controls::install_control_custody(
+                self.child.as_mut(),
                 domain,
                 crate::control_custody::CustodyAttachment::Dynamic,
             );
@@ -193,30 +194,17 @@ impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    crate::provides!(dyn crate::widget::FullscreenProvider);
+    crate::provides!(
+        dyn crate::widget::FullscreenProvider,
+        dyn crate::undo::CommittedActions,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::view::capability::ViewState,
+        dyn crate::undo::UndoPoints
+    );
 
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(old) = &self.control_domain {
-            if !old.same(domain) {
-                if !domain.permits_renewal(old, attachment) {
-                    domain.unsafe_attachment();
-                    return;
-                }
-                if let Some(scope) = self.scope_domain.take() {
-                    scope.close();
-                }
-                self.child_domain = None;
-            }
-        }
-        self.control_domain = Some(domain.clone());
-        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
-        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
-        self.child.install_control_custody(child_domain, attachment);
-    }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         self.reconcile(state, path);
@@ -315,14 +303,6 @@ where
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset) || self.child.take_focus_reset()
     }
@@ -337,42 +317,6 @@ where
 
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         self.child.on_external_event(payload, state, root);
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.child.record_intent()
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        self.child.view_state()
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        self.child.restore_view_state(view);
-    }
-
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        self.child.set_record_scope(record);
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        self.child.release_record_scope()
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.child.resources(doc)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.child.search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        self.child.activate_search_result(action_id, doc, path);
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.child.take_committed_action()
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
@@ -396,6 +340,112 @@ where
             presence,
             permissions,
         );
+    }
+}
+
+impl<K> crate::undo::UndoPoints for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl<K> crate::view::capability::ViewState for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        crate::view::capability::view_state(self.child.as_ref())
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        crate::view::capability::restore_view_state(self.child.as_mut(), view);
+    }
+}
+
+impl<K> crate::record::capability::RecordScoped for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        crate::record::capability::record_intent(self.child.as_ref())
+    }
+    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+        crate::record::capability::set_record_scope(self.child.as_mut(), record);
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        crate::record::capability::release_record_scope(self.child.as_mut())
+    }
+}
+
+impl<K> crate::search::capability::SearchSource for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        crate::search::capability::search_providers(self.child.as_ref())
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        crate::search::capability::activate_search_result(
+            self.child.as_mut(),
+            action_id,
+            doc,
+            path,
+        );
+    }
+}
+
+impl<K> crate::resources::PublishesResources for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::resources::resources(self.child.as_ref(), doc)
+    }
+}
+
+impl<K> crate::widget::controls::ActionControls for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(old) = &self.control_domain {
+            if !old.same(domain) {
+                if !domain.permits_renewal(old, attachment) {
+                    domain.unsafe_attachment();
+                    return;
+                }
+                if let Some(scope) = self.scope_domain.take() {
+                    scope.close();
+                }
+                self.child_domain = None;
+            }
+        }
+        self.control_domain = Some(domain.clone());
+        let scope = self.scope_domain.get_or_insert_with(|| domain.child());
+        let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
+        crate::widget::controls::install_control_custody(
+            self.child.as_mut(),
+            child_domain,
+            attachment,
+        );
+    }
+}
+
+impl<K> crate::undo::CommittedActions for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        crate::undo::take_committed_action(self.child.as_mut())
     }
 }
 

@@ -380,6 +380,7 @@ pub struct InputCaptureBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     compositor: InputCaptureCompositorHandle,
+    connection: zbus::Connection,
 }
 
 /// Narrow bridge used by Clipboard; it never exposes input capture state to
@@ -390,15 +391,23 @@ pub struct InputCaptureSessionHandle {
 }
 #[cfg(target_os = "linux")]
 impl InputCaptureBackend {
-    pub fn new(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
+    /// `connection` is the bus this backend is served on; its request and
+    /// session objects are registered there.
+    pub fn new(
+        ctx: PortalContext,
+        lifecycle: PortalLifecycle,
+        connection: zbus::Connection,
+    ) -> Self {
         Self {
             compositor: ctx.input_capture.clone(),
             ctx,
             lifecycle,
+            connection,
         }
     }
-    pub fn spawn_signal_emitter(&self, connection: zbus::Connection) {
+    pub fn spawn_signal_emitter(&self) {
         let compositor = self.compositor.clone();
+        let connection = self.connection.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(8)).await;
@@ -504,7 +513,6 @@ impl InputCaptureBackend {
     async fn create_session(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -517,7 +525,6 @@ impl InputCaptureBackend {
         }
         self.create_legacy(
             header,
-            connection,
             handle,
             session_handle,
             app_id,
@@ -529,7 +536,6 @@ impl InputCaptureBackend {
     async fn create_session2(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
@@ -564,7 +570,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_session(connection, &key, entry, move |_| close_session(
+                .register_session(&self.connection, &key, entry, move |_| close_session(
                     &state,
                     &cleanup_key
                 ))
@@ -581,7 +587,6 @@ impl InputCaptureBackend {
     async fn start(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -614,7 +619,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -631,7 +636,7 @@ impl InputCaptureBackend {
         .await
         .is_allowed();
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         if !allowed {
             return (1, HashMap::new());
@@ -675,7 +680,6 @@ impl InputCaptureBackend {
     async fn get_zones(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -697,7 +701,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -710,7 +714,7 @@ impl InputCaptureBackend {
             .map(|state| (state.zones.clone(), state.zone_set))
             .unwrap_or_default();
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(
@@ -729,7 +733,6 @@ impl InputCaptureBackend {
     async fn set_pointer_barriers(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
-        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -755,7 +758,7 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, entry, |_| {})
+                .register_request(&self.connection, &request, entry, |_| {})
                 .await,
             Ok(true)
         ) {
@@ -784,7 +787,7 @@ impl InputCaptureBackend {
             session.zone_set = current_zone_set;
         }
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(&mut results, "failed_barriers", Value::from(failed));
@@ -885,7 +888,6 @@ impl InputCaptureBackend {
     async fn create_legacy(
         &self,
         header: zbus::message::Header<'_>,
-        connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
         app_id: String,
@@ -926,10 +928,9 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_session(connection, &key, session_entry, move |_| close_session(
-                    &state,
-                    &cleanup_key
-                ))
+                .register_session(&self.connection, &key, session_entry, move |_| {
+                    close_session(&state, &cleanup_key)
+                })
                 .await,
             Ok(true)
         ) {
@@ -944,14 +945,14 @@ impl InputCaptureBackend {
         };
         if !matches!(
             self.lifecycle
-                .register_request(connection, &request, request_entry, |_| {})
+                .register_request(&self.connection, &request, request_entry, |_| {})
                 .await,
             Ok(true)
         ) {
             return (2, HashMap::new());
         }
         self.lifecycle
-            .complete_request_object(connection, &request)
+            .complete_request_object(&self.connection, &request)
             .await;
         let mut results = HashMap::new();
         insert_value(&mut results, "capabilities", Value::U32(requested));

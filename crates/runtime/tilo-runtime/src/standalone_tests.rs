@@ -44,6 +44,7 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .stdout(std::fs::File::create(&log).unwrap())
@@ -171,6 +172,114 @@ fn sdk_apps_join_a_standalone_session_and_publish_to_mcp() {
     // The profile is released and served again with the same workspace.
     let reopened = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
     assert_eq!(reopened.room(), listed_room(&root));
+}
+
+const WRITER_TEST: &str = "standalone::tests::an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart";
+const WRITER_HELPER: &str = "TILO_STANDALONE_WRITER_HELPER";
+const WRITER_APP: &str = "dev.tilo.writer";
+const WRITER_KIND: &str = "dev.tilo.writer.note";
+const WRITER_RECORD: &str = "0b7d9a3e-5c1f-4a8e-9d2b-7f6e5a4c3b21";
+const WRITTEN: &str = "written by an SDK app";
+
+/// What the runtime's own room owner holds of the writer's record, read
+/// from the profile as a fresh owner restores it.
+fn written(profile: &Path) -> Option<String> {
+    use automerge::ReadDoc as _;
+    let workspace = Arc::new(ProfileWorkspace::open(profile).ok()?);
+    let room = workspace.room();
+    let owner = owner::RoomOwner::open(
+        profile,
+        &room,
+        tilo_identity_host::broker::trusted_current_device(&room).ok()?,
+        owner::RecordCreation {
+            declared_kinds: Box::new(|_| None),
+            dev: true,
+        },
+        workspace,
+        tilo_action_broker::channel_encryption::ChannelKeyProvider::default(),
+    )
+    .ok()?;
+    let record = ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).ok()?);
+    assert!(
+        owner.document(WRITER_APP, record.as_str()).is_none()
+            || owner.encrypted(WRITER_APP, record.as_str()),
+        "the SDK's write arrived sealed"
+    );
+    let bytes = owner.document(WRITER_APP, record.as_str())?;
+    let doc = automerge::AutoCommit::load(&bytes).ok()?;
+    doc.get(automerge::ROOT, "text")
+        .ok()?
+        .and_then(|(value, _)| value.into_string().ok())
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the session holds the profile and brokers for the whole scenario on purpose"
+)]
+fn an_sdk_apps_sealed_write_in_the_runtimes_own_room_is_durable_across_restart() {
+    // Helper role: an ordinary SDK app joins one record of the runtime's
+    // room and writes it once. The SDK holds the write until the runtime's
+    // identity service hands out the route's keys, then seals and sends it.
+    if std::env::var_os(WRITER_HELPER).is_some() {
+        use automerge::transaction::Transactable as _;
+        let checkout = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_file_record(uuid::Uuid::parse_str(WRITER_RECORD).unwrap()),
+            ui::record::RecordKind::new(WRITER_KIND),
+        );
+        let mut manager = ui::collaboration::CollaborationManager::for_record(&checkout);
+        let started = Instant::now();
+        while !manager.is_connected() && started.elapsed() < tilo_test_env::hang_bound() {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(manager.is_connected(), "{:?}", manager.state());
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
+        doc.commit();
+        assert!(
+            manager.send(ui::collaboration::CollabRequest::document_snapshot(
+                doc.save()
+            ))
+        );
+        loop {
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let Some(root) = isolated_root(WRITER_TEST) else {
+        return;
+    };
+    let session = Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap();
+    let log = std::fs::File::create(root.join("writer.log")).unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", WRITER_TEST, "--nocapture"])
+        .env(WRITER_HELPER, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log));
+    let mut child = session.launch(WRITER_APP, command).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    let stored = loop {
+        let stored = written(&root);
+        if stored.is_some() || Instant::now() >= deadline {
+            break stored;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    let logs = std::fs::read_to_string(root.join("writer.log")).unwrap_or_default();
+    assert_eq!(
+        stored.as_deref(),
+        Some(WRITTEN),
+        "the sealed write reaches the owner: {logs}"
+    );
+    drop(session);
+    // Served again, the profile's owner still holds the write.
+    drop(Standalone::start_in_dev_mode(&root, &mut |_| {}).unwrap());
+    assert_eq!(written(&root).as_deref(), Some(WRITTEN));
 }
 
 fn listed_room(root: &Path) -> String {

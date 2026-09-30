@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::collaboration::{
     CollabEvent, CollabRequest, NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand,
@@ -59,7 +59,7 @@ impl Default for NearbySendState {
             pending: BTreeMap::new(),
             requests: VecDeque::new(),
             snapshot: NearbyTransferSnapshot::default(),
-            next_poll: Instant::now(),
+            next_poll: ui::time::now(),
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),

@@ -327,7 +327,7 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
-   && grep -Fq "github.event.inputs.publish == 'true'" "$os_image_workflow" \
+   && grep -Fq "github.event.inputs.release == 'true'" "$os_image_workflow" \
    && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \

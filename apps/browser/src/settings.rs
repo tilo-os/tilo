@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `xdg_paths::config_dir()/tilo-browser/settings.json`. It holds the
+//!    `tilo_paths::config_dir()/tilo-browser/settings.json`. It holds the
 //!    durable preferences (ad-blocking, clear-on-exit, search engine,
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
@@ -151,7 +151,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Absolute path of the on-disk settings file:
-    /// `xdg_paths::config_dir()/tilo-browser/settings.json`. `None` when the
+    /// `tilo_paths::config_dir()/tilo-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
         crate::storage::config_dir().map(|d| d.join("settings.json"))
@@ -773,7 +773,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             pane.sync(&mut doc, &automerge::ROOT);
             assert!(
-                pane.control_action_bindings()
+                ui::widget::controls::control_action_bindings(&pane)
                     .iter()
                     .all(|binding| !matches!(
                         binding.kind,
@@ -873,7 +873,7 @@ mod tests {
             );
 
             assert!(
-                pane.control_action_bindings()
+                ui::widget::controls::control_action_bindings(&pane)
                     .iter()
                     .all(|binding| !matches!(
                         binding.kind,

@@ -14,9 +14,7 @@ pub struct AddressProfile {
     pub id: String,
     pub label: String,
     pub full_name: String,
-    #[serde(default)]
     pub given_name: String,
-    #[serde(default)]
     pub family_name: String,
     pub street: String,
     pub city: String,
@@ -175,7 +173,7 @@ impl AutofillStore {
             .filter(|p| !p.as_os_str().is_empty())
             .ok_or("Address profile directory is unavailable")?;
         std::fs::create_dir_all(parent).map_err(|_| "Cannot create address profile directory")?;
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|_| "Cannot save address profiles")?;
         self.saved = next;
         Ok(())
@@ -202,7 +200,7 @@ mod tests {
         }
     }
 
-    /// Profile lifecycle: opt-in, legacy names, private isolation and capacity.
+    /// Profile lifecycle: opt-in, private isolation and capacity.
     #[test]
     fn address_profiles_opt_in_edit_capacity_and_private_isolation() {
         // Phase `address_profiles_require_opt_in_and_survive_explicit_edits`.
@@ -232,18 +230,6 @@ mod tests {
             );
             reopened.set_enabled(false).unwrap();
             assert!(reopened.profile_for_fill("two").is_none());
-        }
-
-        // Phase `existing_profiles_without_split_names_remain_readable`.
-        {
-            let mut value = serde_json::to_value(profile("legacy")).unwrap();
-            value.as_object_mut().unwrap().remove("given_name");
-            value.as_object_mut().unwrap().remove("family_name");
-            let parsed: AddressProfile = serde_json::from_value(value).unwrap();
-            assert_eq!(parsed.full_name, "Synthetic Person");
-            assert!(parsed.given_name.is_empty());
-            assert!(parsed.family_name.is_empty());
-            assert!(parsed.valid());
         }
 
         // Phase `private_mode_never_reads_or_changes_normal_profiles`.

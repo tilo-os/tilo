@@ -59,10 +59,14 @@ enum TargetPlatform {
     TiloOs,
     /// WebAssembly side module for the browser toolkit core (`wasm32`).
     Web,
+    /// Self-contained executable for other Linux desktops (`x86_64` or `aarch64`).
+    Linux,
     /// Self-contained Windows executable (`x86_64` or `aarch64`).
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
     Macos,
+    /// Android package, an APK or AAB (`aarch64` or `x86_64`).
+    Android,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -77,8 +81,10 @@ impl From<TargetPlatform> for registry_client::Platform {
         match value {
             TargetPlatform::TiloOs => Self::TiloOs,
             TargetPlatform::Web => Self::Web,
+            TargetPlatform::Linux => Self::Linux,
             TargetPlatform::Windows => Self::Windows,
             TargetPlatform::Macos => Self::Macos,
+            TargetPlatform::Android => Self::Android,
         }
     }
 }
@@ -116,7 +122,7 @@ enum Command {
         #[arg(long)]
         thin: bool,
     },
-    /// Pack the Windows or macOS build of an app: one self-contained
+    /// Pack the Linux, Windows or macOS build of an app: one self-contained
     /// executable with the toolkit linked in, shipped as `bin/<file name>`
     /// under a signed `[target]`.
     PackDesktop {
@@ -291,6 +297,23 @@ enum Command {
         /// The .tapp to describe.
         file: PathBuf,
     },
+    /// Print the registry entry this publisher has waiting for review for a
+    /// package id, as `--previous-entry` accepts it; prints nothing when none
+    /// is waiting. A newer request replaces the waiting one and must keep its
+    /// versions, so it builds on this entry rather than the published one.
+    Pending(PendingArgs),
+}
+
+#[derive(clap::Args)]
+struct PendingArgs {
+    /// Registry origin, e.g. `https://apps.tilo.so`.
+    #[arg(long)]
+    registry: String,
+    /// Publisher identity JSON that signs the time-bound read.
+    #[arg(long)]
+    identity: PathBuf,
+    /// Package id, e.g. `so.tilo.notes`.
+    package_id: String,
 }
 
 fn main() -> Result<()> {
@@ -389,6 +412,7 @@ fn main() -> Result<()> {
             action,
             previous_entry.as_deref(),
         ),
+        Command::Pending(args) => cmd_pending(&args),
     }
 }
 
@@ -506,6 +530,7 @@ fn cmd_pack_web(args: &PackWebArgs<'_>) -> Result<()> {
 /// The desktop systems `pack-desktop` builds for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum DesktopPlatform {
+    Linux,
     Windows,
     Macos,
 }
@@ -541,6 +566,7 @@ fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
         })?;
     let module = format!("bin/{name}");
     let platform = match args.platform {
+        DesktopPlatform::Linux => registry_types::LINUX_PLATFORM,
         DesktopPlatform::Windows => registry_types::WINDOWS_PLATFORM,
         DesktopPlatform::Macos => registry_types::MACOS_PLATFORM,
     };
@@ -781,10 +807,6 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the publish subcommand's explicit CLI options are kept visible at the command boundary"
-)]
 fn cmd_publish(
     file: &Path,
     registry: &str,
@@ -993,10 +1015,23 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the entry subcommand's explicit CLI options are kept visible at the command boundary"
-)]
+fn cmd_pending(args: &PendingArgs) -> Result<()> {
+    let package_id = args.package_id.as_str();
+    let signer = load_signing_key(&args.identity)?;
+    let client = registry_client::RegistryClient::new(&args.registry)?;
+    let Some(entry) = client.pending(&signer, package_id)? else {
+        return Ok(());
+    };
+    if !registry_types::verify_entry_signature(&entry) {
+        bail!("pending entry for {package_id} has an invalid publisher signature");
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&entry).context("encode pending entry")?
+    );
+    Ok(())
+}
+
 fn cmd_entry(
     file: &Path,
     url: &str,

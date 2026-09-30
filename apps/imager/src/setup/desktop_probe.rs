@@ -429,11 +429,10 @@ mod native {
     };
     use std::fs::{self, OpenOptions};
     use std::io::Read;
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::path::Path;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::process::Command;
+    use std::time::Duration;
 
     pub(super) struct QueryOutput {
         pub code: i32,
@@ -449,82 +448,35 @@ mod native {
         timeout: Duration,
         limit: usize,
     ) -> Result<QueryOutput, String> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .env_clear()
             .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
             .env("LC_ALL", "C")
-            .env("HOME", "/")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| format!("Could not execute {program}."))?;
-        let result = (|| {
-            let mut stdout = child.stdout.take().ok_or("Missing query stdout.")?;
-            let mut stderr = child.stderr.take().ok_or("Missing query stderr.")?;
-            for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-                // SAFETY: each fd belongs to a live child pipe held above.
-                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                if flags < 0
-                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-                {
-                    return Err("Could not bound query output.".into());
-                }
-            }
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let started = Instant::now();
-            loop {
-                drain(&mut stdout, &mut out, limit)?;
-                drain(&mut stderr, &mut err, limit)?;
-                if let Some(status) = child
-                    .try_wait()
-                    .map_err(|_| "Could not read query status.")?
-                {
-                    drain(&mut stdout, &mut out, limit)?;
-                    drain(&mut stderr, &mut err, limit)?;
-                    return Ok(QueryOutput {
-                        code: status
-                            .code()
-                            .ok_or("Query terminated without an exit code.")?,
-                        stdout: String::from_utf8(out)
-                            .map_err(|_| "Invalid query output encoding.")?,
-                        stderr: String::from_utf8(err)
-                            .map_err(|_| "Invalid query error encoding.")?,
-                    });
-                }
-                if started.elapsed() >= timeout {
-                    return Err(format!("Read-only query timed out: {program}."));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        })();
-        if result.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        result
-    }
-
-    fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
-        let mut buffer = [0; 4096];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => return Ok(()),
-                Ok(count) => {
-                    if bytes.len() + count > limit {
-                        return Err("Read-only query output exceeded its limit.".into());
+            .env("HOME", "/");
+        let output =
+            bounded_command::run_prepared(command, None, limit, timeout).map_err(|error| {
+                match error {
+                    bounded_command::Error::Timeout(_) => {
+                        format!("Read-only query timed out: {program}.")
                     }
-                    bytes.extend_from_slice(
-                        buffer.get(..count).ok_or("Invalid query read length.")?,
-                    );
+                    bounded_command::Error::OutputTooLarge { .. } => {
+                        "Read-only query output exceeded its limit.".into()
+                    }
+                    _ => format!("Could not execute {program}."),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
-                Err(_) => return Err("Could not read query output.".into()),
-            }
-        }
+            })?;
+        Ok(QueryOutput {
+            code: output
+                .status
+                .code()
+                .ok_or("Query terminated without an exit code.")?,
+            stdout: String::from_utf8(output.stdout)
+                .map_err(|_| "Invalid query output encoding.")?,
+            stderr: String::from_utf8(output.stderr)
+                .map_err(|_| "Invalid query error encoding.")?,
+        })
     }
 
     fn run(program: &str, args: &[&str]) -> Result<QueryOutput, String> {
@@ -980,16 +932,14 @@ mod tests {
         #[cfg(unix)]
         {
             use std::time::Duration;
-            let result =
-                native::query("/usr/bin/printf", &["hello"], Duration::from_secs(1), 32).unwrap();
+            let bound = tilo_test_env::hang_bound();
+            let result = native::query("/usr/bin/printf", &["hello"], bound, 32).unwrap();
             assert_eq!(result.stdout, "hello");
-            assert!(
-                native::query("/usr/bin/printf", &["123456789"], Duration::from_secs(1), 4)
-                    .is_err()
-            );
-            let start = std::time::Instant::now();
-            assert!(native::query("/bin/sleep", &["2"], Duration::from_millis(25), 32).is_err());
-            assert!(start.elapsed() < Duration::from_secs(1));
+            assert!(native::query("/usr/bin/printf", &["123456789"], bound, 4).is_err());
+            let start = ui::time::now();
+            let sleep = (bound.as_secs() * 2).to_string();
+            assert!(native::query("/bin/sleep", &[&sleep], Duration::from_millis(25), 32).is_err());
+            assert!(start.elapsed() < bound);
         }
 
         // Phase `session_and_confinement_evidence_fail_closed`.

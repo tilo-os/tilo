@@ -23,7 +23,7 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::widget::{InputHint, TaffyTreeExt, Widget};
+use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
 
 const HEIGHT: f64 = 34.0;
 const RESET_SIZE: f64 = 26.0;
@@ -188,20 +188,13 @@ impl Widget for ShortcutRecorder {
             );
         } else {
             InputHint::paint_at(
-                scene,
-                transform,
+                &mut crate::paint::PaintCtx::new(scene, transform, text, theme),
                 Point::new(
                     chord.x0 + 5.0,
                     chord.center().y - crate::widget::input_hint::HEIGHT / 2.0,
                 ),
                 &InputBinding::Keyboard(self.binding()),
-                self.platform,
-                self.interaction.keyboard_family,
-                self.interaction
-                    .controller
-                    .unwrap_or(crate::interaction::ControllerFamily::Generic),
-                text,
-                theme,
+                LegendConventions::new(self.platform, &self.interaction),
             );
             if self.invalid {
                 text.draw_text_weighted(

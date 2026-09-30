@@ -35,6 +35,7 @@ def plan(
     configured: str = "true",
     integration: str = "",
     hardware_profile: str = "",
+    arches: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "output"
@@ -45,16 +46,18 @@ def plan(
                 "GITHUB_EVENT_NAME": event,
                 "GITHUB_OUTPUT": str(output),
                 "GITHUB_SHA": SHA,
-                "REQUESTED_PUBLISH": requested,
+                "REQUESTED_RELEASE": requested,
                 "PUBLISHED_REVISION": published,
                 "PUBLICATION_CONFIGURED": configured,
                 "INTEGRATION_REVISION": integration,
+                "DEV_ARCHES": arches,
             }
         )
         if hardware_profile:
             environment["HARDWARE_PROFILE"] = hardware_profile
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values["mode"] == ("release" if values["publish"] == "true" else "dev")
         return (
             values["publish"] == "true",
             values["skip"] == "true",
@@ -82,17 +85,17 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
-        with self.subTest(phase='protected manual main publish uses native large disk fleet'):
+        with self.subTest(phase='protected manual main publish uses the release class'):
             publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "true")
             self.assertTrue(publish)
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "hardware_profile": "orangepi-3b-v2-1"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -110,11 +113,11 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "hardware_profile": "orangepi-3b-v2-1"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "hardware_profile": "orangepi-3b-v2-1"},
                 ],
             )
 
@@ -204,6 +207,110 @@ class OsReleaseMatrixTests(unittest.TestCase):
                 "refs/heads/feature", "workflow_dispatch", "false", hardware_profile="orangepi-3b-v2-1")
             self.assertFalse(publish)
             self.assertEqual(lanes, [{"arch": "aarch64", "runner": "runner-large-arm64"}])
+
+
+class OsDevLaneTests(unittest.TestCase):
+    def test_build_os_dev_calls_a_cached_image_only_dev_build(self):
+        with self.subTest(phase='a called build is a dev build of both native lanes'):
+            for ref, board in (
+                ("refs/heads/main", True),
+                ("refs/pull/12/head", False),
+            ):
+                publish, skip, lanes = plan(ref, "workflow_call", "")
+                self.assertFalse(publish)
+                self.assertFalse(skip)
+                expected = [
+                    {"arch": "x86_64", "runner": "runner-large"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64"},
+                ]
+                if board:
+                    expected.append({
+                        "arch": "aarch64",
+                        "runner": "runner-large-arm64",
+                        "hardware_profile": "orangepi-3b-v2-1",
+                    })
+                self.assertEqual(lanes, expected)
+        with self.subTest(phase='a pull request builds the architectures os-dev chose'):
+            _, _, lanes = plan("refs/pull/12/head", "workflow_call", "", arches='["x86_64"]')
+            self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
+            self.assertIn("arches: ${{ needs.arches.outputs.arches }}",
+                          (ROOT / ".forgejo/workflows/os-dev.yml").read_text())
+        with self.subTest(phase='a newer commit of the ref supersedes the build'):
+            self.assertEqual(
+                concurrency_group("refs/pull/12/head", "workflow_call", ""),
+                "tilo-os-dev-refs/pull/12/head",
+            )
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
+        with self.subTest(phase='main pushes and image pull requests call it'):
+            caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
+            self.assertIn("name: Build / OS dev", caller)
+            self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
+            self.assertIn("branches: [main]", caller)
+            self.assertIn('- "os/**"', caller)
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", caller)
+            self.assertIn("  workflow_call:", WORKFLOW.read_text())
+        with self.subTest(phase='the dev build publishes images and skips the disk install'):
+            workflow = WORKFLOW.read_text()
+            step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
+            self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
+            self.assertIn("-f os/Containerfile.dev", step)
+            self.assertNotIn("--cache-to", step)
+            self.assertIn("--secret id=actions_cache_url,env=ACTIONS_CACHE_URL", step)
+            self.assertIn("push=true", step)
+            self.assertIn("PUSHED_DIGEST=", step)
+            self.assertIn("IMAGE_ONLY=1", step)
+            self.assertIn("TILO_DEV_RUST_LTO=off", step)
+            gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
+            self.assertIn("steps.release-mode.outputs.dev-fast != 'true'", gate.splitlines()[1])
+
+    def test_dev_images_carry_the_apps_of_their_commit(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Materialize the pinned app collection\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertNotIn("        if:", step)
+        # A dev build takes the published collection only when its source has
+        # this commit's app inputs, as Release / apps defines them.
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn(".forgejo/workflows/release-apps.yml", step)
+        self.assertIn("index.json | jq -r '.source // empty'", step)
+        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+                        step.index("echo 'TILO_PREBUILT_APPS=1'"))
+        self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
+                        workflow.index("      - name: Materialize the pinned app collection\n"))
+
+    def test_dev_builds_keep_a_cacheable_epoch(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        # image.created keeps the commit time either way.
+        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
+
+    def test_dev_series_names_the_ref_and_commit(self):
+        workflow = WORKFLOW.read_text()
+        block = workflow.split("      - name: Select build, validation, or publication mode\n", 1)[1]
+        script = textwrap.dedent(block.split("        run: |\n", 1)[1].split("\n\n      ", 1)[0])
+        for ref, event, series, fast, gate in [
+            ("refs/heads/main", "workflow_call", "main-0123456", "true", "false"),
+            ("refs/pull/12/head", "workflow_call", "pr-12-0123456", "true", "false"),
+            ("refs/heads/fix/x", "workflow_dispatch", "fix-x-0123456", "false", "true"),
+        ]:
+            with self.subTest(ref=ref, event=event), tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "output"
+                env = os.environ.copy()
+                env.update({
+                    "GITHUB_REF": ref, "GITHUB_REF_NAME": ref.split("/", 2)[2],
+                    "GITHUB_EVENT_NAME": event, "GITHUB_SHA": SHA,
+                    "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(Path(temporary) / "env"),
+                    "REQUESTED_RELEASE": "", "PLANNED_PUBLISH": "false",
+                })
+                subprocess.run(["bash", "-c", script.replace("${{ matrix.role }}", "")],
+                               env=env, check=True, stdout=subprocess.DEVNULL)
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(values["dev-series"], series)
+                self.assertEqual(values["dev-fast"], fast)
+                self.assertEqual(values["dev-gate"], gate)
 
 
 def generation_script() -> str:
@@ -399,8 +506,9 @@ def concurrency_group(
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-orangepi-3b-{0}', github.sha)", "('tilo-os-image-orangepi-3b-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
+        ("format('tilo-os-dev-{0}', github.ref)", "('tilo-os-dev-' + ref)"),
         ("github.event.inputs.hardware_profile", "profile"),
-        ("github.event.inputs.publish", "requested"),
+        ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),
         ("github.ref", "ref"),
         ("&&", " and "),

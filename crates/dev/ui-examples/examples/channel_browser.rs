@@ -45,10 +45,6 @@ fn clock(headless: bool) -> SystemTime {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Example channel fixtures vary space/color, relative activity, unread count, pin state, and collaborator role."
-)]
 fn ch(
     now: SystemTime,
     name: &str,

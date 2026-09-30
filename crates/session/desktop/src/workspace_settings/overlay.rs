@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
@@ -798,14 +799,10 @@ impl WorkspaceSettingsOverlay {
         );
         let body_y = rect.y0 + 168.0;
         let editing = self.draw_ws_settings_name_input(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             content_rect,
             model,
             active_name.as_str(),
-            body_y,
         );
         let can_invite = model.desktop.active_workspace().is_some_and(|workspace| {
             model.governs_active_room && workspace.may_administer(model.local_user)
@@ -1087,12 +1084,6 @@ impl WorkspaceSettingsOverlay {
     /// Title plus the "Active workspace: …" line; returns the active
     /// workspace's name so the General tab's name input can fall back
     /// to it while nothing is being edited.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the \
-                  name and role are read from; matching every other draw_ws_settings_* \
-                  helper in this impl"
-    )]
     fn draw_ws_settings_header_text(
         &self,
         scene: &mut Scene,
@@ -1432,11 +1423,6 @@ impl WorkspaceSettingsOverlay {
     /// so the caller knows to stop. Returns `false` on `General`, whose
     /// clearing happens here too, but whose body the caller continues
     /// painting below.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  bodies read from; matching every other draw_ws_settings_* helper in this impl"
-    )]
     fn draw_ws_settings_dispatch_tab(
         &mut self,
         scene: &mut Scene,
@@ -1500,11 +1486,6 @@ impl WorkspaceSettingsOverlay {
     }
 
     /// The Members tab body: roster rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
     fn draw_ws_settings_members_tab(
         &mut self,
         scene: &mut Scene,
@@ -1548,10 +1529,6 @@ impl WorkspaceSettingsOverlay {
 
     /// The Agents tab body: an explicitly non-human roster backed by the
     /// same signed membership and revocation policy as the broker.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "matches the other workspace-settings tab paint helpers"
-    )]
     fn draw_ws_settings_agents_tab(
         &mut self,
         scene: &mut Scene,
@@ -1593,11 +1570,6 @@ impl WorkspaceSettingsOverlay {
 
     /// The Permissions tab body: the grant/revoke pane, then the shared
     /// close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
     fn draw_ws_settings_permissions_tab(
         &mut self,
         scene: &mut Scene,
@@ -1646,11 +1618,6 @@ impl WorkspaceSettingsOverlay {
     }
 
     /// The Apps tab body: default-app rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state/tree the tab \
-                  body reads from; matching every other draw_ws_settings_* helper in this impl"
-    )]
     fn draw_ws_settings_apps_tab(
         &mut self,
         scene: &mut Scene,
@@ -1693,11 +1660,6 @@ impl WorkspaceSettingsOverlay {
     /// Name input — edits fall through to `editing_workspace_name`.
     /// Returns whether the name is currently being edited, so the
     /// caller's footer hint can match.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the state it's read \
-                  from; matching every other draw_ws_settings_* helper in this impl"
-    )]
     fn name_selection_geometry(
         text_renderer: &mut TextRenderer,
         shown: &str,
@@ -1728,25 +1690,19 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Workspace identity painting combines render context and card bounds with chrome state, active name, and the existing body-position parameter."
-    )]
     #[expect(
         clippy::too_many_lines,
         reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
     )]
     fn draw_ws_settings_name_input(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         model: &WorkspaceSettingsModel<'_>,
         active_name: &str,
-        _body_y: f64,
     ) -> bool {
+        let (scene, transform, text_renderer, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let body = Self::body_rect(rect);
@@ -1859,12 +1815,6 @@ impl WorkspaceSettingsOverlay {
     }
 
     /// Sharing card that opens the signed invite composer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, plus the invite permission \
-                  state; matching every other draw_ws_settings_* helper \
-                  in this impl"
-    )]
     fn draw_ws_settings_invite_link(
         &self,
         scene: &mut Scene,

@@ -62,6 +62,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
 use crate::sources::distinct_categories;
+use crate::widgets::{CardAction, CardDetails, CardLayout};
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -1266,6 +1267,16 @@ impl StoreApp {
 
     fn stacked_catalogue_layout(&self) -> bool {
         self.compact_layout() || self.readable_type_layout()
+    }
+
+    fn card_layout(&self) -> CardLayout {
+        if self.stacked_catalogue_layout() {
+            CardLayout::Stacked {
+                large_text: self.readable_type_layout(),
+            }
+        } else {
+            CardLayout::Wide
+        }
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -3353,16 +3364,19 @@ impl StoreApp {
             let select_key = format!("store.detail.{}", item.id);
             let card = crate::widgets::store_card(
                 item,
-                action,
-                &select_key,
-                &click_key,
+                CardAction {
+                    kind: action,
+                    key: &click_key,
+                    binding: item_action_binding(item, action),
+                    in_progress: operation_active,
+                },
+                CardDetails {
+                    key: &select_key,
+                    binding: detail_binding(item),
+                },
                 theme,
                 self.images.clone(),
-                item_action_binding(item, action),
-                detail_binding(item),
-                self.stacked_catalogue_layout(),
-                self.readable_type_layout(),
-                operation_active,
+                self.card_layout(),
             );
             if !group_by_availability {
                 search_cards.push(card);
@@ -3612,7 +3626,7 @@ impl StoreApp {
     /// same information in the catalogue surface and never overlay a card.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// The pill's type: the theme's small step, handed to the renderer once
@@ -3706,7 +3720,7 @@ impl StoreApp {
         {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let label = self.footer_label();
         if label != self.last_status_label {
             self.last_status_label.clone_from(&label);
@@ -3817,24 +3831,27 @@ impl StoreApp {
             return;
         };
         let update = match outcome {
-            ui::portal::PortalOutcome::Opened(path) => match atomic_file::write(&path, &bytes) {
-                Ok(()) => {
-                    self.status_line = format!("Exported report evidence to {}.", path.display());
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
+            ui::portal::PortalOutcome::Opened(path) => {
+                match tilo_files::native::atomic::write(&path, &bytes) {
+                    Ok(()) => {
+                        self.status_line =
+                            format!("Exported report evidence to {}.", path.display());
+                        tilo_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        }
                     }
-                }
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "store.report_export_failed".into(),
-                        message: format!("Could not export report evidence: {error}"),
-                        details: None,
-                        retryable: true,
+                    Err(error) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "store.report_export_failed".into(),
+                            message: format!("Could not export report evidence: {error}"),
+                            details: None,
+                            retryable: true,
+                        },
                     },
-                },
-            },
+                }
+            }
             ui::portal::PortalOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Export cancelled".into()),
@@ -3882,6 +3899,12 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
 }
 
 impl Widget for StoreApp {
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
@@ -3900,6 +3923,272 @@ impl Widget for StoreApp {
         ]
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let index = self
+            .completed_invocations
+            .iter()
+            .position(|update| update.invocation() == invocation)?;
+        Some(self.completed_invocations.remove(index))
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        self.drain_report_export();
+        for report in &self.reports {
+            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
+        }
+        self.sync_report_resources(state, path);
+        if let Some(root) = self.root.as_mut() {
+            root.sync(state, path);
+        }
+        // The catalogue chrome is process-local presentation state. Reconcile
+        // the local widget bindings after children have handled input; a
+        // remote document can never overwrite another person's search, view,
+        // or facet selection.
+        let source = self.source_filter_state.with(Clone::clone);
+        self.set_active_filter_from_local(&source);
+        let category = self.category_filter_state.with(Clone::clone);
+        let category = (category != "All").then_some(category);
+        let valid = category.as_ref().is_none_or(|candidate| {
+            self.category_labels()
+                .iter()
+                .any(|label| label == candidate)
+        });
+        self.set_active_category(if valid { category } else { None });
+        self.set_query(self.query_state.with(Clone::clone));
+        self.report_notes = self
+            .reports
+            .iter()
+            .map(|report| {
+                (
+                    report.app_id.clone(),
+                    text_at(state, path, &report_note_key(&report.app_id)),
+                )
+            })
+            .collect();
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.structure_dirty = false;
+        self.reduce_motion = theme.reduce_motion;
+        self.text_scale = theme.text_scale;
+        let mut root = self.compose(theme);
+        let child = root.build_layout(taffy, theme, node_map);
+        self.root = Some(root);
+        let node = parent_node(
+            taffy,
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let was_compact = self.compact_layout();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+        if was_compact != self.compact_layout() {
+            self.structure_dirty = true;
+        }
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
+            && let Some(&child_node) = children.first()
+        {
+            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(root) = self.root.as_mut() {
+            root.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &PermissionContext,
+    ) {
+        if let Some(root) = self.root.as_mut() {
+            root.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
+        }
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Child overlays (any dropdown / popover) first, then the
+        // floating status bubble on top of the content.
+        if let Some(root) = self.root.as_mut() {
+            root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // Track the pointer so the bubble can reveal on hover of its
+        // bottom-right zone (coords are window-space, unscaled).
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
+            && let Some(&child_node) = children.first()
+        {
+            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.root
+            .as_ref()
+            .map(|r| r.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.root
+            .as_mut()
+            .map(|r| r.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    fn name(&self) -> &'static str {
+        "StoreApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The composed child tree supplies individual control semantics; the
+    /// canvas-free root still names the application for assistive technology.
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("App Store")
+            .with_bounds(self.rect);
+        if !self.status_line.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::Group)
+                    .with_name(self.status_line.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
+        own || child
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|r| r.needs_animation_frame())
+            || (!self.compact_layout()
+                && !self.reduce_motion
+                && self.status_bubble.needs_frame(ui::time::now()))
+            || self
+                .images
+                .as_ref()
+                .is_some_and(|images| images.pending() > 0)
+            || self.report_export.is_some()
+    }
+}
+
+impl ui::search::capability::SearchSource for StoreApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for StoreApp {
     #[allow(
         clippy::too_many_lines,
         reason = "the hierarchical Store resource tree is assembled in one place so published parent-child relationships remain auditable"
@@ -4164,11 +4453,6 @@ impl Widget for StoreApp {
         }
         vec![root]
     }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         // Resolve every ID we currently publish before falling back to the
         // unbounded catalogue's lazy app/version/publisher lookup.  This
@@ -4234,270 +4518,14 @@ impl Widget for StoreApp {
         }
         None
     }
+}
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let index = self
-            .completed_invocations
-            .iter()
-            .position(|update| update.invocation() == invocation)?;
-        Some(self.completed_invocations.remove(index))
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        self.drain_report_export();
-        for report in &self.reports {
-            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
-        }
-        self.sync_report_resources(state, path);
-        if let Some(root) = self.root.as_mut() {
-            root.sync(state, path);
-        }
-        // The catalogue chrome is process-local presentation state. Reconcile
-        // the local widget bindings after children have handled input; a
-        // remote document can never overwrite another person's search, view,
-        // or facet selection.
-        let source = self.source_filter_state.with(Clone::clone);
-        self.set_active_filter_from_local(&source);
-        let category = self.category_filter_state.with(Clone::clone);
-        let category = (category != "All").then_some(category);
-        let valid = category.as_ref().is_none_or(|candidate| {
-            self.category_labels()
-                .iter()
-                .any(|label| label == candidate)
-        });
-        self.set_active_category(if valid { category } else { None });
-        self.set_query(self.query_state.with(Clone::clone));
-        self.report_notes = self
-            .reports
-            .iter()
-            .map(|report| {
-                (
-                    report.app_id.clone(),
-                    text_at(state, path, &report_note_key(&report.app_id)),
-                )
-            })
-            .collect();
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.structure_dirty = false;
-        self.reduce_motion = theme.reduce_motion;
-        self.text_scale = theme.text_scale;
-        let mut root = self.compose(theme);
-        let child = root.build_layout(taffy, theme, node_map);
-        self.root = Some(root);
-        let node = parent_node(
-            taffy,
-            Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let was_compact = self.compact_layout();
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if was_compact != self.compact_layout() {
-            self.structure_dirty = true;
-        }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
-            && let Some(&child_node) = children.first()
-        {
-            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        // Child overlays (any dropdown / popover) first, then the
-        // floating status bubble on top of the content.
-        if let Some(root) = self.root.as_mut() {
-            root.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        // Track the pointer so the bubble can reveal on hover of its
-        // bottom-right zone (coords are window-space, unscaled).
-        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
-            && let Some(&child_node) = children.first()
-        {
-            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.root
-            .as_ref()
-            .map(|r| r.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.root
-            .as_mut()
-            .map(|r| r.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
+impl ui::widget::controls::ActionControls for StoreApp {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
         self.root
             .as_mut()
-            .and_then(|root| root.take_control_invocation())
+            .and_then(|root| ui::widget::controls::take_control_invocation(root.as_mut()))
             .or_else(|| self.pending_control_invocation.take())
-    }
-
-    fn name(&self) -> &'static str {
-        "StoreApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// The composed child tree supplies individual control semantics; the
-    /// canvas-free root still names the application for assistive technology.
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("App Store")
-            .with_bounds(self.rect);
-        if !self.status_line.is_empty() {
-            root.children.push(
-                AccessNode::new(Role::Group)
-                    .with_name(self.status_line.clone())
-                    .with_live(Politeness::Polite),
-            );
-        }
-        Some(root)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
-        own || child
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|r| r.needs_animation_frame())
-            || (!self.compact_layout()
-                && !self.reduce_motion
-                && self.status_bubble.needs_frame(std::time::Instant::now()))
-            || self
-                .images
-                .as_ref()
-                .is_some_and(|images| images.pending() > 0)
-            || self.report_export.is_some()
     }
 }
 
@@ -5071,7 +5099,7 @@ mod tests {
             }
             app.set_items(items);
             let doc = AutoCommit::new();
-            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let root = ui::resources::resources(&app, &doc).pop().unwrap();
             let snapshot_count = root
                 .children
                 .iter()
@@ -5080,7 +5108,7 @@ mod tests {
                 .count();
             assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
             let omitted = "app:dev.example.utility0216";
-            let resolved = Widget::resource(&app, &doc, omitted).unwrap();
+            let resolved = ui::resources::resource(&app, &doc, omitted).unwrap();
             assert_eq!(resolved.id.0, omitted);
             assert!(
                 resolved
@@ -5109,14 +5137,15 @@ mod tests {
                 "store:moderation",
             ] {
                 assert!(
-                    Widget::resource(&app, &doc, id).is_some(),
+                    ui::resources::resource(&app, &doc, id).is_some(),
                     "published resource {id} must remain directly resolvable"
                 );
             }
-            let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
+            let remote = ui::resources::resource(&app, &doc, "remote:flathub").unwrap();
             assert!(remote.actions.iter().any(|action| action.id == "remove"));
             let browse =
-                Widget::resource(&app, &doc, crate::browse_actions::BROWSE_RESOURCE_ID).unwrap();
+                ui::resources::resource(&app, &doc, crate::browse_actions::BROWSE_RESOURCE_ID)
+                    .unwrap();
             assert!(
                 browse
                     .actions
@@ -5473,16 +5502,23 @@ mod tests {
                 for busy in [false, true] {
                     let card = crate::widgets::store_card(
                         item,
-                        action,
-                        "select",
-                        "primary",
+                        CardAction {
+                            kind: action,
+                            key: "primary",
+                            binding: item_action_binding(item, action),
+                            in_progress: busy,
+                        },
+                        CardDetails {
+                            key: "select",
+                            binding: detail_binding(item),
+                        },
                         &Theme::dark(),
                         None,
-                        item_action_binding(item, action),
-                        detail_binding(item),
-                        width < 600.0,
-                        false,
-                        busy,
+                        if width < 600.0 {
+                            CardLayout::Stacked { large_text: false }
+                        } else {
+                            CardLayout::Wide
+                        },
                     );
                     let mut grid = CardGrid::content_sized(vec![card]);
                     let (tree, node) = layout_card_grid(&mut grid, width);
@@ -5524,7 +5560,8 @@ mod tests {
                             },
                         );
                     }
-                    let details = grid.take_control_invocation().expect("pointer Details");
+                    let details = ui::widget::controls::take_control_invocation(&mut grid)
+                        .expect("pointer Details");
                     assert_eq!(details.address.resource, format!("app:{}", item.id));
                     assert_eq!(details.address.action, "show-details");
                     let primary = control_mut(&mut grid, "primary").unwrap();
@@ -5537,7 +5574,7 @@ mod tests {
                         ),
                         !busy
                     );
-                    let invoked = grid.take_control_invocation();
+                    let invoked = ui::widget::controls::take_control_invocation(&mut grid);
                     if busy {
                         assert!(invoked.is_none());
                     } else {
@@ -5576,8 +5613,7 @@ mod tests {
                 &automerge::ROOT,
             )
             .unwrap();
-            let intent = app
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("refresh action intent");
             assert_eq!(intent.address.resource, "store:remotes");
             assert_eq!(intent.address.action, "refresh");
@@ -5916,14 +5952,17 @@ mod tests {
         {
             let app = seeded_app();
             let doc = AutoCommit::new();
-            for action in Widget::resources(&app, &doc).iter().flat_map(|resource| {
-                resource.actions.iter().chain(
-                    resource
-                        .children
-                        .iter()
-                        .flat_map(|child| child.actions.iter()),
-                )
-            }) {
+            for action in ui::resources::resources(&app, &doc)
+                .iter()
+                .flat_map(|resource| {
+                    resource.actions.iter().chain(
+                        resource
+                            .children
+                            .iter()
+                            .flat_map(|child| child.actions.iter()),
+                    )
+                })
+            {
                 if action.kind != OperationKind::Effect {
                     continue;
                 }
@@ -6100,7 +6139,7 @@ mod tests {
             let mut app = seeded_app();
             app.set_flatpak_available(false);
             let doc = AutoCommit::new();
-            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let root = ui::resources::resources(&app, &doc).pop().unwrap();
             let chess = root
                 .children
                 .iter()
@@ -6133,7 +6172,7 @@ mod tests {
             };
             app.set_flatpak_available(false);
             let mut doc = AutoCommit::new();
-            let root = Widget::resources(&app, &doc).pop().unwrap();
+            let root = ui::resources::resources(&app, &doc).pop().unwrap();
             let chess = root
                 .children
                 .iter()

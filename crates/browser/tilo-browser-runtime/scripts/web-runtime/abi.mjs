@@ -13,7 +13,8 @@
 //     strategy (`rustc --print cfg`: target features, panic, ...),
 //   - the release profile as declared in Cargo.toml and the
 //     CARGO_PROFILE_RELEASE_* overrides env.sh applies to it,
-//   - the Cargo.lock digest,
+//   - the Cargo.lock entries of the core's own packages (an app built in
+//     another workspace adds entries of its own, which the core never links),
 //   - every unit the core links except the core crate itself: its package,
 //     features and Cargo's metadata hash (which encodes the package, its
 //     features, profile and dependency graph, and is independent of the
@@ -94,6 +95,16 @@ function sourceDigest(files, repo, outDir) {
   return hash.digest('hex');
 }
 
+/** Digest of the `[[package]]` entries of Cargo.lock whose `name@version` is in `packages`. */
+export function lockDigest(lock, packages) {
+  const entries = lock.split(/^\[\[package\]\]\n/m).slice(1).filter(entry => {
+    const name = /^name = "([^"]+)"/m.exec(entry)?.[1];
+    const version = /^version = "([^"]+)"/m.exec(entry)?.[1];
+    return packages.has(`${name}@${version}`);
+  });
+  return sha256(entries.map(entry => entry.trimEnd()).sort().join('\n'));
+}
+
 function profileText(manifest, name) {
   const match = new RegExp(`^\\[profile\\.${name}\\]\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, 'm').exec(manifest);
   if (!match) throw Error(`Cargo.toml declares no [profile.${name}]`);
@@ -142,9 +153,23 @@ export function abiInputs({cargoJson, repo, runtime, rustflags, packages, rustc 
       overrides: Object.entries(process.env).filter(([name]) => name.startsWith('CARGO_PROFILE_RELEASE_'))
         .map(([name, value]) => `${name}=${value}`).sort(),
     },
-    lock: sha256(readFileSync(join(repo, 'Cargo.lock'))),
+    lock: lockDigest(readFileSync(join(repo, 'Cargo.lock'), 'utf8'), packages),
     units,
   };
+}
+
+/**
+ * The packages whose units decide the ABI: those of the core's graph that the
+ * app collection's graphs share. A crate only the core uses (its page host's
+ * transports, say) exports nothing an app links against, so an optional core
+ * feature that adds such crates, and changes no shared crate's features,
+ * keeps the id. `graph` is graph.json: `{"<root>": ["name@version", ...]}`
+ * for the core and each collection app; without apps, the core's own graph.
+ */
+export function abiPackages(graph) {
+  const core = graph[CORE_PACKAGE] ?? [];
+  const apps = new Set(Object.entries(graph).filter(([root]) => root !== CORE_PACKAGE).flatMap(([, packages]) => packages));
+  return new Set(apps.size ? core.filter(key => apps.has(key)) : core);
 }
 
 /** `tilo-runtime/2026.07+wasm.<32 hex>`: the runtime name plus 128 bits of the digest. */
@@ -154,7 +179,7 @@ export function abiId(inputs) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [cargoJsonPath, graphPath, repo, runtime] = process.argv.slice(2);
-  const packages = new Set(JSON.parse(readFileSync(graphPath, 'utf8'))[CORE_PACKAGE]);
+  const packages = abiPackages(JSON.parse(readFileSync(graphPath, 'utf8')));
   const inputs = abiInputs({cargoJson: readFileSync(cargoJsonPath, 'utf8'), repo, runtime, packages, rustflags: process.env.RUSTFLAGS ?? ''});
   process.stdout.write(JSON.stringify({abi: abiId(inputs), inputs}, null, 2) + '\n');
 }

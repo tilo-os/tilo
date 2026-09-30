@@ -401,6 +401,11 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
+    crate::provides!(
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
@@ -557,26 +562,27 @@ impl Widget for CodeEditor {
         self.inner.wants_pointer_capture()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.inner.get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.inner.set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner.text_review()
     }
+}
 
+impl crate::undo::UndoPoints for CodeEditor {
+    fn needs_commit(&self) -> bool {
+        self.inner.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.inner.on_commit();
+    }
+    fn get_state(&self) -> Option<String> {
+        self.inner.get_state()
+    }
+    fn set_state(&mut self, state: &str) {
+        self.inner.set_state(state);
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }

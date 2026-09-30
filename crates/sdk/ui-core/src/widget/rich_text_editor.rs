@@ -531,17 +531,14 @@ impl RichTextEditor {
             underlines.push((pr.start, pr.end));
         }
         let browser_emoji = tr.browser_color_emoji_installed();
-        let layout = RichTextLayout::shape_browser(
+        let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            base_bold,
-            size,
-            width,
+            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             underlines,
             strikes,
-            1.0,
             browser_emoji,
         );
         tr.note_browser_rich_layout(&layout);
@@ -849,6 +846,8 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 impl Widget for RichTextEditor {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         let Some(field) = Self::ensure_map(state, path, &self.key) else {
@@ -1144,40 +1143,6 @@ impl Widget for RichTextEditor {
         self.layout_dirty
     }
 
-    fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
-    }
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-    fn get_state(&self) -> Option<String> {
-        let affinity = match self.core.caret_position().affinity {
-            TextAffinity::Before => "b",
-            TextAffinity::After => "a",
-        };
-        Some(format!(
-            "{}:{}:{affinity}",
-            self.core.selection().anchor,
-            self.core.selection().cursor
-        ))
-    }
-    fn set_state(&mut self, s: &str) {
-        let mut parts = s.split(':');
-        if let (Some(a), Some(c)) = (parts.next(), parts.next())
-            && let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>())
-        {
-            let affinity = if parts.next() == Some("a") {
-                TextAffinity::After
-            } else {
-                TextAffinity::Before
-            };
-            self.core.set_selection(a, c);
-            self.core
-                .place_position(TextPosition::with_affinity(c, affinity), true);
-        }
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
@@ -1228,6 +1193,42 @@ impl Widget for RichTextEditor {
                 true
             }
             _ => false,
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for RichTextEditor {
+    fn needs_commit(&self) -> bool {
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+    fn get_state(&self) -> Option<String> {
+        let affinity = match self.core.caret_position().affinity {
+            TextAffinity::Before => "b",
+            TextAffinity::After => "a",
+        };
+        Some(format!(
+            "{}:{}:{affinity}",
+            self.core.selection().anchor,
+            self.core.selection().cursor
+        ))
+    }
+    fn set_state(&mut self, s: &str) {
+        let mut parts = s.split(':');
+        if let (Some(a), Some(c)) = (parts.next(), parts.next())
+            && let (Ok(a), Ok(c)) = (a.parse::<usize>(), c.parse::<usize>())
+        {
+            let affinity = if parts.next() == Some("a") {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
+            self.core.set_selection(a, c);
+            self.core
+                .place_position(TextPosition::with_affinity(c, affinity), true);
         }
     }
 }
@@ -1786,11 +1787,11 @@ mod tests {
                     mods(false, true),
                 );
             }
-            let saved = Widget::get_state(&ed).unwrap();
+            let saved = crate::undo::get_state(&ed).unwrap();
             // A rebuild resets the caret; set_state restores it.
             let mut ed2 = RichTextEditor::new("doc");
             ed2.sync(&mut state.doc, &state.root);
-            Widget::set_state(&mut ed2, &saved);
+            crate::undo::set_state(&mut ed2, &saved);
             assert_eq!(
                 ed2.selection(),
                 0..2,

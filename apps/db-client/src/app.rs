@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -35,6 +35,7 @@ use winit::keyboard::{Key, NamedKey};
 use uuid::Uuid;
 
 use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -213,6 +214,8 @@ impl DerefMut for QueryEditorChild {
 }
 
 impl Widget for QueryEditorChild {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -316,28 +319,27 @@ impl Widget for QueryEditorChild {
         self.editor.ime_purpose()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.editor.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.editor.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.editor.get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.editor.set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.editor.text_review()
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.editor.layout_needs_measure()
+    }
+}
+
+impl ui::undo::UndoPoints for QueryEditorChild {
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+    fn get_state(&self) -> Option<String> {
+        self.editor.get_state()
+    }
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
     }
 }
 
@@ -996,7 +998,7 @@ impl DbClientApp {
             query_drag: None,
             query_measure_dirty: false,
             flap: FlapState::open_when_docked(),
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             scrim_rect: Rect::ZERO,
             toggle_btn: Rect::ZERO,
             run_hover: false,
@@ -1328,7 +1330,7 @@ impl DbClientApp {
     /// headless frame captures the chip that replaced the old status strip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// `--shots --connect`: open the "New connection" sheet so the modal can
@@ -1837,100 +1839,15 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[DB_OPERATION_TYPE]
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("database", "database.workspace", "Database");
-        let active_id = self.session.active_connection_id();
-        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
-        let mut query = ActionSpec::prompted_operation(
-            "query",
-            "Run SQL",
-            "SQL query",
-            "SELECT …",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            move |sql| {
-                encode_operation(&DbClientOperation::RunQuery {
-                    connection_id: query_connection_id.clone(),
-                    sql: sql.to_string(),
-                })
-            },
-        );
-        // Prompted SQL may be a read, but agents cannot soundly classify an
-        // arbitrary dialect statement from this transport envelope. Declare
-        // the conservative write/confirmation contract; the editor keeps its
-        // lighter in-app path for clearly read-only SQL.
-        query = query
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job)
-            .destructive();
-        if !self.session.connected {
-            query = query.unavailable(
-                "not_connected",
-                "Open a saved connection before running SQL",
-            );
-        }
-        root.actions.push(query);
-        let sql = EditorDoc::read_sql(doc);
-        if !sql.trim().is_empty() {
-            root.actions.push(
-                ActionSpec::prompted(
-                    "save_query",
-                    "Save current query",
-                    "Query name",
-                    "Saved query",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    move |name| {
-                        crate::actions::encode(&crate::actions::save_query_action(
-                            Uuid::new_v4(),
-                            name,
-                            &sql,
-                        ))
-                    },
-                )
-                .reversible(),
-            );
-        }
-        vec![root]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // Remote directory enumeration never walks a live schema. Deeper
-        // catalog entries are reached through the retained SearchCatalog and
-        // resolved by their canonical resource ids.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        (id == "database")
-            .then(|| self.resources(doc).pop())
-            .flatten()
-            .or_else(|| self.search_index.resource(id))
     }
 
     fn start_operation(
@@ -2181,7 +2098,7 @@ impl Widget for DbClientApp {
         // advance the eased reveal toward the resolved open/closed target.
         let split = self.split_layout();
         self.flap.reconcile(split);
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64();
         self.last_tick = now;
         self.flap.tick(split, dt);
@@ -2502,13 +2419,7 @@ impl Widget for DbClientApp {
         self.flap_animating()
             || (self.schema_in_tree() && self.tree.needs_animation_frame())
             || self.session.busy()
-            || self.status_bubble.needs_frame(Instant::now())
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // Hand the action model's undo bracket to the host so saved-connection
-        // CRUD becomes a single undo boundary and replicates to peers.
-        self.actions.take_committed()
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn draw_overlay(
@@ -2671,28 +2582,129 @@ impl Widget for DbClientApp {
                 && self.editor.wants_pointer_capture())
     }
 
+    fn text_review(&self) -> Option<(usize, String)> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.text_review())
+            .flatten()
+    }
+}
+
+impl ui::undo::UndoPoints for DbClientApp {
     fn needs_commit(&self) -> bool {
         self.editor.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.editor.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.get_state())
             .flatten()
     }
-
     fn set_state(&mut self, state: &str) {
         self.editor.set_state(state);
     }
+}
 
-    fn text_review(&self) -> Option<(usize, String)> {
-        (self.session.tab == MainTab::Query)
-            .then(|| self.editor.text_review())
+impl ui::search::capability::SearchSource for DbClientApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for DbClientApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("database", "database.workspace", "Database");
+        let active_id = self.session.active_connection_id();
+        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
+        let mut query = ActionSpec::prompted_operation(
+            "query",
+            "Run SQL",
+            "SQL query",
+            "SELECT …",
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            move |sql| {
+                encode_operation(&DbClientOperation::RunQuery {
+                    connection_id: query_connection_id.clone(),
+                    sql: sql.to_string(),
+                })
+            },
+        );
+        // Prompted SQL may be a read, but agents cannot soundly classify an
+        // arbitrary dialect statement from this transport envelope. Declare
+        // the conservative write/confirmation contract; the editor keeps its
+        // lighter in-app path for clearly read-only SQL.
+        query = query
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
+            .destructive();
+        if !self.session.connected {
+            query = query.unavailable(
+                "not_connected",
+                "Open a saved connection before running SQL",
+            );
+        }
+        root.actions.push(query);
+        let sql = EditorDoc::read_sql(doc);
+        if !sql.trim().is_empty() {
+            root.actions.push(
+                ActionSpec::prompted(
+                    "save_query",
+                    "Save current query",
+                    "Query name",
+                    "Saved query",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    move |name| {
+                        crate::actions::encode(&crate::actions::save_query_action(
+                            Uuid::new_v4(),
+                            name,
+                            &sql,
+                        ))
+                    },
+                )
+                .reversible(),
+            );
+        }
+        vec![root]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // Remote directory enumeration never walks a live schema. Deeper
+        // catalog entries are reached through the retained SearchCatalog and
+        // resolved by their canonical resource ids.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "database")
+            .then(|| self.resources(doc).pop())
             .flatten()
+            .or_else(|| self.search_index.resource(id))
+    }
+}
+
+impl ui::undo::CommittedActions for DbClientApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hand the action model's undo bracket to the host so saved-connection
+        // CRUD becomes a single undo boundary and replicates to peers.
+        self.actions.take_committed()
     }
 }
 
@@ -3387,10 +3399,9 @@ impl DbClientApp {
         self.conn_rects.clear();
         self.conn_delete_rects.clear();
         let mut y = r.y0 + 32.0;
-        let active = self.session.active;
         let connections = self.session.connections.clone();
         for (idx, conn) in connections.iter().enumerate() {
-            self.draw_connection_row(scene, t, tr, theme, idx, conn, active, y);
+            self.draw_connection_row(&mut PaintCtx::new(scene, t, tr, theme), idx, conn, y);
             y += 44.0;
         }
 
@@ -3401,26 +3412,24 @@ impl DbClientApp {
             .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one row's full draw context: canvas + theme + which row + its data + its y"
-    )]
     fn draw_connection_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         idx: usize,
         conn: &crate::model::ConnectionProfile,
-        active: usize,
         y: f64,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let p = theme.db();
         let r = self.sidebar_rect;
         let row = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 40.0);
         self.conn_rects.push((idx, row));
-        let is_active = idx == active;
+        let is_active = idx == self.session.active;
         if is_active {
             scene.fill(
                 Fill::NonZero,
@@ -4087,7 +4096,7 @@ impl DbClientApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_bubble_label();
         // Poke only when the summary actually changes (a connect, a query
         // completing, a table-count tick) — draw runs every frame, so poking
@@ -5292,7 +5301,7 @@ mod behavior_tests {
             assert_eq!(conns.len(), 1, "the connection was written to the document");
             assert_eq!(conns[0].name, "Prod");
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the action host recorded an undo boundary for the CRUD"
             );
             assert_eq!(
@@ -5474,7 +5483,7 @@ mod behavior_tests {
         {
             let (mut app, doc) = synced();
             app.session.connections[0].password = "never-publish-this".into();
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "root discovery is bounded");
             assert!(resources[0].children.is_empty());
             let connection = app.session.active_connection().unwrap().id.to_string();
@@ -5482,9 +5491,8 @@ mod behavior_tests {
             let relation = &schema.tables[0];
             let relation_id =
                 catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
-            let resolved = app
-                .resource(&doc, &relation_id)
-                .expect("exact relation resolves");
+            let resolved =
+                ui::resources::resource(&app, &doc, &relation_id).expect("exact relation resolves");
             assert_eq!(resolved.id.as_str(), relation_id);
             assert!(resolved.actions.iter().any(|action| action.id == "browse"));
             let run_sql = resources[0]
@@ -5499,7 +5507,7 @@ mod behavior_tests {
                 "an arbitrary SQL envelope is never advertised as harmless"
             );
             assert!(
-                app.resource(&doc, "database")
+                ui::resources::resource(&app, &doc, "database")
                     .expect("root resolves exactly")
                     .actions
                     .iter()
@@ -5529,9 +5537,8 @@ mod behavior_tests {
             let second_id =
                 catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
             assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
-            let resolved = app
-                .resource(&doc, &second_id)
-                .expect("exact relation resolves");
+            let resolved =
+                ui::resources::resource(&app, &doc, &second_id).expect("exact relation resolves");
             let browse = resolved
                 .actions
                 .iter()

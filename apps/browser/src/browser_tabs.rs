@@ -4,12 +4,12 @@ use crate::BrowserWidget;
 use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::style_helpers::{auto, length};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::time::{Duration, Instant};
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -176,7 +176,7 @@ impl BrowserTabs {
         self.fullscreen_hint = None;
     }
     fn start_fullscreen_hint(&mut self) {
-        self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
+        self.fullscreen_hint_deadline = Some(ui::time::now() + FULLSCREEN_HINT_DURATION);
         self.fullscreen_hint = Some(Self::make_fullscreen_hint());
     }
     fn reconcile_active_content_fullscreen(&mut self) {
@@ -898,12 +898,15 @@ impl Widget for BrowserTabs {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::Continuable
+        dyn ui::widget::Continuable,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::component_lifecycle::ComponentLifecycle
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
-            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
         {
             self.clear_fullscreen_hint();
             self.dirty = true;
@@ -1330,9 +1333,6 @@ impl Widget for BrowserTabs {
                 .poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
     }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.active().search_providers()
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(recovery) = self.recovery.as_ref() {
             return vec![recovery.panel.as_ref()];
@@ -1459,7 +1459,7 @@ impl Widget for BrowserTabs {
         dirty || page || self.bar.take_structure_dirty()
     }
     fn needs_animation_frame(&self) -> bool {
-        fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+        fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
             || self.bar.needs_animation_frame()
             || self.active().needs_animation_frame()
     }
@@ -1468,19 +1468,6 @@ impl Widget for BrowserTabs {
         for tab in &mut self.tabs {
             tab.widget.set_motion_reduced(reduced);
         }
-    }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        if let Some(recovery) = self.recovery.as_mut() {
-            return recovery.panel.take_control_invocation();
-        }
-        if let Some(invocation) = self
-            .exit_panel
-            .as_mut()
-            .and_then(|panel| panel.take_control_invocation())
-        {
-            return Some(invocation);
-        }
-        self.active_mut().take_control_invocation()
     }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
@@ -1503,6 +1490,9 @@ impl Widget for BrowserTabs {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for BrowserTabs {
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
         match self.exit_state {
             ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
@@ -1522,6 +1512,28 @@ impl Widget for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
+    }
+}
+
+impl ui::search::capability::SearchSource for BrowserTabs {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.active().search_providers()
+    }
+}
+
+impl ui::widget::controls::ActionControls for BrowserTabs {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        if let Some(recovery) = self.recovery.as_mut() {
+            return ui::widget::controls::take_control_invocation(recovery.panel.as_mut());
+        }
+        if let Some(invocation) = self
+            .exit_panel
+            .as_mut()
+            .and_then(|panel| ui::widget::controls::take_control_invocation(panel.as_mut()))
+        {
+            return Some(invocation);
+        }
+        self.active_mut().take_control_invocation()
     }
 }
 
@@ -1948,7 +1960,7 @@ mod tests {
 
         // Phase `fullscreen_hint_lifetime_is_exactly_three_seconds`.
         {
-            let entered = std::time::Instant::now();
+            let entered = ui::time::now();
             let deadline = entered + FULLSCREEN_HINT_DURATION;
             assert!(fullscreen_hint_visible(Some(deadline), entered));
             assert!(fullscreen_hint_visible(
@@ -2116,8 +2128,7 @@ mod tests {
                             });
                         }
                     }
-                    let invocation = tabs
-                        .take_control_invocation()
+                    let invocation = ui::widget::controls::take_control_invocation(&mut tabs)
                         .expect("ordinary input must emit the button's canonical action");
                     assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
                     tabs.start_operation(
@@ -2302,7 +2313,7 @@ mod tests {
             assert_eq!(tabs.fullscreen_intent(), Some(true));
 
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 WindowCloseAdmission::Defer
             );
             assert_eq!(tabs.fullscreen_intent(), Some(false));
@@ -2317,11 +2328,15 @@ mod tests {
             assert!(commands.contains(&WebViewCommand::ExitFullscreen));
             assert!(!commands.contains(&WebViewCommand::CancelAllDownloads));
             drop(commands);
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(tabs.exit_panel.is_none());
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert!(
                 !engine
                     .commands
@@ -2346,7 +2361,7 @@ mod tests {
                 tabs.sync(&mut doc, &automerge::ROOT);
                 tabs.on_fullscreen_changed(true);
                 assert_eq!(
-                    tabs.on_window_close_requested(),
+                    ui::component_lifecycle::on_window_close_requested(&mut tabs),
                     WindowCloseAdmission::Defer
                 );
                 if cancelling {
@@ -2366,7 +2381,9 @@ mod tests {
                     assert!(rects.contains_key("browser.download-exit.keep"));
                     assert!(rects.contains_key("browser.download-exit.cancel"));
                 }
-                assert!(!tabs.take_window_close_intent());
+                assert!(!ui::component_lifecycle::take_window_close_intent(
+                    &mut tabs
+                ));
             }
         }
 
@@ -2422,14 +2439,16 @@ mod tests {
             tabs.sync(&mut doc, &automerge::ROOT);
 
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer
             );
             assert!(tabs.exit_panel.is_some(), "both exit choices are visible");
 
             invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
             tabs.sync(&mut doc, &automerge::ROOT);
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert!(
                 !engine
                     .commands
@@ -2438,7 +2457,7 @@ mod tests {
                     .contains(&WebViewCommand::CancelAllDownloads)
             );
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer,
                 "keeping downloads does not arm a delayed automatic quit"
             );
@@ -2472,9 +2491,11 @@ mod tests {
                     .unwrap()
                     .contains(&WebViewCommand::CancelAllDownloads)
             );
-            assert!(!tabs.take_window_close_intent());
+            assert!(!ui::component_lifecycle::take_window_close_intent(
+                &mut tabs
+            ));
             assert_eq!(
-                tabs.on_window_close_requested(),
+                ui::component_lifecycle::on_window_close_requested(&mut tabs),
                 ui::widget::WindowCloseAdmission::Defer,
                 "repeated close cannot bypass native cancellation"
             );
@@ -2500,7 +2521,7 @@ mod tests {
             ]);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(
-                !tabs.take_window_close_intent(),
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
                 "new admission precedes cancel barrier"
             );
             engine.events.lock().unwrap().extend([
@@ -2524,7 +2545,7 @@ mod tests {
             ]);
             tabs.sync(&mut doc, &automerge::ROOT);
             assert!(
-                !tabs.take_window_close_intent(),
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
                 "physical owner is still closing"
             );
             engine
@@ -2538,8 +2559,11 @@ mod tests {
                     error: String::new(),
                 });
             tabs.sync(&mut doc, &automerge::ROOT);
-            assert!(tabs.take_window_close_intent());
-            assert!(!tabs.take_window_close_intent(), "approval is one shot");
+            assert!(ui::component_lifecycle::take_window_close_intent(&mut tabs));
+            assert!(
+                !ui::component_lifecycle::take_window_close_intent(&mut tabs),
+                "approval is one shot"
+            );
         }
 
         // Phase `admitted_close_releases_cached_favicon_and_visual_state`.
@@ -2564,8 +2588,7 @@ mod tests {
         assert!(unsafe {
             (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
         });
-        let invocation = tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(tabs)
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
@@ -2886,8 +2909,8 @@ mod tests {
         // Phase `resources_are_owned_only_by_the_page`.
         {
             let tabs = workspace();
-            assert!(tabs.resources(&AutoCommit::new()).is_empty());
-            assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
+            assert!(ui::resources::resources(&tabs, &AutoCommit::new()).is_empty());
+            assert!(!ui::resources::resources(tabs.active(), &AutoCommit::new()).is_empty());
         }
     }
     /// New tab typing, focus and stale layout nodes.
@@ -2903,7 +2926,7 @@ mod tests {
                 if widget.test_id() == Some("browser.url_input") {
                     return widget
                         .text_review()
-                        .map(|(_, text)| (text, widget.get_state().unwrap()));
+                        .map(|(_, text)| (text, ui::undo::get_state(widget).unwrap()));
                 }
                 widget.children().iter().find_map(|child| address(*child))
             }
@@ -2945,7 +2968,7 @@ mod tests {
                 );
             }
             assert!(
-                tabs.active_mut().take_control_invocation().is_some(),
+                ui::widget::controls::take_control_invocation(tabs.active_mut()).is_some(),
                 "Enter must queue the complete address even before layout"
             );
             let mut new_tree = TaffyTree::new();
@@ -3026,7 +3049,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             tabs.sync(&mut doc, &root);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()
@@ -3118,7 +3141,7 @@ mod tests {
             )
             .unwrap();
             tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
-            let resources = tabs.active().resources(&doc);
+            let resources = ui::resources::resources(tabs.active(), &doc);
             let page = resources[0]
                 .children
                 .iter()

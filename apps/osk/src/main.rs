@@ -187,9 +187,10 @@ fn run_always_visible(args: &LaunchArgs, purpose: Option<InputPurpose>) -> Resul
             if let Some(purpose) = purpose {
                 widget.set_purpose(purpose);
             }
-            let definition = widget.document_history_definition().ok_or_else(|| {
-                LaunchError::Operation("OSK preferences History is unavailable".into())
-            })?;
+            let definition = ui::history_mode::capability::document_history_definition(&widget)
+                .ok_or_else(|| {
+                    LaunchError::Operation("OSK preferences History is unavailable".into())
+                })?;
             Ok((Box::new(widget), definition))
         })?
         .with_window_app_id(osk::KEYBOARD_APP_ID);
@@ -252,8 +253,7 @@ fn finish_prepared_app(
         Box<dyn Widget>,
     ) -> Result<ui::App, LaunchError>,
 ) -> Result<ui::App, LaunchError> {
-    let definition = widget
-        .document_history_definition()
+    let definition = ui::history_mode::capability::document_history_definition(&widget)
         .ok_or_else(|| LaunchError::Operation("OSK preferences History is unavailable".into()))?;
     let mut app = build(
         &spec.history(definition),
@@ -303,9 +303,10 @@ fn run_auto_show(
             if let Some(purpose) = purpose {
                 widget.set_purpose(purpose);
             }
-            let definition = widget.document_history_definition().ok_or_else(|| {
-                LaunchError::Operation("OSK preferences History is unavailable".into())
-            })?;
+            let definition = ui::history_mode::capability::document_history_definition(&widget)
+                .ok_or_else(|| {
+                    LaunchError::Operation("OSK preferences History is unavailable".into())
+                })?;
             Ok((Box::new(widget), definition))
         })?
         .with_window_app_id(osk::KEYBOARD_APP_ID);
@@ -528,7 +529,8 @@ mod launch_tests {
                         root = root.with_layout(layout);
                     }
                 }
-                let expected = root.document_history_definition().unwrap();
+                let expected =
+                    ui::history_mode::capability::document_history_definition(&root).unwrap();
                 let scope = ui::WakeScope::new();
                 let _entry = scope.enter();
                 let spec = launch_spec_with_root(forbidden).open_app_global_state(opener);
@@ -537,7 +539,8 @@ mod launch_tests {
                              scope: ui::WakeScope,
                              root: Box<dyn Widget>| {
                     assert!(std::ptr::eq(
-                        root.document_history_definition().unwrap(),
+                        ui::history_mode::capability::document_history_definition(root.as_ref())
+                            .unwrap(),
                         expected
                     ));
                     assert_eq!(root.accessibility().is_none(), auto);
@@ -576,7 +579,7 @@ mod launch_tests {
                 let probe =
                     OskWidget::new_with_swipe_model(Box::new(osk::GeometricSwipeModel::english()));
                 let encoded = ui::tilo_actions::door::encode(
-                    &probe.resources(&automerge::AutoCommit::new()),
+                    &ui::resources::resources(&probe, &automerge::AutoCommit::new()),
                     &ui::tilo_actions::ActionAddress::new("osk.keyboard.suggestions", "disable"),
                     None,
                 )
@@ -618,10 +621,14 @@ mod launch_tests {
         let args = ARGS.with_borrow_mut(|a| a.take().unwrap());
         let root = shot_root_with_model(&args, Box::new(osk::GeometricSwipeModel::english()));
         assert!(std::ptr::eq(
-            root.document_history_definition().unwrap(),
+            ui::history_mode::capability::document_history_definition(root.as_ref()).unwrap(),
             std::ptr::from_ref(&osk::framework_history::HISTORY)
         ));
-        assert!(root.history_registration().unwrap().is_none());
+        assert!(
+            ui::history_mode::capability::history_registration(root.as_ref())
+                .unwrap()
+                .is_none()
+        );
         launch_spec().validate_history_declaration().unwrap();
     }
     struct NativeObservedRoot {
@@ -630,17 +637,12 @@ mod launch_tests {
         acks: Rc<Cell<usize>>,
     }
     impl Widget for NativeObservedRoot {
-        fn document_history_definition(
-            &self,
-        ) -> Option<&'static ui::history_mode::HistoryDefinition> {
-            self.root.document_history_definition()
-        }
-        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-            self.root.history_restore_readiness(scope)
-        }
-        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-            self.root.resources(doc)
-        }
+        ui::provides!(
+            dyn ui::history_mode::capability::DocumentHistory,
+            dyn ui::widget::controls::ActionControls,
+            dyn ui::resources::PublishesResources
+        );
+
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             self.root.local_resource_operation_handlers()
         }
@@ -651,23 +653,6 @@ mod launch_tests {
             path: &automerge::ObjId,
         ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
             self.root.start_operation(op, doc, path)
-        }
-        fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-            let value = self.root.take_control_invocation();
-            if value.is_some() {
-                self.takes.set(self.takes.get() + 1);
-            }
-            value
-        }
-        fn document_action_applied(
-            &mut self,
-            action: &ui::tilo_actions::EncodedAction,
-            before: &[automerge::ChangeHash],
-            doc: &automerge::AutoCommit,
-            path: &automerge::ObjId,
-        ) {
-            self.acks.set(self.acks.get() + 1);
-            self.root.document_action_applied(action, before, doc, path);
         }
         fn sync(&mut self, doc: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
             self.root.sync(doc, path);
@@ -716,6 +701,49 @@ mod launch_tests {
         }
         fn take_structure_dirty(&mut self) -> bool {
             self.root.take_structure_dirty()
+        }
+    }
+
+    impl ui::resources::PublishesResources for NativeObservedRoot {
+        fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+            ui::resources::resources(self.root.as_ref(), doc)
+        }
+    }
+
+    impl ui::widget::controls::ActionControls for NativeObservedRoot {
+        fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+            let value = ui::widget::controls::take_control_invocation(self.root.as_mut());
+            if value.is_some() {
+                self.takes.set(self.takes.get() + 1);
+            }
+            value
+        }
+    }
+
+    impl ui::history_mode::capability::DocumentHistory for NativeObservedRoot {
+        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+            ui::history_mode::capability::history_restore_readiness(self.root.as_ref(), scope)
+        }
+        fn document_history_definition(
+            &self,
+        ) -> Option<&'static ui::history_mode::HistoryDefinition> {
+            ui::history_mode::capability::document_history_definition(self.root.as_ref())
+        }
+        fn document_action_applied(
+            &mut self,
+            action: &ui::tilo_actions::EncodedAction,
+            before: &[automerge::ChangeHash],
+            doc: &automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) {
+            self.acks.set(self.acks.get() + 1);
+            ui::history_mode::capability::document_action_applied(
+                self.root.as_mut(),
+                action,
+                before,
+                doc,
+                path,
+            );
         }
     }
     thread_local! { static NATIVE_INITIAL: Cell<bool> = const { Cell::new(true) }; }

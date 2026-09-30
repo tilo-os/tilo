@@ -37,9 +37,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
@@ -841,10 +838,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature"
-    )]
     async fn start(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -917,9 +910,7 @@ impl RemoteDesktopBackend {
                 app_id: app_id.clone(),
                 devices,
                 persist_mode,
-                issued_unix_seconds: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_secs()),
+                issued_unix_seconds: tilo_clock::unix_now(),
             };
             let stored = self
                 .restore

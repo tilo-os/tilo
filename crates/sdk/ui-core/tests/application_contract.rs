@@ -2,7 +2,9 @@
 use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
-use tilo_ui::application::{ApplicationCatalog, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application::{
+    ApplicationCatalog, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
@@ -74,13 +76,15 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         );
         let context = HostContext::prepare(
             &definition,
-            host.records.clone(),
-            host.views.clone(),
-            DEVICE.into(),
-            11,
-            authority.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: host.records.clone(),
+                views: host.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -106,14 +110,16 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             assert!(matches!(
                 HostContext::prepare(
                     probe_definition(),
-                    host.records.clone(),
-                    views,
-                    DEVICE.into(),
-                    11,
-                    permissions(),
-                    author(),
-                    provenance(),
-                    &LaunchTarget::New
+                    HostContextInputs {
+                        records: host.records.clone(),
+                        views,
+                        device_id: DEVICE.into(),
+                        instance_id: 11,
+                        permissions: permissions(),
+                        author: author(),
+                        action_context: provenance()
+                    },
+                    &LaunchTarget::New,
                 ),
                 Err(LaunchError::BindingMismatch)
             ));
@@ -222,13 +228,15 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         let target = existing(&record);
         let context = HostContext::prepare(
             probe_definition(),
-            records,
-            host.views,
-            DEVICE.into(),
-            11,
-            permissions(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views: host.views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: permissions(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -406,13 +414,15 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         let target = existing(&record);
         let context = HostContext::prepare(
             probe_definition(),
-            records,
-            views,
-            DEVICE.into(),
-            11,
-            permissions(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: permissions(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -942,13 +952,15 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let target = existing(&checkout);
         let context = HostContext::prepare(
             &definition,
-            host.records,
-            host.views.clone(),
-            DEVICE.into(),
-            11,
-            authority.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: host.records,
+                views: host.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -1012,13 +1024,15 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let target = existing(&record);
         let context = HostContext::prepare(
             &definition,
-            records.clone(),
-            host.views,
-            DEVICE.into(),
-            11,
-            authority,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: records.clone(),
+                views: host.views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority,
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -1538,7 +1552,7 @@ mod save_status_fixture {
             );
         }
         pub(super) fn close(&mut self) {
-            let reports = self.tile.close_components();
+            let reports = tilo_ui::component_lifecycle::close_components(&mut self.tile);
             assert!(!reports.is_empty());
             assert!(reports.iter().all(|report| report.record_error.is_none()
                 && report.view_error.is_none()
@@ -1577,6 +1591,11 @@ mod paired_local {
     thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
+        tilo_ui::provides!(
+            dyn tilo_ui::view::capability::ViewState,
+            dyn tilo_ui::undo::UndoPoints
+        );
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -1616,6 +1635,9 @@ mod paired_local {
         fn set_focus(&mut self, focused: bool) {
             self.0.borrow_mut().focused = focused;
         }
+    }
+
+    impl tilo_ui::undo::UndoPoints for LocalRoot {
         fn get_state(&self) -> Option<String> {
             Some("current caret".into())
         }
@@ -1625,6 +1647,9 @@ mod paired_local {
                 .events
                 .push(format!("ephemeral:{state}"));
         }
+    }
+
+    impl tilo_ui::view::capability::ViewState for LocalRoot {
         fn view_state(&self) -> Option<ViewContribution> {
             Some(ViewContribution {
                 scroll: vec![self.0.borrow().scroll],

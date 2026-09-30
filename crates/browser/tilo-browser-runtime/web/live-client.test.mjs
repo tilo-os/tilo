@@ -167,6 +167,31 @@ test('previews are ordered per record and only received for watched or focused r
   b.live.close();
 });
 
+test('a record watched with a frame callback receives its frames undecoded, never as ops', async () => {
+  const fake = relay();
+  const a = client(fake, 'b'.repeat(64));
+  const b = client(fake, 'c'.repeat(64));
+  const previews = [];
+  const frames = [];
+  b.api.onPreview(value => previews.push(value));
+  a.live.start();
+  b.live.start();
+  await until(() => a.api.state === 'live' && b.api.state === 'live' && b.api.stats().remotes === 1, 'live');
+  const stream = {app: 'so.tilo.legacy-window', record: '@tilo:legacy-windows'};
+  const unwatch = b.api.watchRecord(stream, (publisher, bytes, receivedAtMs) => frames.push({publisher, text: decoder.decode(bytes), receivedAtMs}));
+  await tick();
+  a.api.publishPreview(stream, [{kind: 'insert', at: '01', text: 'raw'}]);
+  await until(() => frames.length === 1, 'raw frame');
+  assert.equal(frames[0].publisher, 'b'.repeat(64));
+  assert.ok(Number.isFinite(frames[0].receivedAtMs));
+  assert.equal(JSON.parse(frames[0].text).ops[0].text, 'raw', 'the exact bytes the publisher sent');
+  assert.equal(previews.length, 0, 'not decoded as ops');
+  assert.equal(b.errors.length, 0);
+  unwatch();
+  a.live.close();
+  b.live.close();
+});
+
 test('forwarded signed changes are admitted once through the runtime and snap previews', async () => {
   const fake = relay();
   const b = client(fake, 'c'.repeat(64));

@@ -11,6 +11,7 @@ use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
 use std::{io::BufRead, net::Ipv4Addr, path::Path, task::Poll, time::Duration};
+use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 use tilo_relay::{
     Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
     daemon::RelayIdentity,
@@ -97,6 +98,9 @@ impl QualificationHold {
                     tilo_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed
                 }
                 "failure" => tilo_action_broker::peer_actions::PeerActionAttachmentError::Failed,
+                "unresponsive" => {
+                    tilo_action_broker::peer_actions::PeerActionAttachmentError::Unresponsive
+                }
                 _ => return false,
             };
             if let Some(sender) = self.action_attachment_exit.take() {
@@ -184,6 +188,7 @@ struct CheckpointCadence {
     pending: bool,
     replacement_pending: bool,
     last_activity: std::time::Instant,
+    idle: Duration,
 }
 impl CheckpointCadence {
     /// Publish a pending replacement at latest after this many committed
@@ -191,12 +196,20 @@ impl CheckpointCadence {
     const MAX_DELTAS: u32 = 1024;
     /// Flush a pending complete basis once input pauses for this long.
     const IDLE: Duration = Duration::from_millis(5000);
+    /// Overrides [`Self::IDLE`] in whole milliseconds, so a test can prove a
+    /// publication happened without the idle flush.
+    const IDLE_ENV: &str = "TILO_HOST_IDLE_CHECKPOINT_MS";
     fn new() -> Self {
+        let idle = std::env::var(Self::IDLE_ENV)
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .map_or(Self::IDLE, Duration::from_millis);
         Self {
             deltas_since_publish: 0,
             pending: false,
             replacement_pending: false,
             last_activity: std::time::Instant::now(),
+            idle,
         }
     }
     fn publication_due(
@@ -227,7 +240,7 @@ impl CheckpointCadence {
     }
     /// On an idle tick: flush the coalesced checkpoint once input has paused.
     fn due_on_idle(&self, now: std::time::Instant) -> bool {
-        self.pending && now.duration_since(self.last_activity) >= Self::IDLE
+        self.pending && now.duration_since(self.last_activity) >= self.idle
     }
     /// A checkpoint was published (through any path); reset the coalescing state.
     fn mark_published(&mut self, now: std::time::Instant) {
@@ -396,6 +409,8 @@ pub struct NativeSubscription {
     actions: Option<AttachedActions>,
     ready: bool,
     publication: std::sync::Mutex<crate::publication::PublicationCursor>,
+    /// Channel governance received for the steward, which the owner never admits.
+    governance: std::sync::Mutex<Vec<InboundChannelGovernance>>,
 }
 struct AttachedActions {
     task: Option<
@@ -433,6 +448,20 @@ impl NativeSubscription {
             self.ready = true;
         }
         event
+    }
+    fn queue_governance(&self, message: tilo_peer_state::NeighbourMsg) {
+        if let (Some(inbound), Ok(mut queue)) = (
+            InboundChannelGovernance::from_message(message),
+            self.governance.lock(),
+        ) {
+            queue.push(inbound);
+        }
+    }
+    fn take_governance(&self) -> Vec<InboundChannelGovernance> {
+        self.governance
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
     }
     pub fn into_client(self) -> RelayClient {
         Arc::try_unwrap(self.session)
@@ -714,6 +743,7 @@ impl LocalHost {
                     actions: None,
                     ready: false,
                     publication: Default::default(),
+                    governance: Default::default(),
                 })
             };
             let result = tokio::select! {
@@ -865,6 +895,8 @@ pub fn message_kind(message: &tilo_peer_state::NeighbourMsg) -> &'static str {
 /// The packet relay's port, kept in the owner root across restarts.
 pub const PACKET_RELAY_PORT_FILE: &str = "packet-relay-port";
 const STABLE_SESSION: Duration = Duration::from_secs(30);
+/// How often the channel steward runs its protocol over the live session.
+const STEWARD_INTERVAL: Duration = Duration::from_millis(100);
 /// Bound repeated retained-baseline replay when a connection cannot stay up.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(15);
 
@@ -978,10 +1010,6 @@ fn console_lines() -> Result<tokio::sync::mpsc::Receiver<std::io::Result<String>
     Ok(receiver)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "session and replaying are the live native-drain pair required for membership reconciliation"
-)]
 async fn handle_collaboration_exchange(
     owner: &mut SessionOwner,
     committed: &crate::committed_authority::CommittedAuthority,
@@ -1180,6 +1208,21 @@ async fn handle_collaboration_admin(
             reconcile = true;
             serde_json::json!({"generation": completion.generation.to_string()})
         }
+        CollaborationAdminOperation::SetAdministrator(input) => {
+            let completion = service
+                .set_member_administrator(
+                    owner,
+                    caller,
+                    crate::collaboration::RemoveMemberRequest {
+                        request_id,
+                        user_public_key: participant(&input.participant_id)?,
+                    },
+                    now,
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            reconcile = true;
+            serde_json::json!({"generation": completion.generation.to_string()})
+        }
         CollaborationAdminOperation::Remove(input) => {
             let completion = service
                 .remove_member(
@@ -1279,6 +1322,14 @@ where
                         };
                         let decoded = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&bytes)
                             .map_err(anyhow::Error::from);
+                        if let Ok(message) = decoded.as_ref()
+                            && crate::channel_steward::is_governance(message)
+                        {
+                            if let (Some(current), Ok(message)) = (session.as_ref(), decoded) {
+                                current.queue_governance(message);
+                            }
+                            continue;
+                        }
                         let update = committed.begin(owner)?;
                         let received = decoded.and_then(|message| owner.receive(origin, message));
                         if !publish_owner_authority(update, owner)? {
@@ -1539,6 +1590,8 @@ struct ActionRuntime {
     actions: Option<crate::action_host::ActionHost>,
     policy_time: Option<tilo_action_broker::peer_actions::PolicyTime>,
     retired: bool,
+    /// A stalled runtime whose custody did not settle stays failed.
+    stall_unsettled: bool,
 }
 impl ActionRuntime {
     fn new(committed: crate::committed_authority::CommittedAuthority) -> Self {
@@ -1557,7 +1610,41 @@ impl ActionRuntime {
             actions: None,
             policy_time: None,
             retired: false,
+            stall_unsettled: false,
         }
+    }
+
+    /// Replace a runtime whose signing failed only because a started owner
+    /// turn stalled. This serialized owner is running again, so that turn has
+    /// since finished with a definite result: closing the workers settles
+    /// their pending writes against it. Custody that does not settle, and any
+    /// other failure, stays terminal.
+    fn recover_after_stall(&mut self, owner: &SessionOwner) -> Result<bool, String> {
+        use tilo_peer_state::owner_commit::OwnerCommitService;
+        if self.stall_unsettled || !self.signing.failed_only_by_stalls()? {
+            return Ok(false);
+        }
+        self.stall_unsettled = true;
+        self.authority.set_ready(false);
+        self.signing.close_admission()?;
+        self.commits.close_admission()?;
+        // Never-started requests are refused with the latched stall.
+        let reason = "action runtime restarting after a stalled owner turn";
+        while let Ok(pending) = self.signatures.try_recv() {
+            let _ = pending.reject_unstarted(reason.into());
+        }
+        while let Ok(pending) = self.commits.try_recv() {
+            let _ = pending.reject_unstarted(reason.into());
+        }
+        while self.network.try_recv().is_ok() {}
+        if let Some(runtime) = self.actions.as_mut() {
+            runtime.close(owner)?;
+        }
+        debug_assert!(self.signing.health().is_err());
+        let committed = self.committed.clone();
+        // Drop joins the old broker before a replacement reopens its journal.
+        drop(std::mem::replace(self, Self::new(committed)));
+        Ok(true)
     }
 
     fn needs_retirement(&self) -> bool {
@@ -1682,6 +1769,24 @@ async fn refresh_actions(
     pool: Option<&crate::host_bytes::HostBytes>,
     cadence: &mut CheckpointCadence,
 ) {
+    if action_error.is_some() {
+        match runtime.recover_after_stall(owner) {
+            Ok(true) => {
+                tracing::warn!(
+                    problem = action_error.as_deref().unwrap_or_default(),
+                    "action runtime restarted after a stalled owner turn"
+                );
+                *action_error = None;
+                if let Some(session) = session.as_mut() {
+                    session.detach_actions().await;
+                }
+            }
+            Ok(false) => {}
+            Err(problem) => {
+                tracing::error!(%problem, "stalled action runtime did not settle; it stays failed");
+            }
+        }
+    }
     if runtime.needs_retirement() {
         runtime.authority.set_ready(false);
         if let Some(session) = session.as_mut() {
@@ -1723,7 +1828,42 @@ mod action_lifecycle_tests;
 /// Longest a peer that cannot reach readiness withholds its ready file.
 const READY_FALLBACK: Duration = Duration::from_secs(30);
 
-pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
+/// Run the session peer. The serialized owner does its durable work (fsynced
+/// commits) inline, so its loop gets an OS thread of its own: a stalled disk
+/// then blocks only the owner, never the caller's runtime workers, while every
+/// service the loop spawns (relay, packet server, ingress) runs on that
+/// runtime.
+pub async fn run(owner: SessionOwner, ready_path: &Path) -> Result<()> {
+    let ready = ready_path.to_path_buf();
+    on_owner_thread(move || async move { run_owner(owner, &ready).await }).await?
+}
+
+const OWNER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Drive the future `make` builds on a dedicated thread, inside the caller's
+/// runtime: its spawned tasks and sockets belong to that runtime, but its own
+/// blocking steps stall only this thread. On a current-thread runtime the
+/// caller's `block_on` keeps driving timers and IO while it awaits the result.
+async fn on_owner_thread<T, F>(make: impl FnOnce() -> F + Send + 'static) -> Result<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T>,
+{
+    let runtime = tokio::runtime::Handle::current();
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("tilo-workspace-owner".into())
+        .stack_size(OWNER_THREAD_STACK_BYTES)
+        .spawn(move || {
+            let _ = done.send(runtime.block_on(make()));
+        })
+        .context("starting the owner thread")?;
+    result
+        .await
+        .context("the owner thread ended without a result")
+}
+
+async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut interrupt = Box::pin(tokio::signal::ctrl_c());
     let interrupted = std::future::poll_fn(|context| match interrupt.as_mut().poll(context) {
         Poll::Ready(result) => Poll::Ready(result.map(|()| true)),
@@ -1833,6 +1973,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     }
     let collaboration = crate::collaboration::CollaborationService::new(invitation_transports);
     let mut action_runtime = ActionRuntime::new(committed.clone());
+    // Without its channel state the steward admits nobody: members wait.
+    let steward = crate::channel_steward::Steward::open(&owner)
+        .inspect_err(|problem| tracing::warn!(%problem, "channel steward unavailable"))
+        .ok();
+    let mut governance = tokio::time::interval(STEWARD_INTERVAL);
+    let mut compaction_checked = 0u64;
+    governance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pump = tokio::time::interval(Duration::from_millis(10));
     let mut action_error: Option<String> = None;
     let mut subscription_generation = 0u64;
@@ -1941,6 +2088,19 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Some(request)=>installed.handle(&mut owner,request),
                         None=>bail!("installed HTTPS ingress stopped"),
                     }
+                    // A controlling viewer's input reaches the session as this
+                    // host's governor device, which it shares its windows with.
+                    let (hello, input) = installed.take_legacy_input();
+                    if !input.is_empty() { tracing::debug!(events = input.len(), hello, ready = session.as_ref().is_some_and(|s| s.is_ready()), "legacy window input forwarded"); }
+                    if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                        if hello {
+                            let identity = tilo_peer_state::NeighbourMsg::IdentityHello { cert: Box::new(owner.identity.native_cert.clone()), revocations: Vec::new() };
+                            if let Err(problem) = current.publish_presence(postcard::to_stdvec(&identity)?) { tracing::debug!(%problem, "legacy window input identity not sent"); }
+                        }
+                        for message in input {
+                            if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { tracing::debug!(%problem, "legacy window input not sent"); }
+                        }
+                    }
                     // HTTPS data, onboarding and staged admissions commit on the
                     // owner; follow up exactly as other inbound commits do.
                     if owner.committed_generation() != before && owner.permits_publication() {
@@ -1963,6 +2123,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 woke_by_pump = true;
                 #[cfg(feature="media")]
                 if let Some(installed)=delivery_ingress.as_mut(){
+                    // A static legacy window sends nothing: its stream ends when
+                    // its session leaves the relay.
+                    for author in installed.legacy_publishers() {
+                        let subscribed = host.relay.is_subscribed(owner.workspace_id(), &author).await;
+                        installed.legacy_subscribed(author, subscribed);
+                    }
                     // A refused descriptor renewal (e.g. disk capacity below the
                     // store's headroom) must not terminate the host: keep serving,
                     // and retry on the next tick once the condition clears.
@@ -2121,6 +2287,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         error = Some("private broker transport stopped; reconnecting shared session".into());
                         if let Some(old) = session.take() { old.close().await; }
                     }
+                    // An unanswered catalogue or heartbeat admitted nothing: a
+                    // busy broker is replaced by attaching afresh, never
+                    // latched as an uncertain outcome.
+                    Some(Ok(Err(tilo_action_broker::peer_actions::PeerActionAttachmentError::Unresponsive))) => {
+                        error = Some("private broker did not answer; reconnecting shared session".into());
+                        if let Some(old) = session.take() { old.close().await; }
+                    }
                     Some(_) => action_error = Some("private broker attachment stopped; outcome unknown".into()),
                     None => {}
                 }
@@ -2257,6 +2430,27 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             message = action_runtime.network.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() => if let Some(message) = message
                 && let Some(current) = session.as_ref().filter(|s| owner.permits_publication() && s.is_ready())
                     && let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(action_runtime.signing.fail(problem.to_string())); },
+            _ = governance.tick(), if steward.is_some() => {
+                if let (Some(steward), Some(current)) = (steward.as_ref(), session.as_ref().filter(|current| current.is_ready())) {
+                    steward.pump(&owner, &crate::channel_steward::RelayGovernance::new(current, current.take_governance()));
+                }
+                if let Some(steward) = steward.as_ref()
+                    && owner.permits_publication()
+                    && compaction_checked != owner.committed_generation()
+                {
+                    compaction_checked = owner.committed_generation();
+                    for (app, record) in owner.peer().sealed_records_to_compact() {
+                        let update = committed.begin(&owner)?;
+                        let compacted = steward.compact(&mut owner, &app, &record);
+                        if !publish_owner_authority(update, &owner)? { break; }
+                        match compacted {
+                            Ok(_) => if let Some(current) = session.as_ref().filter(|current| current.is_ready())
+                                && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); },
+                            Err(problem) => tracing::warn!(%problem, app, record, "sealed history not compacted"),
+                        }
+                    }
+                }
+            }
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
                 reconnect.take();
                 match connection {
@@ -2310,6 +2504,18 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         };
                         let inbound_bytes = bytes.len();
                         let decoded: Result<tilo_peer_state::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
+                        // Legacy-window video is never owner state.
+                        #[cfg(feature = "media")]
+                        if let (tilo_peer_state::TransportOrigin::UntrustedPresence(author), Ok(message)) = (&origin, &decoded)
+                            && crate::legacy_windows::LegacyWindows::carries(message) {
+                            if let Some(installed) = delivery_ingress.as_mut() { installed.legacy_window(*author, message); }
+                            continue;
+                        }
+                        if let Ok(message) = decoded.as_ref()
+                            && crate::channel_steward::is_governance(message) {
+                            if let (Some(current), Ok(message)) = (session.as_ref(), decoded) { current.queue_governance(message); }
+                            continue;
+                        }
                         let kind = decoded.as_ref().map(message_kind).unwrap_or("undecodable");
                         let started = std::time::Instant::now();
                         let publication_before = owner.publication_revision();
@@ -2817,7 +3023,8 @@ mod tests {
         let committed = CommittedAuthority::new(&owner);
         let mut session = Some(host.connect(&owner).await.unwrap());
         let mut replaying = false;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // Readiness is not what this test measures: wait on the hang bound.
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 match session.as_mut().unwrap().recv().await {
                     Some(Inbound::Ready { .. }) => break,
@@ -2895,7 +3102,7 @@ mod tests {
             )
             .unwrap()
         };
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 match peer.recv().await {
                     Some(Inbound::Ready { .. }) => break,
@@ -2944,6 +3151,71 @@ mod tests {
             current.close().await;
         }
         host.shutdown().await.unwrap();
+    }
+
+    /// A durable owner step that stalls (as a slow fsync does) blocks only
+    /// the owner's thread: another task on the same runtime keeps ticking,
+    /// and tasks the owner spawns still run on that runtime.
+    async fn blocking_owner_step_keeps_other_tasks_live()
+    -> (std::thread::ThreadId, std::thread::ThreadId) {
+        let caller = std::thread::current().id();
+        // (longest gap between ticks, last tick) of a task on this runtime.
+        let ticks = Arc::new(std::sync::Mutex::new((Duration::ZERO, None)));
+        let (ticking, ticked) = tokio::sync::oneshot::channel();
+        let ticker = tokio::spawn({
+            let ticks = ticks.clone();
+            async move {
+                let mut ticking = Some(ticking);
+                loop {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let now = std::time::Instant::now();
+                    let mut state = ticks.lock().unwrap();
+                    if let Some(last) = state.1 {
+                        state.0 = state.0.max(now.duration_since(last));
+                    }
+                    state.1 = Some(now);
+                    drop(state);
+                    if let Some(ticking) = ticking.take() {
+                        let _ = ticking.send(());
+                    }
+                }
+            }
+        });
+        // The owner's step starts while the other task is already live.
+        ticked.await.unwrap();
+        let started = std::time::Instant::now();
+        let spawned_on = on_owner_thread(|| async {
+            assert_eq!(std::thread::current().name(), Some("tilo-workspace-owner"));
+            std::thread::sleep(Duration::from_secs(1));
+            tokio::spawn(async { std::thread::current().id() })
+                .await
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        let (longest, last) = *ticks.lock().unwrap();
+        ticker.abort();
+        let longest = longest.max(last.map_or(Duration::MAX, |last| last.elapsed()));
+        assert!(
+            longest < Duration::from_millis(500),
+            "a task on the owner's runtime waited {longest:?} behind its blocking step"
+        );
+        (caller, spawned_on)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_blocking_owner_step_never_stalls_a_current_thread_runtime() {
+        let (caller, spawned_on) = blocking_owner_step_keeps_other_tasks_live().await;
+        assert_eq!(spawned_on, caller, "the owner's tasks run on its runtime");
+    }
+
+    /// From a task on the runtime's only worker, as a spawned host would be.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_blocking_owner_step_never_stalls_a_runtime_worker() {
+        tokio::spawn(blocking_owner_step_keeps_other_tasks_live())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

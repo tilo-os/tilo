@@ -378,29 +378,34 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Four
+future platform families without changing the signed entry shape. Six
 families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
 |---|---|---|---|
 | `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
 | `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+wasm.<32 hex>` |
+| `linux` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
+| `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Web, Windows and macOS
-versions sit beside Tilo OS versions in the same entry: version identity is
-`(version, platform, architecture)`, and a Tilo OS client installs only
-`tilo-os` versions. Generic Linux builds do not belong in the registry.
+each tapp's target with `tilo-app-package entry --arch`. Web, Linux, Windows,
+macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
+is `(version, platform, architecture)`, and a Tilo OS client installs only
+`tilo-os` versions.
 
-**Windows and macOS.** Those systems ship no Tilo toolkit, so the package is one
-self-contained executable with the toolkit linked in. Its signed `[target]`
+**Linux, Windows, macOS and Android.** A `linux` build is for Linux desktops
+other than Tilo OS. Those systems ship no Tilo toolkit, so the package is one
+self-contained executable with the toolkit linked in; for `android` that is an
+`.apk` (or an `.aab` for store upload, `registry_types::ANDROID_PACKAGE_EXTENSIONS`). Its signed `[target]`
 names the executable as `module` (the GUI entrypoint must name the same path)
 and the linked release as `runtime`, equal to `[package].runtime`
 (`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
-design target; `tilo-app-package entry --platform windows|macos` binds it.
+design target; `tilo-app-package entry --platform linux|windows|macos|android`
+binds it.
 
 **Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
 feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,
@@ -499,6 +504,11 @@ tilo-registry-server sign-delegated-snapshot \
   --channel-key-file /run/secrets/registry-channel/seed \
   --valid-for-seconds 86400
 ```
+
+The collector reads a version from its own content-addressed store when it
+already holds the bytes the publisher signed, and fetches only new versions.
+A submission it cannot collect completely stays pending and out of the staged
+batch; the others are staged, and the collector exits non-zero listing it.
 
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The

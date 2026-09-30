@@ -1,5 +1,6 @@
-//! Windows and macOS builds: the authored manifest around one self-contained
-//! executable, with a signed `[target]` naming its platform and architecture.
+//! Linux, Windows, macOS and Android builds: the authored manifest around one
+//! self-contained executable, with a signed `[target]` naming its platform and
+//! architecture.
 
 use std::path::PathBuf;
 
@@ -7,9 +8,10 @@ use crate::id::Kind;
 use crate::manifest::{Entrypoint, EntrypointType, IsaRequirements, Manifest, Target};
 use crate::validate::{ManifestError, validate_manifest};
 
-/// The manifest a `platform` (`windows` or `macos`) build of `authored` is
-/// packed with: `module` is the executable's payload path and `isa` the
-/// native feature level it was compiled for. The toolkit release linked in is
+/// The manifest a `platform` (`linux`, `windows`, `macos` or `android`) build
+/// of `authored` is packed with: `module` is the executable's payload path (an
+/// `.apk` or `.aab` for `android`) and `isa` the native feature level it was
+/// compiled for. The toolkit release linked in is
 /// `[package].runtime`, which a desktop build must declare.
 ///
 /// # Errors
@@ -111,12 +113,45 @@ mod tests {
             Err(ManifestError::BadTarget(_))
         ));
         assert!(matches!(
-            desktop_manifest(&authored(), "linux", "x86_64", "x86_64", "bin/books"),
+            desktop_manifest(&authored(), "freebsd", "x86_64", "x86_64", "bin/books"),
             Err(ManifestError::BadTarget(_))
         ));
         assert!(matches!(
             desktop_manifest(&authored(), "macos", "aarch64", "aarch64", "../books"),
             Err(ManifestError::BadTargetModule(_))
+        ));
+        for apk in ["books.apk", "bin/books.aab"] {
+            let android = desktop_manifest(
+                &authored(),
+                registry_types::ANDROID_PLATFORM,
+                "aarch64",
+                "aarch64",
+                apk,
+            )
+            .unwrap();
+            assert_eq!(
+                android
+                    .target
+                    .as_ref()
+                    .map(|target| target.platform.as_str()),
+                Some("android")
+            );
+        }
+        for not_a_package in ["bin/books", "books.exe", "books.apk.zip", "../books.apk"] {
+            assert!(matches!(
+                desktop_manifest(
+                    &authored(),
+                    registry_types::ANDROID_PLATFORM,
+                    "x86_64",
+                    "x86_64",
+                    not_a_package
+                ),
+                Err(ManifestError::BadTargetModule(_))
+            ));
+        }
+        assert!(matches!(
+            desktop_manifest(&authored(), "android", "armv7", "armv7", "books.apk"),
+            Err(ManifestError::BadTarget(_))
         ));
         let mut service = authored();
         service.package.kind = Kind::Service;

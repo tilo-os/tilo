@@ -33,6 +33,14 @@ def run_main(argv, created=None):
     return result, request
 
 
+def print_pins(kind, x86_ref, arm_ref):
+    out = io.StringIO()
+    argv = [str(SCRIPT), "pins", kind, "--x86-ref", x86_ref, "--arm-ref", arm_ref]
+    with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
+        assert MODULE.main() == 0
+    return out.getvalue()
+
+
 def restart_fixture(test):
     """Give the next subTest phase of a merged test the fresh fixture it had
     as its own test: tear down, run cleanups, reset instance state, set up."""
@@ -216,13 +224,12 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
             self.assertEqual(payload["title"], "build(os): refresh native WPE buildroot snapshots")
             self.assertIn(self.digest, payload["body"])
         restart_fixture(self)
-        with self.subTest(phase="workflow_writes_the_canonical_pin_file"):
-            workflow = (REPO / ".forgejo/workflows/snapshot-wpe-buildroot.yml").read_text()
-            for line in MODULE.wpe_contents("$WPE_BUILDROOT_X86_64_REF",
-                                            "$WPE_BUILDROOT_AARCH64_REF").splitlines()[:2]:
-                self.assertIn(f"'{line}'", workflow)
-            self.assertIn('"WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF"', workflow)
-            self.assertIn('"WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF"', workflow)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("wpe", self.x86_ref, self.arm_ref),
+                             MODULE.wpe_contents(self.x86_ref, self.arm_ref))
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn('open-snapshot-pr.py pins "$promote_kind"', script)
+            self.assertIn("wpe) key=WPE_BUILDROOT label=WPE promote_kind=wpe", script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/wpe-buildroot-snapshot.env").read_text()
@@ -283,14 +290,14 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
                              "build(os): refresh native kernel buildroot snapshots")
             self.assertIn(self.digest, payload["body"])
         restart_fixture(self)
-        with self.subTest(phase="workflow_writes_the_canonical_pin_file"):
-            workflow = (REPO / ".forgejo/workflows/snapshot-kernel-buildroot.yml").read_text()
-            for line in MODULE.kernel_buildroot_contents("$X", "$Y").splitlines()[:2]:
-                self.assertIn(f"'{line}'", workflow)
-            self.assertIn('"KERNEL_BUILDROOT_X86_64_REF=$KERNEL_BUILDROOT_X86_64_REF"', workflow)
-            self.assertIn('"KERNEL_BUILDROOT_AARCH64_REF=$KERNEL_BUILDROOT_AARCH64_REF"', workflow)
-            self.assertIn('branch="automation/kernel-buildroot-snapshot-${snapshot_digest:0:16}"',
-                          workflow)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("kernel-buildroot", self.x86_ref, self.arm_ref),
+                             MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref))
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn("kernel) key=KERNEL_BUILDROOT label=kernel promote_kind=kernel-buildroot",
+                          script)
+            self.assertIn('branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"',
+                          script)
         restart_fixture(self)
         with self.subTest(phase="committed_pins_use_the_canonical_names"):
             committed = (REPO / "os/kernel-buildroot-snapshot.env").read_text()
@@ -322,6 +329,50 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
                 with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
                     run_main(self.argv(**overrides))
 
+
+
+class WpeStageSnapshotPullRequestTests(unittest.TestCase):
+    x86_ref = "registry.tilo.so/tilo/tilo-wpe-stage@sha256:" + "c" * 64
+    arm_ref = "registry.tilo.so/tilo/tilo-wpe-stage@sha256:" + "d" * 64
+
+    def test_wpe_stage_snapshot_pull(self):
+        contents = MODULE.wpe_stage_contents(self.x86_ref, self.arm_ref)
+        digest = hashlib.sha256(contents.encode()).hexdigest()
+        branch = "automation/wpe-stage-snapshot-" + digest[:16]
+        argv = [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "tilo/tilo", "--branch", branch,
+            "--snapshot-digest", digest, "wpe-stage",
+            "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
+        ]
+        with self.subTest(phase="the_promotion_pushes_the_branch_it_names"):
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn('branch="automation/wpe-stage-snapshot-${snapshot_digest:0:16}"', script)
+        with self.subTest(phase="main_creates_digest_bound_pull"):
+            result, request = run_main(argv)
+            self.assertEqual(result, 0)
+            payload = request.call_args.args[5]
+            self.assertEqual(payload["head"], branch)
+            self.assertEqual(payload["title"], "build(os): refresh native WPE engine stages")
+        restart_fixture(self)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("wpe-stage", self.x86_ref, self.arm_ref), contents)
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn("wpe-stage) key=WPE_STAGE label=\"WPE engine\" promote_kind=wpe-stage", script)
+        restart_fixture(self)
+        with self.subTest(phase="committed_pins_use_the_canonical_names"):
+            committed = (REPO / "os/wpe-stage-snapshot.env").read_text()
+            refs = dict(line.split("=", 1) for line in committed.splitlines()
+                        if line and not line.startswith("#"))
+            self.assertEqual(set(refs), {"WPE_STAGE_X86_64_REF", "WPE_STAGE_AARCH64_REF"})
+        restart_fixture(self)
+        with self.subTest(phase="rejects_buildroot_or_mutable_refs"):
+            for arm in ("registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:" + "d" * 64,
+                        "registry.tilo.so/tilo/tilo-wpe-stage:latest", self.x86_ref):
+                bad = list(argv)
+                bad[-1] = arm
+                with self.subTest(arm=arm), self.assertRaises(SystemExit):
+                    run_main(bad)
 
 if __name__ == "__main__":
     unittest.main()

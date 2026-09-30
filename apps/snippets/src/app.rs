@@ -21,9 +21,10 @@ use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1017,9 +1018,14 @@ impl SnippetsApp {
 }
 
 impl ui::widget::Widget for SnippetsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SNIPPETS_OPERATION_TYPE]
@@ -1054,49 +1060,6 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn needs_idle_sync(&self) -> bool {
         !self.seeded
-    }
-
-    /// Publish the library + its snippets so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "snippets.library" {
-            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
-                .pop();
-        }
-        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
-            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
-            return self
-                .library
-                .get(snippet_id)
-                .map(crate::actions::provide_snippet_resource);
-        }
-        self.library
-            .tags()
-            .into_iter()
-            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
-            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold the library into the unified Ctrl+K palette. The provider is an
-    /// O(1) handle to the retained incremental
-    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
-    /// making every snippet findable there by title, language, folder, tag,
-    /// description or body, alongside the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a
@@ -1398,24 +1361,6 @@ impl ui::widget::Widget for SnippetsApp {
         )
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut seen = std::collections::HashSet::new();
-        self.hit
-            .iter()
-            .filter_map(|(_, action)| {
-                let control_id = action.semantic_id();
-                seen.insert(control_id.clone())
-                    .then(|| ui::widget::ControlBindingMetadata {
-                        control_id: control_id.clone(),
-                        kind: action.canonical_address().map_or_else(
-                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
-                            ui::widget::ControlBindingKind::Action,
-                        ),
-                    })
-            })
-            .collect()
-    }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1456,33 +1401,6 @@ impl ui::widget::Widget for SnippetsApp {
         }
         self.apply(hit_action, state);
         true
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-            || self.body_editor.needs_commit()
-            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
-    }
-
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-        self.body_editor.on_commit();
-        if let Some(modal) = &mut self.expand {
-            modal.on_commit();
-        }
-    }
-
-    fn get_state(&self) -> Option<String> {
-        serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        if let Ok((id, Some(caret))) =
-            serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
-            && id == self.open
-        {
-            self.body_editor.set_state(&caret);
-        }
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1529,6 +1447,106 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::UndoPoints for SnippetsApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+            || self.body_editor.needs_commit()
+            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+        self.body_editor.on_commit();
+        if let Some(modal) = &mut self.expand {
+            modal.on_commit();
+        }
+    }
+    fn get_state(&self) -> Option<String> {
+        serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
+    }
+    fn set_state(&mut self, state: &str) {
+        if let Ok((id, Some(caret))) =
+            serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
+            && id == self.open
+        {
+            self.body_editor.set_state(&caret);
+        }
+    }
+}
+
+impl ui::search::capability::SearchSource for SnippetsApp {
+    /// Fold the library into the unified Ctrl+K palette. The provider is an
+    /// O(1) handle to the retained incremental
+    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
+    /// making every snippet findable there by title, language, folder, tag,
+    /// description or body, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SnippetsApp {
+    /// Publish the library + its snippets so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "snippets.library" {
+            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+                .pop();
+        }
+        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
+            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
+            return self
+                .library
+                .get(snippet_id)
+                .map(crate::actions::provide_snippet_resource);
+        }
+        self.library
+            .tags()
+            .into_iter()
+            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
+            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
+    }
+}
+
+impl ui::widget::controls::ActionControls for SnippetsApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut seen = std::collections::HashSet::new();
+        self.hit
+            .iter()
+            .filter_map(|(_, action)| {
+                let control_id = action.semantic_id();
+                seen.insert(control_id.clone())
+                    .then(|| ui::widget::ControlBindingMetadata {
+                        control_id: control_id.clone(),
+                        kind: action.canonical_address().map_or_else(
+                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                            ui::widget::ControlBindingKind::Action,
+                        ),
+                    })
+            })
+            .collect()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for SnippetsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for SnippetsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -1776,13 +1794,16 @@ impl SnippetsApp {
                 if self.search_input.is_focused()
                     && self.route_search_event(
                         event,
-                        ctx.scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: ctx.scale_factor,
+                            modifiers: &modifiers,
+                            state,
+                            path,
+                            handled: &mut *ctx.handled,
+                            focus_target,
+                            node_id,
+                            taffy,
+                        },
                     ) =>
             {
                 *ctx.handled = true;
@@ -1839,16 +1860,7 @@ impl SnippetsApp {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
-            let _ = self.route_search_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            let _ = self.route_search_event(event, ctx);
         }
         if matches!(
             event,
@@ -1862,16 +1874,7 @@ impl SnippetsApp {
         }
         matches!(event, WindowEvent::MouseInput { .. })
             && (self.search_input.is_focused() || self.search_rect.contains(self.last_mouse))
-            && self.route_search_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
-            )
+            && self.route_search_event(event, ctx)
     }
 
     fn handle_left_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1883,16 +1886,7 @@ impl SnippetsApp {
             let search_click = matches!(action, Action::FocusSearch);
             self.apply(action, ctx.state);
             if search_click {
-                let _ = self.route_search_event(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                let _ = self.route_search_event(event, ctx);
             }
             *ctx.handled = true;
         } else {
@@ -1949,16 +1943,7 @@ impl SnippetsApp {
                     *ctx.handled = true;
                 }
                 _ => {
-                    if self.route_search_event(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                        ctx.node_id,
-                        ctx.taffy,
-                    ) {
+                    if self.route_search_event(event, ctx) {
                         *ctx.handled = true;
                     }
                 }
@@ -1985,33 +1970,26 @@ impl SnippetsApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event in this file — bundling it into a context struct would ripple into the shared ui widget trait, out of scope here"
-    )]
+    /// Hand `event` to the search field; `true` when the field used it. The
+    /// field's own handled flag stays local: the caller decides what the
+    /// event means for the rest of the app.
     fn route_search_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
             &mut ui::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state,
-                path,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *ctx.state,
+                path: ctx.path,
                 handled: &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
+                focus_target: &mut *ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
             },
         );
         if self.search_input.take_dirty().is_some() {
@@ -2053,10 +2031,7 @@ impl SnippetsApp {
             let active = matches!(&self.selection, Selection::Smart(s) if *s == smart);
             let count = self.library.query(&Selection::Smart(smart), "").len();
             let row = self.sidebar_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 area,
                 y,
                 smart.label(),
@@ -2078,10 +2053,7 @@ impl SnippetsApp {
                 .query(&Selection::Folder(folder.clone()), "")
                 .len();
             let row = self.sidebar_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 area,
                 y,
                 &folder,
@@ -2099,22 +2071,23 @@ impl SnippetsApp {
         for (tag, cnt) in self.library.tags() {
             let active = matches!(&self.selection, Selection::Tag(x) if *x == tag);
             let label = format!("#{tag}");
-            let row = self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
+            let row = self.sidebar_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                area,
+                y,
+                &label,
+                Some(cnt),
+                active,
+                1,
+            );
             self.record(row, Action::Select(Selection::Tag(tag.clone())));
             y += self.m.sidebar_row_h;
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Sidebar row painting combines render context, row geometry, label/count, selection state, and hierarchy indentation."
-    )]
     fn sidebar_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         y: f64,
         label: &str,
@@ -2122,6 +2095,7 @@ impl SnippetsApp {
         active: bool,
         indent: u32,
     ) -> Rect {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let pad = 10.0;
         let row = Rect::new(
@@ -2131,28 +2105,36 @@ impl SnippetsApp {
             y + self.m.sidebar_row_h - 4.0,
         );
         if active {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
+            draw::fill_round(ctx.scene, ctx.transform, row, theme.radii_md(), c.accent[5]);
         } else if row.contains(self.last_mouse) {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.lift(0.35));
+            draw::fill_round(
+                ctx.scene,
+                ctx.transform,
+                row,
+                theme.radii_md(),
+                c.lift(0.35),
+            );
         }
         let fg = if active { c.text_primary } else { c.neutral[7] };
         let x = row.x0 + pad + f64::from(indent) * 12.0;
-        let ty = y + (row.height() - draw::line_box(tr, CONTROL_FONT)) / 2.0;
-        draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
+        let ty = y + (row.height() - draw::line_box(ctx.text, CONTROL_FONT)) / 2.0;
+        ctx.text(
+            label,
+            &TextStyle::new(14.0).with_weight(TextWeight::Medium),
+            fg,
+            Point::new(x, ty),
+            None,
+        );
         if let Some(shown) = count {
             let count_label = shown.to_string();
-            let count_w = f64::from(tr.measure(&count_label, 12.0, None).0);
+            let count_w = f64::from(ctx.text.measure(&count_label, 12.0, None).0);
             let cfg = if active { c.accent[8] } else { c.text_dim };
-            draw::text(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 &count_label,
-                row.x1 - pad - count_w,
-                ty + 1.0,
-                12.0,
+                &TextStyle::new(12.0),
                 cfg,
-                TextWeight::Regular,
+                Point::new(row.x1 - pad - count_w, ty + 1.0),
+                None,
             );
         }
         row
@@ -2213,16 +2195,15 @@ impl SnippetsApp {
                 search_rect.x1,
                 search_rect.y1,
             );
-            draw::text(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 "×",
-                clear.x0 + 6.0,
-                search_rect.y0 + (search_rect.height() - 15.0) / 2.0 - 2.0,
-                18.0,
+                &TextStyle::new(18.0),
                 c.text_dim,
-                TextWeight::Regular,
+                Point::new(
+                    clear.x0 + 6.0,
+                    search_rect.y0 + (search_rect.height() - 15.0) / 2.0 - 2.0,
+                ),
+                None,
             );
             self.record(clear, Action::ClearSearch);
         }
@@ -2230,16 +2211,12 @@ impl SnippetsApp {
         // "+ New" header row with the result count.
         let header_y = area.y0 + self.m.search_h() + 4.0;
         let count_label = format!("{} snippets", self.visible.len());
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &count_label,
-            area.x0 + pad,
-            header_y,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
-            TextWeight::Medium,
+            Point::new(area.x0 + pad, header_y),
+            None,
         );
         let new_label = "+ New";
         let (nw, nh) = tr.measure(new_label, BUTTON_FONT, None);
@@ -2253,16 +2230,15 @@ impl SnippetsApp {
             header_y + 18.0 + self.m.button_extra,
         );
         draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             new_label,
-            new_rect.x0 + 10.0,
-            new_rect.y0 + (new_rect.height() - f64::from(nh)) / 2.0,
-            BUTTON_FONT,
+            &TextStyle::new(BUTTON_FONT).with_weight(TextWeight::Semibold),
             c.text_primary,
-            TextWeight::Semibold,
+            Point::new(
+                new_rect.x0 + 10.0,
+                new_rect.y0 + (new_rect.height() - f64::from(nh)) / 2.0,
+            ),
+            None,
         );
         self.record(new_rect, Action::NewSnippet);
 
@@ -2339,16 +2315,12 @@ impl SnippetsApp {
         let glyph = "{ }";
         let (gw, gh) = tr.measure(glyph, 22.0, None);
         let gw = f64::from(gw);
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             glyph,
-            cx - gw / 2.0,
-            top + (tile - f64::from(gh)) / 2.0,
-            22.0,
+            &TextStyle::new(22.0).with_weight(TextWeight::Bold),
             c.accent[6],
-            TextWeight::Bold,
+            Point::new(cx - gw / 2.0, top + (tile - f64::from(gh)) / 2.0),
+            None,
         );
         let mut y = tile_rect.y1 + 20.0;
 
@@ -2365,16 +2337,12 @@ impl SnippetsApp {
         };
         let (hw, hh) = tr.measure(headline, 17.0, None);
         let hw = f64::from(hw);
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             headline,
-            cx - hw / 2.0,
-            y,
-            17.0,
+            &TextStyle::new(17.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            TextWeight::Bold,
+            Point::new(cx - hw / 2.0, y),
+            None,
         );
         // Stacked lines step on their measured boxes (26 / 19 px at 1×).
         y += f64::from(hh) + 4.75;
@@ -2382,16 +2350,12 @@ impl SnippetsApp {
         for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
             let (lw, lh) = tr.measure(&line, 13.0, None);
             let lw = f64::from(lw);
-            draw::text(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &line,
-                cx - lw / 2.0,
-                y,
-                13.0,
+                &TextStyle::new(13.0),
                 c.text_dim,
-                TextWeight::Regular,
+                Point::new(cx - lw / 2.0, y),
+                None,
             );
             y += f64::from(lh) + 2.75;
         }
@@ -2400,10 +2364,6 @@ impl SnippetsApp {
 
     /// The "New snippet" primary call to action shown when the whole
     /// library is empty, plus a quiet hint at the search grammar beneath it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the call to action combines the paint context with its centre, vertical position and width limit"
-    )]
     fn draw_empty_new_snippet_cta(
         &mut self,
         scene: &mut Scene,
@@ -2430,16 +2390,12 @@ impl SnippetsApp {
             theme.radii_md(),
             if hovered { c.accent[4] } else { c.accent[5] },
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             label,
-            btn.x0 + 17.0,
-            btn.y0 + (bh - f64::from(lh)) / 2.0,
-            13.5,
+            &TextStyle::new(13.5).with_weight(TextWeight::Semibold),
             c.text_primary,
-            TextWeight::Semibold,
+            Point::new(btn.x0 + 17.0, btn.y0 + (bh - f64::from(lh)) / 2.0),
+            None,
         );
         self.record(btn, Action::NewSnippet);
         // A quiet hint at the search grammar.
@@ -2452,16 +2408,12 @@ impl SnippetsApp {
         );
         let hint = hint.as_str();
         let hw = f64::from(tr.measure(hint, 11.5, None).0);
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             hint,
-            cx - hw / 2.0,
-            hint_y,
-            11.5,
+            &TextStyle::new(11.5),
             c.text_dim,
-            TextWeight::Regular,
+            Point::new(cx - hw / 2.0, hint_y),
+            None,
         );
     }
 
@@ -2495,24 +2447,16 @@ impl SnippetsApp {
                 c.neutral[2]
             },
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             label,
-            btn.x0 + 15.0,
-            btn.y0 + (bh - f64::from(lh)) / 2.0,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            TextWeight::Semibold,
+            Point::new(btn.x0 + 15.0, btn.y0 + (bh - f64::from(lh)) / 2.0),
+            None,
         );
         self.record(btn, Action::ClearSearch);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a list row paints its title, language, tags and preview in one pass sharing the row geometry"
-    )]
     fn draw_list_row(
         &self,
         scene: &mut Scene,
@@ -2550,16 +2494,15 @@ impl SnippetsApp {
             badge_top + badge_h,
         );
         draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             sig,
-            badge.x0 + (badge.width() - f64::from(sw)) / 2.0,
-            badge.y0 + (badge_h - f64::from(sh)) / 2.0,
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
             c.neutral[0],
-            TextWeight::Bold,
+            Point::new(
+                badge.x0 + (badge.width() - f64::from(sw)) / 2.0,
+                badge.y0 + (badge_h - f64::from(sh)) / 2.0,
+            ),
+            None,
         );
 
         let tx = badge.x1 + 10.0;
@@ -2599,46 +2542,34 @@ impl SnippetsApp {
             title_max_w as f32,
             TextWeight::Semibold,
         );
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &title,
-            tx,
-            title_top,
-            ROW_TITLE_FONT,
+            &TextStyle::new(ROW_TITLE_FONT).with_weight(TextWeight::Semibold),
             tcolor,
-            TextWeight::Semibold,
+            Point::new(tx, title_top),
+            None,
         );
 
         // Subtitle: first body line, dimmed and elided to the row's width.
         let first_line = s.body.lines().next().unwrap_or("").trim();
         let preview = draw::mono_fit(tr, &clip(first_line, 120), ROW_SUB_FONT, row.x1 - pad - tx);
-        draw::mono(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &preview,
-            tx,
-            sub_top,
-            ROW_SUB_FONT,
+            &draw::mono_style(ROW_SUB_FONT, TextWeight::Regular),
             c.text_dim,
-            TextWeight::Regular,
+            Point::new(tx, sub_top),
+            None,
         );
 
         if !hint.is_empty() {
             // Level with the title's measured line.
             let hint_top = title_top + (self.m.title_line - f64::from(hh)) / 2.0;
-            draw::text(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &hint,
-                row.x1 - pad - f64::from(hw),
-                hint_top,
-                11.0,
+                &TextStyle::new(11.0).with_weight(TextWeight::Medium),
                 c.text_dim,
-                TextWeight::Medium,
+                Point::new(row.x1 - pad - f64::from(hw), hint_top),
+                None,
             );
         }
     }
@@ -2663,7 +2594,13 @@ impl SnippetsApp {
             return;
         };
         let y = self.draw_detail_header(scene, t, tr, theme, area, open, &snippet);
-        let y = self.draw_detail_toolbar(scene, t, tr, theme, area, y, open, &snippet);
+        let y = self.draw_detail_toolbar(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            area,
+            y,
+            open,
+            &snippet,
+        );
 
         // Code card with syntax-highlighted body.
         let pad = 28.0;
@@ -2690,25 +2627,20 @@ impl SnippetsApp {
             "Select a snippet to preview it."
         };
         let mw = f64::from(tr.measure(msg, 15.0, None).0);
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             msg,
-            area.x0 + (area.width() - mw) / 2.0,
-            area.y0 + area.height() * 0.4,
-            15.0,
+            &TextStyle::new(15.0),
             c.text_dim,
-            TextWeight::Regular,
+            Point::new(
+                area.x0 + (area.width() - mw) / 2.0,
+                area.y0 + area.height() * 0.4,
+            ),
+            None,
         );
     }
 
     /// Title, then the language/folder/tag pill row, then the free-text
     /// description. Returns the y cursor the action toolbar starts from.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_detail_header(
         &mut self,
         scene: &mut Scene,
@@ -2731,34 +2663,32 @@ impl SnippetsApp {
         } else {
             area.x0 + pad
         };
-        draw::text(
-            scene,
-            tr,
-            t,
+        PaintCtx::new(scene, t, tr, theme).text(
             &snippet.title,
-            title_x,
-            y,
-            24.0,
+            &TextStyle::new(24.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            TextWeight::Bold,
+            Point::new(title_x, y),
+            None,
         );
         // Stacked lines step by their measured boxes (36 / 26 px at 1×).
         y += self.m.detail_title_line + 6.0;
 
-        y = self.draw_detail_meta_row(scene, t, tr, theme, area, y, open, snippet);
+        y = self.draw_detail_meta_row(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            area,
+            y,
+            open,
+            snippet,
+        );
 
         // Description.
         if !snippet.description.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &snippet.description,
-                area.x0 + pad,
-                y,
-                14.0,
+                &TextStyle::new(14.0),
                 c.text_dim,
-                TextWeight::Regular,
+                Point::new(area.x0 + pad, y),
+                None,
             );
             y += self.m.detail_desc_line + 8.5;
         }
@@ -2767,87 +2697,51 @@ impl SnippetsApp {
 
     /// The language pill (cycles the language on click) + folder pill +
     /// one pill per tag. Returns the y cursor beneath the row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/y/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_detail_meta_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         y: f64,
         open: SnippetId,
         snippet: &Snippet,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let pad = 28.0;
-        let mut x = area.x0 + pad;
-        let lp = draw::pill(
-            scene,
-            tr,
-            t,
-            snippet.language.label(),
-            x,
+        let mut run = draw::PillRun {
+            x: area.x0 + pad,
             y,
-            22.0 + self.m.pill_extra,
-            12.0,
+            height: 22.0 + self.m.pill_extra,
+            size: 12.0,
+        };
+        let lp = run.pill(
+            ctx,
+            snippet.language.label(),
             c.neutral[0],
             lang_tint(theme, snippet.language),
         );
         // Clicking the language pill cycles to the next language.
         let next = next_language(snippet.language);
         self.record(lp, Action::SetLanguage(open, next));
-        x = lp.x1 + 8.0;
+        run.x = lp.x1 + 8.0;
         if !snippet.folder.is_empty() {
-            let fp = draw::pill(
-                scene,
-                tr,
-                t,
-                &snippet.folder,
-                x,
-                y,
-                22.0 + self.m.pill_extra,
-                12.0,
-                c.text_dim,
-                c.neutral[2],
-            );
-            x = fp.x1 + 8.0;
+            let fp = run.pill(ctx, &snippet.folder, c.text_dim, c.neutral[2]);
+            run.x = fp.x1 + 8.0;
         }
         for tag in &snippet.tags {
             let label = format!("#{tag}");
-            let tp = draw::pill(
-                scene,
-                tr,
-                t,
-                &label,
-                x,
-                y,
-                22.0 + self.m.pill_extra,
-                12.0,
-                c.accent[7],
-                c.accent[1],
-            );
+            let tp = run.pill(ctx, &label, c.accent[7], c.accent[1]);
             self.record(tp, Action::Select(Selection::Tag(tag.clone())));
-            x = tp.x1 + 8.0;
+            run.x = tp.x1 + 8.0;
         }
         y + 34.0 + self.m.pill_extra
     }
 
     /// Copy / Expand / Favorite / Duplicate / Delete. Returns the y cursor
     /// the code card starts from.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus area/y/open/snippet identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_detail_toolbar(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         area: Rect,
         y: f64,
         open: SnippetId,
@@ -2886,12 +2780,12 @@ impl SnippetsApp {
         let mut bx = x_start;
         let mut by = y;
         for (label, primary, action) in buttons {
-            let w = Self::toolbar_button_w(tr, label);
+            let w = Self::toolbar_button_w(ctx.text, label);
             if bx > x_start && bx + w > x_end {
                 bx = x_start;
                 by += row_step;
             }
-            bx = self.toolbar_button(scene, t, tr, theme, bx, by, label, primary, action);
+            bx = self.toolbar_button(ctx, Point::new(bx, by), label, primary, action);
         }
         by + row_step + 4.0
     }
@@ -2905,24 +2799,22 @@ impl SnippetsApp {
 
     /// Draw a toolbar button, record its hit region against `action`, and
     /// return the x-coordinate the next button should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Toolbar button painting combines render context, position, label/style, and the action recorded for its hit region."
-    )]
     fn toolbar_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
+        ctx: &mut PaintCtx<'_>,
+        origin: Point,
         label: &str,
         primary: bool,
         action: Action,
     ) -> f64 {
-        let w = Self::toolbar_button_w(tr, label);
-        let rect = Rect::new(x, y, x + w, y + 32.0 + self.m.button_extra);
+        let theme = ctx.theme;
+        let w = Self::toolbar_button_w(ctx.text, label);
+        let rect = Rect::new(
+            origin.x,
+            origin.y,
+            origin.x + w,
+            origin.y + 32.0 + self.m.button_extra,
+        );
         let hovered = rect.contains(self.last_mouse);
         let face = ButtonFace::new(rect, label)
             .radius(theme.radii_md())
@@ -2934,7 +2826,7 @@ impl SnippetsApp {
             } else {
                 ButtonStyle::Neutral
             });
-        Button::paint(scene, t, tr, theme, &face);
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
         self.record(rect, action);
         rect.x1 + 8.0
     }
@@ -2983,16 +2875,12 @@ impl SnippetsApp {
             // Line number.
             let num = (i + 1).to_string();
             let nw = draw::mono_width(tr, &num, 11.0);
-            draw::mono(
-                scene,
-                tr,
-                t,
+            PaintCtx::new(scene, t, tr, theme).text(
                 &num,
-                x0 + gutter_w - 10.0 - nw,
-                y,
-                11.0,
+                &draw::mono_style(11.0, TextWeight::Regular),
                 c.text_dim,
-                TextWeight::Regular,
+                Point::new(x0 + gutter_w - 10.0 - nw, y),
+                None,
             );
             // Highlighted spans.
             let mut sx = code_x;
@@ -3003,7 +2891,13 @@ impl SnippetsApp {
                 } else {
                     TextWeight::Regular
                 };
-                draw::mono(scene, tr, t, &span.text, sx, y, BODY_FONT, color, weight);
+                PaintCtx::new(scene, t, tr, theme).text(
+                    &span.text,
+                    &draw::mono_style(BODY_FONT, weight),
+                    color,
+                    Point::new(sx, y),
+                    None,
+                );
                 sx += draw::mono_width(tr, &span.text, BODY_FONT);
             }
             y += line_h;
@@ -3049,16 +2943,12 @@ fn section_header(
     x: f64,
     y: f64,
 ) {
-    draw::text(
-        scene,
-        tr,
-        t,
+    PaintCtx::new(scene, t, tr, theme).text(
         label,
-        x,
-        y,
-        11.0,
+        &TextStyle::new(11.0).with_weight(TextWeight::Bold),
         theme.tokens.colors.text_dim,
-        TextWeight::Bold,
+        Point::new(x, y),
+        None,
     );
 }
 
@@ -3184,15 +3074,19 @@ mod tests {
             let mut focus_target = None;
 
             app.search_input.set_focus(true);
+            let mut handled = false;
             assert!(app.route_search_event(
                 &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
-                1.0,
-                winit::event::Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut focus_target,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             ));
 
             assert!(app.visible_count_for_test() < visible_before);
@@ -3311,7 +3205,7 @@ mod tests {
             ));
             assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, body);
 
-            let resource = Widget::resource(&app, &doc, &actions::snippet_resource_id(id))
+            let resource = ui::resources::resource(&app, &doc, &actions::snippet_resource_id(id))
                 .expect("the edited snippet is an addressable resource");
             let edit = resource
                 .actions
@@ -3394,7 +3288,7 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             app.new_snippet_for_test(&mut state.doc);
             let id = app.open_id_for_test().unwrap();
-            app.take_committed_action();
+            ui::undo::take_committed_action(&mut app);
             app.sync(&mut state.doc, &state.root);
             app.layout_at_width_for_test(1280.0).unwrap();
             assert!(app.perform_semantic_action(
@@ -3703,7 +3597,7 @@ mod tests {
 
             // What the palette would dispatch for this snippet's "delete".
             let resource_id = format!("snippets.snippet:{id}");
-            let snip = Widget::resource(&app, &doc, &resource_id)
+            let snip = ui::resources::resource(&app, &doc, &resource_id)
                 .expect("a resource for the target snippet");
             let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
             let spec_encoded = match &spec.input {
@@ -3748,7 +3642,7 @@ mod tests {
                 .expect("an unstarred seeded snippet");
 
             let resource_id = format!("snippets.snippet:{id}");
-            let snip = Widget::resource(&app, &doc, &resource_id).unwrap();
+            let snip = ui::resources::resource(&app, &doc, &resource_id).unwrap();
             let spec = snip
                 .actions
                 .iter()
@@ -3811,7 +3705,7 @@ mod tests {
                 "the host recorded an undo boundary for the dispatched star"
             );
             assert!(
-                Widget::take_committed_action(&mut app).is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the captured heads are cleared on read",
             );
             let entry = state

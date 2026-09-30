@@ -443,7 +443,9 @@ fn engine_thread(
 }
 
 fn filter_store_dir() -> std::path::PathBuf {
-    let base = xdg_paths::xdg::cache_home().unwrap_or_else(std::env::temp_dir);
+    let base = tilo_paths::xdg::cache_home()
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     base.join("tilo-browser").join("filter-store")
 }
 

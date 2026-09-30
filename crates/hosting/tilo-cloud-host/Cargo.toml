@@ -5,6 +5,7 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 [dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 chrono.workspace = true
 launcher = { path = "../../packaging/launcher" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
@@ -22,7 +23,7 @@ rand.workspace = true
 blake3.workspace = true
 hex.workspace = true
 reqwest = { workspace = true, features = ["json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["http"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 advisory-lock = { path = "../../system/advisory-lock" }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 url.workspace = true

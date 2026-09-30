@@ -189,6 +189,23 @@ pub fn bind_intent(
             }
             duplicate_active_tab(strip, group)?
         }
+        SessionIntent::MoveGroup { to, before, .. } => {
+            let destination = workspace
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == to)
+                .ok_or("destination strip is no longer present")?;
+            if before.is_some_and(|id| {
+                id == group.id || !destination.window_groups.iter().any(|g| g.id == id)
+            }) {
+                return Err("destination group is stale".into());
+            }
+            DesktopCommand::MoveGroup {
+                group: group.id,
+                strip: to.0,
+                before,
+            }
+        }
     };
     Ok(BoundCommand { source, command })
 }

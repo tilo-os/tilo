@@ -38,25 +38,8 @@ struct Owner {
     sibling: Option<Box<Owner>>,
 }
 impl Widget for Owner {
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[ChangeHash],
-        doc: &AutoCommit,
-        _: &ObjId,
-    ) {
-        self.receipts.push((
-            action.clone(),
-            before.to_vec(),
-            doc.get(ROOT, "body")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str()
-                .unwrap()
-                .into(),
-        ));
-    }
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -102,6 +85,28 @@ impl Widget for Owner {
             .map_or_else(Vec::new, |s| vec![s.as_mut() as &mut dyn Widget])
     }
 }
+
+impl crate::history_mode::capability::DocumentHistory for Owner {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _: &ObjId,
+    ) {
+        self.receipts.push((
+            action.clone(),
+            before.to_vec(),
+            doc.get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .into(),
+        ));
+    }
+}
 struct Host;
 impl ActionTransport for Host {
     fn replicate(&mut self, _: &tilo_actions::ActionEnvelope) {}
@@ -125,15 +130,18 @@ fn execute(
         &ROOT,
         &registry,
         &mut Host,
-        &tilo_actions::ActionAddress::new("ack.owner", "write"),
-        &resource,
-        &spec,
-        tilo_actions::EncodedAction::encode("ack.write", action).unwrap(),
-        "local",
-        "local",
-        broker,
-        tilo_actions::InvocationId::new(),
-        None,
+        ResourceOperation {
+            address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
+            resource: &resource,
+            spec: &spec,
+            encoded: tilo_actions::EncodedAction::encode("ack.write", action).unwrap(),
+            actor: "local",
+            local_author: "local",
+            broker_admitted: broker,
+            invocation: tilo_actions::InvocationId::new(),
+            ambient: None,
+            scope: None,
+        },
     )
 }
 #[test]
@@ -209,15 +217,19 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
                 &ROOT,
                 &registry,
                 &mut Host,
-                &tilo_actions::ActionAddress::new("owner", "run"),
-                &resource,
-                &spec,
-                tilo_actions::EncodedAction::encode_operation("operation", &action).unwrap(),
-                "local",
-                "local",
-                false,
-                tilo_actions::InvocationId::new(),
-                None,
+                ResourceOperation {
+                    address: &tilo_actions::ActionAddress::new("owner", "run"),
+                    resource: &resource,
+                    spec: &spec,
+                    encoded: tilo_actions::EncodedAction::encode_operation("operation", &action)
+                        .unwrap(),
+                    actor: "local",
+                    local_author: "local",
+                    broker_admitted: false,
+                    invocation: tilo_actions::InvocationId::new(),
+                    ambient: None,
+                    scope: None,
+                },
             )
             .unwrap();
         }

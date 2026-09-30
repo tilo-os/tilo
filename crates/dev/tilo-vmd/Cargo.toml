@@ -15,6 +15,7 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
 advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
 base64.workspace = true

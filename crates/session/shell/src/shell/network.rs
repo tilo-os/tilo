@@ -7,6 +7,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 
 mod boot_join;
 mod governor_actions;
+mod hosted_topology;
 mod native_enrollment;
 mod native_ingress;
 
@@ -25,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
+use crate::network::actor::{
+    Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent, PersonalMediaTransferStatus,
+};
 use crate::network::actor::{
     PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
     WorkspaceControlRoute,
@@ -933,9 +936,7 @@ impl PendingInvitation {
 }
 
 fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
+    tilo_clock::unix_now()
 }
 
 fn pending_invites_path(keypair_path: &Path) -> PathBuf {
@@ -1113,6 +1114,7 @@ pub struct PendingInviteSummary {
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
+    hosted_topology: hosted_topology::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1125,6 +1127,9 @@ pub struct ShellNetwork {
     /// each [`Self::tick`]. `Mutex`-wrapped so `tick` can take `&self`
     /// while shared behind `Arc<ShellNetwork>`.
     pub event_rx: Mutex<mpsc::Receiver<NetEvent>>,
+    /// Wakes the session's event loop when an event arrives, so an idle
+    /// compositor still folds in what peers and the room's host send.
+    event_wake: Arc<std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>>,
     /// Topics already subscribed in the actor. Avoids sending a Join command on
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
@@ -1535,7 +1540,20 @@ impl ShellNetwork {
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
-        let (event_tx, event_rx) = mpsc::channel(64);
+        let (event_tx, mut arriving) = mpsc::channel(64);
+        let (delivered, event_rx) = mpsc::channel(64);
+        let event_wake: Arc<std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>> = Arc::default();
+        let wake = Arc::clone(&event_wake);
+        runtime.spawn(async move {
+            while let Some(event) = arriving.recv().await {
+                if delivered.send(event).await.is_err() {
+                    break;
+                }
+                if let Some(wake) = wake.get() {
+                    wake();
+                }
+            }
+        });
 
         let pending_invitations_path = pending_invites_path(keypair_path);
         let personal_continuity_path = personal_continuity_path(keypair_path);
@@ -1567,6 +1585,7 @@ impl ShellNetwork {
             replica,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
@@ -1610,6 +1629,7 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            hosted_topology: hosted_topology::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -1870,6 +1890,32 @@ impl ShellNetwork {
     }
 
     /// Workspace topic for session traffic associated with the active room.
+    /// Peer handles of the workspace hosts this session reaches `workspace`
+    /// through (the relays that answered ready for it).
+    pub fn workspace_hosts(&self, workspace: u64) -> std::collections::HashSet<u64> {
+        self.workspace_control_relays
+            .lock()
+            .map(|relays| {
+                relays
+                    .iter()
+                    .filter(|(relay_ws, _)| *relay_ws == workspace)
+                    .map(|(_, relay)| crate::network::behaviour::peer_liveness_handle(relay))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Wake the compositor loop whenever a network event arrives for
+    /// [`Self::tick`], and whenever legacy-window traffic (a stream, or a
+    /// viewer's input) arrives, so an idle headless session answers at once.
+    pub fn set_wake(&self, wake: crate::session_runtime::Wake) {
+        let events = Arc::clone(&wake);
+        let _ = self.event_wake.set(Box::new(move || events()));
+        let _ = self
+            .cmd_tx
+            .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+    }
+
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;
@@ -2033,6 +2079,9 @@ impl ShellNetwork {
         if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
             return;
         }
+        if let NeighbourMsg::RemoteInput { peer, surface, .. } = &message {
+            tracing::debug!(workspace_topic, peer, surface, "remote input queued");
+        }
         self.notify_workspace_control(WorkspaceControlNetworkEvent::Message(InboundLegacyEvent {
             workspace_topic,
             transport_peer,
@@ -2118,9 +2167,7 @@ impl ShellNetwork {
     /// `try_send` failures are swallowed — presence is best-effort and
     /// a momentary backlog should never block the render loop.
     pub fn publish_presence(&self, key: String, point: (f64, f64)) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let ts = tilo_clock::unix_now_ms();
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
             user: crate::shell::state::local_user_id(),
@@ -2866,7 +2913,6 @@ impl ShellNetwork {
                 })
                 .unwrap_or_default();
             let device_cert = selected_device_cert(ws.room, &self.keypair)?;
-            let signed_invitee = recipient_user_public_key.and(invitee);
             let token = crate::network::invite::make_invite_token_with_recipient(
                 &self.keypair,
                 &ws,
@@ -2874,10 +2920,16 @@ impl ShellNetwork {
                 &hosts,
                 &pins,
                 Some(device_cert),
-                role,
-                recipient_user_public_key,
-                signed_invitee,
-                expiry_seconds_from_now,
+                crate::network::invite::InviteTerms {
+                    role,
+                    recipient: recipient_user_public_key.map(|user_public_key| {
+                        crate::network::invite::InviteRecipient {
+                            user_public_key,
+                            name: invitee,
+                        }
+                    }),
+                    expiry_seconds_from_now,
+                },
             )
             .map_err(|e| e.to_string())?;
             (token, ws.room)
@@ -3518,19 +3570,10 @@ impl ShellNetwork {
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
     /// checkpoint to one exact certified transport peer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
-    )]
     pub(crate) fn start_nearby_transfer(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        total_bytes: u64,
-        resume_offset: u64,
-        prefix_hash: [u8; 32],
-        content_hash: [u8; 32],
+        transfer: NearbyTransferCheckpoint,
         path: &Path,
     ) -> Result<(), String> {
         let user_public_key = self
@@ -3570,12 +3613,7 @@ impl ShellNetwork {
                 ws,
                 user_public_key,
                 target: transport_target,
-                transfer_id,
-                request_id,
-                total_bytes,
-                resume_offset,
-                prefix_hash,
-                content_hash,
+                transfer,
                 file,
             })
             .map_err(|error| error.to_string())
@@ -5788,9 +5826,7 @@ impl ShellNetwork {
             .ok()
             .and_then(|pending| pending.get(&invite_id).cloned());
         let Some(admission) = admission else { return };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs());
+        let now = tilo_clock::unix_now();
         if admission.room != room || admission.expiry_unix_seconds < now {
             if let Ok(mut pending) = self.pending_identity_admissions.lock() {
                 pending.remove(&invite_id);
@@ -5989,7 +6025,7 @@ fn host_identity_for_key(
     let mut workspace_device_certs = std::collections::HashMap::new();
     let mut workspace_revocations = std::collections::HashMap::new();
     if let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env()
-        && let Ok(registry) = store.migrate_legacy_primary()
+        && let Ok(registry) = store.load_reconciled()
     {
         for (room, identity_id) in &registry.workspace_identities {
             let Some(profile) = registry.identities.get(identity_id) else {
@@ -6084,6 +6120,7 @@ pub(crate) fn shell_network_for_test(
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
         event_tx,
         event_rx: Mutex::new(event_rx),
+        event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
@@ -6145,6 +6182,7 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        hosted_topology: hosted_topology::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -8892,7 +8930,7 @@ mod tests {
 
         fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
             use crate::network::invite::{
-                HomeHostPin, InviteRole, make_invite_token_with_recipient,
+                HomeHostPin, InviteRole, InviteTerms, make_invite_token_with_recipient,
             };
             use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -8932,10 +8970,11 @@ mod tests {
                 std::slice::from_ref(&host_addr),
                 std::slice::from_ref(&pin),
                 Some(owner_cert),
-                InviteRole::Editor,
-                None,
-                None,
-                3600,
+                InviteTerms {
+                    role: InviteRole::Editor,
+                    recipient: None,
+                    expiry_seconds_from_now: 3600,
+                },
             )
             .expect("Alice issues Bob a pinned invite");
 
@@ -9730,6 +9769,7 @@ mod tests {
                 &registry,
                 serde_json::to_vec(&serde_json::json!([
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(service.as_bytes()),
                         "label": "Home server",
@@ -9737,6 +9777,7 @@ mod tests {
                         "relay_workspace_ids": [42],
                     },
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(other_service.as_bytes()),
                         "label": "Other identity",
@@ -9744,6 +9785,7 @@ mod tests {
                         "relay_workspace_ids": [42],
                     },
                     {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                         "device_node_id": hex::encode(device.as_bytes()),
                         "relay_service_node_id": hex::encode(other_service.as_bytes()),
                         "label": "Other workspace",
@@ -9764,12 +9806,12 @@ mod tests {
             assert_eq!(first_boot[0].addr.id, service);
         }
 
-        fn home_peer_registry_prefers_persisted_endpoint_hints_and_keeps_legacy_fallback() {
+        fn home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x71; 32];
             let hinted_service = iroh::SecretKey::from_bytes(&[0x72; 32]).public();
-            let legacy_service = iroh::SecretKey::from_bytes(&[0x73; 32]).public();
+            let unhinted_service = iroh::SecretKey::from_bytes(&[0x73; 32]).public();
             let device = iroh::SecretKey::from_bytes(&[0x74; 32]).public();
             let hint = iroh::EndpointAddr::new(hinted_service)
                 .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
@@ -9785,11 +9827,11 @@ mod tests {
                     relay_workspace_ids: vec![42],
                 },
                 tilo_relay_protocol::HomePeerRegistration {
-                    schema_version: 1,
+                    schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     device_node_id: hex::encode(device.as_bytes()),
-                    relay_service_node_id: hex::encode(legacy_service.as_bytes()),
+                    relay_service_node_id: hex::encode(unhinted_service.as_bytes()),
                     relay_endpoint: None,
-                    label: "Legacy home peer".into(),
+                    label: "Unhinted home peer".into(),
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
@@ -9809,7 +9851,7 @@ mod tests {
             assert!(
                 hosts
                     .iter()
-                    .any(|host| host.addr.id == legacy_service && host.addr.is_empty())
+                    .any(|host| host.addr.id == unhinted_service && host.addr.is_empty())
             );
         }
 
@@ -9843,6 +9885,7 @@ mod tests {
             std::fs::write(
                 &registry,
                 serde_json::to_vec(&serde_json::json!([{
+                    "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
                     "device_node_id": hex::encode(device.as_bytes()),
                     "relay_service_node_id": hex::encode(service.as_bytes()),
                     "label": "Home server",
@@ -9877,7 +9920,7 @@ mod tests {
 
         shell_network_spawns_with_default_keypair();
         home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms();
-        home_peer_registry_prefers_persisted_endpoint_hints_and_keeps_legacy_fallback();
+        home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id();
         home_peer_registry_defaults_to_the_active_identity_root();
         live_registry_refresh_connects_a_newly_approved_home_peer();
     }
@@ -9894,7 +9937,6 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let rooms: Vec<_> = {
             let mut t = tree.write();
-            t.adopt_roomless_workspaces();
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
@@ -9937,7 +9979,6 @@ mod tests {
             let room = tree.read().rooms()[0];
             {
                 let mut tree = tree.write();
-                tree.adopt_roomless_workspaces();
                 let local_user = crate::shell::state::local_user_id();
                 for workspace in &mut tree.desktop.workspaces {
                     workspace.set_owner(local_user.clone());

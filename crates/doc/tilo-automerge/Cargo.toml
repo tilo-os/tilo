@@ -2,9 +2,11 @@
 name = "tilo-automerge"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Apply incoming Automerge changes to an AutoCommit without keeping patch events nothing reads."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "tilo_automerge"

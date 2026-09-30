@@ -232,8 +232,9 @@ pub struct DisplayHardwareSnapshot {
     pub generated_unix_ms: u64,
     pub backend: String,
     pub publisher_pid: u32,
-    /// Linux `/proc/<pid>/stat` start-time ticks. Paired with the PID so a
-    /// stale runtime file cannot become trusted after PID reuse.
+    /// Linux `/proc/<pid>/stat` start-time ticks. With the PID it names the
+    /// publisher's lease (see [`publisher_identity`]), so a stale runtime file
+    /// cannot become trusted after PID reuse.
     pub publisher_start_ticks: u64,
     pub outputs: Vec<DisplayOutputSnapshot>,
     /// Where each enabled output sits in the compositor's combined desktop
@@ -255,10 +256,13 @@ pub struct LiveOutputPlacement {
 impl DisplayHardwareSnapshot {
     pub fn load() -> Option<Self> {
         let path = display_snapshot_path()?;
-        let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        let live_start = process_start_ticks(snapshot.publisher_pid)?;
-        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
-            .then_some(snapshot)
+        let snapshot: Self = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        publisher_live_in(
+            path.parent()?,
+            snapshot.publisher_pid,
+            snapshot.publisher_start_ticks,
+        )
+        .then_some(snapshot)
     }
 
     /// # Errors
@@ -270,8 +274,79 @@ impl DisplayHardwareSnapshot {
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(&path, &body)
+        tilo_files::native::atomic::write_creating_parent(&path, &body)
     }
+}
+
+/// Mark this process as the live publisher of runtime snapshots in the
+/// private runtime directory for the rest of its lifetime, and return the
+/// identity to stamp on what it publishes.
+///
+/// # Errors
+///
+/// As [`publisher_identity_in`], or when `XDG_RUNTIME_DIR` is unavailable.
+pub fn publisher_identity() -> std::io::Result<(u32, u64)> {
+    let path = display_snapshot_path()
+        .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("display snapshot path has no parent"))?;
+    publisher_identity_in(dir)
+}
+
+/// Readers cannot check a publisher through `/proc/<pid>`: the compositor
+/// makes itself non-dumpable while it holds identity keys, and the image
+/// mounts `/proc` with `hidepid=invisible`, which hides a non-dumpable
+/// process even from its own user. So the publisher holds an exclusive
+/// `flock` on `publisher-<pid>-<start ticks>.lock` beside its snapshots for
+/// as long as it lives; the kernel releases it however the process ends, and
+/// a PID with a different start time names a different file.
+///
+/// # Errors
+///
+/// When this process's start time is unreadable, or the lease cannot be
+/// created or locked.
+pub fn publisher_identity_in(dir: &std::path::Path) -> std::io::Result<(u32, u64)> {
+    static LEASES: std::sync::Mutex<Vec<(std::path::PathBuf, advisory_lock::FileLock)>> =
+        std::sync::Mutex::new(Vec::new());
+    let pid = std::process::id();
+    let start_ticks = process_start_ticks(pid)
+        .ok_or_else(|| std::io::Error::other("this process has no readable start time"))?;
+    let path = publisher_lease_path(dir, pid, start_ticks);
+    let mut leases = LEASES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !leases.iter().any(|(held, _)| *held == path) {
+        std::fs::create_dir_all(dir)?;
+        let lease = advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive)
+            .map_err(|error| match error {
+                advisory_lock::TryLockError::WouldBlock => {
+                    std::io::Error::other("another open file already holds this publisher's lease")
+                }
+                advisory_lock::TryLockError::Error(error) => error,
+            })?;
+        leases.push((path, lease));
+    }
+    drop(leases);
+    Ok((pid, start_ticks))
+}
+
+/// Whether the publisher `pid`/`start_ticks` still holds its lease in `dir`.
+pub fn publisher_live_in(dir: &std::path::Path, pid: u32, start_ticks: u64) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let Ok(lease) = std::fs::File::open(publisher_lease_path(dir, pid, start_ticks)) else {
+        return false;
+    };
+    matches!(
+        advisory_lock::FileLock::try_shared(lease),
+        Err(advisory_lock::TryLockError::WouldBlock)
+    )
+}
+
+fn publisher_lease_path(dir: &std::path::Path, pid: u32, start_ticks: u64) -> std::path::PathBuf {
+    dir.join(format!("publisher-{pid}-{start_ticks}.lock"))
 }
 
 pub fn process_start_ticks(pid: u32) -> Option<u64> {
@@ -415,7 +490,7 @@ impl DisplayTransaction {
 /// accepted: falling back to `/tmp` would let another user forge display
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
 /// What kind of input device libinput reports, as far as Settings cares:
@@ -473,7 +548,8 @@ pub struct InputDeviceSnapshot {
 #[serde(default)]
 pub struct InputHardwareSnapshot {
     pub publisher_pid: u32,
-    /// Paired with the PID so a stale file cannot outlive its compositor.
+    /// With the PID it names the publisher's lease, so a stale file cannot
+    /// outlive its compositor.
     pub publisher_start_ticks: u64,
     pub devices: Vec<InputDeviceSnapshot>,
 }
@@ -486,9 +562,12 @@ impl InputHardwareSnapshot {
 
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
         let snapshot: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        let live_start = process_start_ticks(snapshot.publisher_pid)?;
-        (snapshot.publisher_pid != 0 && live_start == snapshot.publisher_start_ticks)
-            .then_some(snapshot)
+        publisher_live_in(
+            path.parent()?,
+            snapshot.publisher_pid,
+            snapshot.publisher_start_ticks,
+        )
+        .then_some(snapshot)
     }
 
     /// # Errors
@@ -507,7 +586,7 @@ impl InputHardwareSnapshot {
     pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(path, &body)
+        tilo_files::native::atomic::write_creating_parent(path, &body)
     }
 
     /// Whether at least one device of `kind` is attached.
@@ -528,7 +607,7 @@ impl InputHardwareSnapshot {
 /// Private session state path for [`InputHardwareSnapshot`]; like
 /// [`display_snapshot_path`] it never falls back to a shared directory.
 pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
-    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
+    tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
 }
 
 /// `input` key holding per-tablet settings, keyed by [`input_device_key`].
@@ -1180,9 +1259,7 @@ pub struct RichInputConfig {
     /// historic key so a current compositor and older Settings builds agree
     /// on the user's primary layout.
     pub keyboard_layout: String,
-    /// Ordered source ids. `layouts` is accepted as an alias for the brief
-    /// development version that used that spelling.
-    #[serde(alias = "layouts")]
+    /// Ordered source ids.
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
@@ -1405,7 +1482,6 @@ impl RichInputConfig {
             .to_string();
         config.keyboard_layouts = section
             .get("keyboard_layouts")
-            .or_else(|| section.get("layouts"))
             .and_then(serde_json::Value::as_array)
             .map(|values| {
                 values
@@ -1606,6 +1682,10 @@ pub enum ShortcutAction {
     AttachTabRight,
     MoveGroupLeft,
     MoveGroupRight,
+    /// Carry the focused window group, whole, into the strip above.
+    MoveGroupToPreviousStrip,
+    /// Carry the focused window group, whole, into the strip below.
+    MoveGroupToNextStrip,
     /// Move the focused window group onto the display to the left of its
     /// own (the previous one in reading order).
     MoveGroupToPreviousDisplay,
@@ -1666,8 +1746,8 @@ impl ShortcutAction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopControlsConfig {
-    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/l aliases for window,
-    /// strip and reorder navigation. The ordinary arrow bindings remain
+    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/j/k/l aliases for
+    /// window and strip navigation and for carrying the focused group. The ordinary arrow bindings remain
     /// available.
     pub vim_mode: bool,
 }
@@ -2181,16 +2261,26 @@ impl Default for ShortcutConfig {
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
-            (ShortcutAction::PreviousStrip, super_shift_chord("up")),
-            (ShortcutAction::NextStrip, super_shift_chord("down")),
+            // Arrows move focus across the plane; Shift carries the focused
+            // group the same way (docs/architecture/window-management.md).
+            (ShortcutAction::PreviousStrip, super_chord("up")),
+            (ShortcutAction::NextStrip, super_chord("down")),
             (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
             (ShortcutAction::NextWorkspace, super_chord("pagedown")),
-            (ShortcutAction::ToggleMaximize, super_chord("up")),
+            (ShortcutAction::ToggleMaximize, super_chord("m")),
             (ShortcutAction::DetachTab, super_shift_chord("enter")),
             (ShortcutAction::AttachTabLeft, super_chord("[")),
             (ShortcutAction::AttachTabRight, super_chord("]")),
             (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
+            (
+                ShortcutAction::MoveGroupToPreviousStrip,
+                super_shift_chord("up"),
+            ),
+            (
+                ShortcutAction::MoveGroupToNextStrip,
+                super_shift_chord("down"),
+            ),
             // Super+Shift+arrows already reorder within a display; Ctrl
             // widens the same gesture to the neighbouring display.
             (
@@ -2245,6 +2335,15 @@ impl Default for ShortcutConfig {
         }
     }
 }
+
+/// Chords that used to be an action's default, as `(action, modifiers in
+/// sorted order, key)`. Never remove an entry: a settings file written by
+/// any earlier release may still carry it.
+const RETIRED_DEFAULTS: &[(ShortcutAction, &[&str], &str)] = &[
+    (ShortcutAction::PreviousStrip, &["Shift", "Super"], "up"),
+    (ShortcutAction::NextStrip, &["Shift", "Super"], "down"),
+    (ShortcutAction::ToggleMaximize, &["Super"], "up"),
+];
 
 impl ShortcutConfig {
     /// Validate an already assembled table before it becomes live runtime
@@ -2421,12 +2520,28 @@ impl ShortcutConfig {
     /// defaults, then accept a stored override only when it is a valid,
     /// non-reserved, non-conflicting chord.  Bad entries fall back to their
     /// default instead of leaving ambiguous client ownership.
+    ///
+    /// A stored chord that was once the default for its action
+    /// ([`RETIRED_DEFAULTS`]) was saved because [`Self::save`] writes the
+    /// whole table, not because the person chose it; it yields to the
+    /// current default.
     #[must_use]
     pub fn normalise(loaded: Self) -> Self {
         let defaults = Self::default();
         let mut effective = defaults.clone();
         for (action, chord) in loaded.bindings {
             if action == ShortcutAction::Lock {
+                continue;
+            }
+            if RETIRED_DEFAULTS.iter().any(|(retired, modifiers, key)| {
+                *retired == action
+                    && chord.key == *key
+                    && chord
+                        .modifiers
+                        .iter()
+                        .map(String::as_str)
+                        .eq(modifiers.iter().copied())
+            }) {
                 continue;
             }
             if !chord.is_valid_configurable() {
@@ -2771,8 +2886,24 @@ mod tests {
             let cfg = ShortcutConfig::default();
             assert_eq!(
                 cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
-                "Super+Up"
+                "Super+m"
             );
+            for (action, chord) in [
+                (ShortcutAction::FocusPreviousWindow, "Super+Left"),
+                (ShortcutAction::FocusNextWindow, "Super+Right"),
+                (ShortcutAction::PreviousStrip, "Super+Up"),
+                (ShortcutAction::NextStrip, "Super+Down"),
+                (ShortcutAction::MoveGroupLeft, "Super+Shift+Left"),
+                (ShortcutAction::MoveGroupRight, "Super+Shift+Right"),
+                (ShortcutAction::MoveGroupToPreviousStrip, "Super+Shift+Up"),
+                (ShortcutAction::MoveGroupToNextStrip, "Super+Shift+Down"),
+            ] {
+                assert_eq!(
+                    cfg.bindings[&action].display(),
+                    chord,
+                    "arrows move focus and Shift carries the group the same way"
+                );
+            }
             assert_eq!(
                 cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
                 "Super+Page Up"
@@ -2872,6 +3003,42 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
+        // Phase `a_table_saved_under_retired_defaults_takes_the_new_ones`.
+        {
+            let mut saved_by_an_older_release = ShortcutConfig::default();
+            for action in [
+                ShortcutAction::MoveGroupToPreviousStrip,
+                ShortcutAction::MoveGroupToNextStrip,
+            ] {
+                saved_by_an_older_release.bindings.remove(&action);
+            }
+            for (action, chord) in [
+                (ShortcutAction::PreviousStrip, "Super+Shift+Up"),
+                (ShortcutAction::NextStrip, "Super+Shift+Down"),
+                (ShortcutAction::ToggleMaximize, "Super+Up"),
+            ] {
+                saved_by_an_older_release
+                    .bindings
+                    .insert(action, KeyChord::parse(chord).unwrap());
+            }
+            assert_eq!(
+                ShortcutConfig::normalise(saved_by_an_older_release.clone()),
+                ShortcutConfig::default(),
+                "an untouched older table is today's defaults"
+            );
+
+            saved_by_an_older_release.bindings.insert(
+                ShortcutAction::NextStrip,
+                KeyChord::parse("Super+J").unwrap(),
+            );
+            let repaired = ShortcutConfig::normalise(saved_by_an_older_release);
+            assert_eq!(
+                repaired.bindings[&ShortcutAction::NextStrip].display(),
+                "Super+j",
+                "a chord the person chose is kept"
+            );
+            assert!(repaired.validate().is_ok());
+        }
         // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
         {
             let dir = tempfile::tempdir().unwrap();
@@ -2890,7 +3057,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 44);
+            assert_eq!(cfg.bindings.len(), 46);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -3065,6 +3232,42 @@ mod tests {
     }
 
     #[test]
+    fn publisher_liveness_is_its_held_lease_not_its_proc_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        // No process has this PID, so /proc cannot vouch for it, as it cannot
+        // for a non-dumpable compositor under hidepid. Holding its lease can.
+        let (pid, start_ticks) = (4_000_000, 7);
+        let lease_path = publisher_lease_path(dir.path(), pid, start_ticks);
+        assert!(
+            !publisher_live_in(dir.path(), pid, start_ticks),
+            "no lease yet"
+        );
+        let lease = std::fs::File::create(&lease_path).unwrap();
+        assert!(
+            !publisher_live_in(dir.path(), pid, start_ticks),
+            "a lease file its publisher no longer locks is a dead publisher's"
+        );
+        let lease = advisory_lock::FileLock::try_exclusive(lease).unwrap();
+        assert!(publisher_live_in(dir.path(), pid, start_ticks));
+        assert!(!publisher_live_in(dir.path(), pid, start_ticks + 1));
+        assert!(!publisher_live_in(dir.path(), 0, start_ticks));
+        drop(lease);
+        assert!(
+            !publisher_live_in(dir.path(), pid, start_ticks),
+            "the kernel drops the lease with its holder"
+        );
+
+        let (own_pid, own_ticks) = publisher_identity_in(dir.path()).unwrap();
+        assert_eq!(own_pid, std::process::id());
+        assert!(publisher_live_in(dir.path(), own_pid, own_ticks));
+        assert_eq!(
+            publisher_identity_in(dir.path()).unwrap(),
+            (own_pid, own_ticks),
+            "publishing again keeps the one lease"
+        );
+    }
+
+    #[test]
     fn input_snapshot_is_trusted_only_from_its_live_publisher() {
         let dir = std::env::temp_dir().join(format!("tilo-input-state-{}", std::process::id()));
         let path = dir.join("input-state.json");
@@ -3075,10 +3278,11 @@ mod tests {
             ..InputDeviceSnapshot::default()
         };
         assert_eq!(pen.key, "056a:0374:Wacom Intuos S Pen");
-        let pid = std::process::id();
+        let (publisher_pid, publisher_start_ticks) =
+            publisher_identity_in(&dir).expect("hold a publisher lease");
         let live = InputHardwareSnapshot {
-            publisher_pid: pid,
-            publisher_start_ticks: process_start_ticks(pid).unwrap_or_default(),
+            publisher_pid,
+            publisher_start_ticks,
             devices: vec![pen.clone(), pen],
         };
         live.save_at(&path).unwrap();

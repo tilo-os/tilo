@@ -345,7 +345,7 @@ impl PdfApp {
             self.next_page();
         }
         // Keep the indicator up right after a nav click.
-        self.page_bubble.poke(std::time::Instant::now());
+        self.page_bubble.poke(ui::time::now());
         self.dirty = true;
         true
     }
@@ -1665,7 +1665,7 @@ mod event_tests {
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "the recolour dispatched an action and stashed one undo boundary"
         );
 
@@ -2084,7 +2084,7 @@ mod event_tests {
             "a highlight drag through handle_event adds an annotation"
         );
         assert!(
-            rig.app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut rig.app).is_some(),
             "the new highlight dispatched an action and stashed one undo boundary"
         );
         assert!(
@@ -2419,7 +2419,7 @@ mod event_tests {
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let resources = Widget::resources(&app, &st.doc);
+        let resources = ui::resources::resources(&app, &st.doc);
         let want_id = format!("pdf.annotation:{}", anno.id);
         let res = resources[0]
             .children

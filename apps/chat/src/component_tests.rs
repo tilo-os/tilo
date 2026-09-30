@@ -19,7 +19,7 @@ fn component_projection_never_seeds_or_marks_read() {
         app.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!app.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&app, &doc).is_empty());
 }
 #[test]
 fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
@@ -226,7 +226,9 @@ fn component_mount(
     ui::record::RecordCheckout,
 ) {
     use std::{cell::RefCell, rc::Rc};
-    use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -251,13 +253,15 @@ fn component_mount(
     };
     let context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        "device".into(),
-        instance,
-        permissions,
-        ui::permissions::UserId(author.into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "device".into(),
+            instance_id: instance,
+            permissions,
+            author: ui::permissions::UserId(author.into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();
@@ -436,7 +440,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     use std::{cell::RefCell, rc::Rc};
     use ui::{
-        application::{HostContext, LaunchTarget, RestoreInput},
+        application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
         record::{RecordCheckout, RecordOwners},
     };
@@ -480,13 +484,15 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         };
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views.clone(),
-            "component-device".into(),
-            instance,
-            permissions.clone(),
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: "component-device".into(),
+                instance_id: instance,
+                permissions: permissions.clone(),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();

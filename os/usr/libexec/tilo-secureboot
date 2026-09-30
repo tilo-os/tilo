@@ -184,6 +184,22 @@ artefacts() {
   return 0
 }
 
+# The ESP stays mounted read-only; tilo-esp-write@secureboot-sign.service is
+# the one step that writes it (a replace of a managed artefact, nothing else).
+ESP_PLAN_DIR="${TILO_ESP_PLAN_DIR:-/var/lib/tilo/esp-plan/secureboot-sign}"
+esp_plan_reset() {
+  install -d -m 0700 "$ESP_PLAN_DIR" || die "cannot prepare $ESP_PLAN_DIR"
+  find "$ESP_PLAN_DIR" -mindepth 1 -delete
+}
+esp_install_signed() {  # staged-file ESP-relative-destination
+  local sum
+  [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._+/-]*$ ]] || return 1
+  sum="$(sha256sum "$1" | cut -d' ' -f1)" || return 1
+  printf '{"ops": [{"op": "install", "file": "%s", "sha256": "%s", "dst": "%s"}]}\n' \
+    "$(basename "$1")" "$sum" "$2" > "$ESP_PLAN_DIR/plan.json" || return 1
+  ${TILO_ESP_WRITE_CMD:-systemctl start --wait tilo-esp-write@secureboot-sign.service}
+}
+
 signed_with_db() {
   tilo-crypto verify-efi "$KEYDIR/db.crt" "$1" >/dev/null 2>&1
 }
@@ -556,20 +572,31 @@ cmd_sign() {
       skipped=$((skipped+1))
       continue
     fi
-    # Authenticode cannot be added in place, so write beside the target and move over it.
-    # /boot and the ESP are writable on a bootc system; the deployment's /usr is
-    # not, and nothing here touches it.
+    # Authenticode cannot be added in place. The ESP is mounted read-only, so
+    # the signed copy is staged in this unit's plan directory and
+    # tilo-esp-write@secureboot-sign installs it over the original (a verified
+    # replace, atomic, never following a symlink). An artefact outside the ESP
+    # (the ostree layout's kernels under /boot/ostree) is replaced beside itself.
     # tilo-crypto creates the destination with O_EXCL. A random, absent name
     # avoids both predictable-sidecar denial of service and symlink following.
-    signed_output="$a.tilo-signed.$(random_token)"
+    case "$a" in
+      "$ESP"/EFI/*) esp_plan_reset; signed_output="$ESP_PLAN_DIR/signed.efi" ;;
+      *) signed_output="$a.tilo-signed.$(random_token)" ;;
+    esac
     TEMP_FILES+=("$signed_output")
     tilo-crypto sign-efi "$signing_key" "$KEYDIR/db.crt" \
            "$a" "$signed_output" >/dev/null \
       || die "signing failed: $a"
     tilo-crypto verify-efi "$KEYDIR/db.crt" "$signed_output" >/dev/null 2>&1 \
       || { rm -f "$signed_output"; die "signature did not verify after signing: $a"; }
-    tilo-crypto durable-rename "$signed_output" "$a" \
-      || die "signed artefact could not be installed durably: $a"
+    case "$a" in
+      "$ESP"/EFI/*)
+        esp_install_signed "$signed_output" "${a#"$ESP"/}" \
+          || die "signed artefact could not be installed durably: $a" ;;
+      *)
+        tilo-crypto durable-rename "$signed_output" "$a" \
+          || die "signed artefact could not be installed durably: $a" ;;
+    esac
     signed_with_db "$a" \
       || die "installed artefact did not verify after durable publication: $a"
     log "signed $a"

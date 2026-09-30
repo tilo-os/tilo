@@ -1,6 +1,6 @@
 //! Self-contained From/To editor for the Directions panel.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -8,6 +8,7 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -194,7 +195,7 @@ impl EndpointEditor {
         self.deadline = if text.trim().is_empty() {
             None
         } else {
-            Some(Instant::now() + SEARCH_DEBOUNCE)
+            Some(ui::time::now() + SEARCH_DEBOUNCE)
         };
         Some(EndpointEffect::Changed { endpoint, text })
     }
@@ -494,23 +495,17 @@ impl EndpointEditor {
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, distance_anchor));
             let distance_w = draw::measure_w(text, &distance, 11.0) + 8.0;
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.name,
-                text_x,
-                name_y,
+                Point::new(text_x, name_y),
                 13.0,
                 theme.text_primary,
                 rect.x1 - text_x - distance_w,
             );
             draw::text_clip(
-                scene,
-                text,
-                transform,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &place.address,
-                text_x,
-                name_y + name_h,
+                Point::new(text_x, name_y + name_h),
                 11.0,
                 theme.text_dim,
                 rect.x1 - text_x - distance_w,
@@ -592,7 +587,7 @@ mod tests {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Origin);
             editor.origin_query = "station".to_string();
-            let now = Instant::now();
+            let now = ui::time::now();
             editor.deadline = Some(now);
             assert_eq!(
                 editor.take_due_search(now),
@@ -608,7 +603,7 @@ mod tests {
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Destination);
-            editor.deadline = Some(Instant::now());
+            editor.deadline = Some(ui::time::now());
             editor.dismiss();
             assert!(!editor.is_focused());
             assert!(!editor.has_pending_query());

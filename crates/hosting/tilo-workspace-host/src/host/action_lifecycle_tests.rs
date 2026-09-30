@@ -312,3 +312,124 @@ async fn action_lifecycle_recovery_retains_exact_postcommit_receipt_custody() {
     assert_eq!(owner.status(), before);
     runtime.actions.as_mut().unwrap().close(&owner).unwrap();
 }
+
+async fn sign_now(
+    owner: &mut SessionOwner,
+    committed: &crate::committed_authority::CommittedAuthority,
+    runtime: &mut ActionRuntime,
+    key: &str,
+) -> Result<collab_types::SignedOp, String> {
+    let route =
+        ui::collaboration::RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+    let signer = runtime
+        .signing
+        .bind(route.clone(), owner.identity.native_cert.clone());
+    let waiting = tokio::spawn(signer.commit(&route, mutation(owner, key)));
+    let pending = runtime.signatures.recv().await.unwrap();
+    let update = committed.begin(owner).unwrap();
+    let (complete, result) = pending.apply(owner);
+    result.unwrap();
+    update.publish(owner).unwrap();
+    complete();
+    waiting.await.unwrap()
+}
+
+// A started signing turn that stalls fails its caller closed. Once this
+// serialized owner runs again the stalled turn has finished, so the runtime is
+// replaced instead of keeping the host offline, and a fresh one signs.
+#[tokio::test(start_paused = true)]
+async fn action_lifecycle_restarts_after_a_stalled_signing_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let committed = crate::committed_authority::CommittedAuthority::new(&owner);
+    let mut runtime = ActionRuntime::new(committed.clone());
+    runtime.start_current(&mut owner, None, None).unwrap();
+    let route =
+        ui::collaboration::RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+    let signer = runtime
+        .signing
+        .bind(route.clone(), owner.identity.native_cert.clone());
+    let waiting = tokio::spawn(signer.commit(&route, mutation(&owner, "committed-while-stalled")));
+    let pending = runtime.signatures.recv().await.unwrap();
+    let update = committed.begin(&owner).unwrap();
+    let (complete, result) = pending.apply(&mut owner);
+    result.unwrap();
+    update.publish(&owner).unwrap();
+    // The owner hangs before answering: after a whole stall budget its caller
+    // fails closed and the signer latches.
+    let error = waiting.await.unwrap().unwrap_err();
+    assert!(error.contains("stalled"), "{error}");
+    assert!(runtime.signing.health().is_err());
+    let mut action_error = Some(error);
+    // The owner runs again and finishes its turn; the caller is gone.
+    complete();
+
+    let mut session = None;
+    let mut cadence = CheckpointCadence::new();
+    refresh_actions(
+        &mut owner,
+        &mut runtime,
+        &mut session,
+        None,
+        &mut action_error,
+        None,
+        &mut cadence,
+    )
+    .await;
+    assert!(action_error.is_none(), "{action_error:?}");
+    assert!(runtime.signing.health().is_ok());
+    // With the error cleared, the owner loop reconnects and mounts a fresh
+    // runtime, which signs definitively.
+    runtime.start_current(&mut owner, None, None).unwrap();
+    let envelope = sign_now(&mut owner, &committed, &mut runtime, "fresh-after-stall")
+        .await
+        .expect("the fresh runtime signs");
+    runtime
+        .signing
+        .commit(OwnerCommitRequest {
+            room: owner.peer().room().into(),
+            operation: CommitOperation::Document {
+                app: "so.tilo.chat".into(),
+                record: String::new(),
+                envelope: Box::new(envelope),
+            },
+        })
+        .await
+        .unwrap();
+    runtime.actions.as_mut().unwrap().close(&owner).unwrap();
+    use ui::automerge::ReadDoc;
+    let document = AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
+    for key in ["committed-while-stalled", "fresh-after-stall"] {
+        assert!(document.get(ROOT, key).unwrap().is_some(), "{key}");
+    }
+}
+
+// Only a stall is recovered: an owner that reported an uncertain result keeps
+// the runtime failed.
+#[tokio::test(start_paused = true)]
+async fn action_lifecycle_keeps_an_uncertain_owner_result_terminal() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let committed = crate::committed_authority::CommittedAuthority::new(&owner);
+    let mut runtime = ActionRuntime::new(committed.clone());
+    runtime.start_current(&mut owner, None, None).unwrap();
+    let mut action_error = Some(runtime.signing.fail("owner result uncertain"));
+    let mut session = None;
+    let mut cadence = CheckpointCadence::new();
+    refresh_actions(
+        &mut owner,
+        &mut runtime,
+        &mut session,
+        None,
+        &mut action_error,
+        None,
+        &mut cadence,
+    )
+    .await;
+    assert_eq!(action_error.as_deref(), Some("owner result uncertain"));
+    assert_eq!(
+        runtime.signing.health().unwrap_err(),
+        "owner result uncertain"
+    );
+    runtime.actions.as_mut().unwrap().close(&owner).unwrap();
+}

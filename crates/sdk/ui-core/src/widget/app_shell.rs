@@ -674,10 +674,6 @@ impl AppShell {
 
 /// Free function (not a method) so it borrows none of `AppShell`'s fields —
 /// the caller keeps a live `&mut` on the child.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the free painter takes child, render, presence and permission inputs separately to avoid borrowing AppShell during a child borrow"
-)]
 fn paint_child(
     w: &mut dyn Widget,
     scene: &mut Scene,
@@ -1611,7 +1607,7 @@ mod tests {
     }
 
     fn dispatch_view_actions(s: &mut AppShell, doc: &mut AutoCommit) {
-        while let Some(intent) = s.take_control_invocation() {
+        while let Some(intent) = crate::widget::controls::take_control_invocation(s) {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(s, doc, &mut resources);
             let encoded =

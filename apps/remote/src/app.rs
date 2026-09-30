@@ -735,7 +735,7 @@ pub struct RemoteApp {
     rail_snap: Option<bool>,
     /// Wall-clock of the last rail animation advance, so the eased slide is
     /// frame-rate independent regardless of how often the host repaints.
-    last_tick: std::time::Instant,
+    last_tick: ui::time::Instant,
     /// System motion preference. The rail keeps the same spatial model, but
     /// snaps between endpoints when motion is reduced.
     motion_reduced: bool,
@@ -1003,7 +1003,7 @@ impl RemoteApp {
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
-            last_tick: std::time::Instant::now(),
+            last_tick: ui::time::now(),
             motion_reduced: false,
             tooltips: TooltipHost::new(),
         }
@@ -1567,7 +1567,7 @@ impl RemoteApp {
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
                 let user = if c.user.is_empty() {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
                     c.user.clone()
                 };
@@ -2354,43 +2354,14 @@ impl Collaborative for RemoteApp {
 }
 
 impl Widget for RemoteApp {
-    ui::provides!(dyn ui::widget::Collaborative);
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
-    }
-
-    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
-    /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
-        }
-        resources
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Remote action, so it records one undo boundary bracketing it.
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn start_operation(
@@ -2697,7 +2668,7 @@ impl Widget for RemoteApp {
         // settling, keep the repaint gate open so the host pumps the next
         // frame; the dt is real elapsed time so the slide is frame-rate
         // independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         if self.motion_reduced {
@@ -3588,6 +3559,43 @@ impl Widget for RemoteApp {
     }
 }
 
+impl ui::resources::PublishesResources for RemoteApp {
+    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
+    /// delete) so the shell's one action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let can_send_text = matches!(
+                &self.live,
+                Some(LiveSession::Ssh(session))
+                    if session.status() == SessionStatus::Connected
+            );
+            if let Some(workspace) = resources.first_mut() {
+                let host_key_issue = self.ssh_host_key_issue(id);
+                workspace.children.push(crate::actions::session_resource(
+                    connection,
+                    can_send_text,
+                    host_key_issue.as_ref(),
+                ));
+            }
+        }
+        resources
+    }
+}
+
+impl ui::undo::CommittedActions for RemoteApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Remote action, so it records one undo boundary bracketing it.
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
 impl RemoteApp {
     fn answer_resource_operation(
         &mut self,
@@ -3851,7 +3859,7 @@ impl RemoteApp {
                 }),
                 _ => None,
             });
-        if self.tooltips.on_pointer(tip, std::time::Instant::now()) {
+        if self.tooltips.on_pointer(tip, ui::time::now()) {
             self.dirty = true;
         }
         // A focused field tracks the pointer so a drag extends its
@@ -5714,10 +5722,6 @@ impl RemoteApp {
     /// Paint one segmented control over rects the caller already pushed as
     /// hits: the shared face owns selection, hover, separators and measured
     /// label centring, so this canvas keeps only its pointer routing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The segmented-control painter forwards render context, precomputed hit rectangles, labels, and the optional selected index."
-    )]
     fn draw_segments(
         &self,
         scene: &mut Scene,
@@ -8001,7 +8005,7 @@ mod tests {
                 "the star and the Ctrl+K row build the byte-identical action",
             );
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the dispatch armed exactly one undo boundary for the host to record",
             );
         }

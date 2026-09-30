@@ -31,6 +31,7 @@ use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::OpClass;
 use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{
@@ -309,10 +310,6 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .max_by_key(|resume| resume.timestamp)
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "resume card rendering receives the ordinary immediate-mode scene and typography context"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
@@ -811,7 +808,9 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
-            source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
+            source: HistorySource::new()
+                .with_artifact_kind(ArtifactKind::Cluster)
+                .without_field_paths(),
             revert_intent,
             name_intent,
             undo_intent,
@@ -1102,6 +1101,55 @@ impl RoomActivityPane {
             self.expanded_brief = None;
             self.clear_comparison();
         }
+    }
+
+    /// What "new" is counted from in `workspace`. One this device has never
+    /// read starts from the history it holds now: a fresh install's own
+    /// setup or a joined workspace's past stays browsable, but is not news.
+    fn passive_frontier(&mut self, workspace: u64) -> WorkspaceSeenFrontier {
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !self.history_index.entries().is_empty()
+        {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            self.seen_frontiers.insert(workspace, frontier);
+            self.persist_frontiers();
+        }
+        self.seen_frontiers
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The tree-only feed's rows the active workspace's frontier has not
+    /// acknowledged, with the same first-sight baseline as
+    /// [`Self::passive_frontier`].
+    fn unseen_tree_rows(&mut self, rows: &[HistoryEntry]) -> Vec<HistoryEntry> {
+        let Some(workspace) = self.last_active else {
+            return rows.to_vec();
+        };
+        let id = |entry: &HistoryEntry| WorkspaceHistoryId {
+            origin: super::index::HistoryOrigin::DesktopTree,
+            change: entry.id,
+        };
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !rows.is_empty()
+        {
+            let frontier = self.seen_frontiers.entry(workspace).or_default();
+            for row in rows {
+                frontier.acknowledge(&id(row));
+            }
+            self.persist_frontiers();
+        }
+        let Some(frontier) = self.seen_frontiers.get(&workspace) else {
+            return rows.to_vec();
+        };
+        rows.iter()
+            .filter(|row| !frontier.acknowledged(&id(row)))
+            .cloned()
+            .collect()
     }
 
     fn persist_frontiers(&self) {
@@ -1413,14 +1461,18 @@ impl RoomActivityPane {
         };
         if ui::history_groups::materialize_and_move_boundary(
             tree.document_mut(),
-            older.work_session_id.as_deref(),
-            &older_start,
-            &older_end,
-            &older.title,
-            newer.work_session_id.as_deref(),
-            &newer_start,
-            &newer_end,
-            &newer.title,
+            ui::history_groups::DisplayedSession {
+                record: older.work_session_id.as_deref(),
+                start: &older_start,
+                end: &older_end,
+                label: &older.title,
+            },
+            ui::history_groups::DisplayedSession {
+                record: newer.work_session_id.as_deref(),
+                start: &newer_start,
+                end: &newer_end,
+                label: &newer.title,
+            },
             &new_left_end,
             &new_right_start,
         )
@@ -1959,7 +2011,17 @@ impl RoomActivityPane {
                 tags.push(Some(workspace.id.raw()));
             }
         }
-        self.derived = entries.into_iter().zip(tags).collect();
+        // Housekeeping stays in the room document's history, out of the feed.
+        self.derived = entries
+            .into_iter()
+            .zip(tags)
+            .filter(|(entry, _)| {
+                !entry
+                    .context
+                    .as_ref()
+                    .is_some_and(ui::tilo_actions::ActionContext::is_housekeeping)
+            })
+            .collect();
         self.derived.sort_by_key(|(entry, _)| entry.timestamp);
         // Names come out of the same document as the changes, so a peer's name
         // arrives with their edits.
@@ -2154,11 +2216,7 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        let passive = self
-            .seen_frontiers
-            .get(&tree.active.raw())
-            .cloned()
-            .unwrap_or_default();
+        let passive = self.passive_frontier(tree.active.raw());
         let rows = self
             .history_index
             .unseen_detached(&passive, tree, &self.detached_records)
@@ -2277,11 +2335,7 @@ impl RoomActivityPane {
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
-        let passive_frontier = self
-            .seen_frontiers
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default();
+        let passive_frontier = self.passive_frontier(workspace);
         let unseen = |frontier: &WorkspaceSeenFrontier, tree: &mut T| {
             if let Some(local) = local {
                 self.history_index
@@ -2413,13 +2467,27 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
-        self.passive_unread = digest_rows.len();
-        self.passive_digest = self.digest.clone();
+        if self.history_index.entries().is_empty() {
+            let unseen = self.unseen_tree_rows(&digest_rows);
+            self.passive_unread = unseen.len();
+            self.passive_digest = ActivityDigest::from_entries_with_ranges(
+                &unseen,
+                SystemTime::UNIX_EPOCH,
+                5,
+                &self.named,
+            );
+        } else {
+            self.passive_unread = digest_rows.len();
+            self.passive_digest = self.digest.clone();
+        }
         self.reset_narrative();
 
+        // Filters and counts name the people history resolved; a change it
+        // could not name still shows under Everyone.
         let mut seen: HashSet<String> = HashSet::new();
         self.contributors = rows
             .iter()
+            .filter(|e| e.author.name != ui::history_source::UNKNOWN_AUTHOR_NAME)
             .filter(|e| seen.insert(e.author.name.clone()))
             .map(|e| e.author.name.clone())
             .collect();
@@ -2444,7 +2512,9 @@ impl RoomActivityPane {
         if self.narrative_request == request {
             return;
         }
-        self.narrative = request.as_ref().map(ui::deterministic_narrative);
+        // The deterministic summary only restates the brief titles below
+        // it, so the card waits for prose that adds something.
+        self.narrative = None;
         self.narrative_request = request;
     }
 
@@ -2840,7 +2910,13 @@ impl RoomActivityPane {
             capacity
         });
         for (lens, label) in candidates.iter().skip(self.lens_offset).take(shown) {
-            self.draw_lens_row(scene, transform, tr, theme, lens, label, &mut y, bounds);
+            self.draw_lens_row(
+                &mut PaintCtx::new(scene, transform, tr, theme),
+                lens,
+                label,
+                &mut y,
+                bounds,
+            );
         }
         if shown < remaining || self.lens_offset > 0 {
             let label = t(if shown < remaining {
@@ -2933,7 +3009,6 @@ impl RoomActivityPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one immediate-mode detail renderer keeps the agent task narrative and actions spatially coherent"
     )]
@@ -3080,10 +3155,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode action row needs shared scene, typography, theme, bounds, and selection context"
-    )]
     fn draw_detail_actions(
         &mut self,
         scene: &mut Scene,
@@ -3162,7 +3233,6 @@ impl RoomActivityPane {
     }
 
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         clippy::cast_precision_loss,
         reason = "comparison paint, bounds, and text layout stay in one retained-rendering pass so labels, hit geometry, and accessible summary cannot diverge"
@@ -3314,21 +3384,16 @@ impl RoomActivityPane {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "small immediate-mode explorer row"
-    )]
     fn draw_lens_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         lens: &LensSelection,
         label: &str,
         y: &mut f64,
         bounds: Rect,
     ) {
+        let (scene, transform, tr, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         if *y + 28.0 > bounds.y1 - 6.0 {
             return;
         }
@@ -3501,17 +3566,12 @@ impl RoomActivityPane {
         }
         let metrics = BriefCardMetrics::new(tr, theme);
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "tilo-deterministic";
             // Section-header role for the label (HIG §9.6: `xs`) — the former
             // `sm - 1` was an invented size — over up to two body lines, each
             // seated on its measured line so 200 % type grows the card.
             let label_size = type_size(tr, theme.tokens.typography.scale.xs);
             let body_size = type_size(tr, theme.tokens.typography.scale.sm);
-            let label = t(if generated {
-                "activity-summary-on-device"
-            } else {
-                "activity-summary-glance"
-            });
+            let label = t("activity-summary-on-device");
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure(&label, label_size, Some(inner_w));
             let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
@@ -3521,11 +3581,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(if generated {
-                    0.13
-                } else {
-                    0.07
-                }),
+                theme.tokens.colors.accent[5].with_alpha_factor(0.13),
                 None,
                 &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
             );
@@ -3653,10 +3709,7 @@ impl RoomActivityPane {
                 &rect,
             );
             draw_brief_card(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 brief,
                 rect,
                 metrics,
@@ -4136,10 +4189,7 @@ impl RoomActivityPane {
             let rect = Rect::new(x0, y, x1, y + height);
             self.task_rects.push((task.id.clone(), rect));
             draw_task_card(
-                scene,
-                transform,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, transform, tr, theme),
                 task,
                 rect,
                 selected,
@@ -6472,21 +6522,18 @@ fn draw_task_button(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "task-card rendering needs the shared renderer context and explicit card data together to keep the visible and accessible states aligned"
 )]
 fn draw_task_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     task: &WorkspaceTask,
     rect: Rect,
     selected: bool,
     now: SystemTime,
     execution_notice: Option<&str>,
 ) {
+    let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     scene.fill(
         Fill::NonZero,
         transform,
@@ -6990,7 +7037,6 @@ fn draw_presence_trail(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::cast_precision_loss,
     reason = "presence-trail painting receives the shared renderer context and uses bounded frame and pointer counts only for display geometry"
 )]
@@ -7040,22 +7086,19 @@ fn draw_replay_pointers(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::cast_precision_loss,
     reason = "brief-card rendering keeps its geometry, summary, and accessible label in one retained pass"
 )]
 fn draw_brief_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     brief: &ActivityBrief,
     rect: Rect,
     m: BriefCardMetrics,
     expanded: bool,
     now: SystemTime,
 ) {
+    let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let rail_x = rect.x0 + 20.0;
     scene.stroke(
         &Stroke::new(2.0),
@@ -7328,8 +7371,8 @@ fn draw_work_session_boundary(
     // itself spatial: each half transfers the bordering action across it in
     // the direction shown, instead of repeating two long explanatory labels.
     let buttons = [
-        (into_newer, "↑  1 action", can_move_up),
-        (into_older, "1 action  ↓", can_move_down),
+        (into_newer, t("activity-session-move-newer"), can_move_up),
+        (into_older, t("activity-session-move-older"), can_move_down),
     ];
     for (button, label, enabled) in buttons {
         let shape = RoundedRect::from_rect(button, 13.0);
@@ -7352,7 +7395,7 @@ fn draw_work_session_boundary(
             &shape,
         );
         let label = tr.elide_to_width(
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             text_width(button.width() - 18.0),
         );
@@ -7743,16 +7786,65 @@ fn describe_room_changes(
         if let Some(tag) = tags.get_mut(i) {
             *tag = workspace_touched(doc, &patches, hash);
         }
-        if let Some((summary, op_class)) = describe_patches(&patches)
-            && let Some(entry) = entries.get_mut(i)
-        {
+        let Some(entry) = entries.get_mut(i) else {
+            continue;
+        };
+        if let Some((summary, op_class)) = describe_patches(&patches) {
             if entry.context.is_none() {
                 entry.summary = summary;
             }
             entry.op_class = op_class;
+        } else if is_room_bookkeeping(&patches) {
+            entry.context = Some(
+                entry
+                    .context
+                    .take()
+                    .unwrap_or_default()
+                    .with_change(ui::tilo_actions::ChangeKind::Housekeeping),
+            );
+        } else if entry.context.is_none() {
+            // The room's own storage keys are not words anyone should read.
+            entry.summary = t("activity-event-updated");
         }
     }
     tags
+}
+
+/// The room keys a desktop writes to keep its projection consistent (the id
+/// counter, who owns each id namespace, the record index, schedule claims, a
+/// retained strip's marker): state about the room, not something anyone did
+/// in it.
+const ROOM_BOOKKEEPING_KEYS: &[&str] = &[
+    tilo_desktop_model::projection::ROOM_DESKTOP_COUNTER_KEY,
+    tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+    tilo_desktop_model::projection::ROOM_RECORDS_KEY,
+    tilo_desktop_model::projection::ROOM_SCHEDULE_CLAIMS_KEY,
+    tilo_desktop_model::projection::STRIP_RETAINED_EMPTY_KEY,
+];
+
+/// Whether a change only wrote the room's bookkeeping.
+fn is_room_bookkeeping(patches: &[automerge::Patch]) -> bool {
+    !patches.is_empty()
+        && patches.iter().all(|patch| {
+            let leaf = match &patch.action {
+                automerge::PatchAction::PutMap { key, .. }
+                | automerge::PatchAction::DeleteMap { key }
+                | automerge::PatchAction::Increment {
+                    prop: Prop::Map(key),
+                    ..
+                } => Some(key.as_str()),
+                _ => None,
+            };
+            patch
+                .path
+                .iter()
+                .filter_map(|(_, prop)| match prop {
+                    Prop::Map(key) => Some(key.as_str()),
+                    Prop::Seq(_) => None,
+                })
+                .chain(leaf)
+                .any(|key| ROOM_BOOKKEEPING_KEYS.contains(&key))
+        })
 }
 
 /// The workspace a change belongs to, or `None` for more than one or
@@ -7847,7 +7939,23 @@ impl PatchCounts {
             (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
                 self.revokes = self.revokes.saturating_add(1);
             }
-            (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "name" => {
+            // A room's `contents` map: a window is an entry of a group's
+            // `tabs`, and a group closes with its last window.
+            (automerge::PatchAction::PutMap { value, .. }, "tabs")
+                if matches!(value.0, Value::Object(_)) =>
+            {
+                self.tabs_added = self.tabs_added.saturating_add(1);
+            }
+            (automerge::PatchAction::DeleteMap { .. }, "tabs" | "groups") => {
+                self.tabs_removed = self.tabs_removed.saturating_add(1);
+            }
+            (automerge::PatchAction::PutMap { key, .. }, _) if key == "order" => {
+                self.groups_moved = self.groups_moved.saturating_add(1);
+            }
+            // The workspace's own name, not a strip's.
+            (automerge::PatchAction::PutMap { key, value, .. }, "" | "workspaces")
+                if key == "name" =>
+            {
                 if let Some(n) = scalar_string(&value.0) {
                     self.names.push(n);
                 }
@@ -7922,6 +8030,15 @@ impl PatchCounts {
                 ),
             };
             return Some((s, OpClass::Splice));
+        }
+        // A room document's first change names the room, its owner and its
+        // name at once: that is the workspace being made.
+        if self.room_set && self.owner_set {
+            let s = match self.names.first().filter(|name| !name.is_empty()) {
+                Some(name) => t_args("activity-event-created-named", &[("name", name.into())]),
+                None => t("activity-event-created"),
+            };
+            return Some((s, OpClass::Govern));
         }
 
         if !self.grants.is_empty() {

@@ -483,6 +483,8 @@ impl Flex {
 }
 
 impl Widget for Flex {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     #[allow(
         clippy::too_many_lines,
         reason = "translates this box's dozen independent layout properties (align, justify, \
@@ -851,44 +853,6 @@ impl Widget for Flex {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action_emitter
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| {
-                self.children
-                    .iter_mut()
-                    .find_map(|child| child.take_control_invocation())
-            })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = self
-            .action_emitter
-            .as_ref()
-            .map(|emitter| {
-                emitter.metadata(self.test_id.as_deref().unwrap_or("tube.custom-control"))
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-        for child in &self.children {
-            bindings.extend(child.control_action_bindings());
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(emitter) = &mut self.action_emitter {
-            emitter.refresh_availability(allowed);
-        }
-        for child in &mut self.children {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         // An overlay captures all pointer events so it behaves modally — the
         // parent routes exclusively to it, keeping clicks off the shell beneath
@@ -931,6 +895,46 @@ impl Widget for Flex {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::widget::controls::ActionControls for Flex {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action_emitter
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| {
+                self.children
+                    .iter_mut()
+                    .find_map(|child| ui::widget::controls::take_control_invocation(child.as_mut()))
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let mut bindings = self
+            .action_emitter
+            .as_ref()
+            .map(|emitter| {
+                emitter.metadata(self.test_id.as_deref().unwrap_or("tube.custom-control"))
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        for child in &self.children {
+            bindings.extend(ui::widget::controls::control_action_bindings(
+                child.as_ref(),
+            ));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(emitter) = &mut self.action_emitter {
+            emitter.refresh_availability(allowed);
+        }
+        for child in &mut self.children {
+            ui::widget::controls::refresh_control_action_availability(child.as_mut(), allowed);
+        }
     }
 }
 

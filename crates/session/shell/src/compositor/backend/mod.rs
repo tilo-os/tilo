@@ -234,7 +234,7 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
 fn monitor_keys(outputs: &[Output]) -> Vec<String> {
     let connectors: Vec<String> = outputs
         .iter()
-        .map(|o| crate::compositor::output_globals::advertised_name(o, outputs))
+        .map(|o| crate::compositor::output_heads::advertised_name(o, outputs))
         .collect();
     let monitors: Vec<settings_store::hardware::MonitorIdentity> = outputs
         .iter()
@@ -683,6 +683,12 @@ pub trait Backend {
     /// Default: a backend with a display is always watched.
     fn set_watched(&mut self, _watched: bool) -> bool {
         false
+    }
+
+    /// Whether anyone may be looking at this backend's pixels, and so whether
+    /// shared legacy windows are worth encoding.
+    fn watched(&self) -> bool {
+        true
     }
 
     fn outputs(&self) -> &[Output];

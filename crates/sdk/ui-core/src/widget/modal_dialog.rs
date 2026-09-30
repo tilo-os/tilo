@@ -456,10 +456,6 @@ impl<C: Widget> ModalDialog<C> {
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
 #[allow(
-    clippy::too_many_arguments,
-    reason = "Detached dialog routing accepts the event, scale/modifiers, and CRDT document/path before supplying Widget layout state."
-)]
-#[allow(
     clippy::arithmetic_side_effects,
     reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
 )]
@@ -552,9 +548,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         );
         self.recompute_layout();
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(self.layout_theme.text_scale);
-        self.place_content(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(self.layout_theme.text_scale, |tr| {
+            self.place_content(&theme, tr)
+        });
     }
 
     #[allow(
@@ -721,7 +717,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 }
                 *ctx.handled = true;
             }
-            WindowEvent::KeyboardInput { .. } => {
+            // Text arrives from an input method (and in a browser page only
+            // from one), not only as key presses.
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
                 self.forward_to_content(
                     event,
                     ctx.scale_factor,

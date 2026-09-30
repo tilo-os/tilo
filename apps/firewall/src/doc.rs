@@ -1,7 +1,6 @@
 //! Native, field-addressable Automerge schema for firewall configuration.
 //!
-//! New data lives at `firewall.zones[zone].rules[rule-id]`; the old
-//! `config` JSON text is a read-only migration input. Rules have independent
+//! Data lives at `firewall.zones[zone].rules[rule-id]`. Rules have independent
 //! fields, an Automerge order list, and a separate delete-wins tombstone map.
 
 use automerge::transaction::Transactable;
@@ -11,7 +10,6 @@ use ui::doc::{read_bool, read_str, read_str_or_text};
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Target, Zone, ZoneKind};
 
 const ROOT_KEY: &str = "firewall";
-const LEGACY_KEY: &str = "config";
 pub struct FirewallDoc;
 
 fn get_map(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -119,20 +117,12 @@ fn read_rule(doc: &AutoCommit, row: &ObjId, id: RuleId) -> Option<Rule> {
 }
 
 impl FirewallDoc {
-    /// The compatibility JSON payload. New writers never call this.
-    pub fn load_json(doc: &AutoCommit) -> Option<String> {
-        let id = get_text(doc, &ROOT, LEGACY_KEY)?;
-        let value = doc.text(&id).ok()?;
-        (!value.is_empty()).then_some(value)
-    }
     pub fn has_native(doc: &AutoCommit) -> bool {
         get_map(doc, &ROOT, ROOT_KEY).is_some()
     }
     pub fn load(doc: &AutoCommit) -> Option<FirewallConfig> {
-        match get_map(doc, &ROOT, ROOT_KEY) {
-            Some(root) => Self::read_native(doc, &root),
-            None => Self::load_json(doc).and_then(|v| FirewallConfig::from_json(&v)),
-        }
+        let root = get_map(doc, &ROOT, ROOT_KEY)?;
+        Self::read_native(doc, &root)
     }
     fn read_native(doc: &AutoCommit, root: &ObjId) -> Option<FirewallConfig> {
         let enabled = read_bool(doc, root, "enabled")?;
@@ -495,7 +485,7 @@ mod tests {
     use super::*;
     use crate::sample::sample_config;
     use tilo_automerge::ApplyIncoming;
-    /// The native document round-trips, legacy JSON is read-only, and probe reconciliation removes absent members and rules.
+    /// The native document round-trips and probe reconciliation removes absent members and rules.
     #[test]
     fn document_round_trips_and_reconciles_probe_state() {
         // --- phase: native_round_trip ---
@@ -516,18 +506,6 @@ mod tests {
                     .sum::<usize>(),
                 c.zones.iter().map(|zone| zone.rules.len()).sum::<usize>()
             );
-        }
-
-        // --- phase: legacy_json_is_read_without_becoming_a_write_target ---
-        {
-            let mut doc = AutoCommit::new();
-            let config = sample_config();
-            let legacy = doc.put_object(&ROOT, LEGACY_KEY, ObjType::Text).unwrap();
-            ui::doc::splice_text_diffed(&mut doc, &legacy, &config.to_json());
-            assert_eq!(FirewallDoc::load(&doc), Some(config.clone()));
-            FirewallDoc::store(&mut doc, &config);
-            assert!(FirewallDoc::has_native(&doc));
-            assert_eq!(FirewallDoc::load_json(&doc), Some(config.to_json()));
         }
 
         // --- phase: probe_reconciliation_removes_absent_members_and_rules ---

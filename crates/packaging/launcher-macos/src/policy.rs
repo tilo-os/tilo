@@ -25,9 +25,11 @@
 //! - **Device grants.** Cameras and microphones sit behind TCC on macOS, not
 //!   device nodes; the profile grants no TCC service, so a device grant is
 //!   not honoured (the app is denied, never widened).
-//! - **Filtered egress without a gate socket.** There is no network namespace
-//!   to hide the host network behind, so a host allowlist is only reachable
-//!   through the gate's Unix socket. With no gate, the launch is offline.
+//! - **Filtered egress without a gate.** There is no network namespace to
+//!   hide the host network behind, so a host allowlist is only reachable
+//!   through the gate's loopback port
+//!   ([`launcher::netgate::LoopbackGate`]). With no gate, the launch is
+//!   offline.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -43,6 +45,12 @@ pub const TILO_SUPPORT_DIR: &str = "Library/Application Support/Tilo";
 /// Subdirectory of the container used as `TMPDIR`: the per-user temporary
 /// directory (`/var/folders/…`) is shared by every process of the user.
 pub const CONTAINER_TMP: &str = "tmp";
+
+/// What `libsystem` appends to the per-user cache and temporary directories
+/// (`confstr(_CS_DARWIN_USER_CACHE_DIR)`), as launchd does for XPC services.
+/// Metal keeps its compiled shaders below the cache directory, so this gives
+/// each app its own shader cache.
+pub const DARWIN_DIR_SUFFIX_ENV: &str = "DIRHELPER_USER_DIR_SUFFIX";
 
 /// The Tilo data home for `home`.
 pub fn data_home(home: &Path) -> PathBuf {
@@ -68,6 +76,56 @@ pub fn prepare_container(
     let dir = appdir::prepare_host_app_dir(data_home, workspace_id, package_id)?;
     std::fs::create_dir_all(dir.join(CONTAINER_TMP))?;
     Ok(dir)
+}
+
+/// The [`DARWIN_DIR_SUFFIX_ENV`] of the app whose container is `container`:
+/// one path component per room and package. `libsystem` accepts no `/` in
+/// it, and `+` is outside the alphabet of both components, so two containers
+/// never share a suffix.
+pub fn darwin_dir_suffix(container: &Path) -> Option<String> {
+    let package = container.file_name()?.to_str()?;
+    let room = container.parent()?.file_name()?.to_str()?;
+    Some(format!("so.tilo+{room}+{package}"))
+}
+
+/// The app's own directory below the per-user cache directory `user_cache`,
+/// created private to the user: where Metal caches the app's compiled
+/// shaders across launches.
+///
+/// # Errors
+///
+/// Returns the error of creating it; `InvalidInput` when `container` has no
+/// room and package to name it after.
+pub fn prepare_darwin_cache(user_cache: &Path, container: &Path) -> io::Result<DarwinCache> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let suffix = darwin_dir_suffix(container).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the container names no room and package",
+        )
+    })?;
+    let dir = std::fs::canonicalize(user_cache)?.join(&suffix);
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    // A link here would hand the app whatever it points at.
+    if !std::fs::symlink_metadata(&dir)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the app's cache directory is not a directory",
+        ));
+    }
+    Ok(DarwinCache { suffix, dir })
+}
+
+/// An app's own per-user cache directory: [`DARWIN_DIR_SUFFIX_ENV`] and
+/// where it resolves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DarwinCache {
+    pub suffix: String,
+    pub dir: PathBuf,
 }
 
 /// The environment a Seatbelt-confined app gets: the Linux launcher's
@@ -102,8 +160,8 @@ pub fn app_environment(container: &Path) -> Vec<(String, String)> {
 pub enum SeatbeltNetwork {
     /// No socket may be connected or bound, IP or filesystem.
     Denied,
-    /// Only this Unix socket — the egress gate — may be connected.
-    Gate(PathBuf),
+    /// Only this loopback TCP port — the egress gate — may be connected.
+    Gate(u16),
     /// IP traffic in and out, and the system resolver. Filesystem sockets
     /// stay denied: a shared host network is not the user's `ssh-agent`.
     Unrestricted,
@@ -120,8 +178,11 @@ pub struct PolicyInputs<'a> {
     pub container_dir: &'a Path,
     pub capabilities: &'a CapabilityPlan,
     pub egress: &'a EgressDecision,
-    /// The egress gate's socket, when [`EgressDecision::Filtered`] runs one.
-    pub gate_socket: Option<&'a Path>,
+    /// The egress gate's loopback port, when [`EgressDecision::Filtered`]
+    /// runs one.
+    pub gate_port: Option<u16>,
+    /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
+    pub darwin_cache: Option<&'a Path>,
 }
 
 /// Every grant of one launch, as resolved paths.
@@ -130,6 +191,8 @@ pub struct SeatbeltPolicy {
     pub payload: PathBuf,
     pub runtime: Option<PathBuf>,
     pub container: PathBuf,
+    /// Read and write, like the container.
+    pub darwin_cache: Option<PathBuf>,
     /// User-granted read-only paths.
     pub read_only: Vec<PathBuf>,
     /// User-granted read-write paths.
@@ -152,7 +215,7 @@ pub enum PolicyError {
     #[error("the {role} directory {path} resolves to the filesystem root")]
     Root { role: &'static str, path: PathBuf },
     #[error(
-        "the container {container} and the {role} directory {other} overlap; an app \
+        "the writable directory {container} and the {role} directory {other} overlap; an app \
          must not be able to write what it executes"
     )]
     Overlap {
@@ -181,15 +244,21 @@ impl SeatbeltPolicy {
             .map(|dir| resolve_dir("runtime", dir))
             .transpose()?;
         let container = resolve_dir("container", inputs.container_dir)?;
-        for (role, other) in std::iter::once(("payload", &payload))
-            .chain(runtime.as_ref().map(|runtime| ("runtime", runtime)))
-        {
-            if container.starts_with(other) || other.starts_with(&container) {
-                return Err(PolicyError::Overlap {
-                    role,
-                    container,
-                    other: other.clone(),
-                });
+        let darwin_cache = inputs
+            .darwin_cache
+            .map(|dir| resolve_dir("cache", dir))
+            .transpose()?;
+        for writable in std::iter::once(&container).chain(&darwin_cache) {
+            for (role, other) in std::iter::once(("payload", &payload))
+                .chain(runtime.as_ref().map(|runtime| ("runtime", runtime)))
+            {
+                if writable.starts_with(other) || other.starts_with(writable) {
+                    return Err(PolicyError::Overlap {
+                        role,
+                        container: writable.clone(),
+                        other: other.clone(),
+                    });
+                }
             }
         }
 
@@ -210,29 +279,23 @@ impl SeatbeltPolicy {
         let network = match inputs.egress {
             EgressDecision::Blocked => SeatbeltNetwork::Denied,
             EgressDecision::Unrestricted => SeatbeltNetwork::Unrestricted,
-            EgressDecision::Filtered(_) => match inputs.gate_socket.map(resolve_socket) {
-                Some(Ok(socket)) => SeatbeltNetwork::Gate(socket),
-                Some(Err(e)) => {
-                    not_enforced.push(format!(
-                        "filtered egress: the gate socket cannot be resolved ({e}); the app \
-                         is offline"
-                    ));
-                    SeatbeltNetwork::Denied
-                }
-                None => {
+            EgressDecision::Filtered(_) => {
+                if let Some(port) = inputs.gate_port {
+                    SeatbeltNetwork::Gate(port)
+                } else {
                     not_enforced.push(
-                        "filtered egress: no gate socket was provided; the app is offline"
-                            .to_string(),
+                        "filtered egress: no gate is running; the app is offline".to_string(),
                     );
                     SeatbeltNetwork::Denied
                 }
-            },
+            }
         };
 
         Ok(SeatbeltPolicy {
             payload,
             runtime,
             container,
+            darwin_cache,
             read_only,
             read_write,
             network,
@@ -254,18 +317,6 @@ fn resolve_dir(role: &'static str, path: &Path) -> Result<PathBuf, PolicyError> 
         });
     }
     Ok(resolved)
-}
-
-/// A socket may not exist yet when the profile is built, so only its parent
-/// is resolved.
-fn resolve_socket(path: &Path) -> io::Result<PathBuf> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent directory"))?;
-    Ok(std::fs::canonicalize(parent)?.join(name))
 }
 
 fn resolve_grants(paths: &[PathBuf], not_enforced: &mut Vec<String>) -> Vec<PathBuf> {
@@ -334,7 +385,8 @@ mod tests {
             container_dir: &layout.container,
             capabilities: plan,
             egress,
-            gate_socket: None,
+            gate_port: None,
+            darwin_cache: None,
         }
     }
 
@@ -444,14 +496,11 @@ mod tests {
         assert_eq!(offline.network, SeatbeltNetwork::Denied);
         assert_eq!(offline.not_enforced.len(), 1);
 
-        let gate = l.root.join("gate.sock");
         let mut i = inputs(&l, &plan, &filtered);
-        i.gate_socket = Some(&gate);
+        i.gate_port = Some(9050);
         let gated = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(
-            gated.network,
-            SeatbeltNetwork::Gate(std::fs::canonicalize(&l.root).unwrap().join("gate.sock"))
-        );
+        assert_eq!(gated.network, SeatbeltNetwork::Gate(9050));
+        assert!(gated.not_enforced.is_empty());
     }
 
     #[test]
@@ -475,6 +524,73 @@ mod tests {
             container.join(".local/share").display().to_string()
         );
         assert_eq!(get("TMPDIR"), container.join("tmp").display().to_string());
+    }
+
+    #[test]
+    fn each_container_gets_its_own_cache_directory() {
+        let data = Path::new("/Users/u/Library/Application Support/Tilo");
+        let suffix = |room: &str, package: &str| {
+            darwin_dir_suffix(&container_dir(data, Some(room), package)).unwrap()
+        };
+        assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
+        assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
+        assert_ne!(suffix("a", "so.tilo.notes"), suffix("b", "so.tilo.notes"));
+        assert!(!suffix("../x", "a/b").contains('/'));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let user_cache = tmp.path().join("C");
+        std::fs::create_dir_all(&user_cache).unwrap();
+        let container = container_dir(tmp.path(), Some("r"), "so.tilo.notes");
+        let cache = prepare_darwin_cache(&user_cache, &container).unwrap();
+        assert_eq!(cache.suffix, "so.tilo+r+so.tilo.notes");
+        assert_eq!(
+            cache.dir,
+            std::fs::canonicalize(&user_cache)
+                .unwrap()
+                .join(&cache.suffix)
+        );
+        assert_eq!(
+            prepare_darwin_cache(&user_cache, &container).unwrap(),
+            cache
+        );
+
+        let other = container_dir(tmp.path(), Some("r"), "so.tilo.other");
+        std::os::unix::fs::symlink(
+            &cache.dir,
+            user_cache.join(darwin_dir_suffix(&other).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            prepare_darwin_cache(&user_cache, &other).is_err(),
+            "a link to another app's cache was accepted"
+        );
+    }
+
+    #[test]
+    fn the_cache_directory_is_writable_and_never_executable() {
+        let l = layout();
+        let plan = CapabilityPlan::empty();
+        let egress = EgressDecision::Blocked;
+        let cache = l.root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut i = inputs(&l, &plan, &egress);
+        i.darwin_cache = Some(&cache);
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert_eq!(
+            policy.darwin_cache,
+            Some(std::fs::canonicalize(&cache).unwrap())
+        );
+
+        let inside = l.payload.join("cache");
+        std::fs::create_dir_all(&inside).unwrap();
+        i.darwin_cache = Some(&inside);
+        assert!(matches!(
+            SeatbeltPolicy::resolve(&i),
+            Err(PolicyError::Overlap {
+                role: "payload",
+                ..
+            })
+        ));
     }
 
     #[test]

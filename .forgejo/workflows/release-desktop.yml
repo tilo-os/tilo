@@ -1,0 +1,377 @@
+name: Release / desktop
+
+# Native builds cover the compositor's distribution graphics/input stack.
+# Pull requests run cheap preflight only. Full distro builds run weekly, on
+# release tags, or by explicit dispatch while CI capacity is constrained.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dist/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".cargo/config.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/session/shell/**"
+      - "apps/imager/**"
+      - "crates/system/block-devices/**"
+      - "crates/sdk/tilo-app/**"
+      - "crates/sdk/ui-core/**"
+      - "crates/packaging/launcher/**"
+      - "crates/system/sandbox-core/**"
+      - "crates/session/tilo-unlock-helper/**"
+      - ".forgejo/workflows/release-desktop.yml"
+      - "docs/install-contract.json"
+      - "scripts/check-install-contract.py"
+  schedule:
+    # One weekly candidate, separated from Saturday's OS image build.
+    - cron: "0 4 * * 5"
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      full_native:
+        description: "Also build and install-test ARM64 when its native-runner capability is enabled."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # Preserve explicit full-native rehearsals across unrelated main pushes.
+  group: package-desktop-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+  # Tags and explicit full-native dispatches use the native-ARM pool.
+  TILO_DESKTOP_ARM64_RELEASES: "1"
+
+jobs:
+  validate:
+    runs-on: runner
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.lanes.outputs.matrix }}
+      release_arches: ${{ steps.lanes.outputs.release_arches }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate packaging inputs before allocating native builders
+        id: preflight
+        shell: bash
+        run: |
+          set -uo pipefail
+          diagnostic=success
+          if ! python3 scripts/check-install-contract.py; then
+            diagnostic=install-contract
+          elif ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD; then
+            diagnostic=bash-syntax
+          elif ! cc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c; then
+            diagnostic=qemu-wrapper-compile
+          elif ! test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"; then
+            diagnostic=arch-version-drift
+          elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
+            diagnostic=rpm-version-drift
+          elif ! dist/ci/run-dev-session-test.sh; then
+            diagnostic=dev-session-contract
+          elif ! dist/ci/run-payload-contract-tests.sh; then
+            diagnostic=payload-contract
+          elif ! os/tests/portal_config_validity.sh; then
+            diagnostic=portal-contract
+          fi
+          echo "diagnostic=$diagnostic" >> "$GITHUB_OUTPUT"
+      - name: Enforce packaging preflight result
+        shell: bash
+        env:
+          PREFLIGHT_DIAGNOSTIC: ${{ steps.preflight.outputs.diagnostic }}
+        run: |
+          if [[ $PREFLIGHT_DIAGNOSTIC != success ]]; then
+            echo "packaging preflight failed: $PREFLIGHT_DIAGNOSTIC" >&2
+            exit 1
+          fi
+      - name: Select native release lanes
+        id: lanes
+        env:
+          FULL_NATIVE: ${{ github.event.inputs.full_native }}
+        shell: bash
+        run: |
+          # Shared references must pin multi-architecture indexes, not amd64
+          # child manifests: Docker selects the immutable native child for
+          # each matrix lane from the index.
+          common_targets=$(cat <<'EOF'
+          nix|docker.io/nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c|
+          ubuntu-24.04|docker.io/library/ubuntu@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9|1+ubuntu24.04
+          debian-13|docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1|1+deb13
+          fedora-44|registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c|
+          EOF
+          )
+          # Fat-LTO desktop packaging needs the larger runner class.
+          amd64_runner=runner-large
+          arm64_runner=runner-large-arm64
+          # menci's cross-build image deliberately declares an amd64 OCI
+          # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
+          # but give native runners an arm64-declared image.
+          amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
+          arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
+          release_arches=amd64
+          if [[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
+             [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
+            release_arches=amd64,arm64
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" --arg amd64_runner "$amd64_runner" --arg arm64_runner "$arm64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets},
+              {arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}
+            ]}')
+          else
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg amd64_runner "$amd64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}
+            ]}')
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "release_arches=$release_arches" >> "$GITHUB_OUTPUT"
+
+  package:
+    # Full five-distro compilation is opt-in for branch/PR changes.
+    if: github.event_name != 'pull_request'
+    needs: validate
+    name: package lane / ${{ matrix.arch }}
+    # Desktop packaging uses the larger native runner class.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    # One architecture job runs all five native userspaces serially. Forgejo
+    # does not enforce matrix max-parallel or job-level concurrency groups, so
+    # splitting distros into jobs overcommits the shared fat-LTO builder.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      # A full clone: every userspace container gets a copy of this checkout,
+      # and the Nix lane reads it through libgit2, which cannot fetch the
+      # objects a blobless partial clone leaves out. From one, `nix build`
+      # failed with "getting Git object '<HEAD>': object not found".
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Materialize the architecture-specific compiler cache client
+        uses: ./.forgejo/actions/cache-github-assets
+        with:
+          key: desktop-external-inputs-${{ matrix.arch }}
+          assets: sccache-v0.17.0-${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}-unknown-linux-musl.tar.gz
+          fallback-keys: |
+            github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+            github-assets-all-v1-
+      - name: Build and install-test all five target userspaces
+        env:
+          # The compiler cache never enters pull-request code here, and a
+          # payload that can be published never compiles through the
+          # shared cache: every CI job and agent sandbox can write any object
+          # in it. Scheduled and dispatched main runs publish the OS desktop
+          # payload, desktop-v tags the release; only a dispatch of another
+          # branch keeps the cache.
+          TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') && '1' || '0' }}
+          # The larger runner supports six native compiler processes.
+          TILO_CARGO_JOBS: "6"
+          TILO_LANE_TARGETS: ${{ matrix.targets }}
+          # RPM signing is restricted to protected desktop tags and happens in
+          # the Fedora packaging userspace, where rpm-sign is installed. The
+          # key is never available to pull requests or ordinary branch builds.
+          TILO_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_B64: ${{ secrets.TILO_RPM_SIGNING_KEY_B64 }}
+          TILO_RPM_SIGNING_KEY_ID: ${{ secrets.TILO_RPM_SIGNING_KEY_ID }}
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
+        shell: bash
+        run: |
+          while IFS='|' read -r distro image revision; do
+            [[ -n $distro ]] || continue
+            echo "::group::$distro / ${{ matrix.arch }}"
+            if ! dist/ci/run-package-job.sh \
+                "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done <<<"$TILO_LANE_TARGETS"
+      # Forgejo's native artifact service implements the v3 protocol. Upstream
+      # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: arch-${{ matrix.arch }}
+          path: dist/ci-output/arch-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: nix-${{ matrix.arch }}
+          path: dist/ci-output/nix-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: ubuntu-24.04-${{ matrix.arch }}
+          path: dist/ci-output/ubuntu-24.04-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: debian-13-${{ matrix.arch }}
+          path: dist/ci-output/debian-13-${{ matrix.arch }}/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: fedora-44-${{ matrix.arch }}
+          path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
+          if-no-files-found: error
+
+  publish-os-payload:
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: runner
+    timeout-minutes: 120
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Publish immutable desktop payloads and advance their channels
+        env:
+          # The CI account's package token writes the immutable payload (as
+          # build-kernel.yml does); the repository-scoped release token
+          # advances the payload channel variables. The Authorized Integration
+          # this used before was rejected ("authGroup.Verify") and Forgejo has
+          # no API to repair it.
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          # Keep future chaining available, but never publish OS versions automatically.
+          CONTINUOUS_OS_RELEASE: "0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n ${PACKAGE_TOKEN:-} && -n ${VARIABLE_TOKEN:-} ]] || {
+            printf 'REGISTRY_TOKEN and RELEASE_TOKEN are required\n' >&2
+            exit 1
+          }
+          owner=${GITHUB_REPOSITORY%%/*}
+          package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
+          version="0.0.0-$GITHUB_SHA"
+          variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
+          put_immutable() {
+            local file=$1 url=$2 response status remote
+            response=$(mktemp "$RUNNER_TEMP/tilo-desktop-response.XXXXXX")
+            status=$(curl --silent --show-error --retry 3 --retry-all-errors \
+              --output "$response" --write-out '%{http_code}' \
+              --header "Authorization: token $PACKAGE_TOKEN" \
+              --request PUT --upload-file "$file" "$url")
+            case "$status" in
+              200|201|204) ;;
+              409)
+                remote=$(mktemp "$RUNNER_TEMP/tilo-existing-desktop.XXXXXX")
+                curl --fail --silent --show-error --retry 3 --retry-all-errors \
+                  --header "Authorization: token $PACKAGE_TOKEN" "$url" --output "$remote"
+                cmp --silent "$file" "$remote"
+                ;;
+              *) cat "$response" >&2; exit 1 ;;
+            esac
+          }
+          update_variable() {
+            local name=$1 value=$2 endpoint status method
+            endpoint="$variable_api/$name"
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: token $VARIABLE_TOKEN" "$endpoint")
+            case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
+            curl --fail --silent --show-error --request "$method" \
+              --header "Authorization: token $VARIABLE_TOKEN" \
+              --header 'Content-Type: application/json' \
+              --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
+          }
+          shopt -s nullglob
+          found=0
+          for bundle in release/fedora-44-*/tilo-desktop-os-*.tar.gz; do
+            found=1
+            arch=${bundle##*tilo-desktop-os-}
+            arch=${arch%.tar.gz}
+            digest_file="$bundle.sha256"
+            (cd "$(dirname "$bundle")" && sha256sum --check --strict "${digest_file##*/}")
+            url="$package_api/tilo-desktop-os/$version/${bundle##*/}"
+            put_immutable "$bundle" "$url"
+            put_immutable "$digest_file" "$url.sha256"
+            digest=$(awk '{print $1}' "$digest_file")
+            upper=${arch^^}
+            update_variable "TILO_DESKTOP_PAYLOAD_URL_$upper" "$url"
+            update_variable "TILO_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
+            if [[ $arch == x86_64 ]]; then
+              update_variable TILO_DESKTOP_PAYLOAD_URL "$url"
+              update_variable TILO_DESKTOP_PAYLOAD_SHA256 "$digest"
+            fi
+          done
+          [[ $found == 1 ]]
+          if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
+            dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
+            curl --fail --silent --show-error --request POST \
+              --header "Authorization: token $VARIABLE_TOKEN" \
+              --header 'Content-Type: application/json' \
+              --data '{"ref":"main","inputs":{"with_browser":"1","release":"true"}}' \
+              "$dispatch_api"
+            echo '::notice::requested continuous desktop/OS integration release'
+          fi
+
+  release-guard:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: validate
+    runs-on: runner
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Require this exact commit to be checked on main
+        shell: bash
+        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: [validate, package, release-guard]
+    runs-on: runner
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Flatten per-target artifact directories
+        run: |
+          find release -mindepth 2 -type f -print0 | while IFS= read -r -d '' artifact; do
+            target="release/${artifact##*/}"
+            test ! -e "$target"
+            mv "$artifact" "$target"
+          done
+          find release -mindepth 1 -type d -empty -delete
+      - name: Check release version and create checksums
+        env:
+          RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}
+        run: |
+          version="${GITHUB_REF_NAME#desktop-v}"
+          test "$version" = "$(<dist/VERSION)"
+          dist/ci/verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"
+          (cd release && sha256sum -- * > SHA256SUMS)
+      - name: Publish package-manager repositories
+        env:
+          TILO_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#desktop-v}"
+      - name: Publish checksummed, install-tested artifacts
+        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        with:
+          direction: upload
+          url: ${{ github.server_url }}
+          repo: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.RELEASE_TOKEN }}
+          release-dir: release
+          override: true
+          release-notes: "Tilo Desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."

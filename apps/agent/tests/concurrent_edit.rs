@@ -24,10 +24,11 @@
               counter bounded by a short-lived test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
+use tilo_actions::ActionAddress;
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -176,7 +177,7 @@ fn drive_peer_and_type(
     let mut typed = 0usize;
     let mut table_done = false;
     let mut invocation_actor = None;
-    while Instant::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
+    while ui::time::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
         let Some(event) = peer.recv().unwrap() else {
             continue;
         };
@@ -201,12 +202,13 @@ fn drive_peer_and_type(
                     replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
 
                 // Land a human edit while the broker invocation is still in

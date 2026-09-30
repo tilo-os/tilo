@@ -13,12 +13,17 @@ static HISTORY: HistoryDefinition = HistoryDefinition {
         content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
+/// An app whose registered framework History has two committed changes.
 fn app() -> App {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
+    app_on(state)
+}
+/// An app on `state` whose History is the framework's registered History.
+fn app_on(state: State) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -38,13 +43,21 @@ fn app() -> App {
     )
     .unwrap()
 }
-fn layout(app: &mut App) {
+/// Lay out and paint one 900×650 frame, as the native runner does.
+pub(crate) fn layout(app: &mut App) {
     app.init_layout();
     let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
     let mut scene = vello::Scene::new();
     draw_frame_content(app, &mut scene, 900, 650, 1.0, None);
     complete_native_frame_content(app, |_| {});
+}
+/// [`app`] where the host's own chrome presents History, laid out.
+pub(crate) fn native_chrome_app() -> App {
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    app
 }
 #[test]
 fn native_history_surface_composes_installs_and_keeps_editor_state() {
@@ -768,7 +781,7 @@ struct RoutedOwners {
 }
 impl RoutedOwners {
     fn new() -> Self {
-        use crate::application::{HostContext, LaunchTarget, RestoreInput};
+        use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,
         };
@@ -790,13 +803,15 @@ impl RoutedOwners {
         for instance in [10, 11] {
             let context = HostContext::prepare(
                 definition,
-                records.clone(),
-                views.clone(),
-                "D".into(),
-                instance,
-                runner_permissions(),
-                author(),
-                provenance(),
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: "D".into(),
+                    instance_id: instance,
+                    permissions: runner_permissions(),
+                    author: author(),
+                    action_context: provenance(),
+                },
                 &LaunchTarget::New,
             )
             .unwrap();
@@ -1176,7 +1191,9 @@ struct RoutedPrimary {
 }
 impl RoutedPrimary {
     fn new(shape: PrimaryMetadataShape) -> Self {
-        use crate::application::{ApplicationDefinition, HostContext, LaunchTarget, RestoreInput};
+        use crate::application::{
+            ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+        };
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-4000-8000-000000000078";
@@ -1202,15 +1219,17 @@ impl RoutedPrimary {
         let target = LaunchTarget::PrimaryNew;
         let context = HostContext::prepare(
             &definition,
-            records.clone(),
-            views,
-            "D".into(),
-            70,
-            std::rc::Rc::new(std::cell::RefCell::new(
-                crate::permissions::PermissionContext::permissive(),
-            )),
-            crate::permissions::UserId("primary-author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views,
+                device_id: "D".into(),
+                instance_id: 70,
+                permissions: std::rc::Rc::new(std::cell::RefCell::new(
+                    crate::permissions::PermissionContext::permissive(),
+                )),
+                author: crate::permissions::UserId("primary-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();
@@ -3577,7 +3596,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     // references survive the supported close/rebind operation.
     unsafe {
         if close {
-            (*pointer).close_components();
+            crate::component_lifecycle::close_components(&mut (*pointer));
         } else {
             (*pointer).bind_record(second.clone(), checkout.clone());
         }
@@ -3819,6 +3838,8 @@ impl PaletteHistoryOwner {
 }
 
 impl crate::widget::Widget for PaletteHistoryOwner {
+    crate::provides!(dyn crate::resources::PublishesResources);
+
     fn name(&self) -> &str {
         "Palette history owner"
     }
@@ -3866,22 +3887,6 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     ) {
         self.text.handle_event(event, ctx);
     }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self
-            .state
-            .authority
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            return vec![];
-        }
-        vec![
-            tilo_actions::Resource::new("palette-owner", "fixture.palette", "Palette owner")
-                .with_action(self.action("text", PALETTE_TEXT_OPERATION, false))
-                .with_action(self.action("json", PALETTE_JSON_OPERATION, true))
-                .with_action(self.action("named", PALETTE_TEXT_OPERATION, false)),
-        ]
-    }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [PALETTE_TEXT_OPERATION.into(), PALETTE_JSON_OPERATION.into()]
             .into_iter()
@@ -3910,6 +3915,25 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::resources::PublishesResources for PaletteHistoryOwner {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self
+            .state
+            .authority
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == 1
+        {
+            return vec![];
+        }
+        vec![
+            tilo_actions::Resource::new("palette-owner", "fixture.palette", "Palette owner")
+                .with_action(self.action("text", PALETTE_TEXT_OPERATION, false))
+                .with_action(self.action("json", PALETTE_JSON_OPERATION, true))
+                .with_action(self.action("named", PALETTE_TEXT_OPERATION, false)),
+        ]
     }
 }
 
@@ -4403,13 +4427,13 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 }
 
 impl crate::widget::Widget for ComponentControlOwner {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.text.accessibility()
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.emitter
-            .as_ref()
-            .and_then(|emitter| emitter.borrow_mut().take())
     }
     fn name(&self) -> &str {
         &self.id
@@ -4454,21 +4478,6 @@ impl crate::widget::Widget for ComponentControlOwner {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) {
         self.text.handle_event(event, ctx);
-    }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![self.resource()];
-        let empty = tilo_actions::Resource::new(&self.id, "fixture.component", "Empty duplicate");
-        match self.duplicate_depth.get() {
-            1 => resources.push(empty),
-            2 => resources.push(
-                tilo_actions::Resource::new("parent", "fixture.parent", "Parent").with_child(empty),
-            ),
-            _ => {}
-        }
-        resources
-    }
-    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        (id == self.id).then(|| self.resource())
     }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [self.operation.clone()].into_iter().collect()
@@ -4520,6 +4529,32 @@ impl crate::widget::Widget for ComponentControlOwner {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::resources::PublishesResources for ComponentControlOwner {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = vec![self.resource()];
+        let empty = tilo_actions::Resource::new(&self.id, "fixture.component", "Empty duplicate");
+        match self.duplicate_depth.get() {
+            1 => resources.push(empty),
+            2 => resources.push(
+                tilo_actions::Resource::new("parent", "fixture.parent", "Parent").with_child(empty),
+            ),
+            _ => {}
+        }
+        resources
+    }
+    fn resource(&self, _: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        (id == self.id).then(|| self.resource())
+    }
+}
+
+impl crate::widget::controls::ActionControls for ComponentControlOwner {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.emitter
+            .as_ref()
+            .and_then(|emitter| emitter.borrow_mut().take())
     }
 }
 
@@ -4732,6 +4767,7 @@ fn component_control_root(
             )),
             author: crate::permissions::UserId("component-control-author".into()),
             operation_context: tilo_actions::ActionContext::default(),
+            writes_as_author: false,
         };
         let live = ComponentControlOwner::new(
             id,
@@ -5171,12 +5207,11 @@ fn history_preview_keeps_session_notifications_on_the_live_owner_exactly_once() 
         !visual_names.iter().any(|name| name == "Live owner"),
         "active History presentation hides the live owner from visual traversal",
     );
-    let session_names = app
-        .root_widget
-        .collaboration_children_mut()
-        .into_iter()
-        .map(|child| child.name().to_string())
-        .collect::<Vec<_>>();
+    let session_names =
+        crate::collaboration::participants::collaboration_children(app.root_widget.as_mut())
+            .into_iter()
+            .map(|child| child.name().to_string())
+            .collect::<Vec<_>>();
     assert_eq!(session_names, ["Live owner"]);
 
     app.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });
@@ -5715,8 +5750,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
     emit_later("after-return");
     assert!(binding.queued_controls.borrow().is_empty());
     assert!(
-        app.root_widget.children_mut()[0]
-            .take_control_invocation()
+        crate::widget::controls::take_control_invocation(app.root_widget.children_mut()[0])
             .is_none()
     );
     assert_eq!(
@@ -5733,8 +5767,7 @@ fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_outp
     layout(&mut app);
     emit_later("while-suspended");
     assert!(
-        app.root_widget.children_mut()[0]
-            .take_control_invocation()
+        crate::widget::controls::take_control_invocation(app.root_widget.children_mut()[0])
             .is_none()
     );
     assert_eq!(binding.queued_controls.borrow().len(), 1);
@@ -5817,6 +5850,8 @@ struct CustodyDeniedRoot {
 }
 
 impl crate::widget::Widget for CustodyDeniedRoot {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
@@ -5872,13 +5907,6 @@ impl crate::widget::Widget for CustodyDeniedRoot {
             vec![self.child.as_mut()]
         }
     }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if self.denied.get() {
-            None
-        } else {
-            self.child.take_control_invocation()
-        }
-    }
     fn visit_components(
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -5887,6 +5915,16 @@ impl crate::widget::Widget for CustodyDeniedRoot {
             Err(crate::bound_dispatch::BoundDispatchError::CrossRecordReentry)
         } else {
             self.child.visit_components(request)
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CustodyDeniedRoot {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if self.denied.get() {
+            None
+        } else {
+            crate::widget::controls::take_control_invocation(self.child.as_mut())
         }
     }
 }
@@ -6103,6 +6141,12 @@ struct CustodyControlsRoot {
 }
 
 impl crate::widget::Widget for CustodyControlsRoot {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::record::capability::RecordScoped
+    );
+
     fn take_structure_dirty(&mut self) -> bool {
         self.child.take_structure_dirty()
             | self
@@ -6114,19 +6158,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
         self.child.mark_drawn();
         if let Some(callback) = &mut self.mark_drawn_callback {
             callback();
-        }
-    }
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.child.install_control_custody(domain, attachment);
-        if let Some(output) = &self.installed_output {
-            if output.borrow().is_none() {
-                *output.borrow_mut() =
-                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
-            }
         }
     }
     fn draw_overlay(
@@ -6147,11 +6178,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     // that enclosing boundary, not a second independent document owner.
     fn has_separate_document_owner(&self) -> bool {
         false
-    }
-    fn record_intent(&self) -> Option<crate::RecordCheckout> {
-        self.record
-            .as_ref()
-            .and_then(|record| record.borrow().clone())
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -6201,9 +6227,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
         vec![self.child.as_mut()]
     }
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.resources.clone()
-    }
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = self.child.resource_operation_handlers();
         handlers.insert("fixture.control".into());
@@ -6227,6 +6250,36 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::record::capability::RecordScoped for CustodyControlsRoot {
+    fn record_intent(&self) -> Option<crate::RecordCheckout> {
+        self.record
+            .as_ref()
+            .and_then(|record| record.borrow().clone())
+    }
+}
+
+impl crate::resources::PublishesResources for CustodyControlsRoot {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources.clone()
+    }
+}
+
+impl crate::widget::controls::ActionControls for CustodyControlsRoot {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        crate::widget::controls::install_control_custody(self.child.as_mut(), domain, attachment);
+        if let Some(output) = &self.installed_output {
+            if output.borrow().is_none() {
+                *output.borrow_mut() =
+                    Some(domain.producer(crate::ControlProducerDiscipline::Fifo { limit: 64 }));
+            }
+        }
     }
 }
 
@@ -6795,8 +6848,10 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     assert_eq!(outer_ledger.borrow().len(), 1, "outer owner stays live");
     assert!(a_ledger.borrow().is_empty());
     let mut saved = Vec::new();
-    app.root_widget
-        .visit_framework_history(&mut |history, _| saved.extend(history.pending_control_reviews()));
+    crate::history_mode::capability::visit_framework_history(
+        app.root_widget.as_ref(),
+        &mut |history, _| saved.extend(history.pending_control_reviews()),
+    );
     assert_eq!(saved.len(), 1);
     assert!(saved[0].owner.starts_with("legacy owner "));
     assert!(
@@ -6832,10 +6887,12 @@ fn custody_embedded_click(app: &mut App, id: &str) {
     app.layout.node_map.clear();
     app.bindings.clear();
     let mut clicked = false;
-    app.root_widget
-        .visit_framework_history_mut(&mut |history, _| {
+    crate::history_mode::capability::visit_framework_history_mut(
+        app.root_widget.as_mut(),
+        &mut |history, _| {
             clicked |= history.activate_retained_control_for_test(id);
-        });
+        },
+    );
     assert!(clicked, "real embedded control {id}");
     layout(app);
 }
@@ -7358,9 +7415,10 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     layout(&mut app);
     let reviews = |app: &App| {
         let mut saved = app.pending_history_controls();
-        app.root_widget.visit_framework_history(&mut |history, _| {
-            saved.extend(history.pending_control_reviews())
-        });
+        crate::history_mode::capability::visit_framework_history(
+            app.root_widget.as_ref(),
+            &mut |history, _| saved.extend(history.pending_control_reviews()),
+        );
         saved
     };
     let saved = reviews(&app);
@@ -7608,8 +7666,11 @@ fn control_custody_core_nested_unbound_tile_follows_authorized_record_renewal() 
 
     let c = ControlDomain::outer();
     c.finish_initial_installation();
-    app.root_widget.children_mut()[0].children_mut()[0]
-        .install_control_custody(&c, CustodyAttachment::Dynamic);
+    crate::widget::controls::install_control_custody(
+        app.root_widget.children_mut()[0].children_mut()[0],
+        &c,
+        CustodyAttachment::Dynamic,
+    );
     assert!(c.coverage().unsafe_late_attachments > 0);
     assert!(c.drain_live().is_empty());
 
@@ -7676,7 +7737,11 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         let mut tile =
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
         assert!(tile.history_owner().is_none(), "actual unbound TileHost");
-        tile.install_control_custody(&left, CustodyAttachment::Initial);
+        crate::widget::controls::install_control_custody(
+            &mut tile,
+            &left,
+            CustodyAttachment::Initial,
+        );
         a.finish_initial_installation();
         b.finish_initial_installation();
         let activate = |tile: &mut crate::widget::TileHost| {
@@ -7693,7 +7758,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         } else {
             (None, vec![])
         };
-        tile.install_control_custody(&b, CustodyAttachment::Dynamic);
+        crate::widget::controls::install_control_custody(&mut tile, &b, CustodyAttachment::Dynamic);
         assert!(
             b.drain_live().is_empty(),
             "foreign B must not adopt queued shared-control E"
@@ -7734,7 +7799,11 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         );
         drop(lease);
         // Legitimate presentation reparenting stays in A's exact incarnation.
-        tile.install_control_custody(&right, CustodyAttachment::Dynamic);
+        crate::widget::controls::install_control_custody(
+            &mut tile,
+            &right,
+            CustodyAttachment::Dynamic,
+        );
         activate(&mut tile);
         assert_eq!(
             a.drain_live().len(),
@@ -7830,5 +7899,144 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
             .0
             .is_empty(),
         "canonical primary owner must replay its accepted history too"
+    );
+}
+
+#[test]
+fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
+    use crate::host_chrome::model::CommandGroup;
+    let has_open_button = |app: &App| {
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-open"))
+                .unwrap_or(false)
+        })
+    };
+    let mut in_window = app();
+    in_window.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+    layout(&mut in_window);
+    assert!(
+        has_open_button(&in_window),
+        "hosts without chrome keep the button"
+    );
+
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    assert!(!has_open_button(&app));
+    let show = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .expect("the menu bar presents framework History");
+    assert_eq!(show.label, "Show History");
+    assert!(show.enabled);
+    assert!(app.invoke_host_command(&show.invocation().unwrap()));
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().is_open());
+    assert!(
+        has_open_button(&app),
+        "open History keeps its way back to the live app"
+    );
+
+    let hide = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .unwrap();
+    assert_eq!(hide.label, "Hide History");
+    assert!(app.invoke_host_command(&hide.invocation().unwrap()));
+    layout(&mut app);
+    assert!(!app.history.as_ref().unwrap().is_open());
+    assert!(!has_open_button(&app));
+}
+
+#[test]
+fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
+    use crate::host_chrome::model::CommandGroup;
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    store.create_record(&checkout).unwrap();
+    let mut state = State::from_doc(
+        store
+            .read(&checkout.id, automerge::AutoCommit::clone)
+            .unwrap(),
+    );
+    state.doc.put(ROOT, "body", "typed").unwrap();
+    state.commit_action(None, None);
+    let mut app = app_on(state);
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+
+    let rows = app
+        .history
+        .as_ref()
+        .unwrap()
+        .current_entries(&app.state.doc);
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows[0].is_genesis(),
+        "History keeps the version it was created as"
+    );
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .map(|command| command.label)
+        .collect();
+    assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
+    assert!(recent[0].contains("Edited body"), "{recent:?}");
+}
+
+#[test]
+fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
+    use crate::host_chrome::model::CommandGroup;
+    let mut app = native_chrome_app();
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .collect();
+    assert_eq!(recent.len(), 2, "both committed changes are listed");
+    assert!(
+        recent
+            .iter()
+            .all(|command| command.enabled && command.label.contains(" · "))
+    );
+    let entry = |command: &crate::host_chrome::model::HostCommand| {
+        command.invocation().unwrap().arguments["entry"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(entry(&recent[0]), entry(&recent[1]));
+
+    // The older change, so opening at it is not the timeline's default.
+    let chosen = &recent[1];
+    assert!(app.invoke_host_command(&chosen.invocation().unwrap()));
+    layout(&mut app);
+    let history = app.history.as_ref().unwrap();
+    assert!(history.is_open());
+    let selected: Vec<_> = history
+        .timeline_selection()
+        .into_iter()
+        .map(crate::standalone_history_host::encode_entry)
+        .collect();
+    assert_eq!(selected, [entry(chosen)]);
+    assert!(
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-before"))
+                .unwrap_or(false)
+        }),
+        "the chosen change shows its before and after"
+    );
+    assert_eq!(
+        app.host_commands(true)
+            .iter()
+            .filter(|command| command.group == CommandGroup::RecentChanges)
+            .count(),
+        2,
+        "open History still lists its changes"
     );
 }

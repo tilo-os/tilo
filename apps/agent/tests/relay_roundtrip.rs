@@ -18,11 +18,11 @@
               test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
-use tilo_actions::Resource;
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
@@ -221,32 +221,19 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     typed_peer::publish_actions(peer, APP, &resources);
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the invocation envelope's fields stay explicit, as the toolkit host receives them"
-)]
 fn service_word_processor_invocation(
     peer: &mut UnixStream,
     replica: &mut AutoCommit,
-    id: u64,
-    resource: String,
-    action: String,
-    argument: Option<&str>,
-    actor: &str,
-    context: Option<&tilo_actions::ActionContext>,
+    invocation: typed_peer::DocumentInvocation<'_>,
 ) {
+    let id = invocation.id;
     let resources = word_processor_resources(replica);
     let update = typed_peer::service_document_invocation(
         peer,
         replica,
         &resources,
         word_processor::actions::register,
-        id,
-        resource,
-        action,
-        argument,
-        actor,
-        context,
+        invocation,
     );
     send(peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
 }
@@ -269,7 +256,7 @@ fn drive_peer_to_table(
     // their delivery is intentionally not globally ordered. Keep draining
     // until both guarantees have been observed instead of treating a fast
     // document update as permission to stop listening for presence.
-    while Instant::now() < deadline && !(done && saw_scribe_presence) {
+    while ui::time::now() < deadline && !(done && saw_scribe_presence) {
         let Some(event) = recv(&mut peer) else {
             continue;
         };
@@ -314,12 +301,13 @@ fn drive_peer_to_table(
                 service_word_processor_invocation(
                     &mut peer,
                     &mut replica,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
             }
             event @ CollabEvent::Document { .. } => {
@@ -469,7 +457,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         // history evidence must arrive even though the user-facing work already
         // looks complete.
         let deadline = tilo_test_env::hang_deadline();
-        while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
+        while ui::time::now() < deadline && ui::read_runs(&replica).is_empty() {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };
@@ -695,7 +683,7 @@ fn drive_files_peer(
 ) {
     files_peer.set_read_timeout(Some(Duration::from_millis(50)));
     let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline
+    while ui::time::now() < deadline
         && matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
     {
         let Some(event) = recv(&mut files_peer) else {
@@ -718,7 +706,7 @@ fn drive_word_processor_to_table(
     let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     let mut answered = false;
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
@@ -741,12 +729,13 @@ fn drive_word_processor_to_table(
                 service_word_processor_invocation(
                     &mut wp_peer,
                     &mut replica,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
             }
             // The agent's edits. A delta from the file manager's document
@@ -817,7 +806,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     };
     let mut session = Session::connect(cfg).expect("agent connects");
 
-    let began = Instant::now();
+    let began = ui::time::now();
     let err = session
         .run()
         .expect_err("an unanswered address must not report success");
@@ -896,7 +885,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         peer.set_read_timeout(Some(Duration::from_millis(200)));
         let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
-        while Instant::now() < deadline && !done {
+        while ui::time::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };
@@ -918,12 +907,13 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
                     service_word_processor_invocation(
                         &mut peer,
                         &mut replica,
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
+                        typed_peer::DocumentInvocation {
+                            id,
+                            address: ActionAddress::new(resource, action),
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            context: context.as_deref(),
+                        },
                     );
                 }
                 event @ CollabEvent::Document { .. } => {
@@ -1032,7 +1022,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         peer.set_read_timeout(Some(Duration::from_millis(200)));
         let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
-        while Instant::now() < deadline && !done {
+        while ui::time::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };

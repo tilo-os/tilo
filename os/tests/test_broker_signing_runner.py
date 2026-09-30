@@ -175,6 +175,22 @@ class BrokerTests(unittest.TestCase):
 
 
 
+def alive(pid):
+    """Whether pid is a running process; an unreaped zombie is dead."""
+    try:
+        state=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    return state not in ('Z','X')
+
+
+# Deadlines here bound hangs, not speed: every process the tests start sleeps
+# far past them, so a runner that waited for its child, a descendant or an
+# inherited pipe is caught however slowly the host starts interpreters.
+HANG=60
+LONG_SLEEP=2*HANG
+
+
 class RemoteDeadlineTests(unittest.TestCase):
     def command(self, payload_bytes, timeout, code):
         return [sys.executable, '-c', b.REMOTE_WRAPPER, str(payload_bytes), str(timeout),
@@ -183,37 +199,49 @@ class RemoteDeadlineTests(unittest.TestCase):
     def test_remote_input_and_deadlines(self):
         with self.subTest(phase="binary_input_and_real_eof"):
             data=bytes(range(256))*4097
-            result=subprocess.run(self.command(len(data), 3, 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'),
-                                  input=data, capture_output=True, timeout=5)
+            result=subprocess.run(self.command(len(data), HANG, 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'),
+                                  input=data, capture_output=True, timeout=HANG)
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, data)
         with self.subTest(phase="stalled_input_has_worker_deadline"):
+            # stdin stays open and short, so only the input deadline ends it.
             child=subprocess.Popen(self.command(5, .2, 'raise AssertionError("must not run")'),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
-                self.assertNotEqual(child.wait(timeout=2), 0)
+                self.assertNotEqual(child.wait(timeout=HANG), 0)
             finally:
                 child.kill();child.communicate()
         with self.subTest(phase="timeout_kills_child_and_descendant"):
             with tempfile.TemporaryDirectory() as tmp:
-                marker=Path(tmp)/'escaped'
-                # The descendant outlives the 0.2s deadline by seconds, so a
-                # runner that waited for it (or its inherited pipes) is caught by
-                # elapsed time without depending on interpreter start-up speed.
-                descendant='import time,pathlib;time.sleep(3);pathlib.Path('+repr(str(marker))+').write_text("escaped")'
-                code='import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);time.sleep(30)'
-                before=time.monotonic()
-                result=subprocess.run(self.command(0,.2,code),input=b'',capture_output=True,timeout=5)
-                elapsed=time.monotonic()-before
-                self.assertNotEqual(result.returncode,0)
-                self.assertLess(elapsed,2.5)
-                # The descendant started before the runner returned; give it past
-                # its whole sleep from that point before proving it was killed.
-                time.sleep(3.5)
-                self.assertFalse(marker.exists())
+                started=Path(tmp)/'descendant'
+                descendant=('import os,pathlib,time;pathlib.Path('+repr(str(started))+').write_text(str(os.getpid()));'
+                            'time.sleep('+str(LONG_SLEEP)+')')
+                code=('import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);'
+                      'time.sleep('+str(LONG_SLEEP)+')')
+                # The kill must reach a descendant that exists. Lengthen the
+                # deadline until one started inside it; each attempt still
+                # asserts the full contract.
+                for deadline in (.5, 1, 2, 4, 8, 16):
+                    # The descendant holds the runner's stdout, so waiting for
+                    # it or its pipe would outlast HANG.
+                    result=subprocess.run(self.command(0,deadline,code),input=b'',capture_output=True,timeout=HANG)
+                    self.assertNotEqual(result.returncode,0)
+                    if started.exists():
+                        pid=int(started.read_text())
+                        # SIGKILL was sent before the runner returned; the
+                        # process finishes exiting asynchronously.
+                        gone=time.monotonic()+HANG
+                        while alive(pid) and time.monotonic()<gone:
+                            time.sleep(.05)
+                        self.assertFalse(alive(pid), 'the descendant must be killed with the child')
+                        break
+                else:
+                    self.fail('no descendant started within a 16 s deadline')
         with self.subTest(phase="exited_leader_does_not_leave_descendant_pipe_open"):
-            code='import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"])'
-            result=subprocess.run(self.command(0,1,code),input=b'',capture_output=True,timeout=2)
+            # The leader exits at once; its descendant keeps the runner's
+            # stdout open far past HANG unless the runner kills its group.
+            code='import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep('+str(LONG_SLEEP)+')"])'
+            result=subprocess.run(self.command(0,HANG,code),input=b'',capture_output=True,timeout=HANG)
             self.assertEqual(result.returncode,0)
 
 if __name__=='__main__': unittest.main()

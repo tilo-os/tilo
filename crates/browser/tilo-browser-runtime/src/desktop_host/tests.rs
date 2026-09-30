@@ -129,16 +129,18 @@ fn fixture_with_extra_calculators(
         pending: 0,
     };
     let (root, handle) = DesktopRoot::new(
-        admission,
-        cache.clone(),
+        DesktopSources {
+            admission,
+            storage: cache.clone(),
+            permissions,
+            content: None,
+            local: None,
+        },
         &room,
         "device",
         "author",
         1,
-        permissions,
         Arc::new(|| {}),
-        None,
-        None,
     )
     .unwrap();
     assert!(
@@ -159,7 +161,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         .borrow_mut()
         .workspaces
         .push(Workspace::new(other, "Work"));
-    let actions = root.caller_view_resources(&AutoCommit::new());
+    let actions = ui::resources::caller_view_resources(&root, &AutoCommit::new());
     assert!(actions.iter().any(|r| r.id.0 == RESOURCE_ID));
     let mut doc = AutoCommit::new();
     for view in [
@@ -233,7 +235,11 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     writer.store.with(&writer.checkout.id, |doc| {
         doc.commit();
     });
-    assert!(capture_records(&required, &owners)[0].document.is_some());
+    assert!(
+        capture_records(&required, &owners, "author")[0]
+            .document
+            .is_some()
+    );
     writer.store.with(&writer.checkout.id, |doc| {
         doc.put(automerge::ROOT, "pending-history-test", "unfinished")
             .unwrap();
@@ -247,7 +253,11 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     assert!(pending.0 > 0);
     let generation = writer.store.action_generation(&writer.checkout.id).unwrap();
     let writes = storage.pending_writes().len();
-    assert!(capture_records(&required, &owners)[0].document.is_none());
+    assert!(
+        capture_records(&required, &owners, "author")[0]
+            .document
+            .is_none()
+    );
     assert_eq!(
         writer
             .store
@@ -264,14 +274,18 @@ fn workspace_activity_capture_never_settles_pending_edits_and_filters_stale_owne
     );
     assert_eq!(storage.pending_writes().len(), writes);
     assert!(
-        capture_records(&[], &owners).is_empty(),
+        capture_records(&[], &owners, "author").is_empty(),
         "obsolete owners cannot enter a newer admission"
     );
     let missing = vec![desktop::Requirement {
         app_id: writer.app.clone(),
         record_id: ui::record::RecordId::for_tab(98765).as_str().into(),
     }];
-    assert!(capture_records(&missing, &owners)[0].document.is_none());
+    assert!(
+        capture_records(&missing, &owners, "author")[0]
+            .document
+            .is_none()
+    );
 }
 
 #[test]
@@ -3963,6 +3977,23 @@ fn live_view_publishes_writer_focus_and_draws_a_remote_caret_without_relayout() 
     assert_eq!((start, end), (1, 1), "caret after the typed character");
     assert!(matches!(&key, ui::presence::PresenceKey::Widget { path } if path.len() == 2));
 
+    // The window's editor caret is published even without keyboard focus
+    // (focus left behind elsewhere, or an action moved the caret).
+    assert!(
+        layout
+            .window_presence
+            .iter()
+            .any(|(window_key, _)| *window_key == key),
+        "{:?}",
+        layout.window_presence
+    );
+    let unfocused = crate::live_view::snapshot_json(
+        &layout,
+        &handle.tab_records.borrow(),
+        crate::live_view::published_selection(None, &layout.window_presence),
+    );
+    assert_eq!(unfocused["selection"], snapshot["selection"]);
+
     let paths_before = frame.frame_render_input().scene.encoding().path_tags.len();
     let relayouts = frame.relayout_frames();
     let mut projection = crate::live_view::RemoteProjection::default();
@@ -4323,7 +4354,7 @@ fn admitted_same_workspace_refresh_keeps_pending_selection_and_checked_owner() {
         _ => panic!("checked owner"),
     };
     assert_eq!(before, after);
-    assert!(root.surface.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut root.surface).is_empty());
 }
 #[test]
 fn pending_tab_choice_does_not_undo_a_newer_workspace_switch() {

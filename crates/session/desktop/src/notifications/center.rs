@@ -926,7 +926,6 @@ impl NotificationCenter {
     /// Paint the centre into `layout`'s panel. The host paints the panel
     /// surface itself; `cursor` lights the hovered controls.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the render handles, the host, the layout and the pointer are each independent inputs; paint and hit rectangles share one layout pass so they cannot drift"
     )]

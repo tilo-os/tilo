@@ -999,37 +999,10 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         return false;
     }
 
-    let group = &mut tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx];
-    let removed = group.tabs.remove(tab_idx);
+    let Some(removed) = tree.desktop.remove_tab(tab_id).map(|removed| removed.tab) else {
+        return false;
+    };
     tree.local_app_records.remove(&tab_id);
-    if group.active_tab == tab_id {
-        group.active_tab = group
-            .tabs
-            .get(tab_idx)
-            .or_else(|| group.tabs.last())
-            .map_or(0, |tab| tab.id);
-    }
-    if remove_group {
-        let removed_was_active = tree.desktop.active_group.get(&strip_id) == Some(&group_id);
-        tree.desktop.workspaces[ws_idx].strips[strip_idx]
-            .window_groups
-            .remove(group_idx);
-        if removed_was_active {
-            let groups = &tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups;
-            match groups
-                .get(group_idx)
-                .or_else(|| groups.last())
-                .map(|group| group.id)
-            {
-                Some(next) => {
-                    tree.desktop.active_group.insert(strip_id, next);
-                }
-                None => {
-                    tree.desktop.active_group.remove(&strip_id);
-                }
-            }
-        }
-    }
     if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
         tree.continuation_closed_tabs.insert(tab_id, room);
     }
@@ -1068,6 +1041,7 @@ pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
+    use std::collections::BTreeMap;
 
     /// The group holding the foreign tab for `surface_id`, wherever placement put it — tests assert
     /// on the adopted tab, not a fixed index, so a placement change fails as a placement assertion, not five unrelated ones.
@@ -2618,6 +2592,7 @@ mod tests {
                 crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
                     package_id: "so.tilo.adoptfixture".into(),
                     display_name: "Adopt Fixture".into(),
+                    localized_names: BTreeMap::default(),
                     category: None,
                     version: "0.1.0".into(),
                     manifest_path: std::path::PathBuf::new(),

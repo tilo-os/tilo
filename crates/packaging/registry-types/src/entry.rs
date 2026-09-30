@@ -628,7 +628,7 @@ mod tests {
         // phase: registry_rejects_non_tilo_platforms_and_unsupported_architectures
         {
             let mut entry = sample_entry();
-            entry.versions[0].target.platform = "linux".into();
+            entry.versions[0].target.platform = "freebsd".into();
             assert_eq!(
                 entry.validate(),
                 Err(EntryValidationError::InvalidVersionTarget)

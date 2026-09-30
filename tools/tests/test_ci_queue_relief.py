@@ -57,7 +57,7 @@ class QueueReliefTests(unittest.TestCase):
             self.assertRegex(events, r"(?m)^  schedule:")
         with self.subTest(phase='app and desktop prs keep preflight without packaging'):
             for name, plan, build in (("release-apps", "plan", "build"),
-                                      ("package-desktop", "validate", "package")):
+                                      ("release-desktop", "validate", "package")):
                 with self.subTest(workflow=name):
                     text = workflow(name)
                     self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
@@ -65,7 +65,7 @@ class QueueReliefTests(unittest.TestCase):
                     self.assertRegex(section(text, build, 2),
                                      r"if: .*github.event_name != 'pull_request'")
         with self.subTest(phase='specialized contract checks keep pr and periodic coverage'):
-            for name in ("legacy-app-e2e", "fs-fuse"):
+            for name in ("ci-legacy-apps", "ci-filesystem"):
                 with self.subTest(workflow=name):
                     events = section(workflow(name), "on")
                     self.assertNotRegex(events, r"(?m)^  push:")
@@ -73,9 +73,9 @@ class QueueReliefTests(unittest.TestCase):
                         self.assertRegex(events, rf"(?m)^  {event}:")
                     self.assertTrue(section(workflow(name), "jobs"))
         with self.subTest(phase='builder recipe does not run e2e against the old image'):
-            legacy_events = section(workflow("legacy-app-e2e"), "on")
+            legacy_events = section(workflow("ci-legacy-apps"), "on")
             self.assertNotIn('os/Containerfile.builder', legacy_events)
-            self.assertIn('os/Containerfile.builder', section(workflow("build-builder-image"), "on"))
+            self.assertIn('os/Containerfile.builder', section(workflow("build-ci-builder"), "on"))
         with self.subTest(phase='os candidate can run after skipped signing preflight'):
             build = section(workflow("build-image"), "build-and-push", 2)
             self.assertIn("always()", build)
@@ -83,7 +83,7 @@ class QueueReliefTests(unittest.TestCase):
             self.assertIn("needs.signing-preflight.result == 'skipped'", build)
 
     def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
-        with self.subTest(phase='fast checks never cancel another commit or event'):
+        with self.subTest(phase='fast checks replace only a superseded run of the same pull request'):
             for name in ("check", "lint"):
                 with self.subTest(workflow=name):
                     text = workflow(name)
@@ -91,13 +91,14 @@ class QueueReliefTests(unittest.TestCase):
                     self.assertRegex(events, r"(?m)^  push:")
                     self.assertRegex(events, r"(?m)^  pull_request:")
                     concurrency = section(text, "concurrency")
-                    self.assertIn("github.event_name", concurrency)
-                    self.assertIn("github.sha", concurrency)
-                    self.assertIn("cancel-in-progress: false", concurrency)
+                    self.assertIn(f"  group: {name}-${{{{ github.event_name }}}}-"
+                                  "${{ github.event.pull_request.number || github.sha }}", concurrency)
+                    self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                                  concurrency)
                     self.assertNotRegex(section(text, "jobs"), r"(?m)^\s+concurrency:")
         with self.subTest(phase='component release tags and manual runs remain'):
             for name, tags in (("build-image", '["v*"]'),
-                               ("package-desktop", '["desktop-v*"]'),
+                               ("release-desktop", '["desktop-v*"]'),
                                ("release-apps", '["apps-v*", "app-*-v*"]')):
                 with self.subTest(workflow=name):
                     events = section(workflow(name), "on")
@@ -109,7 +110,7 @@ class QueueReliefTests(unittest.TestCase):
                         self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
                     self.assertRegex(events, r"(?m)^  workflow_dispatch:")
         with self.subTest(phase='only heavy fuse pr runs replace their own previous run'):
-            concurrency = section(workflow("fs-fuse"), "concurrency")
+            concurrency = section(workflow("ci-filesystem"), "concurrency")
             group = re.search(r"(?m)^  group: (.+)$", concurrency).group(1)
             cancel = re.search(r"(?m)^  cancel-in-progress: (.+)$", concurrency).group(1)
             self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")

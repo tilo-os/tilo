@@ -2,7 +2,7 @@
 //! no application capability or actor constructor crosses the network queue.
 use super::{
     Arc, CallerInvocation, CapnpBrokerState, CrdtRoute, DirectoryActionConfirmation,
-    LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
+    InvocationInputs, LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
     admit_verified_join_at,
 };
 use tilo_delivery_protocol::peer_actions::{ActionMessage, Confirmation};
@@ -136,7 +136,6 @@ impl CapnpBrokerState {
     }
 
     #[expect(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one certified-request dispatcher over the relay action vocabulary"
     )]
@@ -374,10 +373,12 @@ impl CapnpBrokerState {
                 self.dispatch_invocation_from_offered(
                     request.peer_id,
                     offered,
-                    request.argument.as_deref(),
-                    &actor,
-                    token.as_deref(),
-                    None,
+                    InvocationInputs {
+                        argument: request.argument.as_deref(),
+                        actor: &actor,
+                        confirmation_token: token.as_deref(),
+                        context: None,
+                    },
                     Some((&caller, &request)),
                     revision.as_deref(),
                 )?;

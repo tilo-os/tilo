@@ -3,7 +3,15 @@
 //! Subcommands:
 //! - `init` — write a default config to `--config` (or
 //!   `/etc/tilo/relay.toml`) and exit.
-//! - `run` — long-running daemon (systemd `Type=notify`).
+//! - `run` — long-running daemon (systemd `Type=notify`); with feature
+//!   `web`, `--web <addr> --allowed-origin <origin> --tls dev|files:<chain>,<key>`
+//!   also serves browsers (HTTPS + WebTransport).
+//! - `dev` (feature `web`) — a throwaway local host for browser development:
+//!   its own user root, the browser listener, and an approver that
+//!   certifies every browser that asks.
+//! - `room` (feature `web`) — a short-lived shared room: like `dev`, but it
+//!   certifies only the browsers whose pairing codes its operator admits
+//!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
@@ -28,11 +36,11 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
-use tilo_relay::{
-    RelayConfig,
-    daemon::{Relay, RelayIdentity},
-};
+use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
+
+#[cfg(feature = "web")]
+mod web_cli;
 
 /// Default location for the daemon config on a Fedora bootc image.
 const DEFAULT_CONFIG_PATH: &str = "/etc/tilo/relay.toml";
@@ -54,7 +62,19 @@ enum Cmd {
     /// already exists).
     Init,
     /// Run the relay daemon (long-running).
-    Run,
+    Run {
+        #[cfg(feature = "web")]
+        #[command(flatten)]
+        web: web_cli::WebArgs,
+    },
+    /// A throwaway local host for browser development (never in production:
+    /// it certifies every browser device that asks).
+    #[cfg(feature = "web")]
+    Dev(web_cli::DevArgs),
+    /// A short-lived shared room: its own user root and browser listener,
+    /// certifying only the browsers its operator admits on stdin.
+    #[cfg(feature = "web")]
+    Room(web_cli::RoomArgs),
     /// Print current metrics + hosted workspace list.
     Status,
     /// Add a workspace to the config file.
@@ -100,7 +120,18 @@ fn run() -> anyhow::Result<()> {
 
     match cli.cmd {
         Cmd::Init => cmd_init(&cli.config),
-        Cmd::Run => cmd_run(&cli.config),
+        #[cfg(feature = "web")]
+        Cmd::Run { web } => cmd_run(&cli.config, web),
+        #[cfg(not(feature = "web"))]
+        Cmd::Run {} => cmd_run(&cli.config),
+        #[cfg(feature = "web")]
+        Cmd::Dev(args) => {
+            tilo_rt::daemon("tilo-relay").run(web_cli::dev(args, wait_for_shutdown()))?
+        }
+        #[cfg(feature = "web")]
+        Cmd::Room(args) => {
+            tilo_rt::daemon("tilo-relay").run(web_cli::room(args, wait_for_shutdown()))?
+        }
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
         Cmd::UnbindWorkspace { id } => cmd_unbind(&cli.config, id),
@@ -191,11 +222,20 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
     clippy::significant_drop_tightening,
     reason = "the relay must keep serving until shutdown().await consumes it"
 )]
-fn cmd_run(path: &Path) -> anyhow::Result<()> {
+fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
-        let relay = Relay::start(cfg, identity).await?;
+        #[cfg(feature = "web")]
+        let state_root = cfg.state_root.clone();
+        #[cfg(feature = "web")]
+        let hosted = web_cli::start_relay(cfg, identity, &web, &state_root).await?;
+        #[cfg(feature = "web")]
+        let relay = &hosted.relay;
+        #[cfg(not(feature = "web"))]
+        let relay = tilo_relay::daemon::Relay::start(cfg, identity).await?;
+        #[cfg(feature = "web")]
+        let _web = web_cli::serve(relay, &web, &state_root).await?;
         let addr = relay.node_addr();
         tracing::info!(?addr, "relay online");
         // Best-effort sd_notify (silently no-ops outside systemd).
@@ -203,6 +243,9 @@ fn cmd_run(path: &Path) -> anyhow::Result<()> {
         // Park until Ctrl-C / SIGTERM.
         wait_for_shutdown().await?;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
+        #[cfg(feature = "web")]
+        hosted.shutdown().await;
+        #[cfg(not(feature = "web"))]
         relay.shutdown().await;
         Ok::<(), anyhow::Error>(())
     })?
@@ -259,6 +302,7 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use iroh_base::EndpointAddr;
+    use tilo_relay::daemon::Relay;
     use tilo_relay::mesh::{ReplicationIntent, ServiceCapabilities};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
@@ -309,6 +353,22 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
         fs::full_replica::save_status(&status_path, &status).unwrap();
+        // The filesystem process keeps its status fresh; the relay honours
+        // only a recent one. Relay start can take longer than that bound.
+        let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let heartbeat = std::thread::spawn({
+            let (path, beating) = (status_path.clone(), std::sync::Arc::clone(&beating));
+            move || {
+                while beating.load(std::sync::atomic::Ordering::Acquire) {
+                    let mut status = status.clone();
+                    status.updated_at_ms = tilo_clock::unix_now_ms();
+                    let staged = path.with_extension("staged");
+                    std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
+                    std::fs::rename(&staged, &path).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        });
 
         let bundle_path = temp.path().join("home-peer.toml");
         let bundle = fs::full_replica::HomePeerSet {
@@ -357,6 +417,8 @@ mod tests {
         );
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
+        beating.store(false, std::sync::atomic::Ordering::Release);
+        heartbeat.join().unwrap();
         relay.shutdown().await;
     }
 }

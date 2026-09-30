@@ -4,11 +4,11 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-AUDIO="$ROOT/crates/media/core/src/audio.rs"
-RUNTIME="$ROOT/crates/media/core/src/audio_runtime.rs"
+AUDIO="$ROOT/crates/platform/tilo-media/src/audio.rs"
+RUNTIME="$ROOT/crates/platform/tilo-media/src/audio_runtime.rs"
 OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
-EVENT_SOUND="$ROOT/crates/media/core/src/event_sound.rs"
+EVENT_SOUND="$ROOT/crates/platform/tilo-media/src/event_sound.rs"
 SHELL_CAPTURE="$ROOT/crates/session/shell/src/compositor/audio_capture.rs"
 
 fails=0
@@ -36,7 +36,7 @@ must_contain "$RUNTIME" 'bounded_command::run_prepared' \
     "short-lived audio controls need bounded subprocess execution"
 must_contain "$RUNTIME" '\.process_group\(0\)' \
     "interactive audio sessions need isolated process ownership"
-must_contain "$RUNTIME" 'terminate_process_group' \
+must_contain "$RUNTIME" 'bounded_command::terminate_tree' \
     "interactive audio teardown must remove descendants"
 must_contain "$OCR" 'run_prepared_with_limits' \
     "OCR needs independent document and diagnostic ceilings"
@@ -56,7 +56,7 @@ must_not_contain "$SHELL_CAPTURE" '\.output\(\)|\.status\(\)' \
     "screen-recording probes contain unbounded command execution"
 must_contain "$SHELL_CAPTURE" '\.process_group\(0\)' \
     "long-lived screen audio capture needs isolated process ownership"
-must_contain "$SHELL_CAPTURE" 'libc::kill\(group, libc::SIGKILL\)' \
+must_contain "$SHELL_CAPTURE" 'bounded_command::terminate_tree' \
     "screen audio teardown must remove recorder descendants"
 
 if [ "$fails" -gt 0 ]; then

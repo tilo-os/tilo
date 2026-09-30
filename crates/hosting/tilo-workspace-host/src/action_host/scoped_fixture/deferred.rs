@@ -111,16 +111,46 @@ impl tilo_actions::Action for MintedDocument {
     }
 }
 impl Widget for Probe {
-    fn action_directory_invocation_domain(
-        &self,
-        _: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // Lookup, pages and published resources are exactly this finite universe.
-        ui::widget::ActionDirectoryInvocationDomain::MaterializedOnly
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
+    );
+
+    fn build_layout(
+        &mut self,
+        tree: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        let node = tree.new_leaf(ui::taffy::Style::default()).unwrap();
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
-    fn action_directory_revision(&self, _: &AutoCommit) -> Option<String> {
-        Some("deferred-probe-v1".into())
+    fn apply_layout(
+        &mut self,
+        _: &ui::taffy::TaffyTree<()>,
+        _: ui::taffy::NodeId,
+        _: ui::kurbo::Point,
+    ) {
     }
+    fn draw(
+        &mut self,
+        _: &mut ui::vello::Scene,
+        _: ui::kurbo::Affine,
+        _: &mut ui::TextRenderer,
+        _: &ui::Theme,
+        _: &ui::PresenceCtx,
+    ) {
+    }
+    fn name(&self) -> &'static str {
+        "DeferredProbe"
+    }
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        ui::kurbo::Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for Probe {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
         use tilo_actions::{
             ActionSpec, ContinuationEvidence, ContinuationKey, ContinuationQuery, ExecutionLocus,
@@ -154,11 +184,6 @@ impl Widget for Probe {
         }
         vec![resource]
     }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.resources(doc)
-            .into_iter()
-            .find(|r| r.id.as_str() == id)
-    }
     fn action_directory_resource_page(
         &self,
         doc: &AutoCommit,
@@ -175,6 +200,24 @@ impl Widget for Probe {
             exhausted: true,
         })
     }
+    fn action_directory_revision(&self, _: &AutoCommit) -> Option<String> {
+        Some("deferred-probe-v1".into())
+    }
+    fn action_directory_invocation_domain(
+        &self,
+        _: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // Lookup, pages and published resources are exactly this finite universe.
+        ui::widget::ActionDirectoryInvocationDomain::MaterializedOnly
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.resources(doc)
+            .into_iter()
+            .find(|r| r.id.as_str() == id)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for Probe {
     fn document_action_applied(
         &mut self,
         action: &tilo_actions::EncodedAction,
@@ -188,38 +231,6 @@ impl Widget for Probe {
             Some(OWNER)
         );
         self.applied.fetch_add(1, Ordering::SeqCst);
-    }
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        _: &ui::Theme,
-        nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let node = tree.new_leaf(ui::taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(
-        &mut self,
-        _: &ui::taffy::TaffyTree<()>,
-        _: ui::taffy::NodeId,
-        _: ui::kurbo::Point,
-    ) {
-    }
-    fn draw(
-        &mut self,
-        _: &mut ui::vello::Scene,
-        _: ui::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::PresenceCtx,
-    ) {
-    }
-    fn name(&self) -> &'static str {
-        "DeferredProbe"
-    }
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        ui::kurbo::Rect::ZERO
     }
 }
 impl AppWidget for Probe {

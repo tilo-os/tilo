@@ -116,7 +116,6 @@ pub(crate) fn widget_deadline(
 )]
 #[cfg(feature = "native")]
 pub(crate) struct WakeDemand {
-    pub model: bool,
     pub primary_startup: bool,
     pub tooltip: bool,
     pub typing: bool,
@@ -126,8 +125,9 @@ pub(crate) struct WakeDemand {
     pub retry_due: bool,
 }
 
-/// Select the actual event-loop deadline. Model services remain independent;
-/// widget deadlines request sync/redraw and remain pending until paint admission.
+/// Select the actual event-loop deadline. Widget deadlines request
+/// sync/redraw and remain pending until paint admission. Collaboration is not
+/// a demand: its transport wakes the loop for every event it delivers.
 #[cfg(feature = "native")]
 pub(crate) fn next_wake(
     now: Instant,
@@ -138,12 +138,10 @@ pub(crate) fn next_wake(
     retry: Option<Instant>,
     animation: Option<Instant>,
 ) -> Option<Instant> {
-    let fast = demand.model
-        || presentation_demand(
-            blocked_until.is_some(),
-            demand.primary_startup || demand.tooltip || demand.typing || demand.widget_due,
-        )
-        || (any_render_available && demand.animation)
+    let fast = presentation_demand(
+        blocked_until.is_some(),
+        demand.primary_startup || demand.tooltip || demand.typing || demand.widget_due,
+    ) || (any_render_available && demand.animation)
         || demand.auxiliary_startup
         || demand.retry_due;
     let scheduled = widget_deadline(widget, blocked_until)
@@ -272,7 +270,7 @@ mod tests {
             );
         }
 
-        // Case `selected_wait_defers_each_render_demand_but_preserves_model_and_visible_sibling`.
+        // Case `selected_wait_defers_each_render_demand_but_preserves_visible_sibling`.
         {
             let now = crate::time::now();
             let retry = now + Duration::from_millis(250);
@@ -311,14 +309,6 @@ mod tests {
                     Some(retry)
                 );
             }
-            let model = WakeDemand {
-                model: true,
-                ..Default::default()
-            };
-            assert_eq!(
-                next_wake(now, Some(retry), false, model, Some(now), Some(retry), None),
-                Some(now + FRAME_INTERVAL)
-            );
             let animation = WakeDemand {
                 animation: true,
                 ..Default::default()
@@ -392,6 +382,28 @@ mod tests {
             );
             assert_eq!(widget_deadline(Some(now), None), Some(now));
         }
+    }
+
+    #[test]
+    fn idle_loop_without_demand_or_deadline_sleeps_until_an_event() {
+        let now = crate::time::now();
+        assert_eq!(
+            next_wake(now, None, true, WakeDemand::default(), None, None, None),
+            None
+        );
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand::default(),
+                None,
+                None,
+                Some(now + FRAME_INTERVAL)
+            ),
+            None,
+            "an animation deadline without animation demand is not a wake"
+        );
     }
 
     #[test]

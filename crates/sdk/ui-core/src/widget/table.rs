@@ -43,6 +43,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -370,6 +371,14 @@ enum Hover {
     EmptyAdd,
 }
 
+/// Pixel-snapped grid geometry for one paint: the interior column and row
+/// edges, and the body they bound.
+struct PaintedGrid {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    body: Rect,
+}
+
 /// Active column-resize drag.
 struct Resize {
     col: usize,
@@ -492,10 +501,7 @@ impl Table {
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
-            let state = self
-                .cells
-                .get(self.projected_index(row, column)?)?
-                .get_state();
+            let state = crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?);
             Some((row, column, state))
         });
         let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
@@ -566,9 +572,7 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        self.cells
-            .get(self.projected_index(row, column)?)?
-            .get_state()
+        crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -581,7 +585,7 @@ impl Table {
         let Some(input) = self.cells.get_mut(index) else {
             return;
         };
-        input.set_state(state);
+        crate::undo::set_state(input, state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
         input.set_caret_position(caret);
@@ -958,25 +962,43 @@ impl Table {
         );
     }
 
+    /// The grid as painted. Painted geometry snaps to whole pixels so a 1 px
+    /// rule is exactly one row or column: a column width is a doc value and
+    /// fractional after a drag. Hit-testing keeps the exact edges; the
+    /// difference is under half a pixel.
+    fn painted_grid(&self) -> PaintedGrid {
+        let (xs, ys) = self.grid_edges();
+        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
+        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
+        // Painted only past `is_empty()`, so both edge lists have >= 2
+        // entries; the fallbacks below never actually apply.
+        let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
+        let gr = self.grid_right().round();
+        let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
+        let gb = self.grid_bottom().round();
+        PaintedGrid {
+            xs,
+            ys,
+            body: Rect::new(gl, gt, gr, gb),
+        }
+    }
+
     /// Draw the grid's line work: interior rules, the heavier separator
     /// under a header row, and the always-on insert ticks at every boundary.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "grid-edge geometry passed through from `draw`, which already computed it \
-                  once for the frame"
-    )]
-    fn draw_grid_lines(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        xs: &[f64],
-        ys: &[f64],
-        gl: f64,
-        gt: f64,
-        gr: f64,
-        gb: f64,
-    ) {
+    fn draw_grid_lines(&self, ctx: &mut PaintCtx<'_>, grid: &PaintedGrid) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let (xs, ys) = (grid.xs.as_slice(), grid.ys.as_slice());
+        let Rect {
+            x0: gl,
+            y0: gt,
+            x1: gr,
+            y1: gb,
+        } = grid.body;
         let tk = &theme.tokens;
         let line = Stroke::new(1.0);
         // Rules derive from the body surface they cross (HIG §9.5): a white
@@ -1040,22 +1062,20 @@ impl Table {
     /// A hover index that no longer matches the current grid (stale from
     /// just before a structural edit) is silently skipped rather than
     /// indexing out of bounds.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "grid-edge geometry passed through from `draw`, which already computed it once for the frame"
-    )]
-    fn draw_hover_affordance(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        xs: &[f64],
-        ys: &[f64],
-        gl: f64,
-        gt: f64,
-        gr: f64,
-        gb: f64,
-    ) {
+    fn draw_hover_affordance(&self, ctx: &mut PaintCtx<'_>, grid: &PaintedGrid) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let (xs, ys) = (grid.xs.as_slice(), grid.ys.as_slice());
+        let Rect {
+            x0: gl,
+            y0: gt,
+            x1: gr,
+            y1: gb,
+        } = grid.body;
         let tk = &theme.tokens;
         let accent = theme.accent_primary;
         // The glyph inside a gutter affordance is a mark on a themed chip, so
@@ -1309,6 +1329,8 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
@@ -1455,20 +1477,9 @@ impl Widget for Table {
             return;
         }
 
-        let (xs, ys) = self.grid_edges();
-        // Painted geometry snaps to whole pixels so a 1 px rule is exactly
-        // one row or column: a column width is a doc value and fractional
-        // after a drag. Hit-testing keeps the exact edges; the difference is
-        // under half a pixel.
-        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
-        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
-        // Reached only past `is_empty()`, so both edge lists have >= 2
-        // entries; the fallbacks below never actually apply.
-        let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
-        let gr = self.grid_right().round();
-        let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
-        let gb = self.grid_bottom().round();
-        let body = Rect::new(gl, gt, gr, gb);
+        let grid = self.painted_grid();
+        let (ys, body) = (&grid.ys, grid.body);
+        let (gl, gr) = (body.x0, body.x1);
 
         // Grid body surface + header band + zebra rows.
         scene.fill(
@@ -1506,8 +1517,9 @@ impl Widget for Table {
             cell.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        self.draw_grid_lines(scene, transform, theme, &xs, &ys, gl, gt, gr, gb);
-        self.draw_hover_affordance(scene, transform, theme, &xs, &ys, gl, gt, gr, gb);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_grid_lines(&mut ctx, &grid);
+        self.draw_hover_affordance(&mut ctx, &grid);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1656,19 +1668,25 @@ impl Widget for Table {
         self.structure_dirty || self.cells.iter().any(super::Widget::is_layout_dirty)
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Table))
+    }
+}
+
+impl crate::undo::UndoPoints for Table {
     fn needs_commit(&self) -> bool {
-        self.pending_commit || self.cells.iter().any(super::Widget::needs_commit)
+        self.pending_commit
+            || self
+                .cells
+                .iter()
+                .any(|cell| crate::undo::needs_commit(cell))
     }
     fn on_commit(&mut self) {
         self.pending_commit = false;
         for c in &mut self.cells {
             c.on_commit();
         }
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Table))
     }
 }
 

@@ -21,10 +21,48 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 use crate::vmbuild::sh_quote;
 
+/// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
+/// so builds from different checkouts on one host can keep their images apart.
+///
+/// # Errors
+/// A value that is not an image tag.
+pub fn local_tag() -> Result<String, CliError> {
+    parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
+}
+
+fn parse_local_tag(value: Option<&str>) -> Result<String, CliError> {
+    let tag = match value {
+        None | Some("") => return Ok("latest".to_owned()),
+        Some(tag) => tag,
+    };
+    let mut chars = tag.chars();
+    let first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    if first && tag.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+        Ok(tag.to_owned())
+    } else {
+        Err(CliError::InvalidInput(format!(
+            "TILO_LOCAL_TAG={tag} is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)"
+        )))
+    }
+}
+
 /// What `--from local` builds and moves the VM onto.
-pub const LOCAL_DEV_IMAGE: &str = "localhost/tilo-vm:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_dev_image() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo-vm:{}", local_tag()?))
+}
+
 /// The production image the local dev image is built FROM.
-pub const LOCAL_BASE: &str = "localhost/tilo:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_base() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo:{}", local_tag()?))
+}
 /// The script `--from local` runs (relative to the worktree).
 pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
@@ -65,7 +103,7 @@ pub fn parse_from(
     };
     match from.split_once(':') {
         None if from == "local" => Ok(UpgradeFrom::Local {
-            image: LOCAL_DEV_IMAGE.to_owned(),
+            image: local_dev_image()?,
             build: true,
         }),
         Some(("local", image)) if !image.is_empty() => Ok(UpgradeFrom::Local {
@@ -105,6 +143,54 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
             format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
         ],
     }
+}
+
+/// The seven-hex commit a `sha:` tag (`main-<sha7>`) names.
+pub fn ci_commit(tag: &str) -> Option<&str> {
+    tag.strip_prefix("main-")
+        .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A dev build of a branch or pull request is tagged `<ref>-<sha7>`, so a
+/// commit that is not on main is found by listing the repositories' tags:
+/// `tilo-vm:<ref>-<sha7>-ci` is the published dev image,
+/// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
+/// `skopeo list-tags` output in, candidates out; several refs sort by name so
+/// the choice is stable.
+pub fn ci_ref_candidates(sha: &str, arch: &str, vm_tags: &str, ci_tags: &str) -> CiCandidates {
+    fn tags(listing: &str) -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(listing)
+            .ok()
+            .and_then(|value| value.get("Tags").cloned())
+            .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
+            .unwrap_or_default()
+    }
+    fn named_ref(tag: &str, suffix: &str) -> bool {
+        tag.strip_suffix(suffix).is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        })
+    }
+    let mut dev_images: Vec<String> = tags(vm_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-ci")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
+        .collect();
+    let mut bases: Vec<String> = tags(ci_tags)
+        .into_iter()
+        .filter(|tag| named_ref(tag, &format!("-{sha}-{arch}")))
+        .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
+        .collect();
+    dev_images.sort();
+    bases.sort();
+    CiCandidates { dev_images, bases }
+}
+
+/// `skopeo list-tags` for one repository.
+pub fn list_tags_command(repository: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
 }
 
 /// The local tag of a dev image built FROM a CI base.
@@ -234,7 +320,7 @@ pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| LOCAL_DEV_IMAGE.to_owned());
+        .map_or_else(|| local_dev_image().map_err(|e| e.to_string()), Ok)?;
     let mut facts = ImageFacts {
         id,
         flavour,
@@ -731,6 +817,21 @@ mod tests {
 
     use super::*;
 
+    /// `TILO_LOCAL_TAG` names the local images' tag, `latest` when unset; anything else is refused.
+    #[test]
+    fn local_tag_is_latest_unless_named() {
+        assert_eq!(parse_local_tag(None).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
+        assert_eq!(
+            parse_local_tag(Some(&"a".repeat(128))).unwrap(),
+            "a".repeat(128)
+        );
+        for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
+            assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
     /// from-local builds and from-local-image does not; only dev names pass; production-named, unlabelled
     /// and sealed images are refused with the fix; an older base is refused and an unknown age is a note.
     #[test]
@@ -740,7 +841,7 @@ mod tests {
             assert_eq!(
                 parse_from("local", None).unwrap(),
                 UpgradeFrom::Local {
-                    image: LOCAL_DEV_IMAGE.to_owned(),
+                    image: local_dev_image().unwrap(),
                     build: true
                 }
             );
@@ -877,6 +978,35 @@ mod tests {
         assert!(!is_already_booted(
             "error: Switching: pulling: connection refused"
         ));
+    }
+
+    /// A commit off main is found by its `<ref>-<sha7>` tags.
+    #[test]
+    fn a_pull_request_commit_resolves_through_its_ref_tags() {
+        assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
+        assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
+        assert_eq!(ci_commit("v1.2.3"), None);
+        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
+        let ci =
+            r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
+        let found = ci_ref_candidates("1a2b3c4", "x86_64", vm, ci);
+        assert_eq!(
+            found.dev_images,
+            vec![
+                "registry.tilo.so/tilo/tilo-vm:fix-x-1a2b3c4-ci".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm:pr-12-1a2b3c4-ci".to_owned(),
+            ]
+        );
+        assert_eq!(
+            found.bases,
+            vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
+        );
+        let none = ci_ref_candidates("1a2b3c4", "aarch64", "not json", "{}");
+        assert!(none.dev_images.is_empty() && none.bases.is_empty());
+        assert_eq!(
+            list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
+            "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
+        );
     }
 
     /// `--from ci:` and `--from sha:` name a CI tag, which resolves to published dev images, then

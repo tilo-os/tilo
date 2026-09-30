@@ -1143,6 +1143,8 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
         Some(crate::widget::PrimaryScrollRegion {
             key: "primary",
@@ -1173,16 +1175,6 @@ impl Widget for Scrollable {
             PrimaryScrollResult::Unsupported,
             PrimaryScrollResult::Changed,
         )
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = child.has_action_control_bindings();
-            }
-        });
-        found
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {
@@ -1740,6 +1732,18 @@ impl Widget for Scrollable {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
+    }
+}
+
+impl crate::widget::controls::ActionControls for Scrollable {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = crate::widget::controls::has_action_control_bindings(child);
+            }
+        });
+        found
     }
 }
 

@@ -1051,7 +1051,7 @@ mod tests {
             );
             assert!(dest.join("nested/empty-dir").is_dir());
             assert_eq!(std::fs::metadata(dest.join("empty")).unwrap().len(), 0);
-            let expected_time = std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
+            let expected_time = ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
             assert_eq!(
                 std::fs::metadata(dest.join("large.bin"))
                     .unwrap()
@@ -1500,11 +1500,11 @@ mod tests {
             let meta = std::fs::metadata(dest.join("hello.txt")).unwrap();
             assert_eq!(
                 meta.modified().unwrap(),
-                std::time::UNIX_EPOCH - std::time::Duration::from_nanos(100)
+                ui::time::UNIX_EPOCH - std::time::Duration::from_nanos(100)
             );
             assert_eq!(
                 meta.accessed().unwrap(),
-                std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800)
+                ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800)
             );
         } else if name.starts_with("times-") {
             assert!(!dest.join("hello.txt").exists());
@@ -1720,7 +1720,7 @@ mod tests {
                     .complete()
                 );
                 let target = dest.join("large.bin");
-                let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+                let changed_time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
                 let edited = target.clone();
                 state.borrow_mut().during_finish = Some(Box::new(move || {
                     if replace_name {
@@ -1770,7 +1770,7 @@ mod tests {
                         .unwrap()
                         .complete()
                 );
-                let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+                let changed_time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
                 let directory = dest.join(relative);
                 std::fs::File::open(&directory)
                     .unwrap()
@@ -1824,7 +1824,7 @@ mod tests {
             )
             .unwrap();
             assert!(report.complete(), "{report:?}");
-            let expected = std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
+            let expected = ui::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
             assert_eq!(
                 std::fs::metadata(&dest).unwrap().modified().unwrap(),
                 expected

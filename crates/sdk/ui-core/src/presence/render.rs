@@ -1,8 +1,9 @@
 use super::PresenceCtx;
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::permissions::UserId;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use vello::{
     Scene,
@@ -198,10 +199,6 @@ impl PresenceCtx {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "peer caret painting combines render context with collaborator identity, display name and caret bounds"
-    )]
     pub fn draw_peer_caret_labeled(
         &self,
         scene: &mut Scene,
@@ -273,33 +270,17 @@ impl PresenceCtx {
     /// a hover or a roster lookup. Mirrors
     /// [`Self::draw_peer_caret_labeled`] — one chip design for every "this
     /// is where that person is" affordance.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "labeled peer outlines share render context with collaborator identity, name, object bounds and corner radius"
-    )]
     pub fn draw_peer_outline_labeled(
         &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         user: &UserId,
         name: &str,
         rect: Rect,
         radius: f64,
     ) {
-        self.draw_peer_outline(scene, theme, transform, user, rect, radius);
-        let color = color_for(self, user, theme);
-        draw_name_chip(
-            scene,
-            theme,
-            text_renderer,
-            transform,
-            color,
-            name,
-            rect.x0,
-            rect.y0,
-        );
+        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
+        let color = color_for(self, user, ctx.theme);
+        draw_name_chip(ctx, color, name, rect.origin());
     }
 
     /// [`Self::draw_peer_outline_labeled`] for a surface that clips its own
@@ -316,30 +297,24 @@ impl PresenceCtx {
     /// `Logo_Bug.png` into one named `Ada_Bug.png`. On an object too narrow to
     /// hold both, the chip stays within the object rather than escaping it —
     /// covering a name is recoverable, pointing at the wrong clip is not.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "bounded peer labels need render context, collaborator identity and name, object geometry and clipping bounds"
-    )]
     pub fn draw_peer_outline_labeled_within(
         &self,
-        scene: &mut Scene,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
         user: &UserId,
         name: &str,
         rect: Rect,
         radius: f64,
         bounds: Rect,
     ) {
-        self.draw_peer_outline(scene, theme, transform, user, rect, radius);
+        let theme = ctx.theme;
+        self.draw_peer_outline(ctx.scene, theme, ctx.transform, user, rect, radius);
         let color = color_for(self, user, theme);
         // Sideways the same rule applies: a chip that runs past the
         // surface's right edge is clipped to its first letters, so the name
         // is elided to what the surface can show and the chip slides left
         // to stay inside — at 2× a name is twice as wide, and objects near
         // the right edge lost their labels first.
-        let (name, w, h) = chip_fitting(theme, text_renderer, name, bounds.width());
+        let (name, w, h) = chip_fitting(theme, ctx.text, name, bounds.width());
         let above = rect.y0 - h - CHIP_GAP;
         let chip = if above >= bounds.y0 {
             Rect::new(rect.x0, above, rect.x0 + w, above + h)
@@ -350,7 +325,7 @@ impl PresenceCtx {
         };
         let x0 = chip.x0.min(bounds.x1 - w).max(bounds.x0);
         let chip = Rect::new(x0, chip.y0, x0 + w, chip.y1);
-        draw_name_chip_in(scene, theme, text_renderer, transform, color, &name, chip);
+        draw_name_chip_in(ctx, color, &name, chip);
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
@@ -787,7 +762,6 @@ fn draw_agent_diamond(
 
 #[allow(
     clippy::arithmetic_side_effects,
-    clippy::too_many_arguments,
     reason = "kurbo Rect/Affine arithmetic is f64 math; it cannot panic or overflow, unlike integer +/-/*"
 )]
 fn draw_peer_pill_kind(
@@ -983,58 +957,33 @@ fn chip_fitting(
     clippy::arithmetic_side_effects,
     reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
 )]
-fn draw_name_chip_in(
-    scene: &mut Scene,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    transform: Affine,
-    color: Color,
-    name: &str,
-    chip_rect: Rect,
-) {
-    let chip = RoundedRect::from_rect(chip_rect, f64::from(theme.tokens.radii.sm));
+fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect: Rect) {
+    let theme = ctx.theme;
     // Solid fill in the peer's colour so the chip reads as "them".
-    scene.fill(Fill::NonZero, transform, color, None, &chip);
+    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.sm), color);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-    let pad_x = CHIP_PAD_X * label_magnification(theme, text_renderer);
-    let (_, th) = text_renderer.measure(name, label_size, None);
+    let label_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.xs);
+    let pad_x = CHIP_PAD_X * label_magnification(theme, ctx.text);
+    let (_, th) = ctx.text.measure(name, label_size, None);
     let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
-        scene,
+    ctx.text(
         name,
-        label_size,
+        &TextStyle::new(label_size),
         contrast_ink(color),
-        transform * Affine::translate((chip_rect.x0 + pad_x, text_y)),
+        Point::new(chip_rect.x0 + pad_x, text_y),
         None,
     );
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "name-chip painting shares render context with collaborator color, label and the object anchor coordinates"
-)]
-fn draw_name_chip(
-    scene: &mut Scene,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    transform: Affine,
-    color: Color,
-    name: &str,
-    anchor_x: f64,
-    anchor_top: f64,
-) {
-    let (w, h) = chip_size(theme, text_renderer, name);
-    let cy = anchor_top - h - CHIP_GAP;
+fn draw_name_chip(ctx: &mut PaintCtx<'_>, color: Color, name: &str, anchor: Point) {
+    let (w, h) = chip_size(ctx.theme, ctx.text, name);
+    let cy = anchor.y - h - CHIP_GAP;
     draw_name_chip_in(
-        scene,
-        theme,
-        text_renderer,
-        transform,
+        ctx,
         color,
         name,
-        Rect::new(anchor_x, cy, anchor_x + w, cy + h),
+        Rect::new(anchor.x, cy, anchor.x + w, cy + h),
     );
 }
 
@@ -1620,10 +1569,7 @@ mod tests {
             let mut scene = Scene::new();
             let user = UserId("charlie".to_string());
             ctx.draw_peer_outline_labeled(
-                &mut scene,
-                &theme,
-                &mut tr,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 &user,
                 "Charlie",
                 Rect::new(30.0, 40.0, 100.0, 80.0),
@@ -1669,10 +1615,7 @@ mod tests {
 
             let mut scene = Scene::new();
             ctx.draw_peer_outline_labeled_within(
-                &mut scene,
-                &theme,
-                &mut tr,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 &user,
                 "Charlie",
                 object,
@@ -1719,10 +1662,7 @@ mod tests {
 
             let mut scene = Scene::new();
             ctx.draw_peer_outline_labeled_within(
-                &mut scene,
-                &theme,
-                &mut tr,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 &user,
                 "Charlie",
                 object,
@@ -2591,10 +2531,7 @@ mod tests {
 
             let mut scene = Scene::new();
             ctx.draw_peer_outline_labeled_within(
-                &mut scene,
-                &theme,
-                &mut tr,
-                Affine::IDENTITY,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 &user,
                 "Charlotte Okonkwo",
                 object,

@@ -7,7 +7,9 @@ invoke the chosen `(provider, id)`. The [search selection guide](../../docs/head
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
 rendering itself. `action-api-demo.py` and `app-launch-proof.py` start their own
-isolated sessions and exercise semantic invocation.
+isolated sessions and exercise semantic invocation. `agent-seats-proof.py`
+starts an `agent-control` session and drives it from two MCP sessions at once:
+each agent's strip, screenshots and held keys stay its own.
 
 For examples that connect to an existing compositor, start it once with:
 

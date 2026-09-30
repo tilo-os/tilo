@@ -472,10 +472,6 @@ mod component_adapter {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "existing Widget callback signatures"
-    )]
     impl FullscreenProvider for BoundAppWidget {
         fn fullscreen_intent(&self) -> Option<bool> {
             let binding = self.component.callback_binding();
@@ -549,7 +545,21 @@ mod component_adapter {
             dyn crate::widget::CompleteContentProvider,
             dyn crate::widget::Continuable,
             dyn crate::widget::FloatingSurfaceProvider,
-            dyn crate::widget::AudiencePresentationProvider
+            dyn crate::widget::AudiencePresentationProvider,
+            dyn crate::collaboration::participants::Participants,
+            dyn crate::undo::CommittedActions,
+            dyn crate::undo::UndoControl,
+            dyn crate::undo::LocalUndo,
+            dyn crate::history_mode::capability::DocumentHistory,
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::resources::PublishesResources,
+            dyn crate::search::capability::SearchSource,
+            dyn crate::permissions::capability::PermissionGated,
+            dyn crate::presence::capability::PublishesPresence,
+            dyn crate::record::capability::RecordScoped,
+            dyn crate::view::capability::ViewState,
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::undo::UndoPoints
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -568,34 +578,6 @@ mod component_adapter {
                     root.native_input_snapshot(doc, &automerge::ROOT)
                 })
                 .flatten()
-        }
-
-        fn unsaved_documents(
-            &self,
-            _: &AutoCommit,
-        ) -> Vec<crate::close_admission::UnsavedDocument> {
-            self.component.unsaved_documents()
-        }
-        fn checkpoint_components(&mut self) -> Vec<String> {
-            self.component.checkpoint_for_close()
-        }
-        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.finish_admitted_close();
-            self.component.take_close_reports()
-        }
-
-        fn install_control_custody(
-            &mut self,
-            parent: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
-        ) {
-            let binding = self.component.callback_binding();
-            if let Some(domain) = binding.control_domain.upgrade() {
-                let _ = domain.attach_to(parent);
-                if let Some(root) = self.component.root.as_deref_mut() {
-                    root.install_control_custody(&domain, attachment);
-                }
-            }
         }
 
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -620,28 +602,12 @@ mod component_adapter {
                 .stamp(binding.lifetime_id)
         }
 
-        fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.close();
-            self.component.take_close_reports()
-        }
-        fn take_component_close_reports(
-            &mut self,
-        ) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.take_close_reports()
-        }
-
         fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
             Some(self.component.callback_binding())
         }
         // Local feedback belongs to the emitting component. The host delivers
         // bound results through with_live_component; generic tree recursion
         // must neither cross into another record nor revive a closed owner.
-        fn on_control_invocation_result(
-            &mut self,
-            _: &tilo_actions::ActionAddress,
-            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-        }
         fn visit_components(
             &mut self,
             request: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -895,42 +861,11 @@ mod component_adapter {
                 visitor(root);
             }
         }
-        /// Participant views (agent carets) live against the component's own
-        /// record document, the one `sync` hands the app, never the outer
-        /// App document: resolved against the outer document a Writer caret
-        /// finds no block, and no participant presence is produced at all.
-        fn participant_presence(
-            &self,
-            state: &AutoCommit,
-        ) -> Vec<crate::widget::ParticipantPresence> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, _record_root| {
-                    self.component
-                        .root
-                        .as_deref()
-                        .map(|root| root.participant_presence(document))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.component
                 .root
                 .as_deref_mut()
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
-        }
-        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-            let binding = self.component.callback_binding();
-            let _entry = binding
-                .enter()
-                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
-            let root = self
-                .component
-                .root
-                .as_deref()
-                .ok_or("Component root is unavailable")?;
-            root.history_restore_readiness(scope)
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             let binding = self.component.callback_binding();
@@ -1169,67 +1104,6 @@ mod component_adapter {
             };
             root.opening()
         }
-        fn needs_commit(&self) -> bool {
-            // Consumed under the canonical record admission.
-            false
-        }
-        fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-            // Consumed under the canonical record admission.
-            None
-        }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            if let Some(intent) = root.take_control_invocation() {
-                let mut queued = binding.queued_controls.borrow_mut();
-                if queued.len() >= 64 {
-                    queued.pop_front();
-                }
-                queued.push_back(intent);
-            }
-            // The private host sweep consumes the queue with this captured owner.
-            None
-        }
-        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.control_action_bindings()
-        }
-        fn refresh_control_action_availability(
-            &mut self,
-            _allowed: &HashSet<tilo_actions::ActionAddress>,
-        ) {
-            // The private host sweep supplies this component's own authority.
-        }
-        fn on_commit(&mut self) {
-            // Consumed under the canonical record admission.
-        }
-        fn get_state(&self) -> Option<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.get_state()
-        }
-        fn set_state(&mut self, state: &str) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_state(state);
-        }
         fn text_review(&self) -> Option<(usize, String)> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1237,6 +1111,17 @@ mod component_adapter {
             };
             let root = self.component.root.as_deref()?;
             root.text_review()
+        }
+        fn nav_availability(&self) -> crate::gesture::NavAvailability {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return crate::gesture::NavAvailability::default();
+            };
+            self.component
+                .root
+                .as_deref()
+                .map(Widget::nav_availability)
+                .unwrap_or_default()
         }
         fn on_external_event(
             &mut self,
@@ -1282,32 +1167,6 @@ mod component_adapter {
             };
             root.take_focus_reset()
         }
-        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.record_intent()
-        }
-        fn view_state(&self) -> Option<crate::view::ViewContribution> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.view_state()
-        }
-        fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.restore_view_state(view);
-        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1326,32 +1185,6 @@ mod component_adapter {
             };
             root.set_motion_reduced(reduced);
         }
-        fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_record_scope(record);
-        }
-        fn presence_key(&self) -> Option<PresenceKey> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_key()
-        }
-        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_payload()
-        }
         fn needs_idle_sync(&self) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1362,159 +1195,7 @@ mod component_adapter {
             };
             root.needs_idle_sync()
         }
-        fn permission_scope(&self) -> Option<PermissionScope> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.permission_scope()
-        }
-        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources(document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn action_directory_resource_page(
-            &self,
-            doc: &AutoCommit,
-            cursor: &[u8],
-            max_results: usize,
-        ) -> Option<ActionDirectoryResourcePage> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_resource_page(document, cursor, max_results)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_revision(document)
-                })
-                .unwrap_or(None)
-        }
 
-        fn action_directory_invocation_domain(
-            &self,
-            doc: &AutoCommit,
-        ) -> crate::widget::ActionDirectoryInvocationDomain {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    self.component
-                        .root
-                        .as_deref()
-                        .map(|root| root.action_directory_invocation_domain(document))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        }
-        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource(document, id)
-                })
-                .unwrap_or(None)
-        }
-        /// A participant's tree is built against the component's own record
-        /// document, like [`Self::resources`]; the default would fall back to
-        /// this boundary's own view (the published schema) on the outer doc.
-        fn resources_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-        ) -> Vec<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let Some(root) = self.component.root.as_deref() else {
-                        return Vec::new();
-                    };
-                    root.resources_for(participant, document)
-                })
-                .unwrap_or_else(|_| Vec::new())
-        }
-        fn resource_for(
-            &self,
-            participant: Option<&tilo_actions::ParticipantId>,
-            doc: &AutoCommit,
-            id: &str,
-        ) -> Option<tilo_actions::Resource> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.resource_for(participant, document, id)
-                })
-                .unwrap_or(None)
-        }
-        fn action_directory_visibility(
-            &self,
-            doc: &AutoCommit,
-            resource_id: &str,
-        ) -> Option<tilo_actions::ActionAddress> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, _record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.action_directory_visibility(document, resource_id)
-                })
-                .unwrap_or(None)
-        }
-        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-            self.component.search_providers()
-        }
-        fn activate_search_result(
-            &mut self,
-            action_id: &str,
-            doc: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) {
-            let (doc, _) = crate::doc::document(doc, path);
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.activate_search_result(action_id, document, record_root);
-                })
-                .unwrap_or(());
-        }
-        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            // Consumed under the canonical record admission.
-            None
-        }
-        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            // Individual bound nodes receive their own record/instance status.
-        }
-        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-            // The host captures the origin from its admitted node map.
-            None
-        }
-        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.handle_local_undo_request(request)
-        }
         fn apply_room_action(
             &mut self,
             doc: &mut AutoCommit,
@@ -1557,91 +1238,6 @@ mod component_adapter {
                 self.component.invocations.push(op.invocation());
             }
             result
-        }
-        // Legacy adapters for apps not yet on `Widget::start_operation`.
-        fn invoke_resource_operation(
-            &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<bool, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn invoke_resource_operation_v2(
-            &mut self,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.invoke_resource_operation_v2(kind, type_id, payload, document, record_root)
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()))
-        }
-        fn start_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &AutoCommit,
-            _path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            let binding = self.component.callback_binding();
-            let result = binding
-                .read_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return Err("component callback refused".into());
-                    };
-                    root.start_resource_operation(
-                        invocation,
-                        kind,
-                        type_id,
-                        payload,
-                        document,
-                        record_root,
-                    )
-                })
-                .unwrap_or_else(|_| Err("component callback refused".into()));
-            if matches!(result, Ok(Some(ResourceOperationStart::Accepted)))
-                && !self.component.invocations.contains(&invocation)
-            {
-                self.component.invocations.push(invocation);
-            }
-            result
-        }
-        /// Legacy adapter: offered through [`Widget::start_operation`].
-        fn start_resource_operation_with_document(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            kind: tilo_actions::OperationKind,
-            type_id: &str,
-            payload: &[u8],
-            doc: &mut AutoCommit,
-            path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String> {
-            self.start_operation(
-                &crate::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-                doc,
-                path,
-            )
         }
         fn poll_resource_operation(
             &mut self,
@@ -1855,6 +1451,419 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::undo::UndoPoints for BoundAppWidget {
+        fn needs_commit(&self) -> bool {
+            // Consumed under the canonical record admission.
+            false
+        }
+        fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
+            // Consumed under the canonical record admission.
+            None
+        }
+        fn on_commit(&mut self) {
+            // Consumed under the canonical record admission.
+        }
+        fn get_state(&self) -> Option<String> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::undo::get_state(root)
+        }
+        fn set_state(&mut self, state: &str) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::undo::set_state(root, state);
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for BoundAppWidget {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.component.unsaved_documents()
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.component.checkpoint_for_close()
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.finish_admitted_close();
+            self.component.take_close_reports()
+        }
+        fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.close();
+            self.component.take_close_reports()
+        }
+        fn take_component_close_reports(
+            &mut self,
+        ) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.take_close_reports()
+        }
+    }
+
+    impl crate::view::capability::ViewState for BoundAppWidget {
+        fn view_state(&self) -> Option<crate::view::ViewContribution> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::view::capability::view_state(root)
+        }
+        fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::view::capability::restore_view_state(root, view);
+        }
+    }
+
+    impl crate::record::capability::RecordScoped for BoundAppWidget {
+        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::record::capability::record_intent(root)
+        }
+        fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::record::capability::set_record_scope(root, record);
+        }
+    }
+
+    impl crate::presence::capability::PublishesPresence for BoundAppWidget {
+        fn presence_key(&self) -> Option<PresenceKey> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_key(root)
+        }
+        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_payload(root)
+        }
+    }
+
+    impl crate::permissions::capability::PermissionGated for BoundAppWidget {
+        fn permission_scope(&self) -> Option<PermissionScope> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::permissions::capability::permission_scope(root)
+        }
+    }
+
+    impl crate::search::capability::SearchSource for BoundAppWidget {
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            self.component.search_providers()
+        }
+        fn activate_search_result(
+            &mut self,
+            action_id: &str,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) {
+            let (doc, _) = crate::doc::document(doc, path);
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return;
+                    };
+                    crate::search::capability::activate_search_result(
+                        root,
+                        action_id,
+                        document,
+                        record_root,
+                    );
+                })
+                .unwrap_or(());
+        }
+    }
+
+    impl crate::resources::PublishesResources for BoundAppWidget {
+        fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources(root, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn action_directory_resource_page(
+            &self,
+            doc: &AutoCommit,
+            cursor: &[u8],
+            max_results: usize,
+        ) -> Option<ActionDirectoryResourcePage> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_resource_page(
+                        root,
+                        document,
+                        cursor,
+                        max_results,
+                    )
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_revision(root, document)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| {
+                            crate::resources::action_directory_invocation_domain(root, document)
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
+        fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource(root, document, id)
+                })
+                .unwrap_or(None)
+        }
+        /// A participant's tree is built against the component's own record
+        /// document, like [`Self::resources`]; the default would fall back to
+        /// this boundary's own view (the published schema) on the outer doc.
+        fn resources_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+        ) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    crate::resources::resources_for(root, participant, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn resource_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::resource_for(root, participant, document, id)
+                })
+                .unwrap_or(None)
+        }
+        fn action_directory_visibility(
+            &self,
+            doc: &AutoCommit,
+            resource_id: &str,
+        ) -> Option<tilo_actions::ActionAddress> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    crate::resources::action_directory_visibility(root, document, resource_id)
+                })
+                .unwrap_or(None)
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for BoundAppWidget {
+        fn install_control_custody(
+            &mut self,
+            parent: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            let binding = self.component.callback_binding();
+            if let Some(domain) = binding.control_domain.upgrade() {
+                let _ = domain.attach_to(parent);
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    crate::widget::controls::install_control_custody(root, &domain, attachment);
+                }
+            }
+        }
+        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref_mut()?;
+            if let Some(intent) = crate::widget::controls::take_control_invocation(root) {
+                let mut queued = binding.queued_controls.borrow_mut();
+                if queued.len() >= 64 {
+                    queued.pop_front();
+                }
+                queued.push_back(intent);
+            }
+            // The private host sweep consumes the queue with this captured owner.
+            None
+        }
+        fn on_control_invocation_result(
+            &mut self,
+            _: &tilo_actions::ActionAddress,
+            _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        ) {
+        }
+        fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            let Some(root) = self.component.root.as_deref() else {
+                return Vec::new();
+            };
+            crate::widget::controls::control_action_bindings(root)
+        }
+        fn refresh_control_action_availability(
+            &mut self,
+            _allowed: &HashSet<tilo_actions::ActionAddress>,
+        ) {
+            // The private host sweep supplies this component's own authority.
+        }
+    }
+
+    impl crate::history_mode::capability::DocumentHistory for BoundAppWidget {
+        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
+            let root = self
+                .component
+                .root
+                .as_deref()
+                .ok_or("Component root is unavailable")?;
+            crate::history_mode::capability::history_restore_readiness(root, scope)
+        }
+    }
+
+    impl crate::undo::LocalUndo for BoundAppWidget {
+        fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return false;
+            };
+            crate::undo::handle_local_undo_request(root, request)
+        }
+    }
+
+    impl crate::undo::UndoControl for BoundAppWidget {
+        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+            // Individual bound nodes receive their own record/instance status.
+        }
+        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+            // The host captures the origin from its admitted node map.
+            None
+        }
+    }
+
+    impl crate::undo::CommittedActions for BoundAppWidget {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            // Consumed under the canonical record admission.
+            None
+        }
+    }
+
+    impl crate::collaboration::participants::Participants for BoundAppWidget {
+        fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+            crate::collaboration::participants::join_participant_in_children(self, participant)
+        }
+        fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+            crate::collaboration::participants::leave_participant_in_children(self, participant);
+        }
+        fn set_participant_label(
+            &mut self,
+            participant: &tilo_actions::ParticipantId,
+            label: &str,
+        ) {
+            crate::collaboration::participants::set_participant_label_in_children(
+                self,
+                participant,
+                label,
+            );
+        }
+        fn set_participant_host(&mut self, host: bool) {
+            crate::collaboration::participants::set_participant_host_in_children(self, host);
+        }
+        /// Participant views (agent carets) live against the component's own
+        /// record document, the one `sync` hands the app, never the outer
+        /// App document: resolved against the outer document a Writer caret
+        /// finds no block, and no participant presence is produced at all.
+        fn participant_presence(
+            &self,
+            state: &AutoCommit,
+        ) -> Vec<crate::widget::ParticipantPresence> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| {
+                            crate::collaboration::participants::participant_presence(root, document)
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
         }
     }
     impl AppWidget for BoundAppWidget {

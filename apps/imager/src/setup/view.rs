@@ -3032,18 +3032,13 @@ impl Drop for SetupApp {
 }
 
 impl Widget for SetupApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             super::actions::SETUP_OPERATION_TYPE,
             super::import_actions::IMPORT_OPERATION_TYPE,
         ]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if let Some(import_app) = &self.import_app {
-            return import_app.resources(doc);
-        }
-        vec![super::actions::resource(&self.setup_projection())]
     }
 
     fn start_operation(
@@ -3255,6 +3250,15 @@ impl Widget for SetupApp {
     }
 }
 
+impl ui::resources::PublishesResources for SetupApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if let Some(import_app) = &self.import_app {
+            return import_app.resources(doc);
+        }
+        vec![super::actions::resource(&self.setup_projection())]
+    }
+}
+
 impl SetupApp {
     fn answer_resource_operation_v2(
         &mut self,
@@ -3304,7 +3308,7 @@ mod tests {
     use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
     use crate::setup::internal_download::tests::{Server, response};
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
-    use std::time::{Duration, Instant};
+    use ui::time::Duration;
 
     #[cfg(windows)]
     const TEST_SOURCE_ROOT: &str = r"C:\setup-source";
@@ -3799,7 +3803,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal download timed out");
+                assert!(ui::time::now() < deadline, "internal download timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(app.status, "Download ready");
@@ -3828,7 +3832,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal release timed out");
+                assert!(ui::time::now() < deadline, "internal release timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(app.status, "Kept for later");
@@ -3943,7 +3947,7 @@ mod tests {
                 {
                     break;
                 }
-                assert!(Instant::now() < deadline, "internal download timed out");
+                assert!(ui::time::now() < deadline, "internal download timed out");
                 std::thread::sleep(Duration::from_millis(2));
             }
             assert_eq!(server.requests().len(), 3);
@@ -4531,7 +4535,7 @@ mod tests {
             let mut app = supported_fixture();
             app.import_launcher = || ImportApp::for_shot("import-first-login-later");
             let mut doc = AutoCommit::new();
-            let setup = Widget::resources(&app, &doc).pop().unwrap();
+            let setup = ui::resources::resources(&app, &doc).pop().unwrap();
             let open = setup
                 .actions
                 .iter()
@@ -4555,7 +4559,7 @@ mod tests {
             let mut state = AutoCommit::new();
             Widget::sync(&mut app, &mut state, &automerge::ROOT);
 
-            let resources = Widget::resources(&app, &state);
+            let resources = ui::resources::resources(&app, &state);
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "imager.import");
             assert!(
@@ -4604,7 +4608,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-            let updated = Widget::resources(&app, &state);
+            let updated = ui::resources::resources(&app, &state);
             let folder = updated[0]
                 .children
                 .iter()
@@ -4624,7 +4628,7 @@ mod tests {
             let mut app = supported_fixture();
             app.import_launcher = || ImportApp::for_shot("import-issue-pages");
             let mut state = AutoCommit::new();
-            let setup = Widget::resources(&app, &state).pop().unwrap();
+            let setup = ui::resources::resources(&app, &state).pop().unwrap();
             let open = setup
                 .actions
                 .iter()
@@ -4635,7 +4639,7 @@ mod tests {
             invoke_encoded_setup(&mut app, &open).unwrap();
             Widget::sync(&mut app, &mut state, &automerge::ROOT);
 
-            let resource = Widget::resources(&app, &state).pop().unwrap();
+            let resource = ui::resources::resources(&app, &state).pop().unwrap();
             let operation = resource
                 .children
                 .iter()
@@ -4665,7 +4669,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             let observed = loop {
                 Widget::update(&mut app, &mut state, &automerge::ROOT);
-                let resource = Widget::resources(&app, &state).pop().unwrap();
+                let resource = ui::resources::resources(&app, &state).pop().unwrap();
                 let read = resource
                     .actions
                     .iter()
@@ -4681,14 +4685,14 @@ mod tests {
                     break observed;
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "embedded completed issue page was not publicly observable"
                 );
                 std::thread::yield_now();
             };
             assert_eq!(observed["operations"][0]["next_issues_available"], false);
 
-            let resource = Widget::resources(&app, &state).pop().unwrap();
+            let resource = ui::resources::resources(&app, &state).pop().unwrap();
             let read = resource
                 .actions
                 .iter()
@@ -4702,7 +4706,7 @@ mod tests {
     }
 
     fn setup_resource(app: &SetupApp, doc: &AutoCommit) -> tilo_actions::Resource {
-        Widget::resources(app, doc)
+        ui::resources::resources(app, doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == super::super::actions::SETUP_RESOURCE_ID)
             .unwrap()
@@ -4843,7 +4847,7 @@ mod tests {
         app: &SetupApp,
         doc: &AutoCommit,
     ) -> tilo_actions::EncodedAction {
-        let resource = Widget::resources(app, doc).pop().unwrap();
+        let resource = ui::resources::resources(app, doc).pop().unwrap();
         assert_eq!(
             resource.id.as_str(),
             super::super::actions::SETUP_RESOURCE_ID
@@ -4876,7 +4880,7 @@ mod tests {
         doc: &mut AutoCommit,
         retained_setup: &tilo_actions::EncodedAction,
     ) {
-        let resource = Widget::resources(app, doc).pop().unwrap();
+        let resource = ui::resources::resources(app, doc).pop().unwrap();
         assert_eq!(
             resource.id.as_str(),
             super::super::import_actions::IMPORT_RESOURCE_ID
@@ -4909,7 +4913,7 @@ mod tests {
             .is_none(),
             "the retained setup action must not reach the hidden parent flow"
         );
-        assert_eq!(Widget::resources(app, doc)[0].kind, "imager.import");
+        assert_eq!(ui::resources::resources(app, doc)[0].kind, "imager.import");
     }
 
     /// Semantic operations, suggested and retained folder actions.
@@ -5152,7 +5156,9 @@ mod tests {
                 });
             }
 
-            let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+            let root = ui::resources::resources(&app, &AutoCommit::new())
+                .pop()
+                .unwrap();
             let folders = &child_resource(&root, "imager.setup.selection").children;
             let remove_a = folders[0]
                 .actions
@@ -5270,7 +5276,7 @@ mod tests {
             );
             invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
             assert!(
-                Widget::resources(&app, &doc)
+                ui::resources::resources(&app, &doc)
                     .iter()
                     .all(|resource| resource.kind != "imager.setup")
             );
@@ -5291,7 +5297,7 @@ mod tests {
             });
             app.import_launcher = || ImportApp::for_shot("import-complete");
             let mut doc = AutoCommit::new();
-            let resource = Widget::resources(&app, &doc).pop().unwrap();
+            let resource = ui::resources::resources(&app, &doc).pop().unwrap();
             assert_eq!(resource.kind, "imager.setup");
             assert_eq!(
                 resource.presentation.as_ref().unwrap().badge.as_deref(),
@@ -5365,7 +5371,9 @@ mod tests {
                 .borrow_mut()
                 .set_folder_mode(1, FolderMode::Later);
 
-            let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+            let root = ui::resources::resources(&app, &AutoCommit::new())
+                .pop()
+                .unwrap();
             let selection = child_resource(&root, "imager.setup.selection");
             let detail = selection
                 .presentation

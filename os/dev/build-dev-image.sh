@@ -19,6 +19,8 @@
 #      the script stops after step 1 and prints the command to run later.
 #
 # Environment:
+#   TILO_LOCAL_TAG    tag of the local images below instead of latest, to keep
+#                     builds from different checkouts apart
 #   TILO_DEV_BASE     production image to build FROM (default localhost/tilo:latest,
 #                     what ./os/build.sh produces). A CI image works too:
 #                       podman pull registry.tilo.so/tilo/tilo:<tag>
@@ -52,7 +54,7 @@ set -euo pipefail
 
 for a in "$@"; do
   case "$a" in
-    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
     *) printf 'build-dev-image: unknown arg: %s\n' "$a" >&2; exit 2 ;;
   esac
 done
@@ -64,8 +66,8 @@ export TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
 export TILO_DISK_SIZE="${TILO_DISK_SIZE:-64G}"
 source "$_dev_dir/_common.sh"
 
-base="${TILO_DEV_BASE:-localhost/tilo:latest}"
-dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:latest}"
+base="${TILO_DEV_BASE:-localhost/tilo:$TILO_LOCAL_TAG}"
+dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:$TILO_LOCAL_TAG}"
 case "$dev_image" in
   localhost/tilo-vm:*|registry.tilo.so/tilo/tilo-vm:*) ;;
   *) die "TILO_DEV_IMAGE=$dev_image: the dev image may only be tagged localhost/tilo-vm:<tag> or
@@ -167,9 +169,10 @@ podman image exists "$base" || die "the production base $base is not in local st
     TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> $0"
 base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null || true)"
 [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || base_digest=""
-# Production builds clamp .Created to their commit's time; tilo-vm compares it
+# The base's commit time (its org.tilo.source-date-epoch label, else .Created,
+# which production builds clamp to it); tilo-vm compares it
 # with the base of the image a VM runs, so a VM is not moved onto an older base.
-base_created="$(podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$base" 2>/dev/null || true)"
+base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
@@ -185,7 +188,14 @@ export SOURCE_DATE_EPOCH
 mkdir -p "$TMPDIR"
 export TMPDIR
 
+# The dev packages come from the snapshot the base was built from: the one its
+# org.tilo.rpms.ref label records (a base built here may use a local snapshot,
+# which nothing else resolves), else the published one for this commit.
 rpms_ref="${RPMS_REF:-}"
+if [ -z "$rpms_ref" ]; then
+  rpms_ref="$(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' "$base" 2>/dev/null || true)"
+  case "$rpms_ref" in "<no value>") rpms_ref="" ;; esac
+fi
 if [ -z "$rpms_ref" ]; then
   rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
 fi

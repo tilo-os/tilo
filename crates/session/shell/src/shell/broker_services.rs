@@ -65,10 +65,61 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
             if let Some(network) = network {
                 network.check_native_custody(&owner, room)?;
+                // The room's receipts are its governor's to record.
+                if let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    redacted,
+                    ..
+                } = &request.operation
+                    && network.governed_elsewhere(room)
+                {
+                    return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
+                        .await;
+                }
             }
             owner.commit_document(request, std::time::SystemTime::now())
         })
     }
+}
+
+/// Have the governor of `room` record an effect receipt this device's broker
+/// produced, and answer with this device's committed view of the room.
+async fn record_receipt_elsewhere(
+    network: &super::network::ShellNetwork,
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: super::state::RoomId,
+    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+    redacted: &[u8],
+) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+    let bound = serde_json::to_string(&BoundCommand {
+        source: CommandSource {
+            room: room.to_string(),
+            heads: Vec::new(),
+        },
+        command: DesktopCommand::RecordEffectReceipt {
+            receipt_json: String::from_utf8(redacted.to_vec())
+                .map_err(|_| "effect receipt is not JSON text")?,
+        },
+    })
+    .map_err(|error| error.to_string())?;
+    let answer = network.invoke_governor(
+        room,
+        tilo_desktop_model::commands::APP_ID,
+        tilo_desktop_model::commands::RESOURCE,
+        tilo_desktop_model::commands::ACTION,
+        Some(serde_json::json!({ "command": bound })),
+    );
+    tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, answer)
+        .await
+        .map_err(|_| "the workspace host did not record the receipt in time; outcome unknown")?
+        .ok_or("the workspace host stopped before recording the receipt; outcome unknown")??;
+    owner.with_current(room, |view| {
+        Ok(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+            binding: request.binding()?,
+            generation: view.generation(),
+            aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
+        })
+    })
 }
 
 pub struct NativeWorkspaceAuthority(pub WorkspaceTreeHandle);
@@ -289,10 +340,52 @@ fn stage_launch_content(
 }
 
 /// Launches installed apps. With the session's workspace tree it can record
-/// a workspace author granting an app authorship before launching it.
-pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
+/// a workspace author granting an app authorship before launching it; with
+/// the network, an app opened in a room another device governs is opened by
+/// that governor, which creates and places its record.
+pub struct NativeLauncher(
+    pub Option<WorkspaceTreeHandle>,
+    pub Option<Arc<super::network::ShellNetwork>>,
+);
+
+/// How long a launch waits for a room's governor to open the app.
+const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 
 impl NativeLauncher {
+    /// Open `app` through the governor of `workspace`'s room, when another
+    /// device governs it. `None` when this session opens it itself.
+    ///
+    /// Such a room only holds records its governor created, so a local
+    /// launch would open an app whose document the room does not hold. The
+    /// governor's open places the window in the room; the session then opens
+    /// its own instance of that window through [`super::peer_windows`].
+    fn open_through_governor(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+    ) -> Option<Result<(), String>> {
+        let resource = format!(
+            "{}{app}",
+            tilo_agent_control_protocol::OPEN_APP_RESOURCE_PREFIX
+        );
+        let answer = self
+            .1
+            .as_ref()
+            .filter(|network| network.governed_elsewhere(workspace.room))?
+            .invoke_governor(
+                workspace.room,
+                tilo_desktop_model::commands::APP_ID,
+                &resource,
+                tilo_agent_control_protocol::OPEN_APP_ACTION,
+                None,
+            );
+        Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
+            Ok(Some(result)) => result.map(drop),
+            Ok(None) => Err("the workspace host stopped before opening the app".into()),
+            Err(_) => Err("the workspace host did not open the app in time".into()),
+        })
+    }
+
     /// Record `person` granting `app` authorship of `workspace`'s space and
     /// add the grant to the launch's copy, unless the app already holds it.
     /// The tree checks `person`'s own authority; a refusal launches a viewer.
@@ -339,17 +432,73 @@ impl NativeLauncher {
     }
 }
 
+/// The launchable id of host application `desktop_id`, so the workspace's
+/// `app.<id>` open action can name an application no package provides.
+pub(crate) const HOST_APPLICATION_PREFIX: &str = "host:";
+
+/// Tilo packages first, then every host application no installed package
+/// answers for, marked unconfined.
+fn launchable_applications(
+    packages: Vec<super::launcher::InstalledApp>,
+    hosts: Vec<super::host_apps::HostApp>,
+) -> Vec<LaunchableApplication> {
+    let package_ids: std::collections::HashSet<String> = packages
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    let hosts = hosts
+        .into_iter()
+        .filter(|app| !package_ids.contains(&app.desktop_id.to_ascii_lowercase()))
+        .map(|app| LaunchableApplication {
+            package_id: format!("{HOST_APPLICATION_PREFIX}{}", app.desktop_id),
+            display_name: app.name,
+            unconfined: true,
+        });
+    packages
+        .into_iter()
+        .map(|app| LaunchableApplication {
+            package_id: app.package_id,
+            display_name: app.display_name,
+            unconfined: false,
+        })
+        .chain(hosts)
+        .collect()
+}
+
+/// Open host application `desktop_id` in `workspace`, where its X11 bridge,
+/// if it needs one, is that workspace's own.
+fn launch_host_application(
+    desktop_id: &str,
+    workspace: &tilo_desktop_model::Workspace,
+    content: LaunchContent<'_>,
+) -> Result<(), String> {
+    if !content.hash.is_empty() {
+        return Err("opening launch content in a host application is unsupported".into());
+    }
+    super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
 impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
-        super::launcher::gui_apps()
-            .into_iter()
-            .map(|app| LaunchableApplication {
-                package_id: app.package_id,
-                display_name: app.display_name,
-            })
-            .collect()
+        launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
     fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            return launch_host_application(
+                desktop_id,
+                workspace,
+                LaunchContent {
+                    hash: "",
+                    caller: None,
+                    author: None,
+                },
+            );
+        }
+        if let Some(opened) = self.open_through_governor(app, workspace) {
+            return opened;
+        }
         super::launcher::launch_in_workspace(app, workspace)
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -360,6 +509,14 @@ impl LauncherServices for NativeLauncher {
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
     ) -> Result<(), String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            return launch_host_application(desktop_id, workspace, content);
+        }
+        if content.hash.is_empty()
+            && let Some(opened) = self.open_through_governor(app, workspace)
+        {
+            return opened;
+        }
         let mut workspace = workspace.clone();
         if let Some(person) = content.author {
             self.grant_authorship(person, app, &mut workspace);
@@ -371,6 +528,15 @@ impl LauncherServices for NativeLauncher {
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
+    }
+    fn closes_applications(&self) -> bool {
+        super::app_close::installed()
+    }
+    fn close(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        super::app_close::request(super::app_close::AppCloseRequest {
+            app_id: app.to_string(),
+            room: workspace.room,
+        })
     }
 }
 
@@ -461,7 +627,34 @@ impl tilo_action_broker::services::KeyboardShortcutServices for NativeKeyboardSh
 /// Workspace governance (permission profiles) applied under the shell's
 /// canonical capability authority. There is no application behind these
 /// actions: the shell validates, mutates, records the effect and persists.
-pub struct NativeWorkspaceGovernance(pub WorkspaceTreeHandle);
+/// With the network, a room another device governs has that governor apply
+/// them, with this device's own authority there.
+pub struct NativeWorkspaceGovernance(
+    pub WorkspaceTreeHandle,
+    pub Option<Arc<super::network::ShellNetwork>>,
+);
+impl NativeWorkspaceGovernance {
+    /// The network and room when another device governs `room`. The native
+    /// owner locks the tree under its own mutex, so this must not be asked
+    /// while the tree is held.
+    fn governor_elsewhere(
+        &self,
+        room: &str,
+    ) -> Option<(&Arc<super::network::ShellNetwork>, super::state::RoomId)> {
+        let room = self
+            .0
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .map(|workspace| workspace.room)?;
+        self.1
+            .as_ref()
+            .filter(|network| network.governed_elsewhere(room))
+            .map(|network| (network, room))
+    }
+}
 impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     fn app_id(&self) -> &str {
         super::state::WORKSPACE_GOVERNANCE_APP_ID
@@ -491,6 +684,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {
         let actor = request.actor;
+        let elsewhere = self.governor_elsewhere(request.room);
         let mut tree = self.0.write();
         let workspace_index = tree
             .desktop
@@ -545,6 +739,10 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
         let operation = decode_permission_profile_operation(spec, request.argument)?;
+        if let Some((network, room)) = elsewhere.filter(|(_, room)| *room == workspace.room) {
+            drop(tree);
+            return govern_elsewhere(network, room, operation);
+        }
         let workspace_id = workspace.id;
         apply_permission_profile_operation(
             &mut tree,
@@ -574,6 +772,82 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         tree.flush_to_disk();
         drop(tree);
         Ok(())
+    }
+}
+
+/// Have the governor of `room` apply a permission-profile `operation` as a
+/// desktop command from this device.
+fn govern_elsewhere(
+    network: &super::network::ShellNetwork,
+    room: super::state::RoomId,
+    operation: tilo_desktop::workspace_settings::PermissionProfileOperation,
+) -> Result<(), String> {
+    use tilo_desktop::workspace_settings::PermissionProfileOperation as Operation;
+    use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+    let command = match operation {
+        Operation::Save {
+            name,
+            description,
+            rules,
+        } => DesktopCommand::SavePermissionProfile {
+            profile_json: serde_json::to_string(&collab_types::PermissionProfile {
+                name,
+                description,
+                rules,
+            })
+            .map_err(|error| error.to_string())?,
+        },
+        Operation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => DesktopCommand::AssignPermissionProfile {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        },
+        Operation::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        } => DesktopCommand::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        },
+        Operation::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        } => DesktopCommand::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        },
+    };
+    let bound = serde_json::to_string(&BoundCommand {
+        source: CommandSource {
+            room: room.to_string(),
+            heads: Vec::new(),
+        },
+        command,
+    })
+    .map_err(|error| error.to_string())?;
+    let answer = network.invoke_governor(
+        room,
+        tilo_desktop_model::commands::APP_ID,
+        tilo_desktop_model::commands::RESOURCE,
+        tilo_desktop_model::commands::ACTION,
+        Some(serde_json::json!({ "command": bound })),
+    );
+    match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
+        Ok(Some(result)) => result.map(drop),
+        Ok(None) => Err("the workspace host stopped before applying the change".into()),
+        Err(_) => Err("the workspace host did not apply the change in time".into()),
     }
 }
 
@@ -844,7 +1118,8 @@ pub fn native_services(
             as Arc<dyn NativeDocumentReads>
     });
     let governance = membership.as_ref().map(|tree| {
-        Arc::new(NativeWorkspaceGovernance(tree.clone())) as Arc<dyn WorkspaceGovernanceServices>
+        Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
+            as Arc<dyn WorkspaceGovernanceServices>
     });
     let shortcut_library = membership.as_ref().map(|tree| {
         Arc::new(NativeShortcutLibrary(tree.clone())) as Arc<dyn ShortcutLibraryServices>
@@ -860,7 +1135,7 @@ pub fn native_services(
         Arc::new(NativeAppActionGrants(tree.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
-    let launcher = Arc::new(NativeLauncher(membership.clone()));
+    let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
     HostServices {
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
@@ -910,8 +1185,11 @@ pub(crate) fn test_broker_with_membership(
     let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
-        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone())))),
-        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(membership.clone()))),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
+        workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(
+            membership.clone(),
+            None,
+        ))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
@@ -1271,6 +1549,73 @@ mod tests {
         }
     }
 
+    #[test]
+    fn host_applications_are_launchable_unconfined_unless_a_package_answers_for_them() {
+        let package = |id: &str| crate::shell::launcher::InstalledApp {
+            package_id: id.into(),
+            display_name: "Writer".into(),
+            localized_names: std::collections::BTreeMap::default(),
+            category: None,
+            version: "1".into(),
+            manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
+            payload_root: std::path::PathBuf::from("/x"),
+            has_gui: true,
+            opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
+        };
+        let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
+            desktop_id: id.into(),
+            name: name.into(),
+            source_label: "System",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec![id.into()],
+            mime_types: Vec::new(),
+            terminal: false,
+            icon: None,
+        };
+        let apps = launchable_applications(
+            vec![package("so.tilo.word-processor")],
+            vec![
+                host("chromium-browser", "Chromium"),
+                host("SO.TILO.WORD-PROCESSOR", "Shadowed"),
+            ],
+        );
+        let listed: Vec<_> = apps
+            .iter()
+            .map(|app| (app.package_id.as_str(), app.unconfined))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("so.tilo.word-processor", false),
+                ("host:chromium-browser", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_host_application_refuses_launch_content_before_spawning() {
+        let workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(3),
+            "host launch test",
+        );
+        let refused = NativeLauncher(None, None).launch_content(
+            "host:chromium-browser",
+            &workspace,
+            LaunchContent {
+                hash: "00",
+                caller: None,
+                author: None,
+            },
+        );
+        assert_eq!(
+            refused,
+            Err("opening launch content in a host application is unsupported".into())
+        );
+    }
+
     /// A workspace owner opening an app makes it an author of the space,
     /// recorded once as their grant; someone without authority records
     /// nothing, so the app launches a viewer.
@@ -1286,7 +1631,7 @@ mod tests {
         workspace.set_owner("owner".to_string());
         tree.desktop.workspaces.push(workspace.clone());
         let handle = tree.shared();
-        let launcher = NativeLauncher(Some(handle.clone()));
+        let launcher = NativeLauncher(Some(handle.clone()), None);
         let app = "so.tilo.word-processor";
 
         let mut stranger_copy = workspace.clone();
@@ -1302,6 +1647,7 @@ mod tests {
 
         let mut again = handle.read().desktop.workspaces[0].clone();
         launcher.grant_authorship("owner", app, &mut again);
+        drop(launcher);
         assert_eq!(
             handle.read().desktop.workspaces[0].capabilities.len(),
             stored,

@@ -1102,7 +1102,7 @@ fn run_external_process(
             }
         }
         if paths.stop.exists() {
-            terminate_process_group(&mut child);
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             paths.clear_markers();
@@ -1128,35 +1128,6 @@ fn run_external_process(
         }
         std::thread::sleep(SESSION_POLL_INTERVAL);
     }
-}
-
-fn terminate_process_group(child: &mut Child) {
-    // A pid this large would mean the OS process-ID space is not what this
-    // code understands; there is nothing safe to signal, so give up cleanly
-    // rather than let the cast wrap into an unrelated process group.
-    let Ok(pid) = i32::try_from(child.id()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    let group = pid.saturating_neg();
-    // SAFETY: `process_group(0)` above made the child's PID its process-group
-    // ID. A negative target confines SIGTERM to that group and never targets
-    // the compositor or the caller's process group.
-    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// `(device, connected session, receiver-message channel)` — the result of

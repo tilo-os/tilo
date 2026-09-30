@@ -272,13 +272,13 @@ impl ImportApp {
                     .map_err(|e| e.to_string())?;
                 }
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+                let deadline = ui::time::now() + SHOT_WAIT_BOUND;
                 app.wait_for_shot_terminal(deadline)?;
                 app.expanded_details.insert(0);
                 app.load_issue_page(0, 0)?;
                 while app.detail_request.is_some() {
                     app.poll_background();
-                    if std::time::Instant::now() > deadline {
+                    if ui::time::now() > deadline {
                         return Err("issue-page screenshot timed out".into());
                     }
                     std::thread::yield_now();
@@ -288,7 +288,7 @@ impl ImportApp {
                 std::fs::write(source.join("Welcome.txt"), b"verified import")
                     .map_err(|error| error.to_string())?;
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                app.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
+                app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
         app.structure_dirty = true;
@@ -308,7 +308,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -328,7 +328,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("progress screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -346,7 +346,7 @@ impl ImportApp {
         std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join("Old shortcut"))
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)
     }
 
     fn seed_retry_progress_shot(
@@ -362,7 +362,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -374,7 +374,7 @@ impl ImportApp {
                 self.wait_for_shot_terminal(deadline)?;
                 break;
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("retry screenshot setup timed out".into());
             }
             std::thread::yield_now();
@@ -402,7 +402,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline || self.worker.is_none() {
+            if ui::time::now() >= deadline || self.worker.is_none() {
                 return Err("retry screenshot worker finished before progress was captured".into());
             }
             std::thread::yield_now();
@@ -417,7 +417,7 @@ impl ImportApp {
         std::fs::write(source.join("Budget.txt"), b"source version")
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
         let completed = self
             .operations
             .first()
@@ -454,10 +454,10 @@ impl ImportApp {
         self.start_copy(0)
     }
 
-    fn wait_for_shot_terminal(&mut self, deadline: std::time::Instant) -> Result<(), String> {
+    fn wait_for_shot_terminal(&mut self, deadline: ui::time::Instant) -> Result<(), String> {
         while self.worker.is_some() {
             self.poll_background();
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -467,7 +467,7 @@ impl ImportApp {
 
     fn run_shot_worker(operation: &mut OperationRecord, job: MigrationJob) -> Result<(), String> {
         let mut worker = MigrationWorker::start(job)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             if let Some(event) = worker.try_next() {
                 match event {
@@ -482,7 +482,7 @@ impl ImportApp {
                     }
                 }
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 operation.apply_outcome(WorkerOutcome::Interrupted);
                 return Err("screenshot worker timed out".into());
             }
@@ -1189,8 +1189,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .map_err(|_| "system time is before the Unix epoch".to_string())?
                 .as_nanos(),
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
@@ -1291,7 +1291,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = xdg_paths::data_local_dir()
+                        let parent = tilo_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("tilo/files");
                         super::migration_store::ensure_private_root(&parent)
@@ -2529,12 +2529,10 @@ fn state_summary(state: OperationState) -> &'static str {
 }
 
 impl Widget for ImportApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[import_actions::IMPORT_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
     }
 
     fn start_operation(
@@ -2946,6 +2944,12 @@ impl Widget for ImportApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImportApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![import_actions::resource(&self.import_projection())]
+    }
+}
+
 impl ImportApp {
     fn admit_resource_operation(
         &mut self,
@@ -3073,7 +3077,6 @@ fn disposable_fixture_dir() -> std::io::Result<tempfile::TempDir> {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::time::Instant;
 
     use super::*;
 
@@ -3099,7 +3102,7 @@ mod tests {
         let deadline = tilo_test_env::hang_deadline();
         while app.worker.is_some() {
             app.poll_background();
-            assert!(Instant::now() < deadline, "import worker did not finish");
+            assert!(ui::time::now() < deadline, "import worker did not finish");
             std::thread::yield_now();
         }
         while let Some(invocation) = app
@@ -3119,7 +3122,7 @@ mod tests {
             {
                 break;
             }
-            assert!(Instant::now() < deadline, "copy invocation did not settle");
+            assert!(ui::time::now() < deadline, "copy invocation did not settle");
             std::thread::yield_now();
         }
     }
@@ -3128,13 +3131,15 @@ mod tests {
         let deadline = tilo_test_env::hang_deadline();
         while !app.pending_saves.is_empty() {
             app.poll_background();
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
     }
 
     fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
-        Widget::resources(app, &AutoCommit::new()).pop().unwrap()
+        ui::resources::resources(app, &AutoCommit::new())
+            .pop()
+            .unwrap()
     }
 
     fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
@@ -3209,7 +3214,7 @@ mod tests {
                 return observed;
             }
             assert!(
-                Instant::now() < deadline,
+                ui::time::now() < deadline,
                 "issue page with {count} messages was not publicly observable"
             );
             std::thread::yield_now();
@@ -3306,7 +3311,7 @@ mod tests {
             app.prepare_review().unwrap();
             let operation_id = app.operations[0].id().to_string();
 
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
 
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "imager.import");
@@ -3479,7 +3484,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while pages.detail_request.is_some() {
                 pages.poll_background();
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             }
             assert_eq!(pages.detail_pages[&0].issues.len(), 8);
@@ -3558,7 +3563,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "review save never settled");
+                assert!(ui::time::now() < deadline, "review save never settled");
                 std::thread::yield_now();
             }
             assert!(
@@ -3604,7 +3609,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "review failure never settled");
+                assert!(ui::time::now() < deadline, "review failure never settled");
                 std::thread::yield_now();
             }
         }
@@ -3642,7 +3647,7 @@ mod tests {
                     break;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "picker cancellation never settled"
                 );
                 std::thread::yield_now();
@@ -3680,7 +3685,7 @@ mod tests {
                     break update;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "disconnected picker never failed the review action"
                 );
                 std::thread::yield_now();
@@ -3997,7 +4002,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.gate_request.is_some() {
                 app.poll_background();
-                assert!(Instant::now() < deadline, "identity check did not finish");
+                assert!(ui::time::now() < deadline, "identity check did not finish");
                 std::thread::yield_now();
             }
             assert!(
@@ -4065,7 +4070,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "copy action never settled");
+                assert!(ui::time::now() < deadline, "copy action never settled");
                 std::thread::yield_now();
             }
             assert_eq!(app.operations[0].state(), OperationState::Complete);
@@ -4105,7 +4110,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "identity failure never settled");
+                assert!(ui::time::now() < deadline, "identity failure never settled");
                 std::thread::yield_now();
             }
             assert!(app.worker.is_none());
@@ -4186,7 +4191,10 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
                 app.poll_background();
-                assert!(Instant::now() < deadline, "copy made no journaled progress");
+                assert!(
+                    ui::time::now() < deadline,
+                    "copy made no journaled progress"
+                );
                 std::thread::yield_now();
             }
             assert!(
@@ -4230,7 +4238,7 @@ mod tests {
                     assert!(app.cancel_active());
                     break;
                 }
-                assert!(Instant::now() < deadline, "copy did not publish progress");
+                assert!(ui::time::now() < deadline, "copy did not publish progress");
                 std::thread::yield_now();
             }
             wait_terminal(&mut app);
@@ -4245,7 +4253,7 @@ mod tests {
                     break store;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "previous writer retained store ownership"
                 );
                 std::thread::yield_now();
@@ -4536,7 +4544,7 @@ mod tests {
                 let deadline = tilo_test_env::hang_deadline();
                 while app.review_request.is_some() {
                     app.poll_background();
-                    assert!(Instant::now() < deadline);
+                    assert!(ui::time::now() < deadline);
                     std::thread::yield_now();
                 }
                 assert!(!app.status_is_error, "{}", app.status);
@@ -4605,7 +4613,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.review_request.is_some() {
                 app.poll_background();
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             }
             assert!(!app.status_is_error, "{}", app.status);
@@ -4684,7 +4692,7 @@ mod tests {
                 if let Ok(store) = MigrationStore::open_at(&root) {
                     break store;
                 }
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             };
             let mut reopened = ImportApp::with_store(store).unwrap();
@@ -4771,7 +4779,7 @@ mod tests {
                 assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
                 break;
             }
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
         assert!(!destination_parent.join("source").exists());

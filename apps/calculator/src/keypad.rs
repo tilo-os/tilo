@@ -12,7 +12,8 @@
 //!    toggle that opens an overlay drawer (drawn over the keypad with a
 //!    dismiss scrim) when the window is too narrow to dock it.
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{SidebarDrawer, SidebarSide};
 use vello::Scene;
@@ -467,11 +468,12 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let display = self.display_rect;
-        ui::surface::card(scene, t, display, theme.radius_standard, c.neutral[0]);
+        ui::surface::card(ctx.scene, t, display, theme.radius_standard, c.neutral[0]);
         if self.display_is_short() {
-            self.draw_display_expr_and_result(scene, t, tr, theme, model);
+            self.draw_display_expr_and_result(ctx.scene, t, ctx.text, theme, model);
             return;
         }
 
@@ -484,30 +486,24 @@ impl CalcScreen {
         );
         let mode_txt = if model.deg { "DEG" } else { "RAD" };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             status,
             mode_txt,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
             c.accent[6],
             Align::Left,
-            TextWeight::Semibold,
         );
         let ans_txt = format!("Ans = {}", engine::format_number(model.ans));
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             status,
             &ans_txt,
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
             Align::Right,
-            TextWeight::Regular,
         );
 
-        self.draw_display_expr_and_result(scene, t, tr, theme, model);
+        self.draw_display_expr_and_result(ctx.scene, t, ctx.text, theme, model);
     }
 
     /// The display panel's expression line and its result/preview line.
@@ -519,6 +515,7 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let display = self.display_rect;
         let short = self.display_is_short();
@@ -534,15 +531,12 @@ impl CalcScreen {
             c.text_primary
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             expr_rect,
             &expr_shown,
-            if short { 24.0 } else { 30.0 },
+            &TextStyle::new(if short { 24.0 } else { 30.0 }).with_weight(TextWeight::Medium),
             expr_color,
             Align::Right,
-            TextWeight::Medium,
         );
 
         // result / preview line
@@ -573,15 +567,12 @@ impl CalcScreen {
             _ => (String::new(), c.text_dim, TextWeight::Regular),
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             res_rect,
             &res_txt,
-            if short { 24.0 } else { 34.0 },
+            &TextStyle::new(if short { 24.0 } else { 34.0 }).with_weight(weight),
             res_color,
             Align::Right,
-            weight,
         );
     }
 
@@ -594,6 +585,7 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         for (i, key) in MEM_KEYS.iter().enumerate() {
             let Some(&r) = self.mem_rects.get(i) else {
@@ -602,18 +594,15 @@ impl CalcScreen {
             let hovered = self.hovered_mem == Some(i);
             let active = matches!(key, Key::MemRecall | Key::MemClear) && model.memory != 0.0;
             let fill = if hovered { c.neutral[3] } else { c.neutral[2] };
-            ui::surface::card(scene, t, r, 8.0, fill);
+            ui::surface::card(ctx.scene, t, r, 8.0, fill);
             let txt_col = if active { c.accent[6] } else { c.text_dim };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 key.label(),
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 txt_col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
         if let Some(&mem3) = self.mem_rects.get(3) {
@@ -634,21 +623,19 @@ impl CalcScreen {
                 c.accent[6]
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 mem_label,
                 &mem_txt,
-                14.0,
+                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
                 mem_col,
                 Align::Right,
-                TextWeight::Medium,
             );
         }
     }
 
     /// The scientific keypad's key buttons.
     fn draw_keys(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         for (i, key) in self.keys.iter().enumerate() {
             let Some(&r) = self.key_rects.get(i) else {
@@ -657,9 +644,9 @@ impl CalcScreen {
             let hovered = self.hovered_key == Some(i);
             let pressed = self.pressed_key == Some(i);
             let (fill, text_col) = key_colors(theme, key.role(), hovered, pressed);
-            ui::surface::card(scene, t, r, 10.0, fill);
+            ui::surface::card(ctx.scene, t, r, 10.0, fill);
             if key.role() == KeyRole::Accent {
-                draw::stroke_round(scene, t, r, 10.0, c.accent[6], 1.0);
+                ctx.stroke_round(r, 10.0, c.accent[6], 1.0);
             }
             let size = match key.role() {
                 KeyRole::Digit | KeyRole::Operator | KeyRole::Accent => 22.0_f32,
@@ -667,15 +654,12 @@ impl CalcScreen {
             }
             .min(ui::num::f32_of_f64(r.height() * 0.6));
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 key.label(),
-                size,
+                &TextStyle::new(size).with_weight(TextWeight::Medium),
                 text_col,
                 Align::Center,
-                TextWeight::Medium,
             );
         }
     }
@@ -694,6 +678,7 @@ impl CalcScreen {
         theme: &Theme,
         model: &CalcModel,
     ) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
         let right = self.sidebar_rect;
 
@@ -705,9 +690,9 @@ impl CalcScreen {
         } else {
             c.surfaces.base
         };
-        draw::fill_rect(scene, t, right, panel_bg);
+        ctx.fill_rect(right, panel_bg);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(right.x0, right.y0),
             Point::new(right.x0, right.y1),
@@ -717,30 +702,24 @@ impl CalcScreen {
 
         let header = Rect::new(right.x0 + 16.0, right.y0, right.x1 - 16.0, right.y0 + 48.0);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             header,
             "History",
-            16.0,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
             Align::Left,
-            TextWeight::Semibold,
         );
-        ui::surface::card(scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, self.clear_hist_rect, 6.0, c.neutral[2]);
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.clear_hist_rect,
             "Clear",
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
             Align::Center,
-            TextWeight::Medium,
         );
 
-        scene.push_layer(
+        ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
@@ -749,15 +728,12 @@ impl CalcScreen {
         );
         if model.history.is_empty() {
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 self.history_view,
                 "No calculations yet",
-                14.0,
+                &TextStyle::new(14.0),
                 c.text_dim,
                 Align::Center,
-                TextWeight::Regular,
             );
         }
         for (i, r) in &self.history_rects {
@@ -765,15 +741,15 @@ impl CalcScreen {
                 continue;
             };
             draw_recorded_row(
-                scene,
+                ctx.scene,
                 t,
-                tr,
+                ctx.text,
                 theme,
                 Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0),
                 entry,
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     // -- hit-testing ---------------------------------------------------------
@@ -876,31 +852,26 @@ pub(crate) fn draw_recorded_row(
     row: Rect,
     entry: &crate::model::HistoryEntry,
 ) {
+    let mut ctx = PaintCtx::new(scene, t, tr, theme);
     let c = &theme.tokens.colors;
-    ui::surface::card(scene, t, row, 8.0, c.neutral[1]);
+    ui::surface::card(ctx.scene, t, row, 8.0, c.neutral[1]);
     let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);
     draw::text_in(
-        scene,
-        tr,
-        t,
+        &mut ctx,
         expr_r,
         &engine::prettify(&entry.expr),
-        13.0,
+        &TextStyle::new(13.0),
         c.text_dim,
         Align::Left,
-        TextWeight::Regular,
     );
     let res_r = Rect::new(row.x0 + 12.0, row.y0 + 24.0, row.x1 - 12.0, row.y1 - 4.0);
     draw::text_in(
-        scene,
-        tr,
-        t,
+        &mut ctx,
         res_r,
         &format!("= {}", entry.result),
-        18.0,
+        &TextStyle::new(18.0).with_weight(TextWeight::Semibold),
         c.text_primary,
         Align::Right,
-        TextWeight::Semibold,
     );
 }
 

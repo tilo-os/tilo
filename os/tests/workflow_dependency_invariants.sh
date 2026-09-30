@@ -9,39 +9,38 @@ cosign_action="$repo/.forgejo/actions/install-cosign/action.yml"
 fail=0
 
 manifest="$repo/os/external-assets/github-assets.tsv"
-package_workflow="$workflows/package-desktop.yml"
+package_workflow="$workflows/release-desktop.yml"
 check_workflow="$workflows/check.yml"
 kernel_workflow="$workflows/build-kernel.yml"
-rpm_snapshot_workflow="$workflows/snapshot-rpms.yml"
+rpm_snapshot_workflow="$workflows/build-rpms.yml"
 containerfile="$repo/os/Containerfile"
-nightly_workflow="$workflows/nightly.yml"
-visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
+nightly_workflow="$workflows/ci-nightly.yml"
+visual_refresh_workflow="$workflows/dev-visual-baselines.yml"
 github_cache_workflows=(
-  "$workflows/build-builder-image.yml"
+  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
-  "$workflows/package-desktop.yml"
+  "$workflows/release-desktop.yml"
   "$workflows/release-imager.yml"
-  "$workflows/snapshot-rpms.yml"
+  "$workflows/build-rpms.yml"
 )
 cosign_workflows=(
-  "$workflows/build-builder-image.yml"
+  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/release-relay.yml"
   "$workflows/release-imager.yml"
-  "$workflows/snapshot-rpms.yml"
-  "$workflows/snapshot-wpe-buildroot.yml"
-  "$workflows/snapshot-kernel-buildroot.yml"
+  "$workflows/build-rpms.yml"
+  "$workflows/build-buildroots.yml"
   "$workflows/dev-disk.yml"
 )
 dev_disk_workflow="$workflows/dev-disk.yml"
 syft_workflow="$workflows/build-image.yml"
 release_signed_workflows=(
-  "$workflows/build-builder-image.yml"
+  "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/release-relay.yml"
-  "$workflows/snapshot-rpms.yml"
+  "$workflows/build-rpms.yml"
 )
 
 if python3 "$repo/tools/policy/check_workflow_actions.py"; then
@@ -57,11 +56,11 @@ else
   fail=1
 fi
 
-if grep -Fq 'group: check-${{ github.event_name }}-${{ github.sha }}' "$check_workflow" \
-   && grep -Fq 'cancel-in-progress: false' "$check_workflow" \
-   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.sha }}' "$workflows/lint.yml" \
-   && grep -Fq 'cancel-in-progress: false' "$workflows/lint.yml"; then
-  printf 'ok    every check and lint event retains an independent result\n'
+if grep -Fq 'group: check-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$check_workflow" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$check_workflow" \
+   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$workflows/lint.yml" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$workflows/lint.yml"; then
+  printf 'ok    check and lint keep every push result and replace only superseded PR runs\n'
 else
   printf 'check or lint events may replace required results\n' >&2
   fail=1
@@ -95,7 +94,7 @@ else
 fi
 
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$kernel_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow" \
+   && grep -Fqx '    needs: signing-preflight' "$kernel_workflow" \
    && grep -Fq "(needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')" "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
 else
@@ -116,7 +115,7 @@ fi
 
 relay_workflow="$workflows/release-relay.yml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability, ensure-rpms]' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, ensure-rpms]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2
@@ -248,7 +247,7 @@ fi
 if [ "$fail" = 0 ]; then
   printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
-builder_workflow="$workflows/build-builder-image.yml"
+builder_workflow="$workflows/build-ci-builder.yml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$builder_workflow" \
    && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
   printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'

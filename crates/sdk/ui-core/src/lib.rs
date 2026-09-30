@@ -37,7 +37,6 @@
     clippy::significant_drop_tightening,
     clippy::similar_names,
     clippy::struct_excessive_bools,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unchecked_time_subtraction,
@@ -137,6 +136,7 @@ pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub mod color;
 pub mod color_compat;
+pub mod component_lifecycle;
 pub mod content_layout;
 mod damage;
 pub mod date;
@@ -158,16 +158,22 @@ pub mod fullscreen;
 pub mod gesture;
 pub mod gpu;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar
-/// output and converting YUV to RGB in a shader.
-#[cfg(feature = "gpu-video")]
+/// output and converting YUV to RGB in a shader. Plain wgpu, so every target
+/// (WebGPU included) has it; `gpu-video` adds the zero-copy dmabuf import,
+/// which `media::availability(Feature::ZeroCopyVideo)` reports.
 pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
-#[cfg(all(windows, feature = "notifications"))]
+#[cfg(feature = "native")]
+mod host_appearance;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_chrome;
+pub mod host_data;
+#[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
-#[cfg(not(all(windows, feature = "notifications")))]
+#[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
 pub mod i18n;
@@ -179,13 +185,13 @@ pub mod interaction;
 pub mod keycaps;
 pub mod launch;
 pub mod live_collaboration;
+pub mod local_identity;
 pub mod local_state;
 pub mod math;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod nav_stack;
 pub mod num;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 pub mod overlay;
 pub mod paint;
@@ -200,8 +206,9 @@ pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
+pub mod storage;
 pub mod ux_bench;
-pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
+pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
@@ -212,6 +219,7 @@ pub mod remote_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
+pub mod resources;
 pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
@@ -248,7 +256,8 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, host, location, mpris, png, portal, time, wake,
+    background, capture, clipboard, env, host, location, mpris, notify, png, portal, secrets, time,
+    wake,
 };
 
 /// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.
@@ -265,7 +274,6 @@ pub use automerge;
 pub use taffy;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
-#[cfg(not(target_arch = "wasm32"))]
 pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};
@@ -302,7 +310,9 @@ pub use profiling::{
     FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
     StatSummary, run_scenario, run_scenario_on,
 };
-pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
+pub use reader_hud::{
+    HudAction, HudControls, HudPlacement, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud,
+};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
 pub use remote_actions::{
     CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,

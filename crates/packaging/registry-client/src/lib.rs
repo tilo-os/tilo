@@ -38,9 +38,7 @@ pub fn apply(
         claims,
         contact,
         note,
-        submitted_at_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs()),
+        submitted_at_unix: tilo_clock::unix_now(),
         signature_hex: String::new(),
     };
     application.sign(key);

@@ -164,7 +164,7 @@ mod tests {
             }
             let troubleshooting = topic("troubleshooting").unwrap();
             assert!(troubleshooting.contains("cargo build -p tilo-vm"));
-            assert!(troubleshooting.contains("rcargo"));
+            assert!(troubleshooting.contains("target/debug/tilo-vm"));
             let swapping = topic("swapping").unwrap();
             assert!(swapping.contains("## Verify your swap"));
             assert!(swapping.contains("tilo-vm slot exec -- sha256sum"));
@@ -203,7 +203,7 @@ mod tests {
             let images = topic("images").unwrap();
             assert!(images.contains("## Pick the fastest loop"));
             assert!(images.contains("--from sha:<commit>"));
-            assert!(images.contains("registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>"));
+            assert!(images.contains("registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>"));
         }
 
         // Phase: guides_use_the_current_command_shapes.

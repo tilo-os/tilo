@@ -393,7 +393,7 @@ mod tests {
         // Phase: every_kind_uses_a_canonical_address.
         {
             let (app, _) = seeded();
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             let provider = &providers[0];
             assert!(
                 provider
@@ -423,7 +423,7 @@ mod tests {
         // Phase: every_search_kind_resolves_its_canonical_open_resource.
         {
             let (app, _) = seeded();
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             let provider = &providers[0];
             for kind in [
                 WORKSPACE_KIND,
@@ -448,7 +448,7 @@ mod tests {
         // Phase: limited_search_honours_the_materialisation_budget.
         {
             let (app, _) = seeded();
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             let provider = &providers[0];
             assert_eq!(provider.search_limited("", 1).len(), 1);
             assert!(provider.search_limited("", 0).is_empty());
@@ -456,8 +456,8 @@ mod tests {
         // Phase: search_addresses_resolve_and_navigate_exactly.
         {
             let (mut app, mut doc) = seeded();
-            let resources = app.resources(&doc);
-            let providers = app.search_providers();
+            let resources = ui::resources::resources(&app, &doc);
+            let providers = ui::search::capability::search_providers(&app);
             let provider = &providers[0];
             let channel_hit = provider
                 .search("")
@@ -553,7 +553,7 @@ mod tests {
                 .find(|message| !message.text.is_empty())
                 .cloned()
                 .unwrap();
-            let mut providers = app.search_providers();
+            let mut providers = ui::search::capability::search_providers(&app);
             let provider = providers.pop().unwrap();
             let hit = provider
                 .search(&message.text)

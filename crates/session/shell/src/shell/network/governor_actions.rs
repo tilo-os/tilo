@@ -79,7 +79,7 @@ async fn invoke(
     app_id: String,
     resource: String,
     action: String,
-    argument: serde_json::Value,
+    argument: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let scope = ExactActionRoute {
         app_id: app_id.clone(),
@@ -110,7 +110,7 @@ async fn invoke(
                 record_id: String::new(),
                 resource,
                 action,
-                argument: Some(argument),
+                argument,
                 confirmation: None,
                 revision: None,
             },
@@ -159,6 +159,13 @@ impl ShellNetwork {
         })
     }
 
+    /// Whether a device other than this one governs `room`: its windows
+    /// and records are created by that governor.
+    pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
+        self.governor_route(room)
+            .is_ok_and(|route| route.source != route.target)
+    }
+
     /// Invoke `resource`/`action` of `app_id` on `room`'s governor with
     /// `argument`, as this device, and answer with its result.
     pub(crate) fn invoke_governor(
@@ -167,7 +174,7 @@ impl ShellNetwork {
         app_id: &str,
         resource: &str,
         action: &str,
-        argument: serde_json::Value,
+        argument: Option<serde_json::Value>,
     ) -> Pending<Result<serde_json::Value, String>> {
         let (completer, answer) = tilo_actions::remote::pending();
         let route = match self.governor_route(room) {
@@ -188,10 +195,28 @@ impl ShellNetwork {
             action.to_owned(),
         );
         runtime.spawn(async move {
-            let result = tokio::time::timeout(
-                GOVERNOR_TIMEOUT,
-                invoke(commands, route, app_id, resource, action, argument),
-            )
+            let result = tokio::time::timeout(GOVERNOR_TIMEOUT, async {
+                // Right after startup the room's relay session may still be dialing.
+                loop {
+                    let result = invoke(
+                        commands.clone(),
+                        route.clone(),
+                        app_id.clone(),
+                        resource.clone(),
+                        action.clone(),
+                        argument.clone(),
+                    )
+                    .await;
+                    match result {
+                        Err(reason)
+                            if reason == crate::network::actor::native_ingress::NOT_CONNECTED =>
+                        {
+                            tokio::time::sleep(STATUS_INTERVAL).await;
+                        }
+                        result => break result,
+                    }
+                }
+            })
             .await
             .unwrap_or_else(|_| Err("the governor did not answer in time".into()));
             completer.complete(result);
@@ -216,6 +241,14 @@ impl ShellNetwork {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_room_no_other_device_governs_is_opened_here() {
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let room = tree.read().desktop.workspaces[0].room;
+        let (net, _commands) = super::super::shell_network_for_test(tree, 0);
+        assert!(!net.governed_elsewhere(room));
+    }
+
     #[test]
     fn a_surface_is_found_by_the_action_it_publishes() {
         let catalogue = serde_json::json!({"version":1,"surfaces":[

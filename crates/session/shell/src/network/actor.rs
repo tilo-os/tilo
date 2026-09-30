@@ -127,6 +127,15 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
+/// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
+#[derive(Clone)]
+pub struct LoopWake(pub crate::session_runtime::Wake);
+impl std::fmt::Debug for LoopWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoopWake")
+    }
+}
+
 #[derive(Debug)]
 pub enum NetCmd {
     NativeConnect(native_ingress::Connect),
@@ -138,6 +147,16 @@ pub enum NetCmd {
     },
     NativePublish {
         ws: u64,
+    },
+    /// Wake the compositor loop when legacy-window traffic arrives: an idle
+    /// headless loop otherwise sleeps until something else wakes it.
+    SetWake(LoopWake),
+    /// This device's own topology entries (`SyncResp`) for a room another
+    /// device governs, to its workspace hosts as a retained delta: the
+    /// governor admits them within this device's registered namespace.
+    PublishHostedTopology {
+        ws: u64,
+        msg: NeighbourMsg,
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
@@ -209,12 +228,7 @@ pub enum NetCmd {
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        total_bytes: u64,
-        resume_offset: u64,
-        prefix_hash: [u8; 32],
-        content_hash: [u8; 32],
+        transfer: NearbyTransferCheckpoint,
         file: std::fs::File,
     },
     Connect {
@@ -235,6 +249,19 @@ pub enum NetCmd {
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
+}
+
+/// One immutable Nearby spool object and the receiver-confirmed checkpoint
+/// its stream resumes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NearbyTransferCheckpoint {
+    pub transfer_id: [u8; 16],
+    pub request_id: [u8; 16],
+    pub total_bytes: u64,
+    pub resume_offset: u64,
+    /// BLAKE3 of the first `resume_offset` bytes, as the receiver holds them.
+    pub prefix_hash: [u8; 32],
+    pub content_hash: [u8; 32],
 }
 
 /// Concrete data-plane route for one workspace-control session.
@@ -684,6 +711,9 @@ struct ActorState {
     personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
+    /// When each recent remote-input message arrived (see [`mark_new_input`]).
+    recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
@@ -704,6 +734,24 @@ struct ActivePersonalMediaTransfer {
     total_bytes: u64,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
     cancel: tokio::sync::watch::Sender<bool>,
+}
+
+/// The exact certified device a personal-fabric stream dials, and the
+/// personal workspace and user key its frames are authenticated under.
+struct PersonalStreamRoute {
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    target: EndpointId,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+}
+
+/// One local file offered to a personal device under `transfer_id`.
+struct PersonalMediaUpload {
+    transfer_id: [u8; 16],
+    file_name: String,
+    total_bytes: u64,
+    file: std::fs::File,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -975,6 +1023,21 @@ impl ActorState {
                     .await;
                 }
             }
+            Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::PublishHostedTopology { ws, msg }) => {
+                if matches!(msg, NeighbourMsg::SyncResp { .. }) {
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        msg,
+                        false,
+                        false,
+                        true,
+                    )
+                    .await;
+                }
+            }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
             }
@@ -1033,26 +1096,10 @@ impl ActorState {
                 ws,
                 user_public_key,
                 target,
-                transfer_id,
-                request_id,
-                total_bytes,
-                resume_offset,
-                prefix_hash,
-                content_hash,
+                transfer,
                 file,
             }) => {
-                self.publish_nearby_transfer(
-                    ws,
-                    user_public_key,
-                    target,
-                    transfer_id,
-                    request_id,
-                    total_bytes,
-                    resume_offset,
-                    prefix_hash,
-                    content_hash,
-                    file,
-                );
+                self.publish_nearby_transfer(ws, user_public_key, target, transfer, file);
             }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
@@ -1085,20 +1132,22 @@ impl ActorState {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
                 };
+                let mut routes = HostRouteScheduler {
+                    endpoint: &self.endpoint,
+                    identity,
+                    internal_tx: &self.internal_tx,
+                    sessions: &self.host_sessions,
+                    connecting: &mut self.connecting_hosts,
+                    content_discovery_tasks: &mut self.content_discovery_tasks,
+                };
                 for ws in self.topics.keys().copied() {
                     if self.native_routes.contains(ws) {
                         continue;
                     }
-                    schedule_host_topic(
-                        &self.endpoint,
-                        identity,
+                    routes.schedule(
                         ws,
                         addr.clone(),
                         expectation.clone(),
-                        &self.internal_tx,
-                        &self.host_sessions,
-                        &mut self.connecting_hosts,
-                        &mut self.content_discovery_tasks,
                         self.action_broker
                             .as_ref()
                             .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
@@ -1335,10 +1384,6 @@ impl ActorState {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the arguments are the complete authenticated transfer manifest plus its local-only file handle"
-    )]
     fn publish_personal_media(
         &mut self,
         ws: WorkspaceId,
@@ -1400,21 +1445,26 @@ impl ActorState {
                 cancel,
             },
         );
-        let endpoint = self.endpoint.clone();
+        let route = PersonalStreamRoute {
+            endpoint: self.endpoint.clone(),
+            addr,
+            target,
+            workspace: ws,
+            user_public_key,
+        };
+        let upload = PersonalMediaUpload {
+            transfer_id,
+            file_name,
+            total_bytes,
+            file,
+        };
         let internal = self.internal_tx.clone();
         report(PersonalMediaTransferStatus::Started, 0);
         tokio::spawn(async move {
             let outcome = stream_personal_media(
-                endpoint,
-                addr,
-                ws,
-                user_public_key,
-                transfer_id,
-                file_name,
-                total_bytes,
-                file,
+                route,
+                upload,
                 internal.clone(),
-                target,
                 std::sync::Arc::clone(&sent_bytes),
                 generation,
                 cancel_rx,
@@ -1481,23 +1531,21 @@ impl ActorState {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one resumable transfer is described by its route, identity, resume point and integrity digests together"
-    )]
     fn publish_nearby_transfer(
         &self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
-        transfer_id: [u8; 16],
-        request_id: [u8; 16],
-        total_bytes: u64,
-        resume_offset: u64,
-        prefix_hash: [u8; 32],
-        content_hash: [u8; 32],
+        transfer: NearbyTransferCheckpoint,
         file: std::fs::File,
     ) {
+        let NearbyTransferCheckpoint {
+            transfer_id,
+            request_id,
+            total_bytes,
+            resume_offset,
+            ..
+        } = transfer;
         let progress = self.subscribers.get(&ws).cloned();
         let report = |status, sent_bytes| {
             if let Some(progress) = progress.as_ref() {
@@ -1522,22 +1570,19 @@ impl ActorState {
             report(PersonalMediaTransferStatus::Failed, resume_offset);
             return;
         };
-        let endpoint = self.endpoint.clone();
+        let route = PersonalStreamRoute {
+            endpoint: self.endpoint.clone(),
+            addr,
+            target,
+            workspace: ws,
+            user_public_key,
+        };
         report(PersonalMediaTransferStatus::Started, resume_offset);
         tokio::spawn(async move {
             let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(resume_offset));
             let result = stream_nearby_transfer(
-                endpoint,
-                addr,
-                ws,
-                user_public_key,
-                target,
-                transfer_id,
-                request_id,
-                total_bytes,
-                resume_offset,
-                prefix_hash,
-                content_hash,
+                route,
+                transfer,
                 file,
                 progress.clone(),
                 std::sync::Arc::clone(&sent),
@@ -1727,17 +1772,19 @@ impl ActorState {
         if !self.native_routes.contains(ws)
             && let Some(identity) = self.host_identity.as_ref()
         {
+            let mut routes = HostRouteScheduler {
+                endpoint: &self.endpoint,
+                identity,
+                internal_tx: &self.internal_tx,
+                sessions: &self.host_sessions,
+                connecting: &mut self.connecting_hosts,
+                content_discovery_tasks: &mut self.content_discovery_tasks,
+            };
             for (addr, expectation) in self.hosts.values().cloned() {
-                schedule_host_topic(
-                    &self.endpoint,
-                    identity,
+                routes.schedule(
                     ws,
                     addr.clone(),
                     expectation,
-                    &self.internal_tx,
-                    &self.host_sessions,
-                    &mut self.connecting_hosts,
-                    &mut self.content_discovery_tasks,
                     self.action_broker
                         .as_ref()
                         .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
@@ -2230,11 +2277,24 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
+                if matches!(
+                    msg,
+                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
+                ) {
+                    tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
+                }
                 // A remote-action retry is byte-identical on purpose; the
                 // receiving host deduplicates it by invocation id instead.
-                if !matches!(msg, NeighbourMsg::RemoteAction { .. })
-                    && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                {
+                let new = match msg {
+                    NeighbourMsg::RemoteAction { .. } => true,
+                    NeighbourMsg::RemoteInput { .. } => {
+                        mark_new_input(ws, fingerprint, Instant::now(), &mut self.recent_input)
+                    }
+                    _ => {
+                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                    }
+                };
+                if !new {
                     return;
                 }
                 Some(NetEvent::Msg {
@@ -2257,7 +2317,20 @@ impl ActorState {
             }
         };
         if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
+            let legacy = matches!(
+                &event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::RemoteInput { .. }
+                        | NeighbourMsg::SurfaceStreamStart { .. }
+                        | NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::SurfaceStreamEnd { .. },
+                    ..
+                }
+            );
             let _ = tx.send(event).await;
+            if legacy && let Some(wake) = &self.wake {
+                wake();
+            }
         }
     }
 
@@ -2307,21 +2380,23 @@ impl ActorState {
             out.push(self.endpoint.addr());
         }
         if let Some(identity) = self.host_identity.as_ref() {
+            let mut routes = HostRouteScheduler {
+                endpoint: &self.endpoint,
+                identity,
+                internal_tx: &self.internal_tx,
+                sessions: &self.host_sessions,
+                connecting: &mut self.connecting_hosts,
+                content_discovery_tasks: &mut self.content_discovery_tasks,
+            };
             for ws in self.topics.keys().copied() {
                 if self.native_routes.contains(ws) {
                     continue;
                 }
                 for (addr, expectation) in self.hosts.values().cloned() {
-                    schedule_host_topic(
-                        &self.endpoint,
-                        identity,
+                    routes.schedule(
                         ws,
                         addr,
                         expectation,
-                        &self.internal_tx,
-                        &self.host_sessions,
-                        &mut self.connecting_hosts,
-                        &mut self.content_discovery_tasks,
                         self.action_broker
                             .as_ref()
                             .is_some_and(|(_, _, rooms)| rooms.contains_key(&ws)),
@@ -2335,9 +2410,7 @@ impl ActorState {
         }
         let msg = NeighbourMsg::Heartbeat {
             peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-            ts: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            ts: tilo_clock::unix_now_ms(),
         };
         if let Ok(bytes) = postcard::to_allocvec(&msg) {
             for topic in self.topics.values() {
@@ -2454,26 +2527,31 @@ async fn send_nearby_transfer_frame(
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one audited streaming state machine keeps prefix verification, bounded chunks, progress, and the authenticated finish together"
 )]
 async fn stream_nearby_transfer(
-    endpoint: Endpoint,
-    addr: EndpointAddr,
-    workspace: WorkspaceId,
-    user_public_key: [u8; 32],
-    target: EndpointId,
-    transfer_id: [u8; 16],
-    request_id: [u8; 16],
-    total_bytes: u64,
-    resume_offset: u64,
-    prefix_hash: [u8; 32],
-    content_hash: [u8; 32],
+    route: PersonalStreamRoute,
+    transfer: NearbyTransferCheckpoint,
     file: std::fs::File,
     progress: Option<mpsc::Sender<NetEvent>>,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<(), ()> {
+    let PersonalStreamRoute {
+        endpoint,
+        addr,
+        target,
+        workspace,
+        user_public_key,
+    } = route;
+    let NearbyTransferCheckpoint {
+        transfer_id,
+        request_id,
+        total_bytes,
+        resume_offset,
+        prefix_hash,
+        content_hash,
+    } = transfer;
     // File reads go through the I/O pool, never a network worker: the
     // resumed prefix can be most of a large file.
     let file = Arc::new(file);
@@ -2592,28 +2670,30 @@ async fn stream_nearby_transfer(
 }
 
 #[allow(
-    clippy::too_many_arguments,
-    reason = "the arguments mirror one immutable transfer manifest and its exact transport route"
-)]
-#[allow(
     clippy::too_many_lines,
     reason = "one bounded transfer: connect, manifest, chunk loop and cancellation share local state"
 )]
 async fn stream_personal_media(
-    endpoint: Endpoint,
-    addr: EndpointAddr,
-    workspace: WorkspaceId,
-    user_public_key: [u8; 32],
-    transfer_id: [u8; 16],
-    file_name: String,
-    total_bytes: u64,
-    file: std::fs::File,
+    route: PersonalStreamRoute,
+    upload: PersonalMediaUpload,
     internal: mpsc::Sender<InternalEvent>,
-    target: EndpointId,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
     generation: u64,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> PersonalMediaStreamOutcome {
+    let PersonalStreamRoute {
+        endpoint,
+        addr,
+        target,
+        workspace,
+        user_public_key,
+    } = route;
+    let PersonalMediaUpload {
+        transfer_id,
+        file_name,
+        total_bytes,
+        file,
+    } = upload;
     let connect = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
@@ -2804,6 +2884,8 @@ async fn run(
         personal_fabric_ingress: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
+        recent_input: HashMap::new(),
+        wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
         pending_surface_frames: HashMap::new(),
@@ -2930,6 +3012,25 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
+/// Remote input is not deduplicated for good: a second click or key press is
+/// byte-identical to the first. Only a copy arriving within [`INPUT_COPY`]
+/// (the same event over another route to this room) is dropped.
+fn mark_new_input(
+    ws: WorkspaceId,
+    fingerprint: [u8; 32],
+    now: Instant,
+    recent: &mut HashMap<(WorkspaceId, [u8; 32]), Instant>,
+) -> bool {
+    const INPUT_COPY: Duration = Duration::from_millis(30);
+    if recent.len() > 256 {
+        recent.retain(|_, seen| now.saturating_duration_since(*seen) < INPUT_COPY);
+    }
+    match recent.insert((ws, fingerprint), now) {
+        Some(seen) => now.saturating_duration_since(seen) >= INPUT_COPY,
+        None => true,
+    }
+}
+
 fn mark_new_message(
     ws: WorkspaceId,
     fingerprint: [u8; 32],
@@ -2950,109 +3051,174 @@ fn mark_new_message(
     true
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "one scheduler transition atomically coordinates the endpoint, host identity, route state, and single discovery-task registry"
-)]
-fn schedule_host_topic(
-    endpoint: &Endpoint,
-    identity: &HostIdentity,
-    ws: WorkspaceId,
-    addr: EndpointAddr,
-    expectation: Option<HomePeerExpectation>,
-    internal_tx: &mpsc::Sender<InternalEvent>,
-    sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
-    connecting: &mut HashSet<(WorkspaceId, EndpointId)>,
-    content_discovery_tasks: &mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
-    action_v2: bool,
-) {
-    let host = addr.id;
-    if let Some(expectation) = expectation.clone()
-        && !content_discovery_tasks.contains_key(&(ws, host))
-    {
-        let discovery_endpoint = endpoint.clone();
-        let discovery_addr = addr.clone();
-        let discovery_identity = identity.clone();
-        let task = tokio::spawn(async move {
-            let mut retry = Duration::from_secs(1);
-            loop {
-                let (discovery_cert, entries) = discovery_identity.material_for(ws);
-                let mut discovery_revocations = RevocationList::new();
-                if entries
-                    .into_iter()
-                    .any(|entry| discovery_revocations.insert(entry).is_err())
-                {
-                    tracing::warn!(ws, "workspace identity has an invalid revocation entry");
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                    continue;
+/// The actor state a host-route scheduling step reads: its endpoint, host
+/// identity and live sessions; and records into: in-flight connections and
+/// the single discovery-task registry.
+struct HostRouteScheduler<'a> {
+    endpoint: &'a Endpoint,
+    identity: &'a HostIdentity,
+    internal_tx: &'a mpsc::Sender<InternalEvent>,
+    sessions: &'a HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    connecting: &'a mut HashSet<(WorkspaceId, EndpointId)>,
+    content_discovery_tasks:
+        &'a mut HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
+}
+
+impl HostRouteScheduler<'_> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scheduler transition atomically coordinates the endpoint, host identity, route state, and single discovery-task registry"
+    )]
+    fn schedule(
+        &mut self,
+        ws: WorkspaceId,
+        addr: EndpointAddr,
+        expectation: Option<HomePeerExpectation>,
+        action_v2: bool,
+    ) {
+        let (endpoint, identity, internal_tx, sessions) = (
+            self.endpoint,
+            self.identity,
+            self.internal_tx,
+            self.sessions,
+        );
+        let connecting = &mut *self.connecting;
+        let content_discovery_tasks = &mut *self.content_discovery_tasks;
+        let host = addr.id;
+        if let Some(expectation) = expectation.clone()
+            && !content_discovery_tasks.contains_key(&(ws, host))
+        {
+            let discovery_endpoint = endpoint.clone();
+            let discovery_addr = addr.clone();
+            let discovery_identity = identity.clone();
+            let task = tokio::spawn(async move {
+                let mut retry = Duration::from_secs(1);
+                loop {
+                    let (discovery_cert, entries) = discovery_identity.material_for(ws);
+                    let mut discovery_revocations = RevocationList::new();
+                    if entries
+                        .into_iter()
+                        .any(|entry| discovery_revocations.insert(entry).is_err())
+                    {
+                        tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                    let discovered = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        RelayClient::discover_content_peer(
+                            &discovery_endpoint,
+                            discovery_addr.clone(),
+                            ws,
+                            expectation.user_public_key,
+                            expectation.device_public_key,
+                            discovery_cert.clone(),
+                            discovery_identity.device_signing_key.clone(),
+                            discovery_revocations.clone(),
+                        ),
+                    )
+                    .await;
+                    match discovered {
+                        Ok(Ok(content_peer)) => {
+                            let _ = register_content_peer(content_peer).await;
+                            // Re-advertise periodically. Registration persists the
+                            // peer, while this also repairs a daemon replacement
+                            // without coupling its lifecycle to the relay session.
+                            retry = Duration::from_secs(30);
+                        }
+                        Ok(Err(error)) => {
+                            tracing::debug!(%error, ws, "relay content discovery is not ready");
+                            retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                        }
+                        Err(_) => {
+                            tracing::debug!(ws, "relay content discovery timed out");
+                            retry = retry.saturating_mul(2).min(Duration::from_secs(10));
+                        }
+                    }
+                    tokio::time::sleep(retry).await;
                 }
-                let discovered = tokio::time::timeout(
-                    Duration::from_secs(10),
-                    RelayClient::discover_content_peer(
-                        &discovery_endpoint,
-                        discovery_addr.clone(),
-                        ws,
-                        expectation.user_public_key,
-                        expectation.device_public_key,
-                        discovery_cert.clone(),
-                        discovery_identity.device_signing_key.clone(),
-                        discovery_revocations.clone(),
-                    ),
-                )
-                .await;
-                match discovered {
-                    Ok(Ok(content_peer)) => {
-                        let _ = register_content_peer(content_peer).await;
-                        // Re-advertise periodically. Registration persists the
-                        // peer, while this also repairs a daemon replacement
-                        // without coupling its lifecycle to the relay session.
-                        retry = Duration::from_secs(30);
-                    }
-                    Ok(Err(error)) => {
-                        tracing::debug!(%error, ws, "relay content discovery is not ready");
-                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
-                    }
-                    Err(_) => {
-                        tracing::debug!(ws, "relay content discovery timed out");
-                        retry = retry.saturating_mul(2).min(Duration::from_secs(10));
-                    }
-                }
-                tokio::time::sleep(retry).await;
-            }
-        });
-        content_discovery_tasks.insert((ws, host), task);
-    }
-    if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
-        return;
-    }
-    let endpoint = endpoint.clone();
-    let identity = identity.clone();
-    let (device_cert, revocation_entries) = identity.material_for(ws);
-    let action_v2 = action_v2 && !device_cert.capabilities.can_act_as_host;
-    let mut revocations = RevocationList::new();
-    for entry in revocation_entries {
-        if revocations.insert(entry).is_err() {
-            tracing::warn!(ws, "workspace identity has an invalid revocation entry");
-            connecting.remove(&(ws, host));
+            });
+            content_discovery_tasks.insert((ws, host), task);
+        }
+        if sessions.contains_key(&(ws, host)) || !connecting.insert((ws, host)) {
             return;
         }
-    }
-    let Some(expectation) = expectation else {
-        // Invited/provider hosts can carry collaboration state, but only an
-        // enrolled home peer may nominate a Files hydration endpoint.
+        let endpoint = endpoint.clone();
+        let identity = identity.clone();
+        let (device_cert, revocation_entries) = identity.material_for(ws);
+        let action_v2 = action_v2 && !device_cert.capabilities.can_act_as_host;
+        let mut revocations = RevocationList::new();
+        for entry in revocation_entries {
+            if revocations.insert(entry).is_err() {
+                tracing::warn!(ws, "workspace identity has an invalid revocation entry");
+                connecting.remove(&(ws, host));
+                return;
+            }
+        }
+        let Some(expectation) = expectation else {
+            // Invited/provider hosts can carry collaboration state, but only an
+            // enrolled home peer may nominate a Files hydration endpoint.
+            let tx = internal_tx.clone();
+            tokio::spawn(async move {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    RelayClient::connect_to_pinned_host(
+                        endpoint,
+                        addr.clone(),
+                        device_cert,
+                        identity.device_signing_key.clone(),
+                        revocations,
+                    ),
+                )
+                .await
+                .map_err(|_| "workspace host connection timed out".to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()))
+                .and_then(|client| {
+                    RelayCoeditSession::join(
+                        client,
+                        ws,
+                        identity.device_signing_key.verifying_key().to_bytes(),
+                    )
+                    .map_err(|error| error.to_string())
+                });
+                let _ = tx
+                    .send(InternalEvent::HostConnected {
+                        ws,
+                        peer: host,
+                        addr,
+                        result: Box::new(result),
+                    })
+                    .await;
+            });
+            return;
+        };
         let tx = internal_tx.clone();
         tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(10),
-                RelayClient::connect_to_pinned_host(
-                    endpoint,
-                    addr.clone(),
-                    device_cert,
-                    identity.device_signing_key.clone(),
-                    revocations,
-                ),
-            )
+            let result = tokio::time::timeout(Duration::from_secs(10), async {
+                if action_v2 {
+                    RelayClient::connect_v2_to_enrolled_home_peer(
+                        endpoint,
+                        addr.clone(),
+                        expectation.user_public_key,
+                        expectation.device_public_key,
+                        device_cert,
+                        identity.device_signing_key.clone(),
+                        revocations,
+                    )
+                    .await
+                } else {
+                    RelayClient::connect_to_enrolled_home_peer(
+                        endpoint,
+                        addr.clone(),
+                        expectation.user_public_key,
+                        expectation.device_public_key,
+                        device_cert,
+                        identity.device_signing_key.clone(),
+                        revocations,
+                    )
+                    .await
+                }
+            })
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
             .and_then(|result| result.map_err(|error| error.to_string()))
@@ -3073,55 +3239,7 @@ fn schedule_host_topic(
                 })
                 .await;
         });
-        return;
-    };
-    let tx = internal_tx.clone();
-    tokio::spawn(async move {
-        let result = tokio::time::timeout(Duration::from_secs(10), async {
-            if action_v2 {
-                RelayClient::connect_v2_to_enrolled_home_peer(
-                    endpoint,
-                    addr.clone(),
-                    expectation.user_public_key,
-                    expectation.device_public_key,
-                    device_cert,
-                    identity.device_signing_key.clone(),
-                    revocations,
-                )
-                .await
-            } else {
-                RelayClient::connect_to_enrolled_home_peer(
-                    endpoint,
-                    addr.clone(),
-                    expectation.user_public_key,
-                    expectation.device_public_key,
-                    device_cert,
-                    identity.device_signing_key.clone(),
-                    revocations,
-                )
-                .await
-            }
-        })
-        .await
-        .map_err(|_| "workspace host connection timed out".to_string())
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|client| {
-            RelayCoeditSession::join(
-                client,
-                ws,
-                identity.device_signing_key.verifying_key().to_bytes(),
-            )
-            .map_err(|error| error.to_string())
-        });
-        let _ = tx
-            .send(InternalEvent::HostConnected {
-                ws,
-                peer: host,
-                addr,
-                result: Box::new(result),
-            })
-            .await;
-    });
+    }
 }
 
 /// Submit an authenticated relay-discovered Files peer to the running FUSE
@@ -3354,6 +3472,27 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    #[test]
+    fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
+        let mut recent = HashMap::new();
+        let start = Instant::now();
+        assert!(mark_new_input(1, [7; 32], start, &mut recent));
+        assert!(
+            !mark_new_input(1, [7; 32], start + Duration::from_millis(1), &mut recent),
+            "the same event arriving over a second relay session"
+        );
+        assert!(
+            mark_new_input(1, [7; 32], start + Duration::from_millis(200), &mut recent),
+            "a second, byte-identical click"
+        );
+        assert!(mark_new_input(
+            2,
+            [7; 32],
+            start + Duration::from_millis(200),
+            &mut recent
+        ));
+    }
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
         let (cancel, _receiver) = tokio::sync::watch::channel(false);
@@ -4298,18 +4437,15 @@ mod tests {
                         let (tx, mut rx) = mpsc::channel(2);
                         let mut connecting = HashSet::new();
                         let mut discoveries = HashMap::new();
-                        schedule_host_topic(
-                            &endpoint,
-                            &identity,
-                            42,
-                            relay_addr,
-                            Some(expectation),
-                            &tx,
-                            &HashMap::new(),
-                            &mut connecting,
-                            &mut discoveries,
-                            false,
-                        );
+                        HostRouteScheduler {
+                            endpoint: &endpoint,
+                            identity: &identity,
+                            internal_tx: &tx,
+                            sessions: &HashMap::new(),
+                            connecting: &mut connecting,
+                            content_discovery_tasks: &mut discoveries,
+                        }
+                        .schedule(42, relay_addr, Some(expectation), false);
                         let rejected = matches!(
                         tilo_test_env::within("a message on rx", rx.recv()).await,
                         Some(InternalEvent::HostConnected { result, .. }) if result.is_err()
@@ -4724,10 +4860,6 @@ mod tests {
     /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
     /// and block until both report `HostReady`. Returns each actor's
     /// command sender and event receiver.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each peer's endpoint, lookup and identity, plus the shared relay and cadence"
-    )]
     async fn join_workspace_and_await_host_ready(
         a: Endpoint,
         lookup_a: MemoryLookup,

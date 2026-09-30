@@ -712,6 +712,8 @@ impl Card {
 }
 
 impl Widget for Card {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -881,22 +883,25 @@ impl Widget for Card {
         dirty
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children.iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            child.on_commit();
-        }
-    }
-
     fn name(&self) -> &'static str {
         "InstallerCard"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for Card {
+    fn needs_commit(&self) -> bool {
+        self.children
+            .iter()
+            .any(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            ui::undo::on_commit(child.as_mut());
+        }
     }
 }
 
@@ -922,6 +927,8 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1061,22 +1068,25 @@ impl Widget for ViewportStage {
         dirty
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children.iter().any(|child| child.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            child.on_commit();
-        }
-    }
-
     fn name(&self) -> &'static str {
         "InstallerViewportStage"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for ViewportStage {
+    fn needs_commit(&self) -> bool {
+        self.children
+            .iter()
+            .any(|child| ui::undo::needs_commit(child.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            ui::undo::on_commit(child.as_mut());
+        }
     }
 }
 
@@ -3946,6 +3956,11 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if !self.bootstrap_done {
@@ -4134,10 +4149,6 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.publish()
-    }
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         op::HANDLERS
     }
@@ -4159,23 +4170,6 @@ impl Widget for InstallerApp {
         };
         self.apply_encoded(&encoded, doc, path)
             .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
-    }
-
-    /// Legacy adapter: offered through [`Widget::start_operation`].
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.start_operation(
-            &ui::widget::ResourceOperation::local(invocation, kind, type_id, payload),
-            doc,
-            path,
-        )
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -4208,16 +4202,6 @@ impl Widget for InstallerApp {
         mine || child
     }
 
-    fn needs_commit(&self) -> bool {
-        self.composed.as_ref().is_some_and(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            c.on_commit();
-        }
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.composed
             .as_ref()
@@ -4230,6 +4214,25 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for InstallerApp {
+    fn needs_commit(&self) -> bool {
+        self.composed
+            .as_ref()
+            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        if let Some(c) = &mut self.composed {
+            ui::undo::on_commit(c.as_mut());
+        }
+    }
+}
+
+impl ui::resources::PublishesResources for InstallerApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.publish()
     }
 }
 

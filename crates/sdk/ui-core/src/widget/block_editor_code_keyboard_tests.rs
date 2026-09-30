@@ -322,16 +322,16 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
         let id = editor.blocks[0].id.clone();
         let bound = editor.blocks[0].line.bound_obj();
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         send(
             &mut editor,
             &mut state.doc,
             NamedKey::Tab,
             ModifiersState::empty(),
         );
-        assert!(editor.needs_commit());
+        assert!(crate::undo::needs_commit(&editor));
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         send(
             &mut editor,
             &mut state.doc,
@@ -339,7 +339,7 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
             ModifiersState::CONTROL,
         );
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         assert_eq!(editor.blocks.len(), 2);
         assert!(state.undo(None, None).is_some());
         editor.sync(&mut state.doc, &ROOT);

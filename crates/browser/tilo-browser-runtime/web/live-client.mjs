@@ -13,6 +13,8 @@ import {createLiveCarriers} from './live-fallback.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 
 export const LIVE_GRANT_TARGET = '/peer/v3/live/grant';
+/** Proof-required route for a controlling viewer's legacy-window input (`legacy_window::INPUT_TARGET`). */
+export const LEGACY_INPUT_TARGET = '/peer/v3/live/legacy-input';
 const MAX_GRANT_BYTES = 2048;
 const MAX_PREVIEW_OPS = 32;
 /** Queued frames per record: previews plus this peer's own signed changes. */
@@ -176,7 +178,7 @@ export function createLiveClient({
   const remotes = new Map();
   // key -> {record, count}. Agent activity is received from every member for
   // as long as the client lives.
-  const watched = new Map([[recordKey(AGENT_ACTIVITY_RECORD), {record: AGENT_ACTIVITY_RECORD, count: 1}]]);
+  const watched = new Map([[recordKey(AGENT_ACTIVITY_RECORD), {record: AGENT_ACTIVITY_RECORD, count: 1, raw: new Set()}]]);
   const agents = new Map(); // publisher -> {agentId, name, state, label, tool, atMs, receivedAtMs}
   const agentPublishers = new Map(); // agent id -> expected publisher hex
   let agentTimer;
@@ -276,6 +278,26 @@ export function createLiveClient({
       parent?.removeEventListener('abort', abort);
       if (id !== undefined) { try { runtime.peer_live_forget(peerId, id); } catch {} }
     }
+  }
+
+  // ---- Legacy window input ------------------------------------------------------
+  /**
+   * Send `{record, events}` for one legacy window. The host forwards it to the
+   * session only for a member who may publish; a viewer gets 403.
+   */
+  async function sendLegacyInput(request) {
+    if (closed || typeof runtime.peer_live_legacy_input !== 'function') return {ok: false, status: 0};
+    const prepared = JSON.parse(runtime.peer_live_legacy_input(peerId, utf8.encode(JSON.stringify(request))));
+    const origin = new URL(prepared.origin);
+    if (prepared?.kind !== 'request' || origin.protocol !== 'https:' || origin.origin !== prepared.origin || prepared.target !== LEGACY_INPUT_TARGET || !Array.isArray(prepared.body) || !Array.isArray(prepared.proof)) {
+      throw failure('Invalid prepared legacy window input');
+    }
+    const response = await fetcher(`${prepared.origin}${prepared.target}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'x-tilo-delivery-proof': prepared.proof.map(v => v.toString(16).padStart(2, '0')).join('')},
+      body: Uint8Array.from(prepared.body), redirect: 'error', credentials: 'omit', cache: 'no-store',
+    });
+    return {ok: response.ok, status: response.status};
   }
 
   // ---- Connection lifecycle -------------------------------------------------
@@ -485,7 +507,12 @@ export function createLiveClient({
     for (const [key, record] of desired) {
       if (remote.ops.has(key)) continue;
       try {
-        remote.ops.set(key, session.subscribeOps(remote.id, trackFor(record), (bytes, receivedAtMs) => { remote.failures.delete(key); onOps(remote, bytes, receivedAtMs); }, () => {
+        remote.ops.set(key, session.subscribeOps(remote.id, trackFor(record), (bytes, receivedAtMs) => {
+          remote.failures.delete(key);
+          const raw = watched.get(key)?.raw;
+          if (raw?.size) { for (const onFrame of [...raw]) { try { onFrame(remote.id, bytes, receivedAtMs); } catch (error) { report(error); } } return; }
+          onOps(remote, bytes, receivedAtMs);
+        }, () => {
           // Egress withdrawn or reset: resubscribe if the record is still wanted.
           remote.ops.delete(key);
           later(remote, () => { if (remotes.get(remote.id) === remote) syncOps(remote); }, retryDelay(remote, key));
@@ -763,6 +790,9 @@ export function createLiveClient({
     get state() { return state; },
     get available() { return state === 'live'; },
     get publisherId() { return state === 'live' ? grant?.namespace[2] : undefined; },
+    /** This member may drive legacy windows (its grant may publish; a viewer's may not). */
+    get canControl() { return state === 'live' && grant?.directions.publish === true; },
+    sendLegacyInput,
     /** Other members currently announced on the live relay. */
     get memberCount() { return state === 'live' ? remotes.size : 0; },
     /** Merge local presence; coalesced to one frame per animation frame. */
@@ -793,18 +823,25 @@ export function createLiveClient({
       previewQueues.delete(recordKey(value));
       try { session?.closeOps(trackFor(value)); } catch {}
     },
-    /** Receive ops (previews, early signed changes) for a record from every member. */
-    watchRecord(record) {
+    /**
+     * Receive ops (previews, early signed changes) for a record from every
+     * member. With `onFrame(publisher, bytes, receivedAtMs)` the record's
+     * frames are not ops: they go to it undecoded (host-published streams
+     * such as legacy windows, which no member can publish).
+     */
+    watchRecord(record, onFrame) {
       const value = validRecord(record);
       const key = recordKey(value);
-      const entry = watched.get(key) ?? {record: value, count: 0};
+      const entry = watched.get(key) ?? {record: value, count: 0, raw: new Set()};
       entry.count++;
+      if (typeof onFrame === 'function') entry.raw.add(onFrame);
       watched.set(key, entry);
       for (const remote of remotes.values()) syncOps(remote);
       let active = true;
       return () => {
         if (!active) return;
         active = false;
+        entry.raw.delete(onFrame);
         if (--entry.count === 0) watched.delete(key);
         for (const remote of remotes.values()) syncOps(remote);
       };

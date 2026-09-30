@@ -2222,32 +2222,14 @@ impl OskWidget {
 }
 
 impl Widget for OskWidget {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(crate::framework_history::definition(
-            self.layouts.get("qwerty") == Some(&KeyboardLayout::qwerty()),
-            self.layouts.get("azerty") == Some(&KeyboardLayout::azerty()),
-        ))
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        if scope == crate::framework_history::SCOPE && self.drafts.pending() {
-            Err("Return to live to finish pending keyboard preferences before restoring".into())
-        } else {
-            Ok(())
-        }
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["osk.suggestions"]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut layouts = self
-            .layouts
-            .keys()
-            .filter(|name| name.as_str() != "symbols")
-            .cloned()
-            .collect::<Vec<_>>();
-        layouts.sort();
-        crate::actions::resources(layouts, &self.preferred_text_layout)
     }
     fn start_operation(
         &mut self,
@@ -2268,30 +2250,6 @@ impl Widget for OskWidget {
                     ui::tilo_actions::ActionOutput::default(),
                 )
             }))
-    }
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.drafts.take()
-    }
-    fn document_action_applied(
-        &mut self,
-        action: &ui::tilo_actions::EncodedAction,
-        _before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-        let Some(action) = crate::actions::decode(action) else {
-            return;
-        };
-        if self.drafts.acknowledge(&action, doc) {
-            match action.value {
-                Preference::Layout(value) => self.select_text_layout_from_sync(&value),
-                Preference::Suggestions(value) => self.set_suggestions_enabled_from_sync(value),
-                Preference::Personalization(value) => {
-                    self.set_personalization_enabled_from_sync(value);
-                }
-                Preference::EmojiRecents(value) => self.set_emoji_recents_from_sync(value),
-            }
-        }
     }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
@@ -2324,7 +2282,7 @@ impl Widget for OskWidget {
         {
             self.set_emoji_recents_from_sync(recents);
         }
-        let resources = self.resources(state);
+        let resources = ui::resources::resources(self, state);
         self.drafts.prepare_after_sync(&resources);
     }
 
@@ -2756,6 +2714,62 @@ impl Widget for OskWidget {
     }
 }
 
+impl ui::resources::PublishesResources for OskWidget {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut layouts = self
+            .layouts
+            .keys()
+            .filter(|name| name.as_str() != "symbols")
+            .cloned()
+            .collect::<Vec<_>>();
+        layouts.sort();
+        crate::actions::resources(layouts, &self.preferred_text_layout)
+    }
+}
+
+impl ui::widget::controls::ActionControls for OskWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.drafts.take()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for OskWidget {
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        if scope == crate::framework_history::SCOPE && self.drafts.pending() {
+            Err("Return to live to finish pending keyboard preferences before restoring".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(crate::framework_history::definition(
+            self.layouts.get("qwerty") == Some(&KeyboardLayout::qwerty()),
+            self.layouts.get("azerty") == Some(&KeyboardLayout::azerty()),
+        ))
+    }
+    fn document_action_applied(
+        &mut self,
+        action: &ui::tilo_actions::EncodedAction,
+        _before: &[automerge::ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+        let Some(action) = crate::actions::decode(action) else {
+            return;
+        };
+        if self.drafts.acknowledge(&action, doc) {
+            match action.value {
+                Preference::Layout(value) => self.select_text_layout_from_sync(&value),
+                Preference::Suggestions(value) => self.set_suggestions_enabled_from_sync(value),
+                Preference::Personalization(value) => {
+                    self.set_personalization_enabled_from_sync(value);
+                }
+                Preference::EmojiRecents(value) => self.set_emoji_recents_from_sync(value),
+            }
+        }
+    }
+}
+
 /// Parse the canonical name of an [`InputPurpose`] (as used in the `osk:purpose:`
 /// command). Returns `None` for an unknown name so the caller can ignore it.
 pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
@@ -3115,13 +3129,17 @@ mod tests {
             assert_eq!(q.role, Role::Button);
             assert!(q.bounds.is_some());
             let target = q.action_target.as_deref().expect("stable action target");
-            assert!(osk.control_action_bindings().iter().any(|binding| {
-                binding.control_id == target
-                    && matches!(
-                        binding.kind,
-                        ui::widget::ControlBindingKind::SemanticAction(_)
-                    )
-            }));
+            assert!(
+                ui::widget::controls::control_action_bindings(&osk)
+                    .iter()
+                    .any(|binding| {
+                        binding.control_id == target
+                            && matches!(
+                                binding.kind,
+                                ui::widget::ControlBindingKind::SemanticAction(_)
+                            )
+                    })
+            );
             assert!(osk.perform_semantic_action(
                 target,
                 &AccessibilityAction::Activate,
@@ -3134,7 +3152,7 @@ mod tests {
         eprintln!("phase resource_catalogue_exports_configuration_not_keystrokes");
         {
             let osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let resources = osk.resources(&AutoCommit::new());
+            let resources = ui::resources::resources(&osk, &AutoCommit::new());
             let keyboard = resources.first().expect("keyboard resource");
             assert!(
                 keyboard.actions.is_empty(),
@@ -3155,7 +3173,7 @@ mod tests {
         {
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             let mut doc = AutoCommit::new();
-            let resources = osk.resources(&doc);
+            let resources = ui::resources::resources(&osk, &doc);
             let encoded = ui::tilo_actions::door::encode(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new("osk.keyboard.layout", "azerty"),
@@ -3166,7 +3184,13 @@ mod tests {
             crate::actions::register(&mut registry);
             let action = registry.decode(&encoded).unwrap();
             action.apply(&mut doc).unwrap();
-            osk.document_action_applied(&encoded, &[], &doc, &automerge::ROOT);
+            ui::history_mode::capability::document_action_applied(
+                &mut osk,
+                &encoded,
+                &[],
+                &doc,
+                &automerge::ROOT,
+            );
             osk.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
                 read_str(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
@@ -4144,7 +4168,7 @@ mod tests {
             crate::actions::register(&mut registry);
             registry
         },
-        resources: |doc| Widget::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
+        resources: |doc| ui::resources::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
         palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
     }
 
@@ -4379,11 +4403,10 @@ mod tests {
         assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
         // Recents are saved through the keyboard's preference action.
         osk.sync(&mut doc, &automerge::ROOT);
-        let offer = osk
-            .take_control_invocation()
+        let offer = ui::widget::controls::take_control_invocation(&mut osk)
             .expect("the recents are offered as a preference action");
         let encoded = ui::tilo_actions::door::encode_json(
-            &osk.resources(&doc),
+            &ui::resources::resources(&osk, &doc),
             &offer.address,
             &offer.arguments,
         )
@@ -4391,7 +4414,13 @@ mod tests {
         let mut registry = ui::tilo_actions::ActionRegistry::new();
         crate::actions::register(&mut registry);
         registry.decode(&encoded).unwrap().apply(&mut doc).unwrap();
-        osk.document_action_applied(&encoded, &[], &doc, &automerge::ROOT);
+        ui::history_mode::capability::document_action_applied(
+            &mut osk,
+            &encoded,
+            &[],
+            &doc,
+            &automerge::ROOT,
+        );
         assert!(!osk.drafts.pending(), "the saved recents settle the draft");
         let mut restarted = OskWidget::new();
         restarted.sync(&mut doc, &automerge::ROOT);

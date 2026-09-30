@@ -21,7 +21,7 @@ impl FrameHarness {
     pub fn enable_document_history_chrome(&mut self) {
         if self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-            || self.root.provides_document_history()
+            || crate::history_mode::capability::provides_document_history(self.root.as_ref())
         {
             return;
         }
@@ -114,7 +114,7 @@ impl FrameHarness {
         let Some(layout) = self.history_layout else {
             return false;
         };
-        let mut pending = vec![layout.toolbar];
+        let mut pending: Vec<_> = layout.toolbar.into_iter().collect();
         pending.extend(layout.pane);
         pending.extend(layout.preview);
         while let Some(next) = pending.pop() {
@@ -360,15 +360,13 @@ impl FrameHarness {
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
         let mut pending = Vec::new();
-        while let Some(intent) = self
-            .document_history
-            .toolbar_mut()
-            .take_control_invocation()
-        {
-            pending.push(intent);
+        for button in self.document_history.in_window_controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(button) {
+                pending.push(intent);
+            }
         }
         if let Some(pane) = self.document_history.pane_mut() {
-            while let Some(intent) = pane.take_control_invocation() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(pane) {
                 pending.push(intent);
             }
         }
@@ -389,11 +387,19 @@ impl FrameHarness {
                     tilo_actions::ActionOutput::default(),
                 ))
             })();
-            self.document_history
-                .toolbar_mut()
-                .on_control_invocation_result(&intent.address, &result);
+            for button in self.document_history.in_window_controls_mut() {
+                crate::widget::controls::on_control_invocation_result(
+                    button,
+                    &intent.address,
+                    &result,
+                );
+            }
             if let Some(pane) = self.document_history.pane_mut() {
-                pane.on_control_invocation_result(&intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    pane,
+                    &intent.address,
+                    &result,
+                );
             }
             result.map_err(|error| error.to_string())?;
         }
@@ -430,11 +436,11 @@ impl FrameHarness {
                 })
             })
             .collect();
-        self.document_history
-            .toolbar_mut()
-            .refresh_control_action_availability(&allowed);
+        for button in self.document_history.in_window_controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(button, &allowed);
+        }
         if let Some(pane) = self.document_history.pane_mut() {
-            pane.refresh_control_action_availability(&allowed);
+            crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
         self.document_history
             .sync(&mut self.state.doc, &self.state.root);
@@ -494,7 +500,10 @@ impl FrameHarness {
         )];
         roots.extend(
             chrome.into_iter().zip(
-                std::iter::once(layout.toolbar)
+                layout
+                    .toolbar
+                    .into_iter()
+                    .chain(layout.search)
                     .chain(layout.pane)
                     .chain(layout.preview),
             ),
@@ -615,9 +624,8 @@ impl FrameHarness {
             let point = Point::new(position.x / self.input_scale, position.y / self.input_scale);
             self.history_pointer_owned = self
                 .document_history
-                .toolbar_mut()
-                .get_rect()
-                .contains(point)
+                .in_window_controls_mut()
+                .any(|button| button.get_rect().contains(point))
                 || self
                     .document_history
                     .pane_mut()
@@ -663,19 +671,21 @@ impl FrameHarness {
             };
             return true;
         }
-        self.document_history.toolbar_mut().handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: self.input_scale,
-                modifiers: &self.modifiers,
-                state: &mut self.state.doc,
-                path: &self.state.root,
-                handled,
-                focus_target: focus,
-                node_id: layout.toolbar,
-                taffy: &self.taffy,
-            },
-        );
+        if let (Some(toolbar), Some(node)) = (self.document_history.toolbar_mut(), layout.toolbar) {
+            toolbar.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: self.input_scale,
+                    modifiers: &self.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy: &self.taffy,
+                },
+            );
+        }
         if !*handled
             && let Some(node) = layout.pane
             && let Some(pane) = self.document_history.pane_mut()
@@ -951,10 +961,11 @@ mod tests {
         // phase: headless_history_retained_nodes_survive_host_move
         {
             let (driver, _, _) = fixture();
-            let original = driver.node_map[&driver.history_layout.unwrap().toolbar];
+            let original = driver.node_map[&driver.history_layout.unwrap().toolbar.unwrap()];
             let mut moved = Box::new(driver);
-            let actual =
-                std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
+            let actual = std::ptr::from_mut(
+                moved.document_history.toolbar_mut().unwrap() as &mut dyn Widget
+            );
             assert!(
                 std::ptr::addr_eq(original, actual),
                 "admission still names the actually retained widget"

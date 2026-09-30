@@ -7,7 +7,7 @@
 )]
 use super::*;
 use crate::bound_dispatch::legacy_document_tests::{Fixture, SetValue, address, registry};
-use crate::widget::{Column, Widget};
+use crate::widget::Column;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
 struct DocumentRouteTransport;
@@ -64,18 +64,8 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     assert_eq!(app.document_routes.sent.len(), 2);
     app.document_routes.sent.clear();
     assert!(
-        app.invoke_resource_action_scoped(
-            &address(),
-            None,
-            "fixture-user",
-            false,
-            false,
-            None,
-            None,
-            None,
-            None
-        )
-        .is_err(),
+        app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user"))
+            .is_err(),
         "bare duplicate refuses"
     );
     a.probe.offer();
@@ -146,7 +136,7 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
                     .unwrap()
             })
             .unwrap();
-        assert!(!probe.needs_commit());
+        assert!(!crate::undo::needs_commit(&probe));
         let root = f.take_tile();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.actions.action_registry = registry();
@@ -226,18 +216,8 @@ fn native_legacy_route_replacement_transport_refuses_before_calls_and_unique_bar
     let calls = std::rc::Rc::new(std::cell::Cell::new(0));
     app.set_action_transport(Box::new(RejectTransport(calls.clone())));
     assert!(
-        app.invoke_resource_action_scoped(
-            &address(),
-            None,
-            "fixture-user",
-            false,
-            false,
-            None,
-            None,
-            None,
-            None
-        )
-        .is_err()
+        app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user"))
+            .is_err()
     );
     assert_eq!(calls.get(), 0);
     assert_eq!(f.snapshot(), before);
@@ -248,18 +228,8 @@ fn native_legacy_route_replacement_transport_refuses_before_calls_and_unique_bar
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     app.actions.action_registry = registry();
     app.init_layout();
-    app.invoke_resource_action_scoped(
-        &address(),
-        None,
-        "fixture-user",
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user"))
+        .unwrap();
     assert_eq!(fresh.probe.acks.get(), 1);
     assert!(
         app.document_routes.sent.is_empty(),
@@ -402,18 +372,8 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     app.init_layout();
     let before = f.snapshot();
-    app.invoke_resource_action_scoped(
-        &address(),
-        None,
-        "fixture-user",
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user"))
+        .unwrap();
     assert_eq!(f.probe.starts.get(), 1);
     let after = f.snapshot();
     assert_eq!((&after.0, after.1), (&before.0, before.1));
@@ -442,18 +402,8 @@ fn native_legacy_and_outer_colliding_controls_keep_their_captured_document() {
     app.init_layout();
     let before = owner.snapshot();
     assert!(
-        app.invoke_resource_action_scoped(
-            &address(),
-            None,
-            "fixture-user",
-            false,
-            false,
-            None,
-            None,
-            None,
-            None
-        )
-        .is_err()
+        app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user"))
+            .is_err()
     );
     outer_probe.offer();
     assert!(app.controlled_local_idle_for_test());
@@ -514,18 +464,8 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
             .is_some_and(|(after, before)| after > before),
         "palette admission must revoke authority resolved before resource rediscovery"
     );
-    app.invoke_resource_action_scoped(
-        &address(),
-        None,
-        "fixture-user",
-        true,
-        false,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    app.invoke_resource_action(ResourceInvocation::new(&address(), "fixture-user").confirmed(true))
+        .unwrap();
     assert_eq!(f.probe.starts.get(), 1);
     assert_eq!(app.actions.local_invocations.len(), 1);
     f.probe.ready.set(true);
@@ -624,17 +564,7 @@ fn component_bare_address(lazy: bool, duplicate: bool) {
     let outer = app.state.doc.save();
     let before = sibling.snapshot();
     let actor = app.collaboration.local_author.0.clone();
-    let result = app.invoke_resource_action_scoped(
-        &address(),
-        None,
-        &actor,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-    );
+    let result = app.invoke_resource_action(ResourceInvocation::new(&address(), &actor));
     if duplicate {
         assert!(
             matches!(result, Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "ambiguous_action_target")

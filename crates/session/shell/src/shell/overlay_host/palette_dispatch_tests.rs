@@ -863,6 +863,53 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
     failed_session_action_is_reported_in_chrome();
 }
 
+/// A killed or crashed app exits with an error after its window was up.
+/// It did open, so no "Couldn't open" card; one that never showed a
+/// window still gets it, and a relaunch starts unproven.
+#[test]
+fn an_app_that_showed_its_window_and_then_failed_is_not_reported_as_unopened() {
+    let (mut host, chrome) = host_with_launch_polling();
+    let package_id = "so.tilo.killed-after-window-fixture";
+    let event = |kind| crate::shell::launcher::LaunchEvent {
+        package_id: package_id.to_string(),
+        display_name: "Fixture".to_string(),
+        managed_agent_id: None,
+        managed_workspace_id: None,
+        kind,
+    };
+    let failed = || crate::shell::launcher::LaunchEventKind::Failed {
+        code: Some(137),
+        stderr_tail: String::new(),
+    };
+    let cards = |chrome: &crate::shell::chrome_state::Chrome| {
+        chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .filter(|n| n.title.contains("Fixture"))
+            .count()
+    };
+    crate::shell::launcher::push_event(event(crate::shell::launcher::LaunchEventKind::Started {
+        pid: 7,
+    }));
+    host.drain_launch_events();
+    crate::shell::launcher::note_launch_presented(package_id);
+    crate::shell::launcher::push_event(event(failed()));
+    host.drain_launch_events();
+    assert_eq!(cards(&chrome), 0, "the app did open");
+
+    crate::shell::launcher::push_event(event(crate::shell::launcher::LaunchEventKind::Started {
+        pid: 8,
+    }));
+    crate::shell::launcher::push_event(event(failed()));
+    assert!(host.drain_launch_events());
+    assert_eq!(
+        cards(&chrome),
+        1,
+        "a relaunch that never showed a window failed to open"
+    );
+}
+
 #[test]
 fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
     /// A launcher parent may exit after daemonising but before its GUI child

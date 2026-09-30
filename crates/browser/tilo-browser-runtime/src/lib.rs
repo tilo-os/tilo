@@ -27,6 +27,9 @@ mod close_recovery;
 #[cfg(all(target_arch = "wasm32", feature = "cloud"))]
 mod peer;
 
+#[cfg(all(target_arch = "wasm32", feature = "relay"))]
+mod relay;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,6 +112,8 @@ mod desktop_overlays;
 mod live_view;
 #[cfg(any(target_arch = "wasm32", test))]
 mod local_desktop;
+#[cfg(any(target_arch = "wasm32", test))]
+mod page_authors;
 #[cfg(any(target_arch = "wasm32", test))]
 mod system_search;
 
