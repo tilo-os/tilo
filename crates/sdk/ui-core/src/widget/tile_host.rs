@@ -1033,6 +1033,12 @@ impl TileHost {
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
+    /// Typing may reach a live app that has no tab record yet. It must not
+    /// bypass a renewed lifetime or admitted owner-bound custody.
+    fn typing_may_bypass_missing_record(&self) -> bool {
+        !self.owner_bound_work && self.record_transition_error.is_none()
+    }
+
     fn prepare_record_resolution(&mut self) -> Result<(), String> {
         if !self.history_lifetime.active.get() {
             let error = "The current document owner is closed".to_string();
@@ -2165,10 +2171,9 @@ impl Widget for TileHost {
             live
         } else if let Some(live) = self.checked_old_owner_for_recovery() {
             Some(live)
-        } else if typing {
-            // A running Terminal (or other live app) must still receive
-            // keystrokes when the tab record is missing or closed. Claiming
-            // handled here dropped Space/Enter/text before the PTY.
+        } else if typing && self.typing_may_bypass_missing_record() {
+            // A running Terminal still receives keystrokes when the tab
+            // record was never bound. A renewed or closed owner must not.
             None
         } else {
             *ctx.handled = true;
@@ -2176,7 +2181,7 @@ impl Widget for TileHost {
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() && !typing {
+        if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
             *ctx.handled = true;
             return;
         }
