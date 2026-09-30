@@ -2025,6 +2025,7 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.base.name=$base" \
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+            --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
             --metadata-file "$metadata" \
             --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
@@ -2272,7 +2273,7 @@ jobs:
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
               TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
-              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label org.opencontainers.image.base.child.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
               ./os/dev/build-dev-image.sh
             test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
             # Gate a throwaway overlay so the disk published below is never
@@ -2969,10 +2970,10 @@ jobs:
           set -euo pipefail
           started=$(date +%s)
           image="registry.tilo.so/tilo/tilo-vm:$SERIES-lenovo-83ed"
-          # Main also moves tilo-vm:lenovo-83ed, which an installed laptop's
-          # `bootc upgrade` follows.
+          # Main also moves tilo-vm:lenovo-83ed-ci, which a laptop installed
+          # from a dev-disk.yml disk of that tag follows with `bootc upgrade`.
           names="$image"
-          [[ $GITHUB_REF != refs/heads/main ]] || names="$names,registry.tilo.so/tilo/tilo-vm:lenovo-83ed"
+          [[ $GITHUB_REF != refs/heads/main ]] || names="$names,registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci"
           metadata="$(mktemp "${RUNNER_TEMP:?}/tilo-board-build.XXXXXX")"
           docker buildx build --builder "$BUILDER_NAME" --provenance=false \
             -f os/Containerfile.board \
@@ -2986,6 +2987,8 @@ jobs:
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::Lenovo 83ED dev image in $(( $(date +%s) - started ))s: $image ($digest)"
+          base="$(skopeo inspect "docker://$BOARD_BASE" | jq -er '.Labels["org.opencontainers.image.base.name"]')"
+          echo "::notice::flashable disk: dispatch dev-disk.yml with source_revision=$GITHUB_SHA base_image=$base dev_image=registry.tilo.so/tilo/tilo-vm@$digest tag=lenovo-83ed-ci architectures=aarch64 validate_boot=false"
 
   promote-lenovo:
     needs: [plan, build-and-push]
