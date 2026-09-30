@@ -7,7 +7,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 
 - **Image signing and public transparency.** CI signs every promoted image by
   digest with cosign and requires the default Rekor publication path for the
-  signature and attestations. The release invariant rejects both
+  image signature and provenance/freshness attestations. The release invariant rejects both
   `--tlog-upload=false` and `--insecure-ignore-tlog`. The tracked
   `keys/cosign.pub` is the
   verifier; signing requires `COSIGN_KEY_REF` to name a non-exportable
@@ -124,9 +124,12 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   and stage in the background, then become active on the user's next ordinary
   restart. This prevents an update timer from rebooting an active game or work
   session.
-- **SBOM.** CI generates an SPDX SBOM (syft) and attaches it as a **signed**
-  in-toto attestation to the image (`cosign attest`). Audit with
-  `cosign verify-attestation --key keys/cosign.pub --type spdxjson <image>`.
+- **SBOM.** CI generates a complete SPDX SBOM with Syft and attaches it to
+  the image in the OCI registry. Rekor's public service limits attestation
+  uploads to 100 KB, so the full OS inventory cannot be logged directly. The
+  CI KMS signs its SHA-256 in the Rekor-logged SLSA provenance. Audit with
+  `os/dev/verify-release-sbom.sh <image@sha256:digest>`; it verifies that
+  provenance and hashes the downloaded inventory before accepting it.
 - **Reproducible builds (release-blocking).** Every release is built twice. The
   second build bypasses the first build's layer cache, and the workflow refuses
   publication unless both OCI manifests are byte-identical.
