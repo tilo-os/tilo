@@ -267,6 +267,11 @@ impl MediaEngine {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn latch_bound_for_test(&mut self) {
+        self.bound = true;
+    }
+
     /// Force the simulated transport regardless of build/environment. Used by
     /// `--shots`/tests that want the deterministic local bus.
     pub fn simulated() -> Self {
@@ -327,12 +332,13 @@ impl MediaEngine {
                 live::BindOutcome::Bound(live) => {
                     self.transport = live;
                     self.bound = true;
+                    return true;
                 }
                 // The simulator stays in place.
                 live::BindOutcome::Failed => {}
             }
         }
-        self.bound
+        false
     }
 
     /// Whether the live transport became ready since the last call. A call
@@ -783,6 +789,22 @@ mod tests {
         assert!(!engine.take_bound(), "a failed bind announces nothing");
         assert!(!engine.is_live());
         assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));
+    }
+
+    /// `poll_binding` used to return the latched `bound` flag forever, so
+    /// Chat's `update` stayed true after the endpoint came up and the
+    /// native runner committed a buffer at 144 Hz (~90% of a core).
+    #[test]
+    fn poll_binding_is_edge_triggered_after_the_endpoint_is_ready() {
+        let mut engine = MediaEngine::simulated();
+        engine.bound = true;
+        assert!(
+            !engine.poll_binding(),
+            "an already-bound endpoint is not a change"
+        );
+        assert!(engine.take_bound(), "the latch is still delivered once");
+        assert!(!engine.take_bound());
+        assert!(!engine.poll_binding());
     }
 
     // -- Real transport + codec loopback (only compiled with `live-media`) ----
