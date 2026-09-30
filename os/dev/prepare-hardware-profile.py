@@ -49,6 +49,30 @@ def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
     return current
 
 
+def module_state(kernel: Path, name: str) -> str:
+    """Return ``builtin``, ``module``, or ``absent`` without following symlinks."""
+    builtin = kernel / "modules.builtin"
+    suffix = f"/{name}.ko"
+    if builtin.exists() or builtin.is_symlink():
+        builtin = checked_path(kernel, Path("modules.builtin"), required=True)
+        for line in builtin.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.endswith(suffix):
+                return "builtin"
+    for directory, dirnames, filenames in os.walk(kernel, followlinks=False):
+        current = Path(directory)
+        if current.is_symlink():
+            dirnames.clear()
+            continue
+        dirnames[:] = [entry for entry in dirnames if not (current / entry).is_symlink()]
+        for filename in filenames:
+            candidate = current / filename
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            if filename == f"{name}.ko" or filename.startswith(f"{name}.ko."):
+                return "module"
+    return "absent"
+
+
 def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path,
                     profiles_dir: Path = PROFILES_DIR, *, target_update_ref: str | None = None) -> None:
     if profile == "generic":
@@ -141,11 +165,20 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         raise ValueError("hardware profile parser is not a valid LF script")
     outputs[PARSER_PATH] = parser
     initramfs_firmware = [*firmware_names.values(), *installed_system_firmware]
-    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in initramfs_firmware)
-    outputs[DRACUT_PATH] = (
-        "# Hardware-profile firmware needed before the encrypted root is unlocked.\n"
-        f'install_items+=" {firmware_paths} "\n'
-    ).encode("utf-8")
+    modular_boot = []
+    for name in definition.get("boot_modules", []):
+        state = module_state(config.parent, name)
+        if state == "absent":
+            raise ValueError(f"hardware profile boot module is not built in or installed: {name}")
+        if state == "module":
+            modular_boot.append(name)
+    dracut_lines = ["# Hardware-profile firmware and boot modules needed before the root is mounted."]
+    if initramfs_firmware:
+        firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in initramfs_firmware)
+        dracut_lines.append(f'install_items+=" {firmware_paths} "')
+    if modular_boot:
+        dracut_lines.append(f'add_drivers+=" {" ".join(modular_boot)} "')
+    outputs[DRACUT_PATH] = ("\n".join(dracut_lines) + "\n").encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {

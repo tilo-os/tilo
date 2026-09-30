@@ -27,6 +27,7 @@ ARCH_PATHS = (
     "os/dev/uki*",
     "os/dev/hardware_profile.py",
     "os/dev/prepare-hardware-profile.py",
+    "os/Containerfile.board",
     "os/dev/*fex*",
     "os/external-assets/fex-*",
     "os/dev/windows_provider.py",
