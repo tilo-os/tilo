@@ -33,6 +33,26 @@ display-vrr-unsupported = Not supported by this display
 display-vrr-driver-unsupported = The graphics driver does not offer it for this display
 display-vrr-driver-rejected = The graphics driver refused to turn it on
 
+
+# Displays pane: night light, rotation, built-in name
+display-builtin = Built-in display
+display-brightness = Brightness
+display-auto-brightness = Automatic brightness
+display-no-ambient = No ambient-light sensor detected
+display-night-light = Night light
+display-night-light-schedule = Sunset to sunrise
+display-night-light-schedule-desc = Turn Night Light on and off on the Appearance day and night schedule
+display-night-light-warmth = Night light warmth
+display-night-light-temp-subtle = Subtle · 4500 K
+display-night-light-temp-warm = Warm · 3700 K
+display-night-light-temp-very-warm = Very warm · 2800 K
+display-night-light-caption = Night Light applies a whole-desktop colour transform. Automatic brightness follows the kernel ambient-light sensor with smoothing and a deadband.
+display-rotation = Rotation
+display-rotation-landscape = Landscape
+display-rotation-portrait-right = Portrait right
+display-rotation-upside-down = Upside down
+display-rotation-portrait-left = Portrait left
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad
