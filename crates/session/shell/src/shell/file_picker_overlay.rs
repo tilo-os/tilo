@@ -71,7 +71,10 @@ impl FilePickerOverlay {
                 let _ = request.reply.send(None);
                 continue;
             }
-            let scope = picker_scope_for(chrome, &request.caller);
+            let scope = request
+                .scope
+                .clone()
+                .unwrap_or_else(|| picker_scope_for(chrome, &request.caller));
             let active = ActiveFilePicker::mount(request, scope);
             tracing::info!(
                 app = %active.app_id,
@@ -350,6 +353,7 @@ mod tests {
                 accept_label: Some("Attach folder".into()),
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply,
             });
 
@@ -369,5 +373,51 @@ mod tests {
         picker_rect_is_centered_and_clamped_to_viewport();
         single_file_request_cannot_receive_multiple_paths();
         directory_request_flows_through_overlay_to_folder_reply();
+    }
+
+    #[test]
+    fn a_scope_decided_with_the_request_replaces_the_users_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let granted = temp.path().join("in");
+        std::fs::create_dir(&granted).unwrap();
+        std::fs::write(granted.join("x.xlsx"), b"sheet").unwrap();
+        let elsewhere = temp.path().join("home");
+        std::fs::create_dir(&elsewhere).unwrap();
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .id;
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
+            initial_dir: elsewhere.clone(),
+            roots: vec![elsewhere],
+        });
+
+        let queue = crate::portal::FilePickerQueue::new();
+        let (reply, _received) = oneshot::channel();
+        queue.spawn(FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "org.example"),
+            title: "Import".into(),
+            save: false,
+            directory: false,
+            multiple: false,
+            accept_label: None,
+            current_name: None,
+            filters: Vec::new(),
+            scope: Some(crate::portal::PickerScope {
+                initial_dir: granted.clone(),
+                roots: vec![granted.clone()],
+            }),
+            reply,
+        });
+        let mut overlay = FilePickerOverlay::default();
+        overlay.set_queue(queue);
+        assert!(overlay.pump(Some(&chrome)));
+        let widget = overlay.widget_mut().expect("mounted picker");
+        assert_eq!(widget.current_dir(), granted.as_path());
+        assert!(widget.select_by_path(&granted.join("x.xlsx")));
     }
 }

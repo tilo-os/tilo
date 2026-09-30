@@ -23,8 +23,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
     BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
-    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_identity_bind,
-    resolve_service_binds_for_launch, to_service_binds,
+    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_chooser_bind,
+    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
 };
 
 struct SeccompFds {
@@ -2114,6 +2114,11 @@ fn run_with_context(
         {
             resolved.push(blobs);
         }
+        if let Some(chooser) =
+            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(chooser);
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);
@@ -2738,6 +2743,11 @@ fn run_with_capture_spawn<T>(
         resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
         resolved.push(blobs);
+    }
+    if let Some(chooser) =
+        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(chooser);
     }
     let binds = to_service_binds(&resolved);
 
