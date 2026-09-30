@@ -5081,19 +5081,7 @@ async fn handle_commit(
         .await
         .admitted_commit(&author_device_public_key, &op);
     if let Some(admitted) = admitted {
-        if admitted.digest != digest {
-            return refused("operation id already committed with different content");
-        }
-        tracing::debug!(
-            workspace_id,
-            seq = admitted.seq,
-            "resent commit answered from the ledger"
-        );
-        return Ok(Some(Envelope::Committed {
-            workspace_id,
-            op,
-            seq: admitted.seq,
-        }));
+        return Ok(Some(resent_commit(workspace_id, admitted, digest)));
     }
     let observed = session
         .compactor
@@ -5131,30 +5119,68 @@ async fn handle_commit(
     if let Some(position) = resume_record(session, workspace_id, [&authored]) {
         let _ = session.outbound.try_send(position);
     }
-    // Acknowledged at the host order it was published in, so every member
-    // receives commits in the order their authors were told.
-    let (seq, ledger, store) = {
-        let mut runtime = ws.lock().await;
-        let seq = match durable {
-            0 => runtime.next_seq(unix_now_ns()),
-            seq => seq,
-        };
-        let ledger = runtime.remember_commit(crate::store::CommitRecord {
+    let seq = remember_commit(
+        &ws,
+        crate::store::CommitRecord {
             author: author_device_public_key,
             op,
-            seq,
+            seq: durable,
             digest,
-        });
-        (seq, ledger, runtime.store.clone())
-    };
-    tokio::task::spawn_blocking(move || ledger.persist(&store))
-        .await
-        .map_err(|_| PeerError::Io(std::io::Error::other("commit ledger write panicked")))?;
+        },
+    )
+    .await?;
     Ok(Some(Envelope::Committed {
         workspace_id,
         op,
         seq,
     }))
+}
+
+/// The answer to a resent commit the ledger already holds: its original
+/// host order, or a refusal when the same operation id carries other content.
+fn resent_commit(
+    workspace_id: u64,
+    admitted: crate::store::CommitRecord,
+    digest: [u8; 32],
+) -> Envelope {
+    if admitted.digest != digest {
+        return Envelope::CommitRefused {
+            workspace_id,
+            op: admitted.op,
+            reason: "operation id already committed with different content".into(),
+        };
+    }
+    tracing::debug!(
+        workspace_id,
+        seq = admitted.seq,
+        "resent commit answered from the ledger"
+    );
+    Envelope::Committed {
+        workspace_id,
+        op: admitted.op,
+        seq: admitted.seq,
+    }
+}
+
+/// Record an admitted commit in the workspace's commit ledger and return the
+/// host order it is acknowledged at: the durable sequence it was published
+/// in (`record.seq`), or the next one when persistence assigned none. Every
+/// member then receives commits in the order their authors were told.
+async fn remember_commit(
+    ws: &SharedWorkspace,
+    mut record: crate::store::CommitRecord,
+) -> Result<u64, PeerError> {
+    let (ledger, store) = {
+        let mut runtime = ws.lock().await;
+        if record.seq == 0 {
+            record.seq = runtime.next_seq(unix_now_ns());
+        }
+        (runtime.remember_commit(record), runtime.store.clone())
+    };
+    tokio::task::spawn_blocking(move || ledger.persist(&store))
+        .await
+        .map_err(|_| PeerError::Io(std::io::Error::other("commit ledger write panicked")))?;
+    Ok(record.seq)
 }
 
 /// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
