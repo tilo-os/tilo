@@ -8,27 +8,23 @@ mod durable_local_matrix {
         root: tempfile::TempDir,
         cert: tilo_user_identity::DeviceCert,
         key: SigningKey,
+        person: SigningKey,
         route: CrdtRoute,
         membership: WorkspaceTreeHandle,
         publisher: Arc<PeerPublisher>,
         authority: Arc<CurrentHost>,
         origin: crate::peer_actions::PolicyOrigin,
         control: crate::peer_actions::PolicyClockTestControl,
-        owner_task: tokio::task::JoinHandle<tilo_workspace_host::SessionOwner>,
+        owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
     }
     impl Environment {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
             let mut owner =
-                tilo_workspace_host::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
-            let key = tilo_user_identity::persist::read_device_key(
-                &tilo_user_identity::persist::IdentityPaths::under(
-                    owner.root().canonicalize().unwrap().join("identity"),
-                )
-                .device_privkey,
-            )
-            .unwrap();
+            let key = owner.signing_key().clone();
+            let person = owner.person_key().clone();
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
@@ -54,7 +50,7 @@ mod durable_local_matrix {
             tree.persist_path = Some(root.path().join("workspace.json"));
             let membership = tree.shared();
             let (handle, mut mailbox) =
-                tilo_workspace_host::owner_commit::OwnerCommitMailbox::bounded(8);
+                crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(handle));
             let owner_task = tokio::task::spawn_local(async move {
@@ -68,6 +64,7 @@ mod durable_local_matrix {
                 root,
                 cert,
                 key,
+                person,
                 route,
                 membership,
                 publisher,
@@ -773,16 +770,7 @@ mod durable_local_matrix {
                     .await
                     .unwrap();
                 rig.stream.as_ref().unwrap().read().await.unwrap();
-                let identity = tilo_user_identity::persist::IdentityPaths::under(
-                    env.root
-                        .path()
-                        .join("owner")
-                        .canonicalize()
-                        .unwrap()
-                        .join("identity"),
-                );
-                let root =
-                    tilo_user_identity::persist::read_signing_key(&identity.user_privkey).unwrap();
+                let root = env.person.clone();
                 let device = SigningKey::from_bytes(&[83; 32]);
                 let mut certificate = env.cert.clone();
                 certificate.device_public_key = device.verifying_key().to_bytes();
