@@ -3410,11 +3410,17 @@ impl Widget for GroupRow {
             return false;
         }
         // The row owns drag animations outside its presentation children;
-        // propagate them alongside child animation requests.
+        // propagate them alongside child animation requests. Off-screen
+        // groups use the same cull as `needs_redraw`: a hosted app past
+        // the strip edge must not keep the desktop at the refresh rate.
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.group_drag_active()
-            || self.groups.iter().any(super::Widget::needs_animation_frame)
+            || self
+                .groups
+                .iter()
+                .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
+                .any(super::Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4753,7 +4759,7 @@ mod tests {
     #[test]
     fn a_long_strip_encodes_only_the_groups_it_shows() {
         let (few, few_scene) = drawn_strip(6);
-        let (many, many_scene) = drawn_strip(40);
+        let (mut many, many_scene) = drawn_strip(40);
         let shown = many.onscreen_group_ids();
         assert!(
             !shown.is_empty() && shown.len() < 6,
@@ -4780,6 +4786,25 @@ mod tests {
             });
         assert_eq!(skipped, many.culled_groups);
         assert!(consulted.len() >= shown.len());
+
+        // Animation cadence used to OR every group, so a hosted app that
+        // kept asking for frames after it scrolled off pinned the shell
+        // at 144 Hz. The spawn animation is a real per-group demand.
+        let offscreen = many.culled_groups[0];
+        let group = many
+            .groups
+            .iter_mut()
+            .find(|g| g.id == offscreen)
+            .expect("culled group");
+        group.start_spawn_animation();
+        assert!(
+            group.needs_animation_frame(),
+            "fixture: the off-screen group is asking for frames"
+        );
+        assert!(
+            !many.needs_animation_frame(),
+            "an idle hosted app past the edge must not keep requesting frames"
+        );
     }
 
     #[test]
