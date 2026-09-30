@@ -1,5 +1,6 @@
 //! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
 pub mod action;
+pub mod markdown;
 use automerge::AutoCommit;
 use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,58 @@ pub struct Segment {
     pub kind: String,
     pub text: String,
     pub complete: bool,
+    #[serde(flatten)]
+    pub shape: Shape,
+}
+/// Where a block sits in the document's structure: a heading's or list
+/// item's level, a list's numbering, a cell's table, row and column.
+#[derive(Debug, Default, Serialize)]
+pub struct Shape {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nesting: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub col: Option<i64>,
+}
+fn shape(source: &Source<'_>, block: &ObjId) -> Result<Shape, ReadError> {
+    let mut shape = Shape::default();
+    let Some(attrs) = source.object(block, qdoc::schema::BLOCK_ATTRS, ObjType::Map)? else {
+        return Ok(shape);
+    };
+    let int = |key: &str| {
+        let mut found = None;
+        source.field(&attrs, key, |value| {
+            if let source::Value::Scalar(scalar) = value {
+                found = match scalar {
+                    automerge::ScalarValueRef::Int(n) => Some(*n),
+                    automerge::ScalarValueRef::Uint(n) => i64::try_from(*n).ok(),
+                    _ => None,
+                };
+            }
+            Ok(())
+        })?;
+        Ok::<_, ReadError>(found)
+    };
+    shape.level = int("level")?;
+    shape.nesting = int("nesting")?;
+    shape.row = int("row")?;
+    shape.col = int("col")?;
+    source.field(&attrs, "ordered", |value| {
+        if let source::Value::Scalar(automerge::ScalarValueRef::Boolean(flag)) = value {
+            shape.ordered = Some(*flag);
+        }
+        Ok(())
+    })?;
+    let table = source.string(&attrs, "table", 128)?;
+    shape.table = (!table.is_empty()).then_some(table);
+    Ok(shape)
 }
 #[derive(Debug, Serialize)]
 pub struct Page {
@@ -38,7 +91,10 @@ pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::Seman
     }
 }
 use automerge::{ObjId, ObjType, ROOT};
-use qdoc::semantic_read::{json_len, source::Source};
+use qdoc::semantic_read::{
+    json_len,
+    source::{self, Source},
+};
 use std::{cmp::Ordering, ops::ControlFlow};
 struct Candidate {
     id: String,
@@ -182,6 +238,7 @@ fn read_source(
             kind: source.string(&candidate.object, qdoc::schema::BLOCK_KIND, 64)?,
             text: String::new(),
             complete: false,
+            shape: shape(source, &candidate.object)?,
         });
         let mut continuation = Cursor {
             basis: page.basis.fingerprint,
