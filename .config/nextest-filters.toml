@@ -1,0 +1,24 @@
+# Filtersets the CI test runs share. Workflows read them from the checked-out
+# tree (tools/ci/nextest_filters.py), so a pull request tested on top of main
+# filters main's package names, not the ones its own workflow file knew.
+
+# Software-Vulkan goldens. Under the affected-package shards their atomic
+# rasterisation changes with runner load, producing repeatable false pixel
+# deltas even though the same canonical image passes while isolated. Nightly
+# verifies them on an idle renderer after its parallel suite has drained and
+# the visual-baselines workflow renders candidates for exactly these tests.
+# Keep identical to the gpu-golden override in nextest.toml.
+golden = """
+(package(tilo-ui) and test(typography_visual_regression::)) or
+(package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
+(package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
+"""
+
+# Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images
+# and take tens of seconds each. Pull-request shards skip them; pushes to
+# main still run them, and nightly runs them with the whole workspace, so a
+# regression is caught at the merge that caused it.
+push_only = """
+(package(tilo-fs) and binary(collab_release_matrix)) or
+(package(tilo-rollback) and binary(mechanism))
+"""

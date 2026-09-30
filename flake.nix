@@ -16,6 +16,10 @@
         });
 
       checks = forAllSystems (system: {
+        # Validate Cargo.lock against the fixed vendor output without compiling
+        # the entire desktop session.
+        tilo-cargo-vendor = self.packages.${system}.tilo-session.cargoDeps;
+
         # Force the exported module through a real NixOS option evaluation on
         # each release architecture. `nix flake check --no-build` then catches
         # stale display-manager, PAM, or portal option wiring without building

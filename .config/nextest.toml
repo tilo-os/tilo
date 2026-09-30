@@ -6,7 +6,7 @@ fail-fast = false
 
 # Also the profile for the whole suite outside CI, under tools/test-env.sh;
 # DEVELOPMENT.md ("The whole suite, as CI runs it") has the command, which keeps
-# the visual goldens (GOLDEN_FILTER in the workflows) for an idle renderer.
+# the visual goldens (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
 # A test still running after 30 s prints a SLOW line each period, so a log
 # shows where shard time goes while it runs; tools/ci/nextest_report.py lists
