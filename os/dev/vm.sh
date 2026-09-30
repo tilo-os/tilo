@@ -261,6 +261,16 @@ cmd_wait() {
     sleep 2
   done
   boot_diagnose "$TILO_SERIAL" || true
+  if [ -s "$TILO_SERIAL" ]; then
+    warn "last lines of $TILO_SERIAL:"
+    tr -d '\000' < "$TILO_SERIAL" | tail -n 120 >&2
+  else
+    warn "the serial log is empty: $TILO_SERIAL"
+  fi
+  if [ -s "$TILO_QEMU_LOG" ]; then
+    warn "last lines of $TILO_QEMU_LOG:"
+    tail -n 40 "$TILO_QEMU_LOG" >&2
+  fi
   die "timed out waiting for greeter (see $TILO_SERIAL)"
 }
 
