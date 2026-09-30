@@ -394,13 +394,21 @@ fn read_cells_spec(sheet_id: &str) -> ActionSpec {
 
 /// The cell actions each sheet publishes beside rename/delete/insert.
 pub fn sheet_actions(sheet: usize, sheet_id: &str, cells: &[SearchableCell]) -> Vec<ActionSpec> {
-    vec![
+    let mut specs = vec![
         read_cells_spec(sheet_id),
         set_cells_spec(sheet, sheet_id),
         format_cells_spec(sheet_id),
         sort_rows_spec(sheet, sheet_id, cells.to_vec()),
         delete_rows_spec(sheet_id),
-    ]
+    ];
+    for spec in &mut specs {
+        if ANSWERING_EDITS.contains(&spec.id.as_str()) {
+            spec.contract.result = ResultSpec::Json {
+                schema: edit_result_schema(),
+            };
+        }
+    }
+    specs
 }
 
 fn validate_read(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
@@ -462,12 +470,20 @@ fn project_read(
     if width.saturating_mul(height) > MAX_READ_CELLS {
         return Err(SemanticReadError::Limit);
     }
+    Ok(ReadPage {
+        content: range_content(&snap, start, end),
+        next_cursor: None,
+    })
+}
+
+/// `start..=end` of `snap` as `read-cells` answers it.
+fn range_content(snap: &crate::doc::SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
     let values = crate::formula::recalculate(&snap.raw);
-    let mut rows = Vec::with_capacity(height);
+    let mut rows = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut bold = Vec::new();
     for row in start.1..=end.1 {
-        let mut line = Vec::with_capacity(width);
+        let mut line = Vec::new();
         for col in start.0..=end.0 {
             line.push(
                 values
@@ -483,16 +499,70 @@ fn project_read(
         }
         rows.push(serde_json::Value::Array(line));
     }
-    Ok(ReadPage {
-        content: serde_json::json!({
-            "sheet": snap.name,
-            "range": range_label(start, end),
-            "rows": rows,
-            "formulas": formulas,
-            "bold": bold,
-        }),
-        next_cursor: None,
+    serde_json::json!({
+        "sheet": snap.name,
+        "range": range_label(start, end),
+        "rows": rows,
+        "formulas": formulas,
+        "bold": bold,
     })
+}
+
+/// The cell edits that answer with the range they changed, so a caller sees
+/// the values it produced without reading them back.
+pub const ANSWERING_EDITS: [&str; 4] = ["set-cells", "format-cells", "sort-rows", "delete-rows"];
+
+/// The most cells an edit answers with; a larger change answers its first
+/// rows and names the whole range for `read-cells`.
+pub const MAX_ANSWERED_CELLS: u32 = 256;
+
+pub fn edit_result_schema() -> serde_json::Value {
+    serde_json::json!({"type": ["object", "null"]})
+}
+
+/// The answer of cell edit `action` on `sheet_id`, which applied to `doc` as
+/// `changes`: the changed range as `read-cells` shows it, clipped to
+/// [`MAX_ANSWERED_CELLS`] with `"changed"` naming the whole range when cut.
+pub fn edit_result(
+    doc: &AutoCommit,
+    sheet_id: &str,
+    action: &str,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    if !ANSWERING_EDITS.contains(&action) {
+        return None;
+    }
+    let sheet = SheetsDoc::sheet_index_by_resource_id(doc, sheet_id)?;
+    let touched = SheetsDoc::changed_cells(doc, sheet, changes);
+    let (first, rest) = touched.split_first()?;
+    let (start, end) = rest
+        .iter()
+        .fold((*first, *first), |(start, end), &(col, row)| {
+            (
+                (start.0.min(col), start.1.min(row)),
+                (end.0.max(col), end.1.max(row)),
+            )
+        });
+    let width = end.0.saturating_sub(start.0).saturating_add(1);
+    let shown_width = width.min(MAX_ANSWERED_CELLS);
+    let shown_rows = MAX_ANSWERED_CELLS
+        .checked_div(shown_width)
+        .unwrap_or(1)
+        .max(1);
+    let shown_end = (
+        start.0.saturating_add(shown_width.saturating_sub(1)),
+        end.1
+            .min(start.1.saturating_add(shown_rows.saturating_sub(1))),
+    );
+    let mut doc = doc.clone();
+    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let mut content = range_content(&snap, start, shown_end);
+    if shown_end != end
+        && let Some(fields) = content.as_object_mut()
+    {
+        fields.insert("changed".into(), range_label(start, end).into());
+    }
+    Some(content)
 }
 
 pub fn read_result_schema() -> &'static serde_json::Value {

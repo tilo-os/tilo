@@ -266,6 +266,50 @@ impl SheetsDoc {
             .find(|&idx| Self::sheet_resource_id(doc, idx).as_deref() == Some(wanted))
     }
 
+    /// The cells an applied change touched on sheet `idx`, read from its
+    /// patches: a cell's key names it whether the cell or a field in it changed.
+    pub fn changed_cells(doc: &AutoCommit, idx: usize, changes: &[automerge::Patch]) -> Vec<Addr> {
+        let cells = (|| {
+            let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::List), sheets) = doc.get(&wb, "sheets").ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::Map), sheet) = doc.get(&sheets, idx).ok()?? else {
+                return None;
+            };
+            let (Value::Object(ObjType::Map), cells) = doc.get(&sheet, "cells").ok()?? else {
+                return None;
+            };
+            Some(cells)
+        })();
+        let Some(cells) = cells else {
+            return Vec::new();
+        };
+        let mut touched: Vec<Addr> = changes
+            .iter()
+            .filter_map(|patch| {
+                let key = if patch.obj == cells {
+                    match &patch.action {
+                        automerge::PatchAction::PutMap { key, .. }
+                        | automerge::PatchAction::DeleteMap { key } => key.as_str(),
+                        _ => return None,
+                    }
+                } else {
+                    match patch.path.iter().find(|(obj, _)| *obj == cells) {
+                        Some((_, automerge::Prop::Map(key))) => key.as_str(),
+                        _ => return None,
+                    }
+                };
+                Self::parse_cell_key(key)
+            })
+            .collect();
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+    }
+
     /// The file sheet `idx` was imported from, if any.
     pub fn sheet_source(doc: &AutoCommit, idx: usize) -> Option<String> {
         let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
