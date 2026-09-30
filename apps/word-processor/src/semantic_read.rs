@@ -42,7 +42,7 @@ pub struct Shape {
 }
 fn shape(source: &Source<'_>, block: &ObjId) -> Result<Shape, ReadError> {
     let mut shape = Shape::default();
-    let Some(attrs) = source.object(block, qdoc::schema::BLOCK_ATTRS, ObjType::Map)? else {
+    let Some(attrs) = source.block_attrs(block)? else {
         return Ok(shape);
     };
     let int = |key: &str| {
