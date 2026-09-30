@@ -1246,6 +1246,9 @@ pub struct ShellNetwork {
     /// dialing the others, so a peer that is still offline when Wi-Fi comes up
     /// is tried again.
     dialed_direct_peers: Mutex<std::collections::HashSet<iroh::EndpointId>>,
+    /// Topics on which a direct peer has actually appeared. A remote action
+    /// sent before that is dropped by the transport, so it is not attempted.
+    live_room_peers: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
     registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
@@ -1696,6 +1699,7 @@ impl ShellNetwork {
             host_addrs: Mutex::new(host_addrs),
             registered_home_peer_ids: Mutex::new(home_peer_ids),
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
+            live_room_peers: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
@@ -2734,6 +2738,14 @@ impl ShellNetwork {
         let topic = room_topic_id(shared);
         if !self.join_topic(topic) {
             return Err("the shared workspace is not joined".into());
+        }
+        let online = self
+            .live_room_peers
+            .lock()
+            .map(|peers| peers.contains(&(topic, endpoint)))
+            .unwrap_or(false);
+        if !online {
+            return Err("the enrolled device is not online yet".into());
         }
         let message = tilo_actions::remote::RemoteActionMessage::Invoke(
             tilo_actions::remote::InvokeRequest {
@@ -4895,6 +4907,9 @@ impl ShellNetwork {
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.insert(peer);
                 }
+                if let Ok(mut live) = self.live_room_peers.lock() {
+                    live.insert((ws, peer));
+                }
                 self.publish_sync_requests();
                 if self
                     .personal_continuity_user
@@ -4913,6 +4928,9 @@ impl ShellNetwork {
             } => {
                 if let Ok(mut connected) = self.dialed_direct_peers.lock() {
                     connected.remove(&peer);
+                }
+                if let Ok(mut live) = self.live_room_peers.lock() {
+                    live.remove(&(ws, peer));
                 }
                 if let Ok(mut direct) = self.workspace_control_direct.lock() {
                     direct.remove(&(ws, peer));
@@ -6582,6 +6600,7 @@ pub(crate) fn shell_network_for_test(
         host_addrs: Mutex::new(Vec::new()),
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
+        live_room_peers: Mutex::new(std::collections::HashSet::new()),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
@@ -6763,6 +6782,23 @@ mod tests {
         assert!(net.join_default_workspace());
         while commands.try_recv().is_ok() {}
         let address = tilo_actions::ActionAddress::new("app.files", "open");
+        let offline = net.invoke_enrolled_device(
+            &hex::encode(device),
+            tilo_actions::remote::RemoteActionTarget {
+                provider: format!("workspace:{room}"),
+                address: address.clone(),
+            },
+            tilo_actions::remote::InvokeArgument::None,
+        );
+        assert!(
+            offline.is_err(),
+            "an offline device must not be told the action was sent"
+        );
+        let endpoint = iroh::EndpointId::from_bytes(&device).expect("endpoint");
+        net.live_room_peers.lock().expect("live peers").insert((
+            room_topic_id(crate::shell::state::RoomId::parse(room).expect("room")),
+            endpoint,
+        ));
         net.invoke_enrolled_device(
             &hex::encode(device),
             tilo_actions::remote::RemoteActionTarget {
