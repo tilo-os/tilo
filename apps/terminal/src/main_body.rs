@@ -3801,6 +3801,20 @@ impl TerminalWidget {
             }
         }
 
+        self.deliver_mapped_key_bytes(logical_key, physical_key, text, modifiers, handled);
+    }
+
+    /// Map a key press to PTY bytes and write them. Physical Enter/Space
+    /// fill in when the logical key and `text` are empty (control-socket
+    /// and some compositor paths).
+    fn deliver_mapped_key_bytes(
+        &mut self,
+        logical_key: &Key,
+        physical_key: PhysicalKey,
+        text: Option<&str>,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
         let mut bytes = self.map_key(logical_key, modifiers);
         if bytes.is_none() {
             bytes = Self::map_physical_key(physical_key);
