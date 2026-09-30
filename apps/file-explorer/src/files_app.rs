@@ -5430,9 +5430,9 @@ impl FileExplorerWidget {
     }
 
     /// Say on the status line what became of a shortcut run from the menu,
-    /// when `event` says.
-    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        self.status = match self.shortcut_menu.handle_event(event) {
+    /// when `event` says. Returns whether the status line changed.
+    fn handle_shortcut_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
+        let status = match self.shortcut_menu.handle_event(event) {
             Some(crate::shortcut_menu::ShortcutOutcome::Started { label }) => {
                 Some(t_args("files-shortcut-started", &[arg("shortcut", label)]))
             }
@@ -5440,8 +5440,13 @@ impl FileExplorerWidget {
                 "files-shortcut-failed",
                 &[arg("shortcut", label), arg("reason", reason)],
             )),
-            None => return,
+            None => return false,
         };
+        if self.status == status {
+            return false;
+        }
+        self.status = status;
+        true
     }
 
     fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
@@ -7561,16 +7566,18 @@ impl Collaborative for FileExplorerWidget {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        self.handle_shortcut_event(event);
+        let mut changed = self.handle_shortcut_event(event);
         for effect in self.nearby_send.handle_event(event) {
             match effect {
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
                     self.open_nearby_device_picker(&targets);
+                    changed = true;
                 }
                 crate::nearby_send::NearbyUiEffect::Offer {
                     transfer,
                     destinations,
                 } => {
+                    changed = true;
                     self.show_collab_panel(CollabPanel {
                         title: t_args(
                             "files-nearby-offer-title",
@@ -7610,6 +7617,7 @@ impl Collaborative for FileExplorerWidget {
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Failed(transfer) => {
+                    changed = true;
                     self.show_collab_panel(CollabPanel {
                         title: t("files-nearby-failed-title"),
                         summary: transfer.name,
@@ -7627,12 +7635,16 @@ impl Collaborative for FileExplorerWidget {
                     });
                 }
                 crate::nearby_send::NearbyUiEffect::Status(message) => {
-                    self.status = Some(message);
+                    if self.status.as_deref() != Some(message.as_str()) {
+                        self.status = Some(message);
+                        changed = true;
+                    }
                 }
                 crate::nearby_send::NearbyUiEffect::SendResult(result) => {
                     let Some(invocation) = self.resource_invocation.take() else {
                         continue;
                     };
+                    changed = true;
                     self.resource_result = Some(match result {
                         Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
@@ -7651,7 +7663,9 @@ impl Collaborative for FileExplorerWidget {
                 }
             }
         }
-        self.structure_dirty = true;
+        if changed {
+            self.structure_dirty = true;
+        }
     }
 }
 
