@@ -3,9 +3,9 @@
 //!
 //! | Capability | Linux | macOS | Web |
 //! |---|---|---|---|
-//! | camera (`camera`) | `GStreamer` `v4l2src` | `GStreamer` `avfvideosrc` (`AVFoundation`) | `getUserMedia` |
-//! | microphone (`microphone`) | `GStreamer` `autoaudiosrc` (`PipeWire`) | `GStreamer` `autoaudiosrc` (Core Audio) | `getUserMedia` + an audio worklet |
-//! | screen (`screen`) | `ScreenCast` portal + `pipewiresrc` | `GStreamer` `avfvideosrc capture-screen` | `getDisplayMedia` |
+//! | camera (`camera`) | `GStreamer` `v4l2src` | `AVFoundation` (`AVCaptureSession`) | `getUserMedia` |
+//! | microphone (`microphone`) | `GStreamer` `autoaudiosrc` (`PipeWire`) | `AVFoundation` (`AVCaptureSession`) | `getUserMedia` + an audio worklet |
+//! | screen (`screen`) | `ScreenCast` portal + `pipewiresrc` | `AVFoundation` (`AVCaptureScreenInput`) | `getDisplayMedia` |
 //! | scanner (`scanner`) | `SANE` | `Unsupported` | `Unsupported` |
 //!
 //! Every capture is request based and poll driven, because the browser and
@@ -29,6 +29,8 @@ pub mod broker;
 #[cfg(all(unix, not(web_page)))]
 pub mod grants;
 
+#[cfg(avf)]
+mod avf_backend;
 #[cfg(gst)]
 mod gst_backend;
 #[cfg(portal_screen)]
@@ -105,9 +107,9 @@ fn column() -> usize {
 #[must_use]
 pub fn availability(feature: Feature) -> Availability {
     let built = match feature {
-        Feature::Camera => cfg!(any(gst_camera, web_page)),
-        Feature::Microphone => cfg!(any(gst_microphone, web_page)),
-        Feature::Screen => cfg!(any(gst_screen, web_page)),
+        Feature::Camera => cfg!(any(native_camera, web_page)),
+        Feature::Microphone => cfg!(any(native_microphone, web_page)),
+        Feature::Screen => cfg!(any(native_screen, web_page)),
         Feature::Scanner => cfg!(sane_scanner) || column() != 0,
     };
     if !built {
@@ -162,7 +164,7 @@ pub enum DeviceKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// What `open_*` takes: a `/dev/video*` node on Linux, an `AVFoundation`
-    /// index on macOS, a page-scoped device id on the web.
+    /// unique id on macOS, a page-scoped device id on the web.
     pub id: String,
     /// For people. Empty on the web until the user has granted access once.
     pub label: String,
@@ -351,7 +353,9 @@ mod backend {
     pub(super) fn devices(kind: DeviceKind) -> Vec<Device> {
         #[cfg(gst)]
         return super::gst_backend::devices(kind);
-        #[cfg(not(gst))]
+        #[cfg(avf)]
+        return super::avf_backend::devices(kind);
+        #[cfg(not(any(gst, avf)))]
         {
             let _ = kind;
             Vec::new()
@@ -368,7 +372,9 @@ mod backend {
         }
         #[cfg(gst_camera)]
         return super::gst_backend::camera(request);
-        #[cfg(not(gst_camera))]
+        #[cfg(avf_camera)]
+        return super::avf_backend::camera(request);
+        #[cfg(not(native_camera))]
         {
             let _ = request;
             Err(CaptureError::Unsupported(
@@ -383,9 +389,9 @@ mod backend {
     ) -> Result<Box<dyn VideoSource>, CaptureError> {
         #[cfg(portal_screen)]
         return Ok(Box::new(super::portal::Screen::request(request)));
-        #[cfg(all(gst_screen, not(portal_screen)))]
-        return super::gst_backend::screen(request);
-        #[cfg(not(gst_screen))]
+        #[cfg(avf_screen)]
+        return super::avf_backend::screen(request);
+        #[cfg(not(any(portal_screen, avf_screen)))]
         {
             let _ = request;
             Err(CaptureError::Unsupported(
@@ -404,7 +410,9 @@ mod backend {
         }
         #[cfg(gst_microphone)]
         return super::gst_backend::microphone(request);
-        #[cfg(not(gst_microphone))]
+        #[cfg(avf_microphone)]
+        return super::avf_backend::microphone(request);
+        #[cfg(not(native_microphone))]
         {
             let _ = request;
             Err(CaptureError::Unsupported(
@@ -440,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_build_without_a_backend_says_so_instead_of_failing_later() {
-        if !cfg!(gst_camera) {
+        if !cfg!(native_camera) {
             assert!(matches!(
                 VideoCapture::open_camera(&CameraRequest {
                     device: None,
@@ -450,7 +458,7 @@ mod tests {
                 Err(CaptureError::Unsupported(_))
             ));
         }
-        if !cfg!(gst_microphone) {
+        if !cfg!(native_microphone) {
             assert!(matches!(
                 AudioCapture::open_microphone(&MicrophoneRequest::default()),
                 Err(CaptureError::Unsupported(_))

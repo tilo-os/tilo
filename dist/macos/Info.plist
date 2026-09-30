@@ -15,6 +15,8 @@
   <key>CFBundleVersion</key><string>0.0.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSCameraUsageDescription</key><string>Tilo turns the camera on for an app only after you allow that app in Tilo.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Tilo contributors</string>
+  <key>NSMicrophoneUsageDescription</key><string>Tilo turns the microphone on for an app only after you allow that app in Tilo.</string>
 </dict></plist>

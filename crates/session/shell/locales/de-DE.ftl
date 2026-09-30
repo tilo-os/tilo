@@ -1106,7 +1106,7 @@ shell-tab-menu-split-right = Rechts abtrennen
 shell-tab-menu-new-group = In neue Gruppe verschieben
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Anwendung nicht verfügbar
-shell-activity-title = Während du weg warst
+shell-activity-title = Aktivität
 shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
 
 # Sitzungsmenü
