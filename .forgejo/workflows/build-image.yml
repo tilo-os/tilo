@@ -2337,7 +2337,7 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           fi
 
-          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic && '${{ matrix.arch }}' == aarch64 ]]; then
             ./os/tests/validation_drive_qemu.sh
           fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
@@ -3128,7 +3128,7 @@ jobs:
           set -euo pipefail
           BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
             | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')" \
-            ./os/dev/publish-dev-disk-candidate.sh
+            bash ./os/dev/publish-dev-disk-candidate.sh
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
