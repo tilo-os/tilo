@@ -22,7 +22,7 @@ jobs:
     env:
       TILO_DISTROBOX: ""
       TILO_LOCAL_TAG: dev-installer-${{ github.run_id }}
-      TILO_OUTPUT: ${{ runner.temp }}/tilo-dev-installer
+      TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
       TILO_IMAGE: ${{ github.event.inputs.os_image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -81,3 +81,8 @@ jobs:
           name: tilo-dev-installer-aarch64-${{ github.run_id }}
           path: dist/dev-installer/
           if-no-files-found: error
+      - name: Remove this run's disk scratch
+        if: always()
+        run: |
+          test "$TILO_OUTPUT" = "/var/tmp/tilo-dev-installer-$GITHUB_RUN_ID"
+          rm -rf -- "$TILO_OUTPUT"
