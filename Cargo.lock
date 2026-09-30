@@ -6401,8 +6401,6 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "crc32fast",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
  "hex",
  "libc",
  "reqwest",
