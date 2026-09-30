@@ -23,7 +23,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{Addr, CellFormat, Currency, DateStyle, TimeStyle};
+use crate::model::{Addr, CellFormat, Currency, DateStyle, GridEdit, TimeStyle};
 use crate::settings::DocSettings;
 
 /// One sheet's snapshot pulled out of the CRDT for rendering.
@@ -914,18 +914,13 @@ impl SheetsDoc {
         }
     }
 
-    /// Rebase every annotation anchor through a row/column structural map.
-    /// An inserted/deleted cell never leaves a chart or comment pointing at a
-    /// stale coordinate; a deleted endpoint clamps to the closest surviving
-    /// point and a fully-deleted one-cell anchor is dropped.
-    pub fn remap_annotation_anchors(
-        doc: &mut AutoCommit,
-        idx: usize,
-        map: impl Fn(Addr) -> Option<Addr>,
-    ) {
-        let charts = Self::charts(doc, idx);
-        for mut chart in charts {
-            let (Some(start), Some(end)) = (map(chart.start), map(chart.end)) else {
+    /// Rebase every annotation anchor through a row/column structural edit.
+    /// An inserted/deleted line never leaves a chart or comment pointing at a
+    /// stale coordinate: deleting an anchor's edge line shrinks it, and only an
+    /// anchor whose every cell was deleted is dropped.
+    pub fn remap_annotation_anchors(doc: &mut AutoCommit, idx: usize, edit: GridEdit) {
+        for mut chart in Self::charts(doc, idx) {
+            let Some((start, end)) = edit.map_range(chart.start, chart.end) else {
                 Self::delete_chart(doc, idx, &chart.id);
                 continue;
             };
@@ -934,18 +929,8 @@ impl SheetsDoc {
             Self::put_chart(doc, idx, &chart);
         }
         for mut thread in Self::comments(doc, idx) {
-            let (Some(start), Some(end)) = (map(thread.start), map(thread.end)) else {
-                // Keep the discussion available when only one corner was
-                // removed; it follows the surviving end instead of silently
-                // evaporating an audit trail.
-                let survivor = map(thread.start).or_else(|| map(thread.end));
-                let Some(anchor) = survivor else {
-                    Self::delete_comment(doc, idx, &thread.id);
-                    continue;
-                };
-                thread.start = anchor;
-                thread.end = anchor;
-                Self::put_comment(doc, idx, &thread);
+            let Some((start, end)) = edit.map_range(thread.start, thread.end) else {
+                Self::delete_comment(doc, idx, &thread.id);
                 continue;
             };
             thread.start = (start.0.min(end.0), start.1.min(end.1));
@@ -1347,16 +1332,28 @@ mod tests {
             };
             SheetsDoc::put_chart(&mut doc, sheet, &chart);
             SheetsDoc::put_comment(&mut doc, sheet, &thread);
-            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |(c, r)| Some((c, r + 1)));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::InsertRow(0));
             assert_eq!(SheetsDoc::charts(&mut doc, sheet)[0].start, (1, 2));
             assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 3));
-            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |addr| {
-                (addr != (2, 3)).then_some(addr)
-            });
+            // The chart spans B3:D5 and the comment sits on C4. Deleting the
+            // chart's first row, then its last, shrinks it instead of deleting it.
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (3, 3)));
+            assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 2));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(3));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (3, 2)));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(2));
             assert!(
                 SheetsDoc::comments(&mut doc, sheet).is_empty(),
                 "a fully deleted one-cell anchor removes its thread"
             );
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(1));
+            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            assert_eq!((chart.start, chart.end), ((1, 2), (1, 2)));
+            SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
+            assert!(SheetsDoc::charts(&mut doc, sheet).is_empty());
         }
     }
 }
