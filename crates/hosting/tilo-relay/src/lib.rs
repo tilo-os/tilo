@@ -81,6 +81,8 @@ pub mod certification;
 pub mod client;
 pub mod coedit;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod compaction;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;
@@ -97,6 +99,7 @@ pub mod metrics;
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
+pub mod position;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 mod session_carrier;

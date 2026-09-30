@@ -176,7 +176,7 @@ fn navigate(
     target: Category,
 ) -> (TaffyTree<()>, NodeId) {
     let (taffy, node) = lay_out(app);
-    let row = find_rect(app, "SidebarRow", Some(target.label()))
+    let row = find_rect(app, "SidebarRow", Some(&target.label()))
         .unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
         row.y0 >= 0.0 && row.y1 <= f64::from(H),

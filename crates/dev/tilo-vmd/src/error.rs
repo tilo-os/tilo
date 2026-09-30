@@ -22,6 +22,8 @@ pub enum DaemonError {
     BadOutputs(String),
     #[error("slot '{slot}' outputs could not be set: {detail}")]
     DisplayLayout { slot: String, detail: String },
+    #[error("slot '{slot}' could not get a throwaway test identity: {detail}")]
+    TestIdentity { slot: String, detail: String },
     #[error("'{0}' is reserved for VM-wide components")]
     ReservedName(String),
     #[error("'{0}' is not a valid slot name")]
@@ -141,6 +143,7 @@ impl DaemonError {
             Self::ScopeMismatch { .. } => code::SCOPE,
             Self::Apply { .. }
             | Self::DisplayLayout { .. }
+            | Self::TestIdentity { .. }
             | Self::SessionParity { .. }
             | Self::SessionFailed { .. }
             | Self::BootLoader { .. }
@@ -184,6 +187,9 @@ impl DaemonError {
             ),
             Self::DisplayLayout { slot, .. } => format!(
                 "rerun tilo-vm slot create {slot} --headful --outputs <same list> to apply it again; tilo-vm logs {slot} shows what the compositor did"
+            ),
+            Self::TestIdentity { slot, .. } => format!(
+                "the slot's shell must be a dev build (a dev image, or a dev-profile swap) and its user must not hold a real identity; tilo-vm logs {slot} shows what the compositor did"
             ),
             Self::ReservedName(_) => {
                 "pick another slot name; VM-wide components go in with: tilo-vm swap --slot vm <component>"
@@ -312,7 +318,8 @@ impl DaemonError {
             Self::SeatBusy { .. }
             | Self::ControlMissing(_)
             | Self::HeadlessInput(_)
-            | Self::DisplayLayout { .. } => Some("tilo-vm guide driving"),
+            | Self::DisplayLayout { .. }
+            | Self::TestIdentity { .. } => Some("tilo-vm guide driving"),
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
@@ -424,6 +431,10 @@ mod tests {
                 slot: "a".into(),
                 detail: "CapAmb 800000000".into(),
             },
+            DaemonError::TestIdentity {
+                slot: "a".into(),
+                detail: "error [identity_exists]: already has an identity".into(),
+            },
             DaemonError::SessionFailed {
                 slot: "a".into(),
                 state: "activating".into(),
@@ -489,6 +500,7 @@ mod tests {
                 | DaemonError::OutputsNeedHeadful(_)
                 | DaemonError::BadOutputs(_)
                 | DaemonError::DisplayLayout { .. }
+                | DaemonError::TestIdentity { .. }
                 | DaemonError::ReservedName(_)
                 | DaemonError::InvalidName(_)
                 | DaemonError::LayerNotFound(_)

@@ -31,6 +31,14 @@ const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
 const BLOCKING_WORKERS: usize = 4;
 const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+/// How far past the sequence it hands out [`State::next_sequence`] reserves
+/// on disk. A restart continues past the reservation, at most this far
+/// ahead of the host clock.
+const SEQUENCE_RESERVATION_NS: u64 = 1_000_000_000;
+/// One blocking-pool task runs a transaction's quanta for up to this long: a
+/// many-quantum transaction then pays a pool round trip per slice instead of
+/// per quantum, and other workspaces still get a worker within a slice.
+const SLICE: std::time::Duration = std::time::Duration::from_millis(4);
 
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 struct NormalJob {
@@ -134,6 +142,8 @@ pub(crate) struct State {
     pub(crate) store: WorkspaceStore,
     pub(crate) doc: Option<automerge::AutoCommit>,
     sequence: Option<u64>,
+    /// The bound `state-sequence` holds; 0 until this owner wrote one.
+    reserved: u64,
     replays: replay::Replays,
     pub(crate) retention_scratch: Option<std::path::PathBuf>,
     pub(crate) retention_candidates: Vec<(std::path::PathBuf, std::path::PathBuf)>,
@@ -163,9 +173,15 @@ impl State {
             .checked_add(1)
             .ok_or_else(|| error("state sequence exhausted"))?
             .max(tilo_clock::unix_now_ns());
-        // Reserve before any data publication, including across restart.
-        atomic_file::write(&path, &next.to_le_bytes())?;
-        std::fs::File::open(self.store.root())?.sync_all()?;
+        // Reserve before any data publication, including across restart. The
+        // file holds a bound past every sequence handed out, so a burst of
+        // commits syncs it once per reservation instead of once per commit.
+        if next > self.reserved {
+            let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
+            atomic_file::write(&path, &reserved.to_le_bytes())?;
+            std::fs::File::open(self.store.root())?.sync_all()?;
+            self.reserved = reserved;
+        }
         self.sequence = Some(next);
         Ok(next)
     }
@@ -260,6 +276,7 @@ fn start(
         store: runtime.store.clone(),
         doc: runtime.doc.take(),
         sequence: None,
+        reserved: 0,
         replays: replay::Replays::default(),
         retention_scratch: None,
         retention_candidates: Vec::new(),
@@ -481,12 +498,19 @@ async fn run_owner(
             loop {
                 let path = root.clone();
                 let Ok((next, result)) = blocking(workers.clone(), move || {
-                    let result = (|| {
+                    let result = (|| -> Result<Step<()>, StoreError> {
+                        let start = std::time::Instant::now();
                         let cursor = match discard.take() {
                             Some(cursor) => cursor,
                             None => crate::store::replay::WorkDiscard::new(path)?,
                         };
-                        discard.insert(cursor).step(WorkLimit::default())
+                        let cursor = discard.insert(cursor);
+                        loop {
+                            let step = cursor.step(WorkLimit::default())?;
+                            if step != Step::More || start.elapsed() >= SLICE {
+                                return Ok(step);
+                            }
+                        }
                     })();
                     (discard, result)
                 })
@@ -928,12 +952,17 @@ where
                             let shared = state.clone();
                             let quantum = blocking(workers.clone(), move || {
                                 let start = std::time::Instant::now();
-                                let result = operation(
-                                    &mut shared
-                                        .lock()
-                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                    &mut prepared,
-                                );
+                                let mut state = shared
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                let result = loop {
+                                    let result = operation(&mut state, &mut prepared);
+                                    if !matches!(result, Ok(Step::More)) || start.elapsed() >= SLICE
+                                    {
+                                        break result;
+                                    }
+                                };
+                                drop(state);
                                 if diagnostics() {
                                     tracing::info!(
                                         phase = "state_persist",
@@ -1056,6 +1085,7 @@ mod tests {
             store: WorkspaceStore::open(root, 7, false).unwrap(),
             doc: None,
             sequence: None,
+            reserved: 0,
             replays: replay::Replays::default(),
             retention_scratch: None,
             retention_candidates: Vec::new(),
@@ -1417,6 +1447,7 @@ mod tests {
             store,
             doc: None,
             sequence: None,
+            reserved: 0,
             replays: replay::Replays::default(),
             retention_scratch: None,
             retention_candidates: Vec::new(),
@@ -1471,6 +1502,7 @@ mod tests {
             store,
             doc: None,
             sequence: None,
+            reserved: 0,
             replays: replay::Replays::default(),
             retention_scratch: None,
             retention_candidates: Vec::new(),
@@ -1528,6 +1560,7 @@ mod tests {
             store,
             doc: None,
             sequence: None,
+            reserved: 0,
             replays: replay::Replays::default(),
             retention_scratch: None,
             retention_candidates: Vec::new(),

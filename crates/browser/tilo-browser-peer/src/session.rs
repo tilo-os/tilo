@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use crate::carrier::{HttpClient, HttpsLink, LinkError};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::{
-    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, open_frame, sign_frame,
+    Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
 };
 
 /// Longest wait between reconnect attempts.
@@ -261,6 +261,17 @@ pub enum PeerEvent {
         /// Joined or left.
         active: bool,
     },
+    /// The host holds a long sealed history of `route` it cannot read and
+    /// asks this device for a snapshot. Answer with
+    /// [`PeerHandle::compact`] after applying every [`PeerEvent::Document`]
+    /// received before this event: the snapshot is taken to contain them.
+    /// A consumer without the document ignores it.
+    CompactionRequested {
+        /// The route.
+        route: DocumentRoute,
+        /// Echo in [`PeerHandle::compact`].
+        request: [u8; 16],
+    },
 }
 
 enum Command {
@@ -274,6 +285,7 @@ enum Command {
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
+    Compact([u8; 16], Vec<u8>),
     Reconnect,
     Refresh,
     Close,
@@ -413,10 +425,15 @@ impl PeerHandle {
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
             held_outbound: saved.held.into_iter().collect(),
+            reassembly: Reassembly::default(),
+            positions: BTreeMap::new(),
             doc_seq: 0,
             barriers: Vec::new(),
             held_barriers: Vec::new(),
             admission_since: None,
+            delivered: BTreeMap::new(),
+            received: BTreeSet::new(),
+            compactions: BTreeMap::new(),
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -464,6 +481,20 @@ impl PeerHandle {
             .encode_frames()
             .map_err(|error| error.to_string())?;
         self.send(Command::Publish(route, frames))
+    }
+
+    /// Answer [`PeerEvent::CompactionRequested`] `request` with `snapshot`,
+    /// an Automerge save of the route that contains every document this
+    /// session delivered for it before the request. The snapshot is
+    /// committed like any publication, sealed on an encrypted route, and
+    /// the host then drops exactly the history it was told the snapshot
+    /// holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn compact(&self, request: [u8; 16], snapshot: Vec<u8>) -> Result<(), String> {
+        self.send(Command::Compact(request, snapshot))
     }
 
     /// Seal `route`'s documents with `cipher` from now on.
@@ -786,6 +817,11 @@ struct Task {
     /// Frames published on an encrypted route before this device held its
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
+    reassembly: Reassembly,
+    /// The host's last position per room, presented when resubscribing so
+    /// the host replays only what came after it. Kept for the session task's
+    /// lifetime only: it describes what this page has received.
+    positions: BTreeMap<u64, Vec<u8>>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// Barriers called while frames were held, with the routes those frames
@@ -794,9 +830,131 @@ struct Task {
     held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
+    /// Retained entry ids of every document delivered or published per
+    /// route: what a snapshot of the route contains.
+    delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
+    /// Entry ids delivered since this page last subscribed. A subscribe asks
+    /// for them again (a refresh wants the rooms whole), so it clears them.
+    received: BTreeSet<[u8; 32]>,
+    /// Open compaction requests: room, route and the entries delivered when
+    /// the request arrived.
+    compactions: BTreeMap<[u8; 16], Compaction>,
 }
 
+/// An open compaction request: room, route and the entries it covers.
+type Compaction = (u64, DocumentRoute, Vec<[u8; 32]>);
+
+/// Entry ids a route remembers for compaction. Past it, later entries are
+/// left out of statements and simply stay retained.
+const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
+/// Open compaction requests kept; the oldest goes first.
+const MAX_COMPACTIONS: usize = 16;
+
 impl Task {
+    fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
+        let known = self.delivered.entry(route.clone()).or_default();
+        for entry in entries {
+            if known.len() >= MAX_DELIVERED_ENTRIES {
+                return;
+            }
+            known.insert(*entry);
+        }
+    }
+
+    /// Tell the host, once `workspace_id` admitted this device, its
+    /// certificate and that it answers compaction requests. Returns `false`
+    /// when the session could not take them.
+    fn announce(&self, client: &Link, workspace_id: u64) -> bool {
+        if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
+            && client.send(hello).is_err()
+        {
+            return false;
+        }
+        !client.compacts()
+            || client
+                .send(Envelope::CompactVolunteer { workspace_id })
+                .is_ok()
+    }
+
+    fn compaction_requested(&mut self, workspace_id: u64, request: [u8; 16], route: DocumentRoute) {
+        if !self.rooms.contains(&workspace_id) || route.workspace_id().ok() != Some(workspace_id) {
+            return;
+        }
+        let covered = self
+            .delivered
+            .get(&route)
+            .map(|known| known.iter().copied().collect())
+            .unwrap_or_default();
+        if self.compactions.len() >= MAX_COMPACTIONS
+            && let Some(oldest) = self.compactions.keys().next().copied()
+        {
+            self.compactions.remove(&oldest);
+        }
+        self.compactions
+            .insert(request, (workspace_id, route.clone(), covered));
+        self.emit(&PeerEvent::CompactionRequested { route, request });
+    }
+
+    /// Commit `snapshot` for request `request`, then send the signed
+    /// statement of what it covers. Returns `false` when the session could
+    /// not take an envelope.
+    async fn compact(
+        &mut self,
+        request: [u8; 16],
+        snapshot: Vec<u8>,
+        client: Option<&Link>,
+    ) -> bool {
+        let Some(client) = client else {
+            return true;
+        };
+        let Some((workspace_id, route, covered)) = self.compactions.remove(&request) else {
+            return true;
+        };
+        let Ok(frames) = DocumentMutation::Snapshot(snapshot.clone()).encode_frames() else {
+            return true;
+        };
+        let before = self.outbox.len();
+        if !self.publish(route.clone(), frames, Some(client)).await {
+            return false;
+        }
+        let snapshot_entries: Vec<[u8; 32]> = self
+            .outbox
+            .iter()
+            .skip(before)
+            .map(|entry| tilo_relay_protocol::compaction::entry_id(&entry.body))
+            .collect();
+        if snapshot_entries.is_empty() {
+            // Held for the route's keys: nothing was committed to cover with.
+            return true;
+        }
+        let statement = tilo_relay_protocol::compaction::CoverageStatement {
+            workspace_id,
+            channel: *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record).as_bytes())
+                .as_bytes(),
+            request,
+            snapshot: snapshot_entries,
+            covered,
+            heads: tilo_relay_protocol::compaction::snapshot_heads(&snapshot).unwrap_or_default(),
+        };
+        let Ok(statement) = statement.encode() else {
+            return true;
+        };
+        let Ok(signature) = self
+            .signer
+            .sign(tilo_relay_protocol::compaction::signing_bytes(&statement))
+            .await
+        else {
+            return true;
+        };
+        client
+            .send(Envelope::Compacted {
+                workspace_id,
+                statement,
+                signature,
+            })
+            .is_ok()
+    }
+
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
         let wakes = {
             let mut shared = lock(&self.shared);
@@ -989,7 +1147,11 @@ impl Task {
                     biased;
                     command = commands.recv() => match command {
                         None | Some(Command::Close) => return self.closed(),
-                        Some(Command::Reconnect | Command::Refresh) => break,
+                        Some(Command::Reconnect) => break,
+                        Some(Command::Refresh) => {
+                            self.positions.clear();
+                            break;
+                        }
                         Some(command) => {
                             self.apply(command, None).await;
                         }
@@ -1015,7 +1177,11 @@ impl Task {
         loop {
             match commands.recv().await {
                 None | Some(Command::Close) => return false,
-                Some(Command::Reconnect | Command::Refresh) => return true,
+                Some(Command::Reconnect) => return true,
+                Some(Command::Refresh) => {
+                    self.positions.clear();
+                    return true;
+                }
                 Some(command) => {
                     self.apply(command, None).await;
                 }
@@ -1029,12 +1195,9 @@ impl Task {
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
         let mut sent_ok = true;
+        self.received.clear();
         for workspace_id in &self.rooms {
-            sent_ok &= client
-                .send(Envelope::Subscribe {
-                    workspace_id: *workspace_id,
-                })
-                .is_ok();
+            sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
         }
         for workspace_id in &self.live {
             sent_ok &= client
@@ -1081,6 +1244,9 @@ impl Task {
                     }
                     Some(Command::Refresh) => {
                         self.clear_admission_failure();
+                        // A refresh asks for the rooms whole: no position.
+                        self.positions.clear();
+                        self.received.clear();
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
@@ -1096,8 +1262,7 @@ impl Task {
                     Some(envelope) => {
                         let admitted = matches!(envelope, Envelope::Ready { .. });
                         if let Envelope::Ready { workspace_id, .. } = &envelope
-                            && let Some(hello) = identity_hello(*workspace_id, &self.config.cert)
-                            && client.send(hello).is_err()
+                            && !self.announce(&client, *workspace_id)
                         {
                             return Exit::Lost("host session saturated".into());
                         }
@@ -1135,8 +1300,9 @@ impl Task {
                 self.update(|status| {
                     status.rooms.entry(workspace_id).or_insert(false);
                 });
+                self.received.clear();
                 client
-                    .is_none_or(|client| client.send(Envelope::Subscribe { workspace_id }).is_ok())
+                    .is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
             }
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
@@ -1188,6 +1354,7 @@ impl Task {
                 true
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
+            Command::Compact(request, snapshot) => self.compact(request, snapshot, client).await,
             Command::Barrier(done) => {
                 if self.held_outbound.is_empty() {
                     self.await_outbox(done);
@@ -1259,6 +1426,11 @@ impl Task {
                     return delivered;
                 }
             };
+            // What this device publishes, its own replica holds.
+            self.note_delivered(
+                &route,
+                &[tilo_relay_protocol::compaction::entry_id(&signed.body)],
+            );
             let entry = OutboxEntry {
                 op: rand::random(),
                 workspace_id,
@@ -1283,6 +1455,19 @@ impl Task {
         }
         self.persist();
         delivered
+    }
+
+    /// Subscribe to `workspace_id`, resuming after the last position when
+    /// the host supports it.
+    fn subscribe(&self, client: &Link, workspace_id: u64) -> Envelope {
+        if client.resumable() {
+            Envelope::SubscribeFrom {
+                workspace_id,
+                position: self.positions.get(&workspace_id).cloned(),
+            }
+        } else {
+            Envelope::Subscribe { workspace_id }
+        }
     }
 
     fn inbound(&mut self, envelope: Envelope) {
@@ -1314,6 +1499,27 @@ impl Task {
                 };
                 self.inbound_body(body, author_device_public_key);
             }
+            Envelope::Position {
+                workspace_id,
+                position,
+            } => {
+                self.positions.insert(workspace_id, position);
+            }
+            Envelope::CompactRequest {
+                workspace_id,
+                request,
+                app_id,
+                cluster_id,
+                record,
+            } => self.compaction_requested(
+                workspace_id,
+                request,
+                DocumentRoute {
+                    app_id,
+                    cluster_id,
+                    record,
+                },
+            ),
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Some(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
                 self.fail("protocol-rejected", reason);
@@ -1385,6 +1591,14 @@ impl Task {
                     cluster_id,
                     record: record_id,
                 };
+                // A room the host resumes after it lagged can replay an entry
+                // its live deliveries already carried; the page takes it once.
+                if self
+                    .received
+                    .contains(&tilo_relay_protocol::compaction::entry_id(&body))
+                {
+                    return;
+                }
                 let changes = self.channels.open(&route, now);
                 self.absorb(changes);
                 if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
@@ -1402,7 +1616,10 @@ impl Task {
     }
 
     fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
-        match open_frame(body, author, &mut self.ciphers) {
+        match open_frame(body, author, &mut self.ciphers).and_then(|document| match document {
+            Some(document) => self.reassembly.accept(document),
+            None => Ok(None),
+        }) {
             Ok(Some(document)) => {
                 let from: [u8; 4] = author
                     .get(..4)
@@ -1413,7 +1630,15 @@ impl Task {
                     .entry((document.route.clone(), from))
                     .or_default();
                 *opened = opened.saturating_add(1);
+                let route = document.route.clone();
+                let entries = document.entries().to_vec();
                 self.emit(&PeerEvent::Document(Box::new(document)));
+                for entry in &entries {
+                    if self.received.len() < MAX_DELIVERED_ENTRIES {
+                        self.received.insert(*entry);
+                    }
+                }
+                self.note_delivered(&route, &entries);
             }
             Ok(None) => {}
             Err(error) => {
@@ -1712,6 +1937,22 @@ enum Link {
 }
 
 impl Link {
+    fn resumable(&self) -> bool {
+        match self {
+            Self::Https(link) => link.resumable(),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => false,
+        }
+    }
+
+    fn compacts(&self) -> bool {
+        match self {
+            Self::Https(link) => link.compacts(),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => false,
+        }
+    }
+
     fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
         match self {
             Self::Https(link) => link.send(envelope),
