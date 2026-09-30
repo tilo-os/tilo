@@ -35,6 +35,7 @@
               boot.loader.grub.devices = [ "nodev" ];
               services.tilo-session.enable = true;
               services.displayManager.enable = true;
+              services.pipewire.enable = true;
               system.stateVersion = "24.11";
             }
           ];
@@ -60,11 +61,9 @@
             # nested environment.etc file under it fails while assembling /etc.
             systemd.user.units."tilo-graphical-session.target".text =
               builtins.readFile ./os/usr/lib/systemd/user/tilo-graphical-session.target;
-            # NixOS's PipeWire reads /etc/pipewire, not the package's share
-            # directory; Settings offers "Reduce echo in calls" only when
-            # `pipewire -c tilo-echo-cancel.conf` can find the config.
-            environment.etc."pipewire/tilo-echo-cancel.conf".source =
-              "${cfg.package}/share/pipewire/tilo-echo-cancel.conf";
+            # PipeWire builds /etc/pipewire from configPackages. Supplying an
+            # environment.etc child underneath that tree conflicts with it.
+            services.pipewire.configPackages = [ cfg.package ];
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };
