@@ -383,6 +383,11 @@ impl WindowGroup {
         self.layout_width_px()
     }
 
+    /// True when the spring is still aimed at a previous usable basis.
+    pub(crate) fn width_target_is_stale(&self) -> bool {
+        self.width_spring.is_some() && (self.dest_width_px() - self.resolved_width_px()).abs() > 1.0
+    }
+
     fn width_params() -> crate::tokens::SpringParams {
         SpringPresets::default().heavy
     }
@@ -424,6 +429,11 @@ impl WindowGroup {
     /// Advance the slot-width spring. Called from the row's layout pass
     /// so neighbours see the new width in the same frame.
     pub(crate) fn step_width_spring(&mut self) {
+        if self.close_complete() {
+            self.width_spring = None;
+            self.last_width_step = None;
+            return;
+        }
         let Some(spring) = self.width_spring.as_mut() else {
             return;
         };
@@ -436,6 +446,14 @@ impl WindowGroup {
             return;
         }
         let now = crate::time::now();
+        // One step per wall instant: composition settle rebuilds the
+        // same frame up to eight times and must not walk the spring.
+        if self
+            .last_width_step
+            .is_some_and(|t| now.saturating_duration_since(t).is_zero())
+        {
+            return;
+        }
         let dt = self
             .last_width_step
             .map(|t| now.saturating_duration_since(t).as_secs_f32())
@@ -572,10 +590,13 @@ impl WindowGroup {
         self.style_dirty = true;
     }
 
-    /// Pin the slot at its persisted width. Fixtures that construct a
-    /// layout (not animate one) use this after [`Self::set_width`].
-    #[cfg(test)]
+    /// Pin the slot at its persisted width. Used after [`Self::set_width`]
+    /// when the dest strip still fits the viewport, so in-flight values
+    /// cannot invent overflow.
     pub(crate) fn snap_width_spring(&mut self) {
+        if self.width_spring.is_none() {
+            return;
+        }
         self.width_spring = None;
         self.last_width_step = None;
         self.style_dirty = true;
@@ -2353,8 +2374,9 @@ impl Widget for WindowGroup {
         let group_close_in_flight = self
             .closing_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS));
-        let width_in_flight =
-            !self.reduce_motion && self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
+        let width_in_flight = !self.reduce_motion
+            && !self.close_complete()
+            && self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
         // Only the *active* tab is laid out and drawn, so only its signal
         // counts — otherwise a background terminal's PTY-poll would pin
         // the whole shell at 60fps/100% CPU forever.
