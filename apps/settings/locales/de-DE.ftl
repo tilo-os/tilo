@@ -33,6 +33,26 @@ display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
 display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
 display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
+
+# Displays pane: night light, rotation, built-in name
+display-builtin = Integrierter Bildschirm
+display-brightness = Helligkeit
+display-auto-brightness = Automatische Helligkeit
+display-no-ambient = Kein Umgebungslichtsensor erkannt
+display-night-light = Nachtlicht
+display-night-light-schedule = Sonnenuntergang bis Sonnenaufgang
+display-night-light-schedule-desc = Nachtlicht nach dem Zeitplan für Tag und Nacht unter Darstellung ein- und ausschalten
+display-night-light-warmth = Nachtlicht-Wärme
+display-night-light-temp-subtle = Dezent · 4500 K
+display-night-light-temp-warm = Warm · 3700 K
+display-night-light-temp-very-warm = Sehr warm · 2800 K
+display-night-light-caption = Nachtlicht färbt die ganze Oberfläche. Automatische Helligkeit folgt dem Umgebungslichtsensor des Kernels mit Glättung und Totzone.
+display-rotation = Drehung
+display-rotation-landscape = Querformat
+display-rotation-portrait-right = Hochformat rechts
+display-rotation-upside-down = Auf dem Kopf
+display-rotation-portrait-left = Hochformat links
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad
