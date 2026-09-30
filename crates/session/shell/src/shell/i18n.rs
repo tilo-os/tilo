@@ -58,6 +58,18 @@ pub fn current_locale() -> String {
     CATALOG.current_locale()
 }
 
+/// Select the locale written in `appearance.language`, if any.
+/// A running compositor calls this after that key changes so chrome
+/// strings switch without a restart. Missing leaves the current selection.
+pub fn apply_configured_locale() {
+    ensure();
+    if let Some(language) =
+        settings_store::str_at(&settings_store::load(), "appearance", "language")
+    {
+        CATALOG.set_locale(language);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
