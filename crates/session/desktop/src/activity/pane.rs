@@ -1103,6 +1103,55 @@ impl RoomActivityPane {
         }
     }
 
+    /// What "new" is counted from in `workspace`. One this device has never
+    /// read starts from the history it holds now: a fresh install's own
+    /// setup or a joined workspace's past stays browsable, but is not news.
+    fn passive_frontier(&mut self, workspace: u64) -> WorkspaceSeenFrontier {
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !self.history_index.entries().is_empty()
+        {
+            let mut frontier = WorkspaceSeenFrontier::default();
+            frontier.mark_seen(&self.history_index);
+            self.seen_frontiers.insert(workspace, frontier);
+            self.persist_frontiers();
+        }
+        self.seen_frontiers
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The tree-only feed's rows the active workspace's frontier has not
+    /// acknowledged, with the same first-sight baseline as
+    /// [`Self::passive_frontier`].
+    fn unseen_tree_rows(&mut self, rows: &[HistoryEntry]) -> Vec<HistoryEntry> {
+        let Some(workspace) = self.last_active else {
+            return rows.to_vec();
+        };
+        let id = |entry: &HistoryEntry| WorkspaceHistoryId {
+            origin: super::index::HistoryOrigin::DesktopTree,
+            change: entry.id,
+        };
+        if self.persistent_frontiers
+            && !self.seen_frontiers.contains_key(&workspace)
+            && !rows.is_empty()
+        {
+            let frontier = self.seen_frontiers.entry(workspace).or_default();
+            for row in rows {
+                frontier.acknowledge(&id(row));
+            }
+            self.persist_frontiers();
+        }
+        let Some(frontier) = self.seen_frontiers.get(&workspace) else {
+            return rows.to_vec();
+        };
+        rows.iter()
+            .filter(|row| !frontier.acknowledged(&id(row)))
+            .cloned()
+            .collect()
+    }
+
     fn persist_frontiers(&self) {
         self.host.save_frontiers(&self.seen_frontiers);
         self.host.save_departures(&self.departures);
@@ -2167,11 +2216,7 @@ impl RoomActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        let passive = self
-            .seen_frontiers
-            .get(&tree.active.raw())
-            .cloned()
-            .unwrap_or_default();
+        let passive = self.passive_frontier(tree.active.raw());
         let rows = self
             .history_index
             .unseen_detached(&passive, tree, &self.detached_records)
@@ -2290,11 +2335,7 @@ impl RoomActivityPane {
         self.refresh_agent_runs(tree, records, local);
 
         let workspace = tree.active.raw();
-        let passive_frontier = self
-            .seen_frontiers
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default();
+        let passive_frontier = self.passive_frontier(workspace);
         let unseen = |frontier: &WorkspaceSeenFrontier, tree: &mut T| {
             if let Some(local) = local {
                 self.history_index
@@ -2426,8 +2467,19 @@ impl RoomActivityPane {
             5,
             &self.named,
         );
-        self.passive_unread = digest_rows.len();
-        self.passive_digest = self.digest.clone();
+        if self.history_index.entries().is_empty() {
+            let unseen = self.unseen_tree_rows(&digest_rows);
+            self.passive_unread = unseen.len();
+            self.passive_digest = ActivityDigest::from_entries_with_ranges(
+                &unseen,
+                SystemTime::UNIX_EPOCH,
+                5,
+                &self.named,
+            );
+        } else {
+            self.passive_unread = digest_rows.len();
+            self.passive_digest = self.digest.clone();
+        }
         self.reset_narrative();
 
         // Filters and counts name the people history resolved; a change it
@@ -2460,7 +2512,9 @@ impl RoomActivityPane {
         if self.narrative_request == request {
             return;
         }
-        self.narrative = request.as_ref().map(ui::deterministic_narrative);
+        // The deterministic summary only restates the brief titles below
+        // it, so the card waits for prose that adds something.
+        self.narrative = None;
         self.narrative_request = request;
     }
 
@@ -3512,17 +3566,12 @@ impl RoomActivityPane {
         }
         let metrics = BriefCardMetrics::new(tr, theme);
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "tilo-deterministic";
             // Section-header role for the label (HIG §9.6: `xs`) — the former
             // `sm - 1` was an invented size — over up to two body lines, each
             // seated on its measured line so 200 % type grows the card.
             let label_size = type_size(tr, theme.tokens.typography.scale.xs);
             let body_size = type_size(tr, theme.tokens.typography.scale.sm);
-            let label = t(if generated {
-                "activity-summary-on-device"
-            } else {
-                "activity-summary-glance"
-            });
+            let label = t("activity-summary-on-device");
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure(&label, label_size, Some(inner_w));
             let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
@@ -3532,11 +3581,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(if generated {
-                    0.13
-                } else {
-                    0.07
-                }),
+                theme.tokens.colors.accent[5].with_alpha_factor(0.13),
                 None,
                 &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
             );
@@ -7326,8 +7371,8 @@ fn draw_work_session_boundary(
     // itself spatial: each half transfers the bordering action across it in
     // the direction shown, instead of repeating two long explanatory labels.
     let buttons = [
-        (into_newer, "↑  1 action", can_move_up),
-        (into_older, "1 action  ↓", can_move_down),
+        (into_newer, t("activity-session-move-newer"), can_move_up),
+        (into_older, t("activity-session-move-older"), can_move_down),
     ];
     for (button, label, enabled) in buttons {
         let shape = RoundedRect::from_rect(button, 13.0);
@@ -7350,7 +7395,7 @@ fn draw_work_session_boundary(
             &shape,
         );
         let label = tr.elide_to_width(
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             text_width(button.width() - 18.0),
         );
