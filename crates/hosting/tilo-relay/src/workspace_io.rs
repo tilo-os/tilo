@@ -240,18 +240,10 @@ pub(crate) async fn replace_membership(
             } else {
                 runtime.membership_ceiling = Some(requested);
             }
-            let removed: Vec<[u8; 32]> = runtime
-                .membership
-                .devices
-                .iter()
-                .copied()
-                .filter(|device| !members.contains(device))
-                .collect();
             runtime
                 .membership
                 .devices
                 .retain(|device| members.contains(device));
-            runtime.refuse_removed_live_members(&removed);
         }
         let saved = members.clone();
         authorization_io(move || store.save_membership(&saved), None).await?;
