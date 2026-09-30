@@ -218,7 +218,7 @@ pub fn embed_setup_handoff(
 
 fn pack_setup_handoff(staged: &Path) -> io::Result<Vec<u8>> {
     let mut files = Vec::new();
-    collect_files(staged, staged, &mut files)?;
+    collect_files(staged, &mut files)?;
     files.sort();
     let mut payload = Vec::new();
     for path in files {
@@ -239,7 +239,7 @@ fn pack_setup_handoff(staged: &Path) -> io::Result<Vec<u8>> {
     Ok(payload)
 }
 
-fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -247,7 +247,7 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Resul
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files(root, &path, files)?;
+            collect_files(&path, files)?;
         } else if path.is_file() {
             files.push(path);
         }
@@ -270,8 +270,9 @@ fn nm_quoted(value: &str) -> String {
 fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+        })
 }
 
 fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), String> {
@@ -391,9 +392,10 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
     let system = SYSTEM.get_or_init(tilo_identity_host::provisioning::collaboration_identity_paths);
     let identity_dir = IDENTITY_DIR.get_or_init(|| {
-        tilo_identity_host::registry::IdentityRegistryStore::from_env()
-            .map(|store| store.identity_dir().to_path_buf())
-            .unwrap_or_else(|_| dirs_fallback().join(".config/tilo/identity"))
+        tilo_identity_host::registry::IdentityRegistryStore::from_env().map_or_else(
+            |_| dirs_fallback().join(".config/tilo/identity"),
+            |store| store.identity_dir().to_path_buf(),
+        )
     });
     let home_peers = HOME_PEERS.get_or_init(|| {
         system
@@ -411,9 +413,7 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
 }
 
 fn dirs_fallback() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
 #[cfg(test)]
