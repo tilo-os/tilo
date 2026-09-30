@@ -246,7 +246,7 @@ cmd_boot_target() {
 
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
-  local i
+  local i early_reported=0
   for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
     if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greeter up (~$((i*2))s)"; return 0
@@ -259,6 +259,13 @@ cmd_wait() {
        && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
       msg "greeter up via SSH (~$((i*2))s)"; return 0
     fi
+    if [ "$early_reported" = 0 ] && grep -aq 'TILO_VALIDATION_DIAGNOSTICS_END early' "$TILO_SERIAL" 2>/dev/null; then
+      warn "validation-only guest service diagnostics:"
+      tr -d '\000' < "$TILO_SERIAL" \
+        | sed -n '/TILO_VALIDATION_DIAGNOSTICS early/,/TILO_VALIDATION_DIAGNOSTICS_END early/p' \
+        | tail -n 160 >&2
+      early_reported=1
+    fi
     vm_running || { boot_diagnose "$TILO_SERIAL" || true
       # A qemu that exits this early usually said why on stderr, which is
       # all that reaches its log; CI keeps nothing else of the run dir.
@@ -268,6 +275,16 @@ cmd_wait() {
       die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
     sleep 2
   done
+  if command -v sshpass >/dev/null 2>&1 \
+     && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ]; then
+    local ssh_diagnostic
+    ssh_diagnostic="$(gssh 'systemctl status greetd.service tilo-validation-ssh.service --no-pager --lines=20; systemctl --failed --no-pager' 2>&1)" \
+      || warn "validation SSH diagnostic probe failed"
+    if [ -n "$ssh_diagnostic" ]; then
+      warn "validation SSH diagnostic output:"
+      printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
+    fi
+  fi
   boot_diagnose "$TILO_SERIAL" || true
   if [ -s "$TILO_SERIAL" ]; then
     warn "last lines of $TILO_SERIAL:"
