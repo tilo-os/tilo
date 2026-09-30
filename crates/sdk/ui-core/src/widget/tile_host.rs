@@ -279,7 +279,7 @@ struct Binding {
     /// changes for the life of the tab.
     tab: RecordCheckout,
     /// `tab.id` until the hosted app declares a file through
-    /// [`Widget::record_intent`](crate::widget::Widget::record_intent) —
+    /// [`Widget::record_intent`](crate::record::capability::record_intent) —
     /// opening a document *is* moving the tab onto that document's record;
     /// the scratch record it leaves behind is still its own document.
     live: RecordId,
@@ -424,6 +424,9 @@ pub struct TileHost {
     /// Readiness of this occupant, separate from the tile's visibility.
     /// Reset on replacement so a visible notice cannot mark an app ready.
     content_was_presented: std::cell::Cell<bool>,
+    /// The tab this tile shows, named to [`panic_scope`](super::panic_scope)
+    /// while its application runs. Stamped by the owning `WindowGroup`.
+    panic_scope: std::cell::Cell<Option<u64>>,
     rect: Rect,
     pub focused: bool,
     /// Adjacent canvas windows own exactly their layout rectangle, including
@@ -663,6 +666,7 @@ impl TileHost {
             structure_dirty: false,
             was_presented: std::cell::Cell::new(false),
             content_was_presented: std::cell::Cell::new(false),
+            panic_scope: std::cell::Cell::new(None),
             rect: Rect::ZERO,
             focused: false,
             flush_edges: false,
@@ -682,6 +686,16 @@ impl TileHost {
 
     pub(crate) fn set_flush_edges(&mut self, flush: bool) {
         self.flush_edges = flush;
+    }
+
+    /// Name `tab` to a panic hook while this tile's application runs: see
+    /// [`panic_scope`](super::panic_scope).
+    pub fn set_panic_scope(&self, tab: u64) {
+        self.panic_scope.set(Some(tab));
+    }
+
+    fn running(&self) -> super::panic_scope::Scope {
+        super::panic_scope::enter(self.panic_scope.get())
     }
 
     pub fn set_opening_name(&mut self, name: &str) {
@@ -808,21 +822,21 @@ impl TileHost {
         let (Some(binding), TileContent::App(root)) = (&self.binding, &mut self.content) else {
             return Ok(());
         };
-        if !root.needs_commit() {
+        if !crate::undo::needs_commit(root.as_ref()) {
             return Ok(());
         }
         binding
             .store
             .with_action_state(&binding.live, |doc, history, _| {
-                let context = root.take_commit_context();
+                let context = crate::undo::take_commit_context(root.as_mut());
                 history.commit_action_authored_with_message(
                     doc,
                     None,
-                    root.get_state(),
+                    crate::undo::get_state(root.as_ref()),
                     Some(crate::collaboration::local_user_id()),
                     context.and_then(|context| context.change_message()),
                 );
-                root.on_commit();
+                crate::undo::on_commit(root.as_mut());
             })
             .map_err(|error| error.to_string())
     }
@@ -935,7 +949,9 @@ impl TileHost {
             });
         }
         let release = match &mut self.content {
-            TileContent::App(root) => root.release_record_scope(),
+            TileContent::App(root) => {
+                crate::record::capability::release_record_scope(root.as_mut())
+            }
             TileContent::Stub { .. } | TileContent::Notice { .. } => Ok(()),
         };
         if let Err(error) = release {
@@ -1157,7 +1173,7 @@ impl TileHost {
             }
         }
         let want = match &self.content {
-            TileContent::App(w) => w.record_intent(),
+            TileContent::App(w) => crate::record::capability::record_intent(w.as_ref()),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
         let changing_owner = match (&self.binding, &want) {
@@ -1223,7 +1239,7 @@ impl TileHost {
             return;
         }
         if let TileContent::App(w) = &mut self.content {
-            w.set_record_scope(&live);
+            crate::record::capability::set_record_scope(w.as_mut(), &live);
         }
         self.announced = Some(live);
     }
@@ -1261,7 +1277,7 @@ impl TileHost {
         if let Some(history) = history {
             self.install_history_registration(history);
         }
-        self.take_component_close_reports()
+        crate::component_lifecycle::take_component_close_reports(self)
     }
     /// Used when a window announced before it existed (an opening card)
     /// becomes the app; replacing the tab instead would hand focus
@@ -1271,9 +1287,12 @@ impl TileHost {
     pub fn replace_content(&mut self, content: TileContent) {
         self.record_creation_refused = false;
         if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.close_components());
             self.close_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+            self.close_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root.as_mut(),
+                ));
         }
         self.settle_outgoing_record();
         self.renew_history_lifetime();
@@ -1595,32 +1614,11 @@ impl Widget for TileHost {
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::search::capability::SearchSource,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::view::capability::ViewState,
+        dyn crate::component_lifecycle::ComponentLifecycle,
+        dyn crate::undo::UndoPoints
     );
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        if let Some(error) = &self.record_error {
-            return Some(Err(error.clone()));
-        }
-        if self.pending_binding.is_some() {
-            return Some(Err("Document binding has not completed".into()));
-        }
-        if let Some(binding) = &self.binding {
-            // This tile owns the admitted live record, not neighboring records
-            // that happen to share its store. Await its actual writer result.
-            let result = binding.store.try_flush_record(&binding.live);
-            return Some(result.and_then(|()| {
-                self.close_reports
-                    .iter()
-                    .find_map(|report| report.record_error.clone())
-                    .map_or(Ok(()), Err)
-            }));
-        }
-        match &mut self.content {
-            TileContent::App(widget) => widget.try_flush_owned_persistence(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
-        }
-    }
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
         if self
@@ -1724,6 +1722,7 @@ impl Widget for TileHost {
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        let _running = self.running();
         if let TileContent::App(live) = &mut self.content {
             if self
                 .history
@@ -1742,6 +1741,7 @@ impl Widget for TileHost {
         }
     }
     fn native_view_frame_start(&mut self) {
+        let _running = self.running();
         if self
             .history
             .as_ref()
@@ -1752,6 +1752,7 @@ impl Widget for TileHost {
         }
     }
     fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
+        let _running = self.running();
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
         }
@@ -1762,18 +1763,8 @@ impl Widget for TileHost {
             _ => false,
         }
     }
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        match &self.content {
-            TileContent::App(app) => app.view_state(),
-            _ => None,
-        }
-    }
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        if let TileContent::App(app) = &mut self.content {
-            app.restore_view_state(view);
-        }
-    }
     fn needs_idle_sync(&self) -> bool {
+        let _running = self.running();
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),
             _ => false,
@@ -1786,6 +1777,7 @@ impl Widget for TileHost {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let _running = self.running();
         let (_, scope) = op.with_custody();
         op.check()?;
         if !matches!(&self.content, TileContent::App(_)) {
@@ -1833,41 +1825,6 @@ impl Widget for TileHost {
         Ok(started)
     }
 
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        match &self.content {
-            TileContent::App(root) => {
-                if let Some(binding) = &self.binding {
-                    binding
-                        .store
-                        .read(&binding.live, |document| root.unsaved_documents(document))
-                        .unwrap_or_default()
-                } else {
-                    root.unsaved_documents(doc)
-                }
-            }
-            _ => Vec::new(),
-        }
-    }
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
-        errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding {
-            if let Err(error) = binding.store.try_flush() {
-                errors.push(error);
-            }
-        }
-        if let TileContent::App(root) = &mut self.content {
-            errors.extend(root.checkpoint_components());
-        }
-        errors
-    }
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.finish_admitted_close());
-        }
-        self.take_component_close_reports()
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1875,6 +1832,7 @@ impl Widget for TileHost {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        let _running = self.running();
         if let Some(update) = self.take_retained_update(invocation) {
             return Some(update);
         }
@@ -1916,24 +1874,6 @@ impl Widget for TileHost {
             }
             _ => None,
         }
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.history_lifetime.control_domain.close();
-        if self.history_lifetime.active.replace(false) {
-            self.settle_outgoing_record();
-        }
-        if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        if let TileContent::App(root) = &mut self.content {
-            reports.extend(root.take_component_close_reports());
-        }
-        reports
     }
 
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
@@ -2001,6 +1941,7 @@ impl Widget for TileHost {
     }
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let _running = self.running();
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
@@ -2031,6 +1972,7 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+        let _running = self.running();
         // This custody is independent of the outer App State and remains
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
@@ -2083,6 +2025,7 @@ impl Widget for TileHost {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let _running = self.running();
         self.live_callback_node = None;
         let node = match &mut self.content {
             TileContent::App(w) => {
@@ -2124,6 +2067,7 @@ impl Widget for TileHost {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let _running = self.running();
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -2164,6 +2108,7 @@ impl Widget for TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let _running = self.running();
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
@@ -2208,6 +2153,7 @@ impl Widget for TileHost {
         self.draw_steady_state(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let _running = self.running();
         if *ctx.handled {
             return;
         }
@@ -2266,21 +2212,31 @@ impl Widget for TileHost {
                     history.commit_action_authored(
                         doc,
                         None,
-                        app.get_state(),
+                        crate::undo::get_state(app.as_ref()),
                         Some(author.clone()),
                     );
                 }
                 match step {
-                    UndoStep::Undo => history.undo_as(doc, Some(&author), None, app.get_state()),
-                    UndoStep::Redo => history.redo_as(doc, Some(&author), None, app.get_state()),
+                    UndoStep::Undo => history.undo_as(
+                        doc,
+                        Some(&author),
+                        None,
+                        crate::undo::get_state(app.as_ref()),
+                    ),
+                    UndoStep::Redo => history.redo_as(
+                        doc,
+                        Some(&author),
+                        None,
+                        crate::undo::get_state(app.as_ref()),
+                    ),
                 }
                 .map(|entry| {
                     if let Some(meta) = entry.widget_metadata.as_deref() {
-                        app.set_state(meta);
+                        crate::undo::set_state(app.as_mut(), meta);
                     }
                 })
             });
-            app.on_commit();
+            crate::undo::on_commit(app.as_mut());
             *ctx.handled = true;
             return;
         }
@@ -2304,6 +2260,7 @@ impl Widget for TileHost {
         "TileHost"
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let _running = self.running();
         if let Some(detail) = &self.record_error {
             return Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
@@ -2369,6 +2326,36 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
+    fn take_structure_dirty(&mut self) -> bool {
+        // Both flags drained, not short-circuited, so neither can be left
+        // set behind the other.
+        let swapped = std::mem::take(&mut self.structure_dirty);
+        let inner = match &mut self.content {
+            TileContent::App(w) => w.take_structure_dirty(),
+            _ => false,
+        };
+        swapped || inner
+    }
+    fn needs_animation_frame(&self) -> bool {
+        let _running = self.running();
+        // `TileHost` has no `children()`, so the default recursive
+        // implementation would always say false; override so the spawn
+        // fade and a hosted app's own signal both bubble up. The opening
+        // card itself is state, not an animation: its spinner reports its own
+        // motion through `inner`, and under reduced motion it is deliberately
+        // static. Treating `opening()` as perpetual motion pinned the whole
+        // compositor at display cadence until a slow app's first frame.
+        let inner = match &self.content {
+            TileContent::App(w) => w.needs_animation_frame(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        };
+        let opening_indicator =
+            Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
+        self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::undo::UndoPoints for TileHost {
     /// A bound tile has already committed the app's burst against its own
     /// record in [`Widget::update`]; saying "yes" here would commit the
     /// host's own, unrelated document too.
@@ -2385,7 +2372,7 @@ impl Widget for TileHost {
             return false;
         }
         match &self.content {
-            TileContent::App(w) => w.needs_commit(),
+            TileContent::App(w) => crate::undo::needs_commit(w.as_ref()),
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
@@ -2394,34 +2381,111 @@ impl Widget for TileHost {
             return;
         }
         if let TileContent::App(w) = &mut self.content {
-            w.on_commit();
+            crate::undo::on_commit(w.as_mut());
         }
     }
-    fn take_structure_dirty(&mut self) -> bool {
-        // Both flags drained, not short-circuited, so neither can be left
-        // set behind the other.
-        let swapped = std::mem::take(&mut self.structure_dirty);
-        let inner = match &mut self.content {
-            TileContent::App(w) => w.take_structure_dirty(),
-            _ => false,
-        };
-        swapped || inner
+}
+
+impl crate::component_lifecycle::ComponentLifecycle for TileHost {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        match &self.content {
+            TileContent::App(root) => {
+                if let Some(binding) = &self.binding {
+                    binding
+                        .store
+                        .read(&binding.live, |document| {
+                            crate::component_lifecycle::unsaved_documents(root.as_ref(), document)
+                        })
+                        .unwrap_or_default()
+                } else {
+                    crate::component_lifecycle::unsaved_documents(root.as_ref(), doc)
+                }
+            }
+            _ => Vec::new(),
+        }
     }
-    fn needs_animation_frame(&self) -> bool {
-        // `TileHost` has no `children()`, so the default recursive
-        // implementation would always say false; override so the spawn
-        // fade and a hosted app's own signal both bubble up. The opening
-        // card itself is state, not an animation: its spinner reports its own
-        // motion through `inner`, and under reduced motion it is deliberately
-        // static. Treating `opening()` as perpetual motion pinned the whole
-        // compositor at display cadence until a slow app's first frame.
-        let inner = match &self.content {
-            TileContent::App(w) => w.needs_animation_frame(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
-        };
-        let opening_indicator =
-            Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
-        self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
+        errors.extend(self.record_error.iter().cloned());
+        if let Some(binding) = &self.binding {
+            if let Err(error) = binding.store.try_flush() {
+                errors.push(error);
+            }
+        }
+        if let TileContent::App(root) = &mut self.content {
+            errors.extend(crate::component_lifecycle::checkpoint_components(
+                root.as_mut(),
+            ));
+        }
+        errors
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports
+                .extend(crate::component_lifecycle::finish_admitted_close(
+                    root.as_mut(),
+                ));
+        }
+        self.take_component_close_reports()
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.history_lifetime.control_domain.close();
+        if self.history_lifetime.active.replace(false) {
+            self.settle_outgoing_record();
+        }
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        if let TileContent::App(root) = &mut self.content {
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root.as_mut(),
+            ));
+        }
+        reports
+    }
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        if let Some(error) = &self.record_error {
+            return Some(Err(error.clone()));
+        }
+        if self.pending_binding.is_some() {
+            return Some(Err("Document binding has not completed".into()));
+        }
+        if let Some(binding) = &self.binding {
+            // This tile owns the admitted live record, not neighboring records
+            // that happen to share its store. Await its actual writer result.
+            let result = binding.store.try_flush_record(&binding.live);
+            return Some(result.and_then(|()| {
+                self.close_reports
+                    .iter()
+                    .find_map(|report| report.record_error.clone())
+                    .map_or(Ok(()), Err)
+            }));
+        }
+        match &mut self.content {
+            TileContent::App(widget) => {
+                crate::component_lifecycle::try_flush_owned_persistence(widget.as_mut())
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+}
+
+impl crate::view::capability::ViewState for TileHost {
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        match &self.content {
+            TileContent::App(app) => crate::view::capability::view_state(app.as_ref()),
+            _ => None,
+        }
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        if let TileContent::App(app) = &mut self.content {
+            crate::view::capability::restore_view_state(app.as_mut(), view);
+        }
     }
 }
 
@@ -3206,6 +3270,8 @@ mod tests {
     }
 
     impl Widget for Scribe {
+        crate::provides!(dyn crate::record::capability::RecordScoped);
+
         fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             use automerge::transaction::Transactable;
             let (state, path) = crate::doc::document(state, path);
@@ -3244,6 +3310,9 @@ mod tests {
                     .with_value(self.text.clone()),
             )
         }
+    }
+
+    impl crate::record::capability::RecordScoped for Scribe {
         fn record_intent(&self) -> Option<RecordCheckout> {
             self.opens.as_ref().map(|p| {
                 RecordCheckout::new(
@@ -3567,7 +3636,8 @@ mod tests {
                 assert_eq!(host.resolve_record().is_err(), reject);
                 assert!(old.validate().is_err());
                 drop(old);
-                let mut reports = host.take_component_close_reports();
+                let mut reports =
+                    crate::component_lifecycle::take_component_close_reports(&mut host);
                 assert_eq!(
                     reports.len(),
                     1,
@@ -3578,7 +3648,9 @@ mod tests {
                 assert!(report.record_retry.as_ref().unwrap().same_owner(&store));
                 assert_eq!(report.record_retry_target.as_ref(), Some(&a.id));
                 let _ = host.resolve_record();
-                assert!(host.take_component_close_reports().is_empty());
+                assert!(
+                    crate::component_lifecycle::take_component_close_reports(&mut host).is_empty()
+                );
                 drop(host);
                 drop(store);
                 std::fs::remove_dir(&path).unwrap();
@@ -3628,7 +3700,7 @@ mod tests {
                 })
                 .unwrap();
             host.replace_content(declared_probe(&DECLARED_HISTORY, false));
-            let reports = host.take_component_close_reports();
+            let reports = crate::component_lifecycle::take_component_close_reports(&mut host);
             assert_eq!(reports.len(), 1);
             assert!(reports[0].record_error.is_none());
             let settled = store
@@ -3636,8 +3708,8 @@ mod tests {
                 .unwrap();
             assert_eq!(settled.1, 0);
             host.bind_record(store.clone(), checkout.clone());
-            assert!(host.close_components().is_empty());
-            assert!(host.close_components().is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
             assert_eq!(
                 store
                     .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -3651,7 +3723,7 @@ mod tests {
                 })
                 .unwrap();
             assert!(store.read(&checkout.id, |doc| doc.pending_ops()).unwrap() > 0);
-            let reports = host.close_components();
+            let reports = crate::component_lifecycle::close_components(&mut host);
             assert_eq!(reports.len(), 1);
             assert!(reports[0].record_error.is_none());
             let later = store
@@ -3659,7 +3731,7 @@ mod tests {
                 .unwrap();
             assert_ne!(later.0, settled.0);
             assert_eq!(later.1, 0);
-            assert!(host.close_components().is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
         }
     }
 
@@ -3963,7 +4035,7 @@ mod tests {
             host.replace_content(content());
             assert!(rebound.validate().is_err());
             let replacement = host.history_owner().unwrap();
-            let _ = host.close_components();
+            let _ = crate::component_lifecycle::close_components(&mut host);
             assert!(replacement.validate().is_err());
             assert!(host.history_owner().is_none());
             host.replace_content(content());
@@ -4158,6 +4230,78 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    /// Records the window a panic hook would name while it lays out.
+    struct ScopeProbe(std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>);
+
+    impl Widget for ScopeProbe {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.0
+                .borrow_mut()
+                .push(super::super::panic_scope::current());
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "ScopeProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for ScopeProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Scope probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("S")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let host = TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+        let mut group = crate::widget::WindowGroup::from_hosts(
+            3,
+            vec![(crate::widget::TabDescriptor::new(41, "Probe"), host)],
+            41,
+            crate::widget::WindowWidth::Fraction(500),
+        );
+        // A host swapped in after the group was built is named too.
+        *group.host_for_tab_mut(41).unwrap() =
+            TileHost::new(TileContent::App(Box::new(ScopeProbe(seen.clone()))));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        for child in group.children_mut() {
+            child.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        }
+        assert_eq!(*seen.borrow(), [Some(41)]);
+        assert_eq!(super::super::panic_scope::current(), None);
     }
 
     #[test]

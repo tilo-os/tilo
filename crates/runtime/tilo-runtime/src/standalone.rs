@@ -16,6 +16,7 @@
 //! collaboration history.
 
 mod channels;
+mod files;
 mod joined;
 mod owner;
 mod rooms;
@@ -66,6 +67,8 @@ pub struct Standalone {
     actor: String,
     identity_socket: PathBuf,
     blob_socket: PathBuf,
+    /// Before the media host, whose content store it uses.
+    _files: Option<files::WorkspaceFiles>,
     _media: profile::MediaHost,
     _lock: advisory_lock::FileLock,
 }
@@ -75,32 +78,28 @@ impl Standalone {
         stage("locking the profile");
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
-        let identity_dir = runtime_identity::identity_dir_from_env()?;
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-        tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
-            &identity_dir,
-            &paths,
-            IdentityStorage::Platform,
-        )?;
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-            .map_err(io::Error::other)?
-            .verifying_key()
-            .to_bytes();
+        let storage = IdentityStorage::for_session();
+        let device = provision_device(storage)?;
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let room_id = workspace.room();
-        let actor = tilo_identity_host::registry::selected_identity_profile(&room_id)?
-            .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?
-            .principal_id();
+        let identity = tilo_identity_host::registry::selected_identity_profile(&room_id)?
+            .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
+        let actor = identity.principal_id();
         stage("saving the workspace");
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
+        serve_device_grants(root, &apps);
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined rooms and channel keys");
-        let (joined, channel_keys) =
-            joined_rooms_and_keys(root, &room_id, (Arc::clone(&channels), Arc::clone(&fanout)))?;
+        let (joined, channel_keys) = joined_rooms_and_keys(
+            root,
+            &room_id,
+            storage,
+            (Arc::clone(&channels), Arc::clone(&fanout)),
+        )?;
         stage("opening the room owner");
         let owner = room_owner(
             root,
@@ -116,7 +115,7 @@ impl Standalone {
         });
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
-        let identity = tilo_identity_host::broker::spawn(
+        let identity_broker = tilo_identity_host::broker::spawn(
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
@@ -152,15 +151,21 @@ impl Standalone {
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &blob_socket)?;
+        let author = files::Author {
+            person: identity.user_public_key,
+            device,
+        };
+        let files = workspace_files(root, &workspace, &media, joined.endpoint(), &author, stage);
         Ok(Self {
             broker,
             joined,
             _channels: channel_keys,
-            _identity: identity,
+            _identity: identity_broker,
             room: room_id,
             actor,
             identity_socket,
             blob_socket,
+            _files: files,
             _media: media,
             _lock: lock,
         })
@@ -289,6 +294,23 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     }
 }
 
+/// The person's camera and microphone decisions, as actions on the
+/// profile's console socket (macOS, where the runtime brokers capture). A
+/// socket that cannot be served leaves the runtime running without it.
+fn serve_device_grants(root: &Path, apps: &apps::Apps) {
+    #[cfg(target_os = "macos")]
+    {
+        let served = apps.device_grants().and_then(|grants| {
+            crate::device_grants::serve(grants, &root.join(crate::CONSOLE_SOCKET))
+        });
+        if let Err(error) = served {
+            tracing::warn!(%error, "the device grants are not served on the console socket");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (root, apps);
+}
+
 /// The broker's channel state, with the profile's durable collaboration
 /// history. Without it scrollback is limited to memory, as in the desktop
 /// session, and the host still serves.
@@ -302,6 +324,54 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
+}
+
+/// This device's collaboration identity, provisioned in `storage` on first
+/// start; answers its device key.
+fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
+        &identity_dir,
+        &paths,
+        storage,
+    )?;
+    Ok(tilo_user_identity::persist::load_device_key(&paths)
+        .map_err(io::Error::other)?
+        .verifying_key()
+        .to_bytes())
+}
+
+/// The profile's workspace files, shown at their folder in this user's
+/// home. Without the folder the host still serves: apps keep their
+/// documents, only the folder view of the files is missing. A profile the
+/// desktop session serves has none: that host projects its files itself.
+fn workspace_files(
+    profile: &Path,
+    workspace: &ProfileWorkspace,
+    media: &profile::MediaHost,
+    endpoint: iroh::Endpoint,
+    author: &files::Author,
+    stage: &mut dyn FnMut(&str),
+) -> Option<files::WorkspaceFiles> {
+    if !workspace.governs() {
+        return None;
+    }
+    stage("showing the workspace files");
+    let started = files::folder(&workspace.name()).and_then(|folder| {
+        let projection = files::Projection::for_host();
+        files::WorkspaceFiles::start(
+            profile,
+            &folder,
+            media.store(),
+            endpoint,
+            author,
+            projection,
+        )
+    });
+    started
+        .inspect_err(|error| tracing::warn!(%error, "the workspace folder is unavailable"))
+        .ok()
 }
 
 /// The durable owner of the profile's room: this host's own, governed with
@@ -335,6 +405,7 @@ fn room_owner(
 fn joined_rooms_and_keys(
     profile: &Path,
     room: &str,
+    storage: IdentityStorage,
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
 ) -> io::Result<(Arc<Joined>, channels::Channels)> {
     let custody = tilo_identity_host::broker::trusted_current_device(room)?;
@@ -343,6 +414,7 @@ fn joined_rooms_and_keys(
     let keys = channels::open(
         profile,
         RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?,
+        storage,
         custody.0,
         Arc::clone(&joined),
         channels,

@@ -39,21 +39,29 @@ use std::env;
 use std::io;
 
 #[cfg(unix)]
-pub use std::os::fd::RawFd;
+use std::os::fd::BorrowedFd;
 #[cfg(unix)]
-use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
+pub use std::os::fd::RawFd;
+#[cfg(all(unix, feature = "rpc"))]
+use std::os::fd::{FromRawFd, OwnedFd};
 /// Placeholder descriptor type on hosts that cannot receive Tilo Unix-socket
 /// service descriptors. Service discovery always returns `None` there.
 #[cfg(not(unix))]
 pub type RawFd = i32;
 
+#[cfg(feature = "rpc")]
 use capnp::capability::Promise;
+#[cfg(feature = "rpc")]
 use capnp_rpc::twoparty;
+#[cfg(feature = "rpc")]
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 #[cfg(unix)]
-use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
-#[cfg(unix)]
+use rustix::io::fcntl_getfd;
+#[cfg(all(unix, feature = "rpc"))]
+use rustix::io::{FdFlags, fcntl_setfd};
+#[cfg(all(unix, feature = "rpc"))]
 use tokio::net::UnixStream;
+#[cfg(feature = "rpc")]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// All ways a system service can be unavailable to an app.
@@ -70,6 +78,7 @@ pub enum NotAvailable {
     #[error("protocol mismatch: expected {expected}, got {got}")]
     ProtocolMismatch { expected: u32, got: u32 },
     /// Capability error talking to the service (rejected request, malformed reply).
+    #[cfg(feature = "rpc")]
     #[error("capnp error: {0}")]
     Capnp(#[from] capnp::Error),
 }
@@ -133,6 +142,7 @@ pub unsafe fn take_service_fd(name: &str) -> Option<OwnedFd> {
     service_fd(name).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+#[cfg(feature = "rpc")]
 /// A tokio Cap'n Proto two-party RPC client wrapped around an owned,
 /// already-connected transport. Typed service crates call
 /// [`Self::bootstrap`] for the root capability; this owns the driver task.
@@ -141,9 +151,11 @@ pub struct CapnpClient {
     bootstrap_side: rpc_twoparty_capnp::Side,
 }
 
+#[cfg(feature = "rpc")]
 /// Compatibility name for clients using launcher-provided Unix descriptors.
 pub type UnixCapnpClient = CapnpClient;
 
+#[cfg(feature = "rpc")]
 impl CapnpClient {
     /// Take ownership of a connected asynchronous byte stream. Platform launch
     /// adapters supply the connection; this constructor does not discover a
@@ -173,7 +185,9 @@ impl CapnpClient {
     }
 
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
-    /// ownership, so the caller must not close it afterwards. `side` is which
+    /// ownership, so the caller must not close it afterwards. A descriptor
+    /// named by `TILO_SVC_<NAME>_FD` is shared by the whole process and is
+    /// never owned by one client: open those with [`connect_service`]. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
     ///
     /// # Errors
@@ -231,23 +245,62 @@ impl CapnpClient {
     }
 }
 
-/// Helper for service crates: probe an fd, lift it to capnp, and pull out
-/// the bootstrap. [`NotAvailable::ServiceFdMissing`] if the env var isn't there.
+#[cfg(feature = "rpc")]
+/// A client connection of its own to the launcher-inherited service `name`.
+///
+/// The process inherits one socket per service, which never belongs to a
+/// single client: every call returns a private connection whose calls are
+/// forwarded over that socket, so any number of clients (one per record,
+/// say) may be open and dropped in any order.
 ///
 /// # Errors
 ///
 /// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
-/// or [`NotAvailable::ConnectionFailed`] if the fd can't be lifted to an RPC
-/// connection.
+/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up
+/// or the inherited one has ended.
+pub fn connect_service(name: &str) -> Result<CapnpClient, NotAvailable> {
+    #[cfg(unix)]
+    {
+        CapnpClient::from_connected_fd(
+            std::os::fd::IntoRawFd::into_raw_fd(connect_service_fd(name)?),
+            rpc_twoparty_capnp::Side::Client,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = name;
+        Err(NotAvailable::ServiceFdMissing)
+    }
+}
+
+#[cfg(all(unix, feature = "rpc"))]
+/// [`connect_service`] for a client that drives its own RPC system: the
+/// connected socket of its own, speaking Cap'n Proto two-party as the client.
+///
+/// # Errors
+///
+/// As [`connect_service`].
+pub fn connect_service_fd(name: &str) -> Result<OwnedFd, NotAvailable> {
+    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
+    shared::connect(name, fd)
+}
+
+#[cfg(feature = "rpc")]
+/// Helper for service crates: open a connection to an inherited service
+/// ([`connect_service`]) and pull out the bootstrap.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
+/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up.
 pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,
 {
-    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
-    let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    Ok(client.bootstrap::<C>())
+    Ok(connect_service(name)?.bootstrap::<C>())
 }
 
+#[cfg(feature = "rpc")]
 /// The same, for a caller that already holds the connection.
 /// [`try_open_service`] reads its fd from the environment, right for a
 /// launched process; a caller with its own connection reaching for the
@@ -266,6 +319,7 @@ where
     Ok(client.bootstrap::<C>())
 }
 
+#[cfg(feature = "rpc")]
 /// `Promise` made return-friendly for `Result<_, capnp::Error>`, so wrappers
 /// can write `let p: Promise<_, _> = ...` without importing capnp.
 pub type RpcPromise<T> = Promise<T, capnp::Error>;
@@ -274,6 +328,7 @@ pub type RpcPromise<T> = Promise<T, capnp::Error>;
 mod tests {
     use super::*;
 
+    #[cfg(feature = "rpc")]
     #[tokio::test(flavor = "current_thread")]
     async fn connected_io_reports_peer_close() {
         tokio::task::LocalSet::new()
@@ -334,5 +389,8 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+#[cfg(all(unix, feature = "rpc"))]
+mod shared;
 
 pub mod native;

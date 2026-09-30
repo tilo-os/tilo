@@ -1602,6 +1602,180 @@ mod command_path_tests {
         }
     }
 
+    /// An agent sorts a downloads folder with typed actions only: `go-to` an
+    /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
+    #[test]
+    fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
+        use ui::resources::PublishesResources;
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        let images = root.path().join("out/images");
+        let documents = root.path().join("out/documents");
+        for dir in [&downloads, &images, &documents] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(downloads.join("holiday.jpg"), b"jpg").unwrap();
+        std::fs::write(downloads.join("notes.txt"), b"txt").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        let mut doc = automerge::AutoCommit::new();
+        let invoke = |files: &mut FileExplorerWidget,
+                      doc: &mut automerge::AutoCommit,
+                      target: (String, &str),
+                      arg: (&str, &Path)| {
+            let (resource, action) = target;
+            let resources = ui::resources::resources(&*files, doc);
+            let arguments = serde_json::Map::from_iter([(
+                arg.0.to_string(),
+                serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
+            )]);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(resource, action),
+                &arguments,
+            )
+            .unwrap();
+            let kind = if action == "go-to" {
+                OperationKind::View
+            } else {
+                OperationKind::Effect
+            };
+            Widget::start_operation(
+                files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                doc,
+                &automerge::ROOT,
+            )
+        };
+
+        let start = (
+            crate::search_provider::folder_resource_id(&files.current_path),
+            "go-to",
+        );
+        invoke(&mut files, &mut doc, start, ("path", &downloads)).unwrap();
+        assert_eq!(files.current_path, downloads);
+        let folder = crate::search_provider::folder_resource_id(&downloads);
+        let relative = invoke(
+            &mut files,
+            &mut doc,
+            (folder.clone(), "go-to"),
+            ("path", Path::new("in")),
+        );
+        assert!(relative.unwrap_err().contains("absolute"));
+
+        let browsed = files.resource(&doc, &folder).unwrap();
+        let holiday = crate::search_provider::entry_resource_id(&downloads.join("holiday.jpg"));
+        let notes = crate::search_provider::entry_resource_id(&downloads.join("notes.txt"));
+        let children: Vec<&str> = browsed.children.iter().map(|c| c.id.as_str()).collect();
+        assert!(children.contains(&holiday.as_str()) && children.contains(&notes.as_str()));
+
+        invoke(
+            &mut files,
+            &mut doc,
+            (holiday, "move-to"),
+            ("folder", &images),
+        )
+        .unwrap();
+        invoke(
+            &mut files,
+            &mut doc,
+            (notes.clone(), "copy-to"),
+            ("folder", &documents),
+        )
+        .unwrap();
+        assert!(images.join("holiday.jpg").exists());
+        assert!(!downloads.join("holiday.jpg").exists(), "moved, not copied");
+        assert!(documents.join("notes.txt").exists() && downloads.join("notes.txt").exists());
+        let nowhere = root.path().join("nope");
+        let missing = invoke(
+            &mut files,
+            &mut doc,
+            (notes, "move-to"),
+            ("folder", &nowhere),
+        );
+        let refusal = missing.unwrap_err();
+        assert!(
+            refusal.contains(r#"move on the folder with {"entries":["notes.txt"],"folder":""#)
+                && refusal.ends_with(r#"","create":true}"#),
+            "{refusal}"
+        );
+        assert!(downloads.join("notes.txt").exists());
+    }
+
+    /// `move` takes several entries by name into a folder it creates, answers
+    /// with what moved, and moves nothing when one name is wrong.
+    #[test]
+    fn move_puts_several_entries_into_a_folder_it_creates() {
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        for name in ["a.png", "b.jpg", "c.txt"] {
+            std::fs::write(downloads.join(name), name).unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(downloads.clone()));
+        files.navigate(downloads.clone());
+        let mut doc = automerge::AutoCommit::new();
+        let images = root.path().join("out/images");
+        let mut invoke = |arguments: serde_json::Value| -> Result<
+            Option<serde_json::Value>,
+            ui::tilo_actions::DoorError,
+        > {
+            let resources = ui::resources::resources(&files, &doc);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(crate::search_provider::folder_resource_id(&downloads), "move"),
+                arguments.as_object().unwrap(),
+            )?;
+            let started = Widget::start_operation(
+                &mut files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::Effect,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &automerge::ROOT,
+            )
+            .map_err(ui::tilo_actions::DoorError::Failed)?;
+            match started {
+                Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
+                _ => panic!("move completes at once"),
+            }
+        };
+
+        let misspelt =
+            invoke(serde_json::json!({"entries": ["a.png", "nope.gif"], "folder": images}));
+        let refusal = format!("{misspelt:?}");
+        assert!(
+            refusal.contains("nope.gif") && refusal.contains("nothing moved"),
+            "{refusal}"
+        );
+        assert!(downloads.join("a.png").exists() && !images.exists());
+
+        let kept =
+            invoke(serde_json::json!({"entries": ["a.png"], "folder": images, "create": false}));
+        assert!(format!("{kept:?}").contains("create:true"), "{kept:?}");
+
+        let moved =
+            invoke(serde_json::json!({"entries": ["a.png", "b.jpg"], "folder": images})).unwrap();
+        assert_eq!(
+            moved,
+            Some(serde_json::json!(format!(
+                "moved 2 into {} (created): a.png, b.jpg",
+                images.display()
+            )))
+        );
+        assert!(images.join("a.png").exists() && images.join("b.jpg").exists());
+        assert!(!downloads.join("a.png").exists() && downloads.join("c.txt").exists());
+    }
+
     fn exported_rename_changes_case_without_overwriting_another_entry() {
         use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();
@@ -2610,9 +2784,9 @@ mod command_path_tests {
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
         xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = Instant::now();
+        widget.next_metadata_refresh = ui::time::now();
 
-        assert!(widget.refresh_metadata_if_due(Instant::now()));
+        assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
@@ -4793,7 +4967,7 @@ mod breadcrumb_home_tests {
         let granted_path = granted.path().to_path_buf();
         // Only `TILO_USER_HOME` is touched: `HOME` is left as the machine's,
         // which is precisely the disagreement under test — the override has
-        // to win over whatever `xdg_paths::home()` says, and it does not say
+        // to win over whatever `tilo_paths::home()` says, and it does not say
         // this temp dir.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_USER_HOME", &granted_path);
@@ -4811,7 +4985,7 @@ mod breadcrumb_home_tests {
             "the granted home wins over the process's own HOME",
         );
         assert_ne!(
-            xdg_paths::home().as_deref(),
+            tilo_paths::home().as_deref(),
             Some(granted_path.as_path()),
             "this test only means something while the two disagree",
         );
@@ -4980,7 +5154,7 @@ mod injected_startup_tests {
         ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
-        widget.refresh_metadata_if_due(Instant::now() + metadata_refresh::LIVE_INTERVAL);
+        widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
         widget.refresh();
         assert_eq!(widget.current_path, child);
         assert!(widget.workspace_roots.is_empty());
@@ -5036,9 +5210,9 @@ mod injected_startup_tests {
             startup(&child),
             deferred_services(),
         );
-        widget.nearby_send.poll_if_due(Instant::now());
+        widget.nearby_send.poll_if_due(ui::time::now());
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > Instant::now()),
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > ui::time::now()),
             "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
         );
         widget
@@ -5064,7 +5238,7 @@ mod injected_startup_tests {
             .borrow_mut()
             .complete(token, Err("document storage unavailable".into()));
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= Instant::now()),
+            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
             "a shell reply after draw must schedule the one follow-up Files sync"
         );
         let mut document = automerge::AutoCommit::new();

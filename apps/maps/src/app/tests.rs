@@ -1365,14 +1365,14 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
         assert!(a.poi_debounce.is_some(), "a pan arms a POI refetch");
         let gen0 = a.poi_generation;
 
-        a.tick_poi_debounce(Instant::now());
+        a.tick_poi_debounce(ui::time::now());
         assert_eq!(
             a.poi_generation, gen0,
             "no fetch before the debounce elapses"
         );
         assert!(a.poi_debounce.is_some());
 
-        let past = Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1);
+        let past = ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1);
         a.tick_poi_debounce(past);
         assert_eq!(a.poi_generation, gen0 + 1, "the debounce issues one fetch");
         assert!(
@@ -1383,7 +1383,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
 
         // Re-arm without moving the viewport → the cache is reused, no new fetch.
         a.schedule_pois();
-        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        a.tick_poi_debounce(ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
         assert_eq!(
             a.poi_generation,
             gen0 + 1,
@@ -1400,7 +1400,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
         a.poi_fetched_bounds = Some(a.padded_viewport_bounds());
         a.model.zoom = 10.0;
         a.schedule_pois();
-        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        a.tick_poi_debounce(ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
         assert!(a.pois.is_empty(), "zoom-out clears the POI markers");
         assert!(a.poi_fetched_bounds.is_none());
     }
@@ -2778,6 +2778,23 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         assert!(!Widget::needs_animation_frame(&a));
     }
 
+    // Phase `pending_requests_and_a_focused_search_take_no_animation_frames`:
+    // requests that never answer (a failing Overpass, a stalled geocode) and
+    // a focused search field leave an idle map without a frame every vsync;
+    // the reply wakes the app when it lands, and a debounce is a deadline.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        a.pending = 3;
+        a.search.set_focused(true);
+        assert!(!Widget::needs_animation_frame(&a));
+        assert_eq!(Widget::next_wake_deadline(&a), None);
+
+        a.schedule_pois();
+        let deadline = Widget::next_wake_deadline(&a).expect("the POI debounce wakes the app");
+        assert!(deadline > ui::time::now());
+        assert!(!Widget::needs_animation_frame(&a));
+    }
+
     // Phase `map_info_sheet_stays_modal_over_extracted_controls`.
     {
         let theme = Theme::dark();
@@ -2858,8 +2875,8 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
     // exercised against a disposable temp dir, never the user's real cache.
     {
         let mut a = app_at(1280.0, 720.0);
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let uniq = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let dir =
             std::env::temp_dir().join(format!("tilo-maps-cctest-{}-{}", std::process::id(), uniq));
@@ -3055,8 +3072,8 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
 /// A fresh, isolated on-disk cache dir so a delete step never touches the
 /// user's real tile cache.
 fn region_test_cache(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let n = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("tilo-maps-{tag}-{}-{}", std::process::id(), n))

@@ -244,7 +244,7 @@ pub struct PreviewDecoder {
     engine: ::media::MediaEngine,
     open_path: Option<std::path::PathBuf>,
     last_seek_ms: Option<u64>,
-    last_seek_at: std::time::Instant,
+    last_seek_at: ui::time::Instant,
     /// Re-seeks issued for the current target without a frame arriving.
     /// Each one backs the next retry off, because a flush-seek restarts
     /// whatever the pipeline was doing.
@@ -277,7 +277,7 @@ impl PreviewDecoder {
             engine,
             open_path: None,
             last_seek_ms: None,
-            last_seek_at: std::time::Instant::now(),
+            last_seek_at: ui::time::now(),
             seek_attempts: 0,
             settled: false,
             frame: None,
@@ -358,7 +358,7 @@ impl PreviewDecoder {
                 self.seek_attempts + 1
             };
             self.last_seek_ms = Some(target_ms);
-            self.last_seek_at = std::time::Instant::now();
+            self.last_seek_at = ui::time::now();
             self.settled = false;
         }
         self.engine.poll();
@@ -1199,7 +1199,7 @@ mod tests {
             // Preroll is async: pump until a frame lands or a short deadline.
             let deadline = tilo_test_env::hang_deadline();
             let mut got = false;
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 if decoder.update(&project, 1.0) {
                     got = true;
                     break;

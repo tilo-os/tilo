@@ -21,11 +21,11 @@ path = "src/main.rs"
 # of scope — deployments put the server behind nginx or Caddy.
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-clock = { path = "../../system/tilo-clock" }
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-atomic-file = { path = "../../../crates/system/atomic-file" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
 tilo-app-package = { path = "../tilo-app-package" }
@@ -55,7 +55,7 @@ zeroize.workspace = true
 # bundle so newly issued public certificates do not depend on the root set
 # compiled into an older pinned application image.
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

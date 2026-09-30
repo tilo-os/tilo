@@ -578,12 +578,12 @@ impl ExpandModal {
     }
 
     pub fn needs_commit(&self) -> bool {
-        self.fields.iter().any(|f| f.input.needs_commit())
+        self.fields.iter().any(|f| ui::undo::needs_commit(&f.input))
     }
 
     pub fn on_commit(&mut self) {
         for field in &mut self.fields {
-            field.input.on_commit();
+            ui::undo::on_commit(&mut field.input);
         }
     }
 }

@@ -6,7 +6,7 @@
 // watcher does not treat the write as another edit.
 
 use std::path::Path;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::RouteSnapshot;
@@ -87,20 +87,84 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    let destination = dir.join(CHECKPOINT_FILE);
-    let temporary = dir.join("checkpoint.bin.partial");
-    if std::fs::write(&temporary, &bytes).is_err() {
+    replace_file(&dir.join(CHECKPOINT_FILE), &bytes)
+}
+
+/// Write `bytes` beside `destination`, then rename them over it, so a reader
+/// never sees a partial file.
+#[cfg(any(feature = "native", test))]
+fn replace_file(destination: &Path, bytes: &[u8]) -> bool {
+    let mut temporary = destination.as_os_str().to_os_string();
+    temporary.push(".partial");
+    if std::fs::write(&temporary, bytes).is_err() {
         return false;
     }
-    std::fs::rename(&temporary, &destination).is_ok()
+    std::fs::rename(&temporary, destination).is_ok()
+}
+
+/// Appended to a reloaded library's path for the file that records where that
+/// reload spent its time, written once the new code's first frame is
+/// presented. `tilo-app dev --timings` joins it with the build.
+#[cfg(feature = "native")]
+const RELOAD_TIMINGS_SUFFIX: &str = ".timings.json";
+
+/// Where one in-place reload spent its time inside the app.
+#[cfg(feature = "native")]
+pub(crate) struct DevReloadTiming {
+    pub library: std::path::PathBuf,
+    /// When the event loop took the reload request.
+    pub received: crate::time::SystemTime,
+    /// Freezing the running app into `checkpoint.bin`.
+    pub checkpoint: std::time::Duration,
+    /// `dlopen` and symbol lookup.
+    pub load: std::time::Duration,
+    /// The library's per-window apply and its new root.
+    pub handoff: std::time::Duration,
+    /// Installing that root and laying it out.
+    pub install: std::time::Duration,
 }
 
 #[cfg(feature = "native")]
+impl DevReloadTiming {
+    /// Record this reload, with the time its first frame was handed to the
+    /// renderer and the time that frame was presented.
+    pub(crate) fn record(
+        &self,
+        submitted: crate::time::SystemTime,
+        presented: crate::time::SystemTime,
+    ) {
+        let unix_ms = |at: crate::time::SystemTime| {
+            at.duration_since(crate::time::UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+        };
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let line = serde_json::json!({
+            "library": self.library,
+            "received_unix_ms": unix_ms(self.received),
+            "checkpoint_ms": ms(self.checkpoint),
+            "load_ms": ms(self.load),
+            "handoff_ms": ms(self.handoff),
+            "install_ms": ms(self.install),
+            "submitted_unix_ms": unix_ms(submitted),
+            "presented_unix_ms": unix_ms(presented),
+        });
+        let mut path = self.library.as_os_str().to_os_string();
+        path.push(RELOAD_TIMINGS_SUFFIX);
+        if !replace_file(Path::new(&path), line.to_string().as_bytes()) {
+            eprintln!(
+                "tilo: cannot record reload timings beside {}",
+                self.library.display()
+            );
+        }
+    }
+}
+
+#[cfg(all(feature = "native", unix))]
 static DEV_STOP_PIPE: AtomicI32 = AtomicI32::new(-1);
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 static DEV_STOP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 extern "C" fn request_dev_session_stop(signal: libc::c_int) {
     let fd = DEV_STOP_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -118,7 +182,7 @@ extern "C" fn request_dev_session_stop(signal: libc::c_int) {
 /// SIGUSR1 asks it to reload the contents of the windows it already has. The
 /// dev loop uses that after a successful build so a new process, and therefore
 /// a new window, is not opened.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 #[allow(
     clippy::disallowed_methods,
     reason = "the signal pipe is read for the life of the process; a pool job would pin a worker on a blocking read"
@@ -171,6 +235,10 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
         );
     }
 }
+
+/// Windows has no signals for the dev loop to send; it ends the process.
+#[cfg(all(feature = "native", not(unix)))]
+pub(crate) fn install_dev_session_stop(_proxy: winit::event_loop::EventLoopProxy<UserEvent>) {}
 
 /// Replace the baked catalogs with the `.ftl` files in `dir`.
 ///
@@ -228,6 +296,8 @@ struct DevCaretField {
 
 #[cfg(test)]
 impl crate::widget::Widget for DevCaretField {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -268,11 +338,13 @@ impl crate::widget::Widget for DevCaretField {
     fn is_focusable(&self) -> bool {
         true
     }
+}
 
+#[cfg(test)]
+impl crate::undo::UndoPoints for DevCaretField {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
-
     fn set_state(&mut self, state: &str) {
         self.caret = state.to_string();
     }
@@ -341,7 +413,7 @@ fn dev_checkpoint_restores_document_and_route() {
     app.autofocus_first = true;
     app.init_layout();
     let focused = app.focused_node.expect("settings caret field is focused");
-    app.mutate_node(focused, |widget| widget.set_state("12"))
+    app.mutate_node(focused, |widget| crate::undo::set_state(widget, "12"))
         .expect("caret state is writable");
     assert!(write_dev_checkpoint(&app, &directory));
 
@@ -358,7 +430,7 @@ fn dev_checkpoint_restores_document_and_route() {
         .focused_node
         .expect("restored settings field is focused");
     let caret = restored
-        .inspect_node(restored_focus, |widget| widget.get_state())
+        .inspect_node(restored_focus, |widget| crate::undo::get_state(widget))
         .expect("restored field is addressable");
     assert_eq!(caret.as_deref(), Some("12"));
     let title = restored

@@ -190,13 +190,13 @@ class FocusedTests(unittest.TestCase):
         with self.subTest(phase='fuse consumer selects helper changes'):
             self.doCleanups()
             self.setUp()
-            workflow = (PATH.parents[2] / '.forgejo/workflows/fs-fuse.yml').read_text()
+            workflow = (PATH.parents[2] / '.forgejo/workflows/ci-filesystem.yml').read_text()
             pr_paths = workflow.split('  pull_request:', 1)[1].split('  schedule:', 1)[0]
             self.assertIn('"tools/ci/focused_test.py"', pr_paths)
         with self.subTest(phase='workflow keeps source separate and request out of shell'):
             self.doCleanups()
             self.setUp()
-            workflow = (PATH.parents[2] / '.forgejo/workflows/focused-test.yml').read_text()
+            workflow = (PATH.parents[2] / '.forgejo/workflows/dev-focused-test.yml').read_text()
             self.assertNotIn('pull_request:', workflow)
             self.assertNotIn('push:', workflow)
             self.assertEqual(workflow.count('persist-credentials: false'), 3)
@@ -208,12 +208,12 @@ class FocusedTests(unittest.TestCase):
             native = workflow.split('  focused:', 1)[1]
             self.assertEqual(native.count('path: control'), 1)
             self.assertEqual(native.count('path: source'), 1)
-            # Checkout uses the registry token; the native job also binds the
-            # shared compiler-cache credential.
-            self.assertIn('source control/tools/ci/compiler_cache_env.sh', native)
+            # Checkout uses the registry token; the runner provides the
+            # compiler cache.
+            self.assertNotIn('compiler_cache_env', native)
             for line in workflow.splitlines():
                 if 'secrets.' in line:
-                    self.assertRegex(line, r'secrets\.(REGISTRY_TOKEN|SCCACHE_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY))\b')
+                    self.assertRegex(line, r'secrets\.REGISTRY_TOKEN\b')
 
 
 if __name__ == '__main__':

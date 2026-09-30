@@ -18,6 +18,7 @@ use std::rc::Rc;
 
 mod host;
 mod open_file;
+pub mod registry;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
@@ -308,6 +309,10 @@ impl HostContext {
     pub fn record(&self) -> &RecordCheckout {
         &self.record
     }
+    /// The application this context was prepared for.
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
     pub fn author(&self) -> &UserId {
         &self.author
     }
@@ -331,6 +336,23 @@ impl HostContext {
     /// [`crate::host::current`] resolved when the host prepared it.
     pub fn services(&self) -> &crate::host::HostServices {
         &self.services
+    }
+    /// This app's secrets, in the store its host provides: the system's
+    /// (the Secret Service, the Keychain, the browser's wrapped store) or a
+    /// host's own. Other apps' secrets are out of reach.
+    pub fn secrets(&self) -> crate::secrets::SecretStore {
+        self.services.secrets.store(&self.app_id)
+    }
+    /// This app's private file areas (data, config, cache, state): the
+    /// per-user directories natively, the origin-private file system in a
+    /// page. See [`crate::storage`] for what belongs where.
+    pub fn files(&self) -> crate::storage::AppFiles {
+        crate::storage::AppFiles::for_app(&self.app_id)
+    }
+    /// This app's preferences: its own section of the desktop settings
+    /// document, named by the app id.
+    pub fn settings(&self) -> crate::storage::Settings {
+        crate::storage::Settings::for_app(&self.app_id)
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
@@ -396,7 +418,7 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || saved.record_kind != self.record.kind.as_str()
+                    || !self.record.kind.names(&saved.record_kind)
                 {
                     return Err(LaunchError::BindingMismatch);
                 }
@@ -414,6 +436,31 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
+    /// Whether the app keeps one record per room, its package primary
+    /// (Chat's conversation), rather than a record per window. Definitions
+    /// do not declare this; Chat's record kind names it.
+    pub fn keeps_room_record(&self) -> bool {
+        self.record_kind.as_str() == "chat.workspace"
+    }
+
+    /// The launch target of an instance with no saved record: a new record
+    /// of its own, or the room's record (created on first use) for an app
+    /// that [keeps one](Self::keeps_room_record).
+    pub fn unsaved_target(&self, records: &RecordStore) -> LaunchTarget {
+        if !self.keeps_room_record() {
+            return LaunchTarget::New;
+        }
+        let checkout = RecordCheckout::package_primary(self.record_kind.clone());
+        if records.try_open_record(&checkout).is_ok() {
+            LaunchTarget::Record {
+                checkout,
+                reveal: None,
+            }
+        } else {
+            LaunchTarget::PrimaryNew
+        }
+    }
+
     /// Whether the component opens files of `media_type` (parameters and case ignored).
     pub fn opens_media_type(&self, media_type: &str) -> bool {
         open_file::media_type_essence(media_type)
@@ -861,7 +908,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| root.unsaved_documents(doc))
+            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -891,9 +938,11 @@ impl AppComponent {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
-            errors.extend(root.checkpoint_components());
+            errors.extend(crate::component_lifecycle::checkpoint_components(root));
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         errors.extend(crate::close_admission::retry_reports(
             &mut self.pending_reports,
@@ -912,9 +961,12 @@ impl AppComponent {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.finish_admitted_close());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::finish_admitted_close(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         let mut report = ComponentCloseReport {
             recovery: Some(
@@ -989,9 +1041,12 @@ impl AppComponent {
         // Parent View has already been captured. Each child still owns its live
         // tree and captures/closes exactly once before any parent root is dropped.
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.close_components());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         self.close_report = Some(report.clone());
         if let Err(error) = self.teardown() {
@@ -1007,7 +1062,9 @@ impl AppComponent {
         // the parent here, and never consult a root after teardown removed it.
         if let Some(root) = self.root.as_deref_mut() {
             let _entry = self.context.wake_scope.enter();
-            reports.extend(root.take_component_close_reports());
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root,
+            ));
         }
         if !self.report_drained
             && let Some(report) = &self.close_report

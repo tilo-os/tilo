@@ -36,8 +36,9 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 /// of the machine.
 ///
 /// The compositor gives each agent named on a command its own seat and strip:
-/// its coordinates and screenshots are that strip's, and the keys and buttons
-/// it holds never reach another agent's window. What this side remembers per
+/// on its turn that strip fills the screen its coordinates and screenshots
+/// cover, and the keys and buttons it holds never reach another agent's
+/// window. What this side remembers per
 /// agent (pointer, last frame's geometry) is kept per agent for the same
 /// reason.
 pub struct Computer {
@@ -787,7 +788,9 @@ pub fn tool_definitions() -> Vec<Value> {
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
         json!({"name":"computer","description":"Pixel fallback for windows that publish no typed action (use tilo_query/tilo_invoke first). One action; returns the post-action screenshot. Coordinates are pixels in the last screenshot's frame; take a screenshot before acting","inputSchema":action,"annotations":effect}),
-        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":action,"minItems":1,"maxItems":MAX_BATCH}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
+        // Each step takes the `computer` tool's arguments; restating that
+        // schema here would double what every model turn reads.
+        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
     ]
 }
 

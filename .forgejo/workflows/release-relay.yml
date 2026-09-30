@@ -39,10 +39,15 @@ on:
       - "crates/packaging/registry-types/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
+      - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-files/**"
+      - "crates/platform/tilo-net/**"
+      - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-secrets/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
-      - "crates/sdk/rt/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/session/desktop-model/**"
@@ -66,10 +71,8 @@ on:
       - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
-      - "crates/system/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
-      - "crates/system/tilo-net/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
@@ -84,7 +87,6 @@ on:
       - "os/dev/verify-rpm-snapshot-buildkit.py"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
-      - "tools/ci/workflow_applicability.py"
       - "vendor/automerge/**"
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/wayland-backend/**"
@@ -120,10 +122,15 @@ on:
       - "crates/packaging/registry-types/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
+      - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-files/**"
+      - "crates/platform/tilo-net/**"
+      - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-secrets/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
-      - "crates/sdk/rt/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/session/desktop-model/**"
@@ -147,10 +154,8 @@ on:
       - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
-      - "crates/system/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
-      - "crates/system/tilo-net/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
@@ -165,8 +170,6 @@ on:
       - "os/dev/verify-rpm-snapshot-buildkit.py"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
-      - "tools/ci/prepare_pr_history.py"
-      - "tools/ci/workflow_applicability.py"
       - "vendor/automerge/**"
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/wayland-backend/**"
@@ -182,12 +185,6 @@ concurrency:
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/release-relay.yml
-      event: ${{ github.event_name }}
-
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
     runs-on: runner
@@ -210,19 +207,11 @@ jobs:
         run: os/dev/require-cosign-authority.sh
 
   ensure-rpms:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
-    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # build-rpms.yml owns all signing as a standalone main workflow. Resolve
     # only its exact content fingerprint here; never fall back to a stale tag.
     runs-on: runner-quality
-    timeout-minutes: 10
+    timeout-minutes: 40
     container:
       image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
@@ -246,23 +235,31 @@ jobs:
               sudo -n dnf install -y "${missing[@]}"
             fi
           fi
+      # build-rpms.yml publishes the snapshot for a new package set on the same
+      # push; wait for it rather than fail.
       - name: Resolve the exact signed RPM snapshot fingerprint
         id: resolve
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
-          ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
-            exit 1
-          }
+          deadline=$((SECONDS + 1800))
+          while :; do
+            status=0
+            ./os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+            [ "$status" -eq 0 ] && break
+            if [ "$status" -ne 1 ] || [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
+              exit 1
+            fi
+            sleep 30
+          done
+          ./os/dev/resolve-rpm-snapshot.sh
 
   build-and-push:
-    needs: [signing-preflight, applicability, ensure-rpms]
+    needs: [signing-preflight, ensure-rpms]
     if: >-
       ${{
         always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') &&
         needs.ensure-rpms.result == 'success' &&
         needs.ensure-rpms.outputs.rpms_ref != ''
@@ -293,12 +290,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           DISPATCH_REQUIRE_CACHE: ${{ inputs.require_compiler_cache }}
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
           require=0
           if [ "${DISPATCH_REQUIRE_CACHE:-false}" = true ]; then
             require=1
@@ -316,30 +309,20 @@ jobs:
             printf 'nonce=\n' >> "$GITHUB_OUTPUT"
           fi
 
-          available=1
-          required=(SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL)
-          for name in "${required[@]}"; do
-            value="${!name:-}"
-            test -n "$value" || available=0
-            case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
-          done
-          case "${SCCACHE_ENDPOINT:-}" in http://*|https://*) ;; *) available=0 ;; esac
-          case "${SCCACHE_ENDPOINT:-}" in *[@[:space:]]*) available=0 ;; esac
-          case "${SCCACHE_BUCKET:-}" in [a-z0-9][a-z0-9.-]*) ;; *) available=0 ;; esac
-          case "${SCCACHE_S3_KEY_PREFIX:-}" in *[!A-Za-z0-9_/-]*) available=0 ;; esac
-          case "${SCCACHE_S3_USE_SSL:-}" in true|false) ;; *) available=0 ;; esac
-          printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
-          if [ "$available" != 1 ]; then
-            echo "::notice::runner compiler cache configuration is absent or unsupported; normal builds compile without it"
-            exit 0
+          # The runner's compiler cache (infra docs/ci-caching.md) reaches the
+          # compile as two BuildKit secrets.
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+            {
+              echo 'configured=1'
+              echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+              echo 'actions_cache_url=ACTIONS_CACHE_URL'
+              echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
+              echo 'TILO_COMPILER_CACHE_SECRETS'
+            } >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' 'configured=0' 'secret-envs=' >> "$GITHUB_OUTPUT"
+            echo "::notice::this slot provides no compiler cache; normal builds compile without it"
           fi
-          {
-            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
-            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
-            printf 'region=%s\n' "$SCCACHE_REGION"
-            printf 'prefix=%s\n' "$SCCACHE_S3_KEY_PREFIX"
-            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
-          } >> "$GITHUB_OUTPUT"
 
       # Login is required on every build (build-only or push): the
       # Containerfile FROMs the private frozen RPM repo, which needs
@@ -370,12 +353,12 @@ jobs:
           echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
           echo "base=$BASE_REF"
 
-      - name: Resolve RPMS_REF by package-set fingerprint
+      - name: Use the snapshot ensure-rpms verified
+        env:
+          RPMS_REF: ${{ needs.ensure-rpms.outputs.rpms_ref }}
         run: |
-          set -euo pipefail
-          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"             || { echo "::error::no fingerprint-resolved RPMS_REF; wait for snapshot-rpms on main"; exit 1; }
+          [[ "$RPMS_REF" =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
-          echo "rpms=$RPMS_REF"
 
       - name: Set up buildx for registry cache export
         id: buildx
@@ -390,9 +373,7 @@ jobs:
           persistent: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
       - name: Verify the frozen RPM package set
-        env:
-          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
-        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"
 
       - name: Resolve the digest-pinned base with bounded retries
         env:
@@ -437,22 +418,14 @@ jobs:
             SOURCE_DATE_EPOCH=0
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE_CONFIGURED=${{ steps.compiler-cache.outputs.configured }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
             TILO_CACHE_PROBE_NONCE=${{ steps.compiler-cache.outputs.nonce }}
-          # The runner injects these least-privilege credentials. BuildKit
-          # exposes them only to the compile RUN, never an image layer or arg.
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-            aws_session_token=AWS_SESSION_TOKEN
-          cache-from: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-relay-buildcache:latest,mode=max,ignore-error=true
+          # BuildKit exposes the job's cache URL and token only to the
+          # compile RUN, never an image layer or arg.
+          secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
+          cache-from: type=gha,scope=relay
+          cache-to: type=gha,scope=relay,mode=max,ignore-error=true
           provenance: false
 
       # Optional signing reuses the same key as the OS image so `bootc

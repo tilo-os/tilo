@@ -45,8 +45,8 @@ use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::live::LiveFrame;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
-    API_PREFIX, EventsRequest, HostInfo, MAX_POLL_MS, MAX_REQUEST_BYTES, SESSION_HEADER,
-    SessionFinish, live_room,
+    API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
+    MAX_REQUEST_BYTES, SESSION_HEADER, SessionFinish, live_room,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -64,6 +64,11 @@ pub struct WebConfig {
     /// Page origins allowed to call the host cross-origin (the Cloud console
     /// origin, a dev server). Empty allows same-origin pages only.
     pub allowed_origins: Vec<String>,
+    /// A loopback address that also serves the HTTPS routes as plain HTTP,
+    /// for local review in a browser that should not need a certificate
+    /// exception. The live plane then uses the HTTPS stream fallback over
+    /// it; WebTransport stays on `listen`.
+    pub plain_listen: Option<SocketAddr>,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -74,6 +79,8 @@ pub struct WebHandle {
     pub origin: String,
     /// SHA-256 of a development certificate, for `serverCertificateHashes`.
     pub certificate_sha256: Option<String>,
+    /// `http://localhost:port` of the plain loopback listener, if any.
+    pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -106,6 +113,14 @@ impl Relay {
     )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
+        if config
+            .plain_listen
+            .is_some_and(|plain| !plain.ip().is_loopback())
+        {
+            return Err(failed(
+                "the plain HTTP listener must be a loopback address".into(),
+            ));
+        }
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
         let tcp = tokio::net::TcpListener::bind(config.listen)
             .await
@@ -167,11 +182,24 @@ impl Relay {
                 }
             }
         }));
+        let mut plain_origin = None;
+        if let Some(plain) = config.plain_listen {
+            let plain = tokio::net::TcpListener::bind(plain)
+                .await
+                .map_err(|error| failed(error.to_string()))?;
+            let port = plain
+                .local_addr()
+                .map_err(|error| failed(error.to_string()))?
+                .port();
+            plain_origin = Some(format!("http://localhost:{port}"));
+            tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
+        }
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
         Ok(WebHandle {
             addr,
             origin: format!("https://{addr}"),
             certificate_sha256: identity.pinned_sha256,
+            plain_origin,
             tasks,
         })
     }
@@ -196,19 +224,21 @@ fn bridge_browser_presence(
     context: &crate::daemon::WebContext,
 ) -> tokio::task::JoinHandle<()> {
     let (tx, mut rx) =
-        tokio::sync::mpsc::channel::<(String, [u8; 32], Vec<u8>)>(BROWSER_PRESENCE_BACKLOG);
+        tokio::sync::mpsc::channel::<(String, String, Vec<u8>)>(BROWSER_PRESENCE_BACKLOG);
     live.set_presence_tap(Arc::new(
         move |room: &str, publisher: &str, frame: &[u8]| {
-            let mut device = [0u8; 32];
-            if hex::decode_to_slice(publisher, &mut device).is_ok() {
-                let _ = tx.try_send((room.to_owned(), device, frame.to_vec()));
-            }
+            let _ = tx.try_send((room.to_owned(), publisher.to_owned(), frame.to_vec()));
         },
     ));
     let grants = grants.clone();
     let context = context.clone();
     tokio::spawn(async move {
-        while let Some((room, device, frame)) = rx.recv().await {
+        while let Some((room, publisher, frame)) = rx.recv().await {
+            // Native peers attribute a live frame to a device: an agent's
+            // presence stays on the browser live plane.
+            let Some(device) = grants.publisher_device(&room, &publisher) else {
+                continue;
+            };
             let Some(workspace_id) = grants.workspace_of(&room) else {
                 continue;
             };
@@ -227,41 +257,70 @@ fn bridge_browser_presence(
                 from_device_public_key: device,
                 frame,
             };
-            workspace
+            let delivered = workspace
                 .lock()
                 .await
                 .relay_bridged_live(&device, &envelope);
+            tracing::debug!(
+                workspace_id,
+                from = %hex::encode(&device[..4]),
+                delivered,
+                "browser presence bridged to iroh live members"
+            );
         }
     })
 }
 
+/// Accepted connections belong to their listener's loop: aborting the loop
+/// (dropping the [`WebHandle`]) closes every open connection with it, so a
+/// browser sees its host go away instead of a kept-alive orphan serving it.
 async fn accept_loop(
     tcp: tokio::net::TcpListener,
     acceptor: tokio_rustls::TlsAcceptor,
     web: Arc<Web>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let Ok((stream, _)) = tcp.accept().await else {
             continue;
         };
+        while connections.try_join_next().is_some() {}
         let acceptor = acceptor.clone();
         let web = web.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let Ok(Ok(tls)) =
                 tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
             else {
                 return;
             };
-            let service = hyper::service::service_fn(move |request| {
-                let web = web.clone();
-                async move { Ok::<_, Infallible>(handle(&web, request).await) }
-            });
-            let _ =
-                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                    .serve_connection(hyper_util::rt::TokioIo::new(tls), service)
-                    .await;
+            serve_connection(tls, web).await;
         });
     }
+}
+
+/// The same routes as plain HTTP on a loopback listener.
+async fn plain_accept_loop(tcp: tokio::net::TcpListener, web: Arc<Web>) {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        let Ok((stream, _)) = tcp.accept().await else {
+            continue;
+        };
+        while connections.try_join_next().is_some() {}
+        connections.spawn(serve_connection(stream, web.clone()));
+    }
+}
+
+async fn serve_connection<Io>(io: Io, web: Arc<Web>)
+where
+    Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = hyper::service::service_fn(move |request| {
+        let web = web.clone();
+        async move { Ok::<_, Infallible>(handle(&web, request).await) }
+    });
+    let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .serve_connection(hyper_util::rt::TokioIo::new(io), service)
+        .await;
 }
 
 /// A response body: whole bytes or a live fallback stream.
@@ -411,7 +470,13 @@ async fn route(
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Body>, Response<Body>> {
     let path = request.uri().path().to_owned();
-    let Some(route) = path.strip_prefix(API_PREFIX) else {
+    // The live fallback keeps its own paths, outside `API_PREFIX`.
+    let fallback =
+        [FALLBACK_OPEN_PATH, FALLBACK_RESUME_PATH, FALLBACK_SEND_PATH].contains(&path.as_str());
+    let Some(route) = path
+        .strip_prefix(API_PREFIX)
+        .or_else(|| fallback.then_some(""))
+    else {
         return Err(status(StatusCode::NOT_FOUND, "not found"));
     };
     let session = token(&request);
@@ -420,7 +485,7 @@ async fn route(
         .get(FALLBACK_SESSION_HEADER)
         .and_then(|value| value.to_str().ok())
         .and_then(session_id);
-    let limit = if route == "/live/fallback/send" {
+    let limit = if path == FALLBACK_SEND_PATH {
         MAX_SEND_BYTES
     } else {
         MAX_REQUEST_BYTES
@@ -463,10 +528,18 @@ async fn route(
         }
         "/session/finish" => {
             let finish: SessionFinish = decode(&bytes)?;
-            sessions
+            let grant = sessions
                 .finish(&finish.handshake, &finish.ack2)
-                .map(|grant| encoded(&grant))
-                .map_err(|error| session_status(&error))
+                .map_err(|error| session_status(&error))?;
+            Ok(
+                match protocol::encode_grant(
+                    &grant,
+                    protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION,
+                ) {
+                    Ok(bytes) => reply(StatusCode::OK, bytes),
+                    Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                },
+            )
         }
         "/send" => {
             let session = authed()?;
@@ -497,6 +570,27 @@ async fn route(
                     session.peer.device_public_key,
                     session.peer.user_public_key,
                     workspace_id,
+                    None,
+                )
+                .await
+                .map(|grant| encoded(&grant))
+                .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
+        }
+        "/live/grant/agent" => {
+            let session = authed()?;
+            let request: AgentLiveGrantRequest = decode(&bytes)?;
+            if request.agent_id.is_empty() || request.agent_id.len() > MAX_AGENT_ID_BYTES {
+                return Err(status(StatusCode::BAD_REQUEST, "agent id out of bounds"));
+            }
+            let token = session.token();
+            web.grants
+                .issue(
+                    sessions,
+                    token,
+                    session.peer.device_public_key,
+                    session.peer.user_public_key,
+                    request.workspace_id,
+                    Some(&request.agent_id),
                 )
                 .await
                 .map(|grant| encoded(&grant))

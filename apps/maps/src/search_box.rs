@@ -4,7 +4,7 @@
 //! timer, and every hot region it paints. `MapsApp` remains responsible for
 //! map-domain effects (selecting/recentring a place and starting network work).
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
@@ -91,8 +91,9 @@ impl SearchBox {
         self.focused = focused;
     }
 
-    pub(crate) fn has_pending_query(&self) -> bool {
-        self.debounce.is_some()
+    /// When the typed query settles into a live geocode.
+    pub(crate) const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
     }
 
     /// Stable identity for a visible suggestion. The canvas uses this to give
@@ -462,7 +463,7 @@ mod tests {
         // Phase `debounce_replaces_results_and_fires_once`.
         {
             let mut search = SearchBox::new();
-            let now = Instant::now();
+            let now = ui::time::now();
             search.query_changed("caf", vec![place("local")], now);
             assert_eq!(search.results()[0].id, "local");
             assert!(search.take_due_query(now, "caf").is_none());
@@ -489,7 +490,7 @@ mod tests {
         // Phase `dismiss_keeps_the_query_but_drops_transient_suggestions`.
         {
             let mut search = SearchBox::new();
-            let now = Instant::now();
+            let now = ui::time::now();
             search.set_focused(true);
             search.query_changed("museum", vec![place("local")], now);
 

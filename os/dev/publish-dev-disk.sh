@@ -43,6 +43,8 @@
 #   CHANNEL            true advances tilo-vm:latest, only forward (default false)
 #   TILO_PACKAGE_TOKEN, TILO_PACKAGE_PUBLIC_BASE_URL   generic package access
 #   TILO_VM_PUBLISH_DIR  scratch for converted disks (default /var/tmp/tilo-vm-publish)
+#   PUSHED_DIGEST      the child is already pushed as <tag>-<arch> with this
+#                      digest (a BuildKit push); DEV_IMAGE is then unused
 #   IMAGE_ONLY         1 publishes the child and index only: no disk, no disk
 #                      manifest, no latest (Build / OS dev; SOURCE_DISK and the
 #                      package settings are then ignored)
@@ -57,9 +59,10 @@ note() { printf '::notice::%s\n' "$*"; }
 
 IMAGE_ONLY=${IMAGE_ONLY:-0}
 [[ $IMAGE_ONLY == 0 || $IMAGE_ONLY == 1 ]] || die "IMAGE_ONLY must be 0 or 1"
-required=(DEV_IMAGE DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION BASE_REPOSITORY BASE_TRUST
+required=(DEV_TAG ARCH SOURCE_REVISION DISK_TOOLING_REVISION BASE_REPOSITORY BASE_TRUST
           BASE_INDEX_DIGEST BASE_CHILD_DIGEST)
 [[ $IMAGE_ONLY == 1 ]] || required+=(SOURCE_DISK TILO_PACKAGE_TOKEN TILO_PACKAGE_PUBLIC_BASE_URL)
+[[ -n ${PUSHED_DIGEST:-} ]] || required+=(DEV_IMAGE)
 for name in "${required[@]}"; do
   [[ -n ${!name:-} ]] || die "$name is required"
 done
@@ -87,7 +90,11 @@ for digest in "$BASE_INDEX_DIGEST" "$BASE_CHILD_DIGEST"; do
 done
 [[ $CHANNEL == true || $CHANNEL == false ]] || die "CHANNEL must be true or false"
 [[ $IMAGE_ONLY == 1 ]] || test -s "$SOURCE_DISK" || die "no installed disk at $SOURCE_DISK"
-podman image exists "$DEV_IMAGE" || die "$DEV_IMAGE is not in local storage"
+if [[ -n ${PUSHED_DIGEST:-} ]]; then
+  [[ $PUSHED_DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || die "PUSHED_DIGEST is not sha256:<64 hex>"
+else
+  podman image exists "$DEV_IMAGE" || die "$DEV_IMAGE is not in local storage"
+fi
 
 manifest_digest() { skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'; }
 if [[ $IMAGE_ONLY == 0 ]]; then
@@ -114,10 +121,15 @@ fi
 # ---- 1. the child ------------------------------------------------------------
 # Not committed until the manifest below exists, so a rerun may replace it.
 child_tag="$REPOSITORY:$DEV_TAG-$ARCH"
-digest_file=$(mktemp /var/tmp/tilo-vm-digest.XXXXXX)
-podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$child_tag"
-image_digest=$(tr -d '[:space:]' < "$digest_file")
-rm -f "$digest_file"
+if [[ -n ${PUSHED_DIGEST:-} ]]; then
+  image_digest=$PUSHED_DIGEST
+  [[ $(manifest_digest "$child_tag") == "$image_digest" ]] || die "$child_tag does not name $image_digest"
+else
+  digest_file=$(mktemp /var/tmp/tilo-vm-digest.XXXXXX)
+  podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$child_tag"
+  image_digest=$(tr -d '[:space:]' < "$digest_file")
+  rm -f "$digest_file"
+fi
 [[ $image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "podman push reported no digest for $child_tag"
 config=$(skopeo inspect "docker://$REPOSITORY@$image_digest")
 [[ $(jq -r .Architecture <<< "$config") == "$platform" ]] || die "$child_tag is not linux/$platform"
@@ -167,14 +179,19 @@ for attempt in 1 2 3 4 5 6; do
     converged=true
     break
   fi
-  list="tilo-vm-index-$DEV_TAG-$ARCH-$$"
-  podman manifest rm "$list" >/dev/null 2>&1 || true
-  podman manifest create "$list" >/dev/null
-  for digest in $(jq -r '.[].digest' <<< "$wanted"); do
-    podman manifest add "$list" "docker://$REPOSITORY@$digest" >/dev/null
-  done
-  podman manifest push --all "$list" "docker://$index_tag"
-  podman manifest rm "$list" >/dev/null
+  if command -v podman >/dev/null; then
+    list="tilo-vm-index-$DEV_TAG-$ARCH-$$"
+    podman manifest rm "$list" >/dev/null 2>&1 || true
+    podman manifest create "$list" >/dev/null
+    for digest in $(jq -r '.[].digest' <<< "$wanted"); do
+      podman manifest add "$list" "docker://$REPOSITORY@$digest" >/dev/null
+    done
+    podman manifest push --all "$list" "docker://$index_tag"
+    podman manifest rm "$list" >/dev/null
+  else
+    mapfile -t sources < <(jq -r --arg repo "$REPOSITORY" '.[] | "\($repo)@\(.digest)"' <<< "$wanted")
+    docker buildx imagetools create --tag "$index_tag" "${sources[@]}"
+  fi
   # A concurrent lane may have written between our read and write; let its
   # write land before reading back.
   sleep $(( attempt * 5 ))
@@ -182,8 +199,11 @@ done
 [[ $converged == true ]] || die "$index_tag did not converge on the published children"
 index_digest=$(manifest_digest "$index_tag")
 # The index is rebuilt whenever another architecture lands; keep each one
-# reachable by its digest, as for the child above.
-skopeo copy --all --preserve-digests "docker://$REPOSITORY@$index_digest" \
+# reachable by its digest, as for the child above. Only the index is copied:
+# its children are already in the repository, and copying them again with
+# --all refuses an index whose children mix gzip and zstd layers under
+# --preserve-digests.
+skopeo copy --multi-arch index-only --preserve-digests "docker://$REPOSITORY@$index_digest" \
   "docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}" >/dev/null
 note "$index_tag ($index_digest) holds $(jq -r '[.[].architecture] | join(", ")' <<< "$wanted")"
 [[ $IMAGE_ONLY == 0 ]] || exit 0

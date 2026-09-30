@@ -6,8 +6,15 @@ version = "0.1.0"
 kind = "app"
 runtime = "tilo-runtime/2026.07"
 
+[package.names]
+de = "Geschwindigkeitstest"
+
 [package.isa]
 x86_64 = "v3"
+
+[capabilities]
+required = ["network.http"]
+optional = []
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

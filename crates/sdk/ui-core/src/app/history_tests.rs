@@ -13,12 +13,17 @@ static HISTORY: HistoryDefinition = HistoryDefinition {
         content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
+/// An app whose registered framework History has two committed changes.
 fn app() -> App {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
+    app_on(state)
+}
+/// An app on `state` whose History is the framework's registered History.
+fn app_on(state: State) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -38,13 +43,21 @@ fn app() -> App {
     )
     .unwrap()
 }
-fn layout(app: &mut App) {
+/// Lay out and paint one 900×650 frame, as the native runner does.
+pub(crate) fn layout(app: &mut App) {
     app.init_layout();
     let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
     let mut scene = vello::Scene::new();
     draw_frame_content(app, &mut scene, 900, 650, 1.0, None);
     complete_native_frame_content(app, |_| {});
+}
+/// [`app`] where the host's own chrome presents History, laid out.
+pub(crate) fn native_chrome_app() -> App {
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    app
 }
 #[test]
 fn native_history_surface_composes_installs_and_keeps_editor_state() {
@@ -3583,7 +3596,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     // references survive the supported close/rebind operation.
     unsafe {
         if close {
-            (*pointer).close_components();
+            crate::component_lifecycle::close_components(&mut (*pointer));
         } else {
             (*pointer).bind_record(second.clone(), checkout.clone());
         }
@@ -6130,7 +6143,8 @@ struct CustodyControlsRoot {
 impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::record::capability::RecordScoped
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -6164,11 +6178,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     // that enclosing boundary, not a second independent document owner.
     fn has_separate_document_owner(&self) -> bool {
         false
-    }
-    fn record_intent(&self) -> Option<crate::RecordCheckout> {
-        self.record
-            .as_ref()
-            .and_then(|record| record.borrow().clone())
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -6241,6 +6250,14 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::record::capability::RecordScoped for CustodyControlsRoot {
+    fn record_intent(&self) -> Option<crate::RecordCheckout> {
+        self.record
+            .as_ref()
+            .and_then(|record| record.borrow().clone())
     }
 }
 
@@ -7882,5 +7899,144 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
             .0
             .is_empty(),
         "canonical primary owner must replay its accepted history too"
+    );
+}
+
+#[test]
+fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
+    use crate::host_chrome::model::CommandGroup;
+    let has_open_button = |app: &App| {
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-open"))
+                .unwrap_or(false)
+        })
+    };
+    let mut in_window = app();
+    in_window.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+    layout(&mut in_window);
+    assert!(
+        has_open_button(&in_window),
+        "hosts without chrome keep the button"
+    );
+
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    assert!(!has_open_button(&app));
+    let show = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .expect("the menu bar presents framework History");
+    assert_eq!(show.label, "Show History");
+    assert!(show.enabled);
+    assert!(app.invoke_host_command(&show.invocation().unwrap()));
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().is_open());
+    assert!(
+        has_open_button(&app),
+        "open History keeps its way back to the live app"
+    );
+
+    let hide = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .unwrap();
+    assert_eq!(hide.label, "Hide History");
+    assert!(app.invoke_host_command(&hide.invocation().unwrap()));
+    layout(&mut app);
+    assert!(!app.history.as_ref().unwrap().is_open());
+    assert!(!has_open_button(&app));
+}
+
+#[test]
+fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
+    use crate::host_chrome::model::CommandGroup;
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    store.create_record(&checkout).unwrap();
+    let mut state = State::from_doc(
+        store
+            .read(&checkout.id, automerge::AutoCommit::clone)
+            .unwrap(),
+    );
+    state.doc.put(ROOT, "body", "typed").unwrap();
+    state.commit_action(None, None);
+    let mut app = app_on(state);
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+
+    let rows = app
+        .history
+        .as_ref()
+        .unwrap()
+        .current_entries(&app.state.doc);
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows[0].is_genesis(),
+        "History keeps the version it was created as"
+    );
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .map(|command| command.label)
+        .collect();
+    assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
+    assert!(recent[0].contains("Edited body"), "{recent:?}");
+}
+
+#[test]
+fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
+    use crate::host_chrome::model::CommandGroup;
+    let mut app = native_chrome_app();
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .collect();
+    assert_eq!(recent.len(), 2, "both committed changes are listed");
+    assert!(
+        recent
+            .iter()
+            .all(|command| command.enabled && command.label.contains(" · "))
+    );
+    let entry = |command: &crate::host_chrome::model::HostCommand| {
+        command.invocation().unwrap().arguments["entry"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(entry(&recent[0]), entry(&recent[1]));
+
+    // The older change, so opening at it is not the timeline's default.
+    let chosen = &recent[1];
+    assert!(app.invoke_host_command(&chosen.invocation().unwrap()));
+    layout(&mut app);
+    let history = app.history.as_ref().unwrap();
+    assert!(history.is_open());
+    let selected: Vec<_> = history
+        .timeline_selection()
+        .into_iter()
+        .map(crate::standalone_history_host::encode_entry)
+        .collect();
+    assert_eq!(selected, [entry(chosen)]);
+    assert!(
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-before"))
+                .unwrap_or(false)
+        }),
+        "the chosen change shows its before and after"
+    );
+    assert_eq!(
+        app.host_commands(true)
+            .iter()
+            .filter(|command| command.group == CommandGroup::RecentChanges)
+            .count(),
+        2,
+        "open History still lists its changes"
     );
 }

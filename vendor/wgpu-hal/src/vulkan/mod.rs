@@ -500,6 +500,9 @@ struct DeviceShared {
 
     empty_descriptor_set_layout: vk::DescriptorSetLayout,
 
+    /// Tilo: set by [`Device::simulate_device_loss`].
+    simulated_loss: core::sync::atomic::AtomicBool,
+
     // The `drop_guard` field must be the last field of this struct so it is dropped last.
     // Do not add new fields after it.
     drop_guard: Option<crate::DropGuard>,

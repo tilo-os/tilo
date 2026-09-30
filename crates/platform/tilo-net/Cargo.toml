@@ -1,0 +1,120 @@
+[package]
+name = "tilo-net"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The network capability on Linux, macOS and the web: async HTTP with streaming bodies, WebSocket, WebTransport, network status, raw sockets on the desktop, and Tilo's one TLS provider and trust source."
+
+[lib]
+name = "tilo_net"
+path = "src/lib.rs"
+
+[dependencies]
+bytes.workspace = true
+http = "1.4"
+thiserror.workspace = true
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+url.workspace = true
+base64 = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+# Channels between browser callbacks and the tasks that await them; `sync`
+# builds on every target.
+tokio = { workspace = true, features = ["macros", "sync"] }
+
+# Linux and macOS: reqwest, tokio-websockets and web-transport-quinn on the
+# system trust bundle and the ring provider.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rustls.workspace = true
+# Resolves to `crates/system/tilo-native-certs` through the workspace patch.
+rustls-native-certs.workspace = true
+# The verifier reqwest uses: the Tilo bundle (through the patched
+# rustls-native-certs) on Linux, the Keychain on macOS.
+rustls-platform-verifier = "0.6.2"
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
+tokio-websockets = { version = "0.13.3", default-features = false, optional = true, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
+futures-util = { workspace = true, optional = true, features = ["sink"] }
+web-transport-quinn = { version = "0.12.1", default-features = false, optional = true, features = ["ring"] }
+# Peer-to-peer frame streams: iroh QUIC, length-prefixed frames.
+iroh = { workspace = true, optional = true }
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", optional = true, features = ["tokio"] }
+
+# The browser: fetch, WebSocket and WebTransport, pinned to the versions the
+# browser runtime links so a page carries one copy.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+# The page has one thread, so a browser object is only ever touched where it
+# was made; this lets the same futures be `Send` on every target.
+send_wrapper = { version = "0.6", features = ["futures"] }
+web-sys = { version = "=0.3.85", features = [
+    "AbortController",
+    "AbortSignal",
+    "BinaryType",
+    "CloseEvent",
+    "Event",
+    "Headers",
+    "Location",
+    "MessageEvent",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "Request",
+    "RequestCredentials",
+    "RequestInit",
+    "RequestMode",
+    "RequestRedirect",
+    "Response",
+    "ResponseType",
+    "WebSocket",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+] }
+
+[features]
+default = []
+# `Client`: HTTP requests with streaming bodies, decompressed like a browser's.
+# The legacy reqwest builders in `tilo_net::http` come with it on the desktop.
+http = ["dep:reqwest", "reqwest/gzip", "reqwest/brotli", "dep:base64"]
+# The legacy blocking reqwest builder, for desktop-only code.
+blocking = ["http", "reqwest/blocking"]
+# JSON request and response bodies.
+json = ["http", "dep:serde", "dep:serde_json"]
+ws = ["dep:tokio-websockets", "dep:tokio-rustls", "dep:futures-util"]
+webtransport = ["dep:web-transport-quinn"]
+# Raw TCP and UDP (and TLS over TCP) on the desktop; `Unsupported` on the web.
+sockets = ["dep:tokio-rustls"]
+# Peer-to-peer frame streams (`p2p`) on the desktop; `Unsupported` on the web.
+p2p = ["dep:iroh", "dep:wire-frame", "dep:serde_json"]
+
+# The loopback tests exercise every backend.
+[[test]]
+name = "desktop"
+required-features = ["http", "json", "ws", "webtransport"]
+
+[[test]]
+name = "live"
+required-features = ["http", "ws", "sockets"]
+
+[dev-dependencies]
+test-http = { path = "../../dev/test-http" }
+tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
+futures-util = { workspace = true, features = ["sink"] }
+# A loopback WebTransport server with a pinned self-signed certificate.
+web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
+rcgen.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -66,6 +66,17 @@ pub async fn start_host(
     state: &Path,
     web_listen: SocketAddr,
 ) -> TestHost {
+    start_host_plain(root, host, state, web_listen, None).await
+}
+
+/// [`start_host`], also serving plain HTTP at `plain_listen`.
+pub async fn start_host_plain(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    plain_listen: Option<SocketAddr>,
+) -> TestHost {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
@@ -98,6 +109,7 @@ pub async fn start_host(
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: Vec::new(),
+            plain_listen,
         })
         .await
         .unwrap();
@@ -133,13 +145,15 @@ pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) ->
     )
     .await
     .unwrap();
-    let mut attempts = 0u32;
+    let deadline = tilo_test_env::hang_deadline();
     let pending = loop {
         if let Some(pending) = approver.list_pending().await.unwrap().pop() {
             break pending;
         }
-        attempts = attempts.saturating_add(1);
-        assert!(attempts < 1000, "no pending certification request");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no pending certification request"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
     let cert = issue_device_cert(
@@ -166,13 +180,19 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    for _ in 0..1500 {
+    // A loaded runner makes reconnects and replays slow, not wrong: wait on
+    // the shared hang bound rather than a count of polls.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         if let Some(value) = probe().await {
             return value;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("timed out waiting for {what}");
 }
 
 pub fn start_peer(
@@ -180,6 +200,23 @@ pub fn start_peer(
     cert: DeviceCert,
     host_cert: DeviceCert,
     key: SigningKey,
+) -> PeerHandle {
+    start_peer_with_store(
+        host,
+        cert,
+        host_cert,
+        key,
+        Arc::new(MemoryPeerStore::default()),
+    )
+}
+
+/// [`start_peer`] over `store`, as a page reloaded from its profile.
+pub fn start_peer_with_store(
+    host: Host,
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    key: SigningKey,
+    store: Arc<MemoryPeerStore>,
 ) -> PeerHandle {
     PeerHandle::start(
         PeerConfig {
@@ -189,7 +226,7 @@ pub fn start_peer(
             revocations: RevocationList::new(),
         },
         Arc::new(key),
-        Arc::new(MemoryPeerStore::default()),
+        store,
     )
 }
 
@@ -208,6 +245,46 @@ pub fn route() -> DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: ROOM.into(),
         record: "note-1".into(),
+    }
+}
+
+/// An HTTPS client that counts the `/events` answers the host sent.
+pub struct Recording {
+    pub inner: Arc<https::DevHttps>,
+    /// Largest single answer.
+    pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every answer's bytes together.
+    pub total: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Recording {
+    pub fn new(inner: Arc<https::DevHttps>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            largest_page: Arc::default(),
+            total: Arc::default(),
+        })
+    }
+}
+
+impl tilo_browser_peer::HttpClient for Recording {
+    fn post(
+        &self,
+        path: &str,
+        session: Option<&str>,
+        body: Vec<u8>,
+    ) -> tilo_browser_peer::HttpFuture<'_> {
+        use std::sync::atomic::Ordering;
+        let events = path.ends_with("/events");
+        let answer = self.inner.post(path, session, body);
+        Box::pin(async move {
+            let answer = answer.await;
+            if events && let Ok((_, bytes)) = &answer {
+                self.largest_page.fetch_max(bytes.len(), Ordering::Relaxed);
+                self.total.fetch_add(bytes.len(), Ordering::Relaxed);
+            }
+            answer
+        })
     }
 }
 

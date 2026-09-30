@@ -15,9 +15,9 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 base64.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 clap.workspace = true

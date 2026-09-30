@@ -277,7 +277,23 @@ impl SessionOwner {
     ) -> Result<CommitReceipt> {
         let row = match request {
             Some(request) if !publications.is_empty() => {
-                if publications.len() != 1 {
+                // One exact window record, optionally preceded by the same
+                // app's absent package primary (an `OpenApp`, see `desktop_commands`).
+                let (created, primaries) = publications
+                    .split_last()
+                    .context("creation publication missing")?;
+                if primaries.len() > 1
+                    || primaries.iter().any(|primary| {
+                        !matches!(
+                            primary,
+                            NeighbourMsg::AppDocument { app_id, cluster_id, record_id, .. }
+                                if app_id == &request.intent.app
+                                    && cluster_id == self.peer.room()
+                                    && record_id.is_empty()
+                                    && self.peer.document(app_id, "").is_none()
+                        )
+                    })
+                {
                     bail!("desktop creation must resolve one exact record");
                 }
                 let NeighbourMsg::AppDocument {
@@ -286,7 +302,7 @@ impl SessionOwner {
                     record_id,
                     envelope,
                     ..
-                } = &publications[0]
+                } = created
                 else {
                     bail!("creation publication missing");
                 };

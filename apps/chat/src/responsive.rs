@@ -22,7 +22,7 @@
 //! This mirrors the weather app's adaptive sidebar, generalised to a pair
 //! of opposing flaps.
 
-use ui::clock::Instant;
+use ui::time::Instant;
 
 /// Below this allocated width (logical px) the left flap (rail + channel
 /// sidebar) switches from docked to overlay. Chosen so the rail + sidebar +
@@ -91,7 +91,7 @@ impl FlapState {
             // pane without animating in.
             reveal: if docked_default_open { 1.0 } else { 0.0 },
             last_mode: None,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             docked_default_open,
         }
     }
@@ -156,7 +156,7 @@ impl FlapState {
     /// Advance the eased reveal toward the target using real elapsed time
     /// (frame-rate independent). Returns true while still animating.
     pub fn tick(&mut self, mode: FlapMode) -> bool {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         self.tick_with_dt(mode, dt)

@@ -140,7 +140,32 @@ pub fn prepare_host_app_dir(
     for sub in [".local/share", ".local/state", ".config", ".cache"] {
         std::fs::create_dir_all(dir.join(sub))?;
     }
+    remove_startup_traces_from_home(&dir);
     Ok(dir)
+}
+
+/// **Migration.** Startup traces used to be written at the top of the app
+/// directory, which is the app's home: Files listed them, and the one being
+/// written kept it repainting. They now go to `.local/state`; the old files
+/// are diagnostics nothing reads, so they are removed rather than moved.
+fn remove_startup_traces_from_home(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with("startup-")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Bind the app's directory into the sandbox and point the environment
@@ -310,6 +335,21 @@ mod tests {
             assert!(dir.join(".config").is_dir());
             assert!(dir.join(".cache").is_dir());
             assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
+        }
+        // Phase `startup_traces_leave_the_apps_home`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
+            std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
+            std::fs::create_dir(dir.join("startup-album.json")).unwrap();
+            prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            assert!(!dir.join("startup-7.json").exists());
+            assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
+            assert!(
+                dir.join("startup-album.json").is_dir(),
+                "a directory is the user's"
+            );
         }
     }
 }

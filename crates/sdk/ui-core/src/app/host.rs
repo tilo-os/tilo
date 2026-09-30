@@ -249,10 +249,10 @@ fn run_layout_pass(
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
     let mut recomposed = false;
-    let view = app.root_widget.view_state();
+    let view = crate::view::capability::view_state(app.root_widget.as_ref());
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
-    app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+    app.layout.structure_dirty |= app.take_composition_dirty();
     let focus = if app.layout.structure_dirty {
         CompositionFocus::capture_live(app.root_widget.as_ref())
     } else {
@@ -274,7 +274,7 @@ fn run_layout_pass(
             app.rebuild_structure();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
-                app.root_widget.restore_view_state(view);
+                crate::view::capability::restore_view_state(app.root_widget.as_mut(), view);
             }
             // Sync may legitimately replace newly mounted delegates. Never
             // inspect or measure stale raw pointers from that build.
@@ -336,7 +336,7 @@ fn run_layout_pass(
         let start = crate::time::now();
         app.apply_history_presentation(current_root);
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
-        let dirty = app.root_widget.take_structure_dirty();
+        let dirty = app.take_composition_dirty();
         // Translation-only frames avoid both composition and a tree snapshot.
         let geometry = if viewport_changed {
             composition_geometry(&app.layout.taffy, current_root)?
@@ -489,7 +489,7 @@ impl crate::view::FreezeThaw for App {
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         let focus = crate::view::capture_focus(ordinal, || {
             self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| widget.get_state())
+                self.inspect_node(id, |widget| crate::undo::get_state(widget))
                     .ok()
                     .flatten()
             })

@@ -1,5 +1,7 @@
 //! Allocation-free decomposition of compositor animation demand.
 
+use std::time::{Duration, Instant};
+
 pub(crate) const HOST_SOURCE_NAMES: [&str; 15] = [
     "root-transition",
     "quick-settings",
@@ -72,6 +74,76 @@ pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
         .enumerate()
         .filter_map(move |(bit, name)| (bits & (1 << bit) != 0).then_some(name))
 }
+
+/// Paths to the deepest widgets under `root` that report animation demand:
+/// the ones actually holding the loop open, not every container above them.
+/// Allocates, so only the paint-stats diagnostic calls it.
+pub(crate) fn animating_leaves(root: &dyn ui::widget::Widget) -> Vec<String> {
+    fn walk(widget: &dyn ui::widget::Widget, path: &str, out: &mut Vec<String>) {
+        if !widget.needs_animation_frame() {
+            return;
+        }
+        // `~` marks a widget that animates without asking to be redrawn: a
+        // retained parent cache then never reaches it again.
+        let clean = if widget.needs_redraw() { "" } else { "~" };
+        let here = match widget.test_id() {
+            Some(id) => format!("{path}/{}{clean}#{id}", widget.name()),
+            None => format!("{path}/{}{clean}", widget.name()),
+        };
+        let before = out.len();
+        widget.for_each_child(&mut |child| walk(child, &here, out));
+        if out.len() == before {
+            let rect = widget.get_rect();
+            let detail = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<crate::shell::foreign::ForeignSurfaceWidget>())
+                .map(|foreign| format!(" {}", foreign.animation_detail()))
+                .unwrap_or_default();
+            out.push(format!(
+                "{here}@{:.0},{:.0} {:.0}x{:.0}{detail}",
+                rect.x0,
+                rect.y0,
+                rect.width(),
+                rect.height()
+            ));
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, "", &mut out);
+    out
+}
+
+/// Paths to the deepest widgets under `root` whose one-shot wake deadline
+/// is `due` or earlier: who will wake an otherwise idle loop next. Allocates,
+/// so only diagnostics call it.
+pub(crate) fn wake_deadline_leaves(root: &dyn ui::widget::Widget, due: Instant) -> Vec<String> {
+    fn walk(widget: &dyn ui::widget::Widget, due: Instant, path: &str, out: &mut Vec<String>) {
+        if widget.next_wake_deadline().is_none_or(|at| at > due) {
+            return;
+        }
+        let here = match widget.test_id() {
+            Some(id) => format!("{path}/{}#{id}", widget.name()),
+            None => format!("{path}/{}", widget.name()),
+        };
+        let before = out.len();
+        widget.for_each_child(&mut |child| walk(child, due, &here, out));
+        if out.len() == before {
+            out.push(here);
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        root,
+        due.checked_add(WAKE_MATCH_SLACK).unwrap_or(due),
+        "",
+        &mut out,
+    );
+    out
+}
+
+/// Deadlines computed against a slightly later clock than the minimum they
+/// are compared with still name the same owner.
+pub(crate) const WAKE_MATCH_SLACK: Duration = Duration::from_millis(1);
 
 #[cfg(test)]
 mod tests {

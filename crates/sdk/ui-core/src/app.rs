@@ -47,6 +47,11 @@ mod close_admission;
 mod document_history;
 mod handoff;
 mod history_actions;
+mod host_commands;
+
+/// The broker-facing History door, which host chrome presents as its own.
+#[cfg(any(feature = "native", test))]
+pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
 mod model_lifecycle;
@@ -173,6 +178,12 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
+    /// A host command chosen in the operating system's own chrome (a menu
+    /// item), entering the same door as the palette.
+    HostCommand(tilo_actions::ControlInvocation),
+    /// Text typed into the host's title-bar search field; search continues
+    /// in the palette.
+    HostSearch(String),
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
@@ -214,7 +225,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
-/// (`QUICK_UI_PERF=1` natively), so the per-frame read is cheap.
+/// (`TILO_UI_PERF=1` natively), so the per-frame read is cheap.
 #[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
@@ -222,7 +233,7 @@ fn perf_enabled() -> bool {
     *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
 }
 
-/// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
+/// `TILO_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
 /// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.
@@ -546,7 +557,7 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<crate::time::SystemTime>,
+    theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night
     /// when last applied: sunrise and sunset re-theme without a file change.
@@ -641,7 +652,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -739,10 +750,7 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
@@ -979,9 +987,12 @@ impl App {
         self.control_domain.close();
         self.actions.bound_record_sync = None;
         self.component_close_reports
-            .extend(self.root_widget.close_components());
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+            .extend(crate::component_lifecycle::close_components(
+                self.root_widget.as_mut(),
+            ));
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
     }
@@ -998,8 +1009,9 @@ impl App {
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         std::mem::take(&mut self.component_close_reports)
     }
 
@@ -1834,8 +1846,35 @@ impl App {
         let Some(intent) = find_appearance_intent(self.root_widget.as_ref()) else {
             return false;
         };
+        self.apply_appearance_intent(intent)
+    }
+
+    /// What a standalone app read from its host OS, through the same door as
+    /// a settings pane's intent. The caller applies each host change once, so
+    /// a contrast toggle made in the app holds until the host changes again.
+    #[cfg(feature = "native")]
+    pub(crate) fn apply_host_appearance(
+        &mut self,
+        host: crate::host_appearance::HostAppearance,
+    ) -> bool {
+        let _entry = self.enter_wake_scope();
+        let mut base_theme = crate::host_appearance::theme(host);
+        base_theme.caret_width = self.accessibility.base_theme.caret_width;
+        self.apply_appearance_intent(crate::theme::AppearanceIntent {
+            base_theme,
+            high_contrast: host.high_contrast,
+            reduce_motion: host.reduce_motion,
+            text_scale: self.accessibility.text_scale,
+            ui_scale: self.accessibility.ui_scale,
+        })
+    }
+
+    #[cfg(feature = "native")]
+    fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name {
+        if intent.base_theme.name != self.accessibility.base_theme.name
+            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
@@ -1882,10 +1921,7 @@ impl App {
         }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            settings_store::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -1894,7 +1930,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -2175,8 +2211,9 @@ impl App {
     pub(crate) fn init_layout_with_dev_view(&mut self, dev_view: Option<crate::view::View>) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
@@ -2196,7 +2233,7 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.get_state())
+            self.inspect_node(id, |widget| crate::undo::get_state(widget))
                 .ok()
                 .flatten()
         });
@@ -2212,6 +2249,17 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// The root's structure flag, and framework History's: it is composed
+    /// as a separate root, so its replaced controls are not the app's.
+    pub(crate) fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root_widget.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
+    }
+
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
     /// focused widget's caret/selection only if focus lands back on the SAME
     /// focusable ordinal after rebuild (never onto a different field);
@@ -2222,8 +2270,7 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed =
-            self.layout.structure_dirty || self.root_widget.take_structure_dirty();
+        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -2234,7 +2281,7 @@ impl App {
                 None
             } else {
                 self.focused_node.and_then(|id| {
-                    self.inspect_node(id, |widget| widget.get_state())
+                    self.inspect_node(id, |widget| crate::undo::get_state(widget))
                         .ok()
                         .flatten()
                 })
@@ -2249,8 +2296,9 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.taffy = TaffyTree::new();
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         self.bindings.clear();
         self.layout.node_map.clear();
         self.build_history_presentation();
@@ -2277,7 +2325,8 @@ impl App {
                     if exact.is_some()
                         && let Some(state) = prev_focus_state.as_deref()
                     {
-                        let _ = self.mutate_node(id, |widget| widget.set_state(state));
+                        let _ =
+                            self.mutate_node(id, |widget| crate::undo::set_state(widget, state));
                     }
                 }
             }
@@ -2700,7 +2749,7 @@ mod number_input_layout_tests;
 
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
-mod framework_history_tests;
+pub(crate) mod framework_history_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;
@@ -2714,7 +2763,7 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-daemons"))]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 
@@ -2735,11 +2784,14 @@ pub(crate) fn flush_widget_owned_persistence(
     root: &mut dyn Widget,
     reports: &mut Vec<crate::application::ComponentCloseReport>,
 ) -> Result<(), String> {
-    reports.extend(root.take_component_close_reports());
-    let current = root
-        .try_flush_owned_persistence()
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
+    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
         .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(root.take_component_close_reports());
+    reports.extend(crate::component_lifecycle::take_component_close_reports(
+        root,
+    ));
     for report in reports.iter_mut() {
         if report.record_error.is_some() && report.record_retry.is_some() {
             // The report retains the actual outgoing owner and exact legacy
@@ -2792,6 +2844,8 @@ mod legacy_owner_routing_tests {
     }
 
     impl Widget for OwnerProbe {
+        crate::provides!(dyn crate::component_lifecycle::ComponentLifecycle);
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -2866,6 +2920,9 @@ mod legacy_owner_routing_tests {
                 .unwrap();
             true
         }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for OwnerProbe {
         fn take_component_close_reports(
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {

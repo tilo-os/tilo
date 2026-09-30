@@ -38,6 +38,22 @@ pub fn get_volume() -> Result<f32, String> {
     parse_wpctl_volume(&out)
 }
 
+/// Whether the default sink is a real output. With no audio device
+/// `WirePlumber` still offers a "Dummy Output" (`auto_null`) whose volume reads
+/// and sets fine and does nothing, so a control over it has no device behind it.
+pub fn has_output_device() -> bool {
+    run_capture("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]).is_ok_and(|out| !is_dummy_sink(&out))
+}
+
+fn is_dummy_sink(inspect: &str) -> bool {
+    inspect.lines().any(|line| {
+        let line = line.trim_start_matches(|c: char| c.is_whitespace() || c == '*');
+        line.strip_prefix("node.name")
+            .and_then(|rest| rest.trim_start().strip_prefix('='))
+            .is_some_and(|value| value.trim().trim_matches('"') == "auto_null")
+    })
+}
+
 /// Toggle the default audio sink's mute state via
 /// `wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`.
 ///
@@ -143,6 +159,15 @@ fn parse_wpctl_volume(stdout: &str) -> Result<f32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_dummy_output_counts_as_no_device() {
+        let dummy = "id 34, type PipeWire:Interface:Node\n    media.class = \"Audio/Sink\"\n  * node.description = \"Dummy Output\"\n  * node.name = \"auto_null\"\n";
+        let real = "id 52, type PipeWire:Interface:Node\n  * node.description = \"Built-in Audio Analog Stereo\"\n  * node.name = \"alsa_output.pci-0000_00_1f.3.analog-stereo\"\n";
+        assert!(is_dummy_sink(dummy));
+        assert!(!is_dummy_sink(real));
+        assert!(!is_dummy_sink(""));
+    }
 
     #[test]
     fn wpctl_volume_lines_parse_level_and_mute_or_fail() {

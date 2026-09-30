@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -214,6 +214,8 @@ impl DerefMut for QueryEditorChild {
 }
 
 impl Widget for QueryEditorChild {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -317,28 +319,27 @@ impl Widget for QueryEditorChild {
         self.editor.ime_purpose()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.editor.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.editor.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.editor.get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.editor.set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.editor.text_review()
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.editor.layout_needs_measure()
+    }
+}
+
+impl ui::undo::UndoPoints for QueryEditorChild {
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+    fn get_state(&self) -> Option<String> {
+        self.editor.get_state()
+    }
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
     }
 }
 
@@ -997,7 +998,7 @@ impl DbClientApp {
             query_drag: None,
             query_measure_dirty: false,
             flap: FlapState::open_when_docked(),
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             scrim_rect: Rect::ZERO,
             toggle_btn: Rect::ZERO,
             run_hover: false,
@@ -1329,7 +1330,7 @@ impl DbClientApp {
     /// headless frame captures the chip that replaced the old status strip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// `--shots --connect`: open the "New connection" sheet so the modal can
@@ -1841,7 +1842,8 @@ impl Widget for DbClientApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2096,7 +2098,7 @@ impl Widget for DbClientApp {
         // advance the eased reveal toward the resolved open/closed target.
         let split = self.split_layout();
         self.flap.reconcile(split);
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64();
         self.last_tick = now;
         self.flap.tick(split, dt);
@@ -2417,7 +2419,7 @@ impl Widget for DbClientApp {
         self.flap_animating()
             || (self.schema_in_tree() && self.tree.needs_animation_frame())
             || self.session.busy()
-            || self.status_bubble.needs_frame(Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn draw_overlay(
@@ -2580,28 +2582,27 @@ impl Widget for DbClientApp {
                 && self.editor.wants_pointer_capture())
     }
 
+    fn text_review(&self) -> Option<(usize, String)> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.text_review())
+            .flatten()
+    }
+}
+
+impl ui::undo::UndoPoints for DbClientApp {
     fn needs_commit(&self) -> bool {
         self.editor.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.editor.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.get_state())
             .flatten()
     }
-
     fn set_state(&mut self, state: &str) {
         self.editor.set_state(state);
-    }
-
-    fn text_review(&self) -> Option<(usize, String)> {
-        (self.session.tab == MainTab::Query)
-            .then(|| self.editor.text_review())
-            .flatten()
     }
 }
 
@@ -4095,7 +4096,7 @@ impl DbClientApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_bubble_label();
         // Poke only when the summary actually changes (a connect, a query
         // completing, a table-count tick) — draw runs every frame, so poking

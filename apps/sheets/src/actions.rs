@@ -228,7 +228,14 @@ pub enum SheetsAction {
     /// local file is an external effect, but the resulting workbook content is
     /// a normal collaborative action: one undo point, one history entry, and
     /// a byte-identical peer replay with no privately-written half import.
-    ImportSheets { sheets: Vec<ImportedSheet> },
+    ImportSheets {
+        sheets: Vec<ImportedSheet>,
+        /// Drop the workbook's only sheet when it is still blank, so a file
+        /// imported into a new workbook is the workbook rather than its
+        /// second tab.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace_blank: bool,
+    },
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
     /// the cell. When `fmt` is `Some`, the cell's display format is set to it in
     /// the same action (smart-typed entry carries its inferred format here);
@@ -267,6 +274,20 @@ pub enum SheetsAction {
         sheet_id: String,
         cells: Vec<FormatWrite>,
     },
+    /// Style every cell of the inclusive range `c0,r0:c1,r1`: bold text and/or
+    /// a display format. `None` leaves that attribute as it is.
+    SetStyle {
+        sheet_id: String,
+        c0: u32,
+        r0: u32,
+        c1: u32,
+        r1: u32,
+        bold: Option<bool>,
+        fmt: Option<String>,
+    },
+    /// Delete several rows (zero-based, as they are before the action) in one
+    /// change; the rows below each move up.
+    DeleteRows { sheet_id: String, rows: Vec<u32> },
     /// Append a new blank sheet named `name`.
     AddSheet { name: String, new_sheet_id: String },
     /// Insert a new blank sheet named `name` at the anchored slot `at`.
@@ -438,7 +459,7 @@ fn range_resource(label: &'static str, sheet_id: &str, cells: usize) -> HistoryR
 )]
 fn history_resource(action: &SheetsAction) -> HistoryResource {
     match action {
-        SheetsAction::ImportSheets { sheets } => (
+        SheetsAction::ImportSheets { sheets, .. } => (
             "Import workbook",
             "sheets.workbook".to_string(),
             "sheets.workbook",
@@ -456,6 +477,20 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
         SheetsAction::SetFormats {
             sheet_id, cells, ..
         } => range_resource("Format range", sheet_id, cells.len()),
+        SheetsAction::SetStyle {
+            sheet_id,
+            c0,
+            r0,
+            c1,
+            r1,
+            ..
+        } => range_resource("Format range", sheet_id, range_area(*c0, *r0, *c1, *r1)),
+        SheetsAction::DeleteRows { sheet_id, rows } => (
+            "Delete rows",
+            format!("sheets.sheet:{sheet_id}"),
+            "sheets.sheet",
+            format!("{} row(s)", rows.len()),
+        ),
         SheetsAction::AddSheet { name, new_sheet_id } => (
             "Add sheet",
             format!("sheets.sheet:{new_sheet_id}"),
@@ -630,11 +665,18 @@ impl Action for SheetsAction {
         // later coordinate/format is malformed or stale.
         validate_action(doc, self)?;
         match self {
-            SheetsAction::ImportSheets { sheets } => {
+            SheetsAction::ImportSheets {
+                sheets,
+                replace_blank,
+            } => {
+                let blank = *replace_blank && workbook_is_blank(doc);
                 for imported in sheets {
                     let sheet =
                         SheetsDoc::add_sheet_with_id(doc, &imported.name, &imported.sheet_id);
                     apply_set_cells(doc, sheet, &imported.cells);
+                }
+                if blank && !sheets.is_empty() {
+                    SheetsDoc::delete_sheet(doc, 0);
                 }
             }
             SheetsAction::SetCell {
@@ -671,6 +713,41 @@ impl Action for SheetsAction {
             SheetsAction::SetFormats {
                 sheet_id, cells, ..
             } => apply_set_formats(doc, resolve_sheet(doc, sheet_id)?, cells),
+            SheetsAction::SetStyle {
+                sheet_id,
+                c0,
+                r0,
+                c1,
+                r1,
+                bold,
+                fmt,
+            } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                for row in *r0..=*r1 {
+                    for col in *c0..=*c1 {
+                        if let Some(bold) = bold {
+                            SheetsDoc::set_cell_bold(doc, sheet, (col, row), *bold);
+                        }
+                        if let Some(fmt) = fmt {
+                            SheetsDoc::set_cell_format(
+                                doc,
+                                sheet,
+                                (col, row),
+                                CellFormat::from_str(fmt),
+                            );
+                        }
+                    }
+                }
+            }
+            SheetsAction::DeleteRows { sheet_id, rows } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                let mut rows = rows.clone();
+                rows.sort_unstable();
+                rows.dedup();
+                for at in rows.into_iter().rev() {
+                    restructure(doc, sheet, delete_row_map(at));
+                }
+            }
             SheetsAction::AddSheet { name, new_sheet_id } => {
                 SheetsDoc::add_sheet_with_id(doc, name, new_sheet_id);
             }
@@ -1093,7 +1170,35 @@ fn validate_imported_sheets(doc: &Doc, sheets: &[ImportedSheet]) -> Result<(), A
 )]
 fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
     match action {
-        SheetsAction::ImportSheets { sheets } => validate_imported_sheets(doc, sheets),
+        SheetsAction::ImportSheets { sheets, .. } => validate_imported_sheets(doc, sheets),
+        SheetsAction::SetStyle {
+            sheet_id,
+            c0,
+            r0,
+            c1,
+            r1,
+            bold: _,
+            fmt,
+        } => {
+            validate_sheet(doc, 0, sheet_id)?;
+            if !valid_range(*c0, *r0, *c1, *r1)
+                || range_area(*c0, *r0, *c1, *r1) > MAX_WRITES_PER_ACTION
+                || fmt.as_deref().is_some_and(|fmt| !valid_format(fmt))
+            {
+                return refuse("style range or format is invalid");
+            }
+            Ok(())
+        }
+        SheetsAction::DeleteRows { sheet_id, rows } => {
+            validate_sheet(doc, 0, sheet_id)?;
+            if rows.is_empty()
+                || rows.len() > MAX_WRITES_PER_ACTION
+                || rows.iter().any(|row| *row > MAX_ROW)
+            {
+                return refuse("rows to delete are invalid");
+            }
+            Ok(())
+        }
         SheetsAction::SetCell {
             sheet,
             sheet_id,
@@ -1375,6 +1480,29 @@ fn valid_range(c0: u32, r0: u32, c1: u32, r1: u32) -> bool {
     valid_addr(c0, r0) && valid_addr(c1, r1) && c0 <= c1 && r0 <= r1
 }
 
+fn range_area(c0: u32, r0: u32, c1: u32, r1: u32) -> usize {
+    let width = usize::try_from(c1.saturating_sub(c0))
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let height = usize::try_from(r1.saturating_sub(r0))
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    width.saturating_mul(height)
+}
+
+/// A workbook of one sheet with no cells, formats, charts or comments.
+fn workbook_is_blank(doc: &mut Doc) -> bool {
+    if SheetsDoc::sheet_count(doc) != 1 {
+        return false;
+    }
+    let snap = SheetsDoc::snapshot_sheet(doc, 0, APPLY_CURRENCY);
+    snap.raw.is_empty()
+        && snap.fmt.is_empty()
+        && snap.bold.is_empty()
+        && SheetsDoc::charts(doc, 0).is_empty()
+        && SheetsDoc::comments(doc, 0).is_empty()
+}
+
 fn valid_annotation(value: &str) -> bool {
     !value.trim().is_empty()
         && value.len() <= MAX_ANNOTATION_BYTES
@@ -1433,14 +1561,23 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
             new_fmt.insert(dst, *fmt);
         }
     }
+    let mut new_bold: Vec<Addr> = snap.bold.iter().filter_map(|addr| map(*addr)).collect();
+    new_bold.sort_unstable();
 
     // Clear every previously-populated cell first, in a stable order.
-    let mut old: Vec<Addr> = snap.raw.keys().chain(snap.fmt.keys()).copied().collect();
+    let mut old: Vec<Addr> = snap
+        .raw
+        .keys()
+        .chain(snap.fmt.keys())
+        .chain(snap.bold.iter())
+        .copied()
+        .collect();
     old.sort_unstable();
     old.dedup();
     for addr in old {
         SheetsDoc::set_cell_raw(doc, sheet, addr, "");
         SheetsDoc::set_cell_format(doc, sheet, addr, CellFormat::General);
+        SheetsDoc::set_cell_bold(doc, sheet, addr, false);
     }
 
     // Write the moved cells in a stable order.
@@ -1453,6 +1590,9 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
     fmts.sort_by_key(|(a, _)| *a);
     for (addr, fmt) in fmts {
         SheetsDoc::set_cell_format(doc, sheet, addr, fmt);
+    }
+    for addr in new_bold {
+        SheetsDoc::set_cell_bold(doc, sheet, addr, true);
     }
     // Charts and discussion anchors describe the same coordinate system as
     // cells, so structural edits must move them in this exact replay action.
@@ -1560,6 +1700,7 @@ pub fn import_sheets_action(
                 cells,
             })
             .collect(),
+        replace_blank: false,
     }
 }
 
@@ -1988,7 +2129,7 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
                         .expect("sheet operation serializes")
                 },
             )
-            .execution(ExecutionMode::Background { cancellable: false })
+            .execution(ExecutionMode::Background { cancellable: true })
             .returns(ResultSpec::Job),
         );
     }
@@ -2116,6 +2257,10 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
                 }
             },
         ));
+
+        for spec in crate::cell_actions::sheet_actions(idx, &stable, &searchable.cells) {
+            sheet = sheet.with_action(spec);
+        }
 
         // Charts and threads are canonical children, not popup-only state.
         // Each carries its UUID resource identity through deletion/resolution.
@@ -2808,6 +2953,7 @@ mod tests {
                 })
                 .collect();
             let mut action = SheetsAction::ImportSheets {
+                replace_blank: false,
                 sheets: vec![ImportedSheet {
                     name: "At the import limit".into(),
                     sheet_id: Uuid::new_v4().to_string(),
@@ -2815,7 +2961,7 @@ mod tests {
                 }],
             };
             assert!(validate_action(&doc, &action).is_ok());
-            let SheetsAction::ImportSheets { sheets } = &mut action else {
+            let SheetsAction::ImportSheets { sheets, .. } = &mut action else {
                 return;
             };
             sheets[0].cells.push(CellWrite {
@@ -2867,6 +3013,7 @@ mod tests {
             let mut doc = seeded();
             let before = doc.save();
             let action = SheetsAction::ImportSheets {
+                replace_blank: false,
                 sheets: vec![
                     ImportedSheet {
                         name: "Would exist".into(),
@@ -2920,10 +3067,11 @@ mod tests {
                     .find(|action| action.id == id)
                     .unwrap();
                 assert_eq!(action.params()[0].name.as_ref(), "path");
-                assert!(matches!(
+                assert_eq!(
                     action.contract.execution,
-                    ExecutionMode::Background { .. }
-                ));
+                    ExecutionMode::Background { cancellable: true },
+                    "{id} must stay cancellable so a stuck job cannot hold the one interchange slot"
+                );
                 assert_eq!(action.contract.result, ResultSpec::Job);
                 assert!(action.contract.validate_declaration().is_empty());
             }
@@ -2953,6 +3101,19 @@ mod tests {
         replay: [
             set_cell => |doc| encode(&set_cell_action(0, stable(doc, 0), (2, 4), "converge", None)),
             insert_row => |doc| encode(&insert_row_action(0, stable(doc, 0), 0)),
+            set_style => |doc| encode(&SheetsAction::SetStyle {
+                sheet_id: stable(doc, 0),
+                c0: 0,
+                r0: 0,
+                c1: 1,
+                r1: 2,
+                bold: Some(true),
+                fmt: Some("number".into()),
+            }),
+            delete_rows => |doc| encode(&SheetsAction::DeleteRows {
+                sheet_id: stable(doc, 0),
+                rows: vec![2, 0],
+            }),
             batched_set_cells => |doc| encode(&set_cells_action(
                 0,
                 stable(doc, 0),

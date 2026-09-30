@@ -531,7 +531,8 @@ def run_proof(repo, root, host_source_snapshot):
             "initialize",
             {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
+                # The proof reads full rows (descriptors and contracts).
+                "capabilities": {"experimental": {"so.tilo.mcp": {"detail": "full"}}},
                 "clientInfo": {"name": "runtime-auto-attach-proof", "version": "1"},
             },
         )

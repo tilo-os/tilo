@@ -85,6 +85,11 @@ impl Joined {
         Ok(joined)
     }
 
+    /// This device's endpoint, which the profile's other services share.
+    pub(super) fn endpoint(&self) -> iroh::Endpoint {
+        self.endpoint.clone()
+    }
+
     /// Redeem `invitation` with the host it names and start syncing the room.
     ///
     /// # Errors
@@ -225,7 +230,7 @@ impl Joined {
                         self.publish(&scope, &session);
                     }
                     Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
-                    Some(Inbound::RemoteAction { .. }) => {}
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {
@@ -309,6 +314,7 @@ impl Joined {
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
                 role,
+                replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },
             |_| format!("peer@{}", hex::encode(author)),

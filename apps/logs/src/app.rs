@@ -34,7 +34,7 @@
 )]
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -79,7 +79,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// has less than `POLL_INTERVAL` of history — that only delays the forced
 /// poll by at most `POLL_INTERVAL`, never panics.
 fn force_immediate_poll_at() -> Instant {
-    let now = Instant::now();
+    let now = ui::time::now();
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
@@ -237,7 +237,7 @@ impl LogsApp {
             m: Metrics::ONE,
             push: PushNav::default(),
             allow_live,
-            last_poll: Instant::now(),
+            last_poll: ui::time::now(),
         };
         app.rebuild_facets();
         app
@@ -2467,7 +2467,8 @@ impl Widget for LogsApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
     );
 
     fn measure(
@@ -2520,7 +2521,7 @@ impl Widget for LogsApp {
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
-            self.last_poll = Instant::now();
+            self.last_poll = ui::time::now();
             match crate::journal::load_live(2000) {
                 Ok(fresh) => {
                     self.entries = fresh;
@@ -2849,12 +2850,6 @@ impl Widget for LogsApp {
         }
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-    }
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -2871,6 +2866,15 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::undo::UndoPoints for LogsApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
     }
 }
 

@@ -43,7 +43,7 @@ def step_script(text, step_id):
 class EnabledImagerPlatforms(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-        self.winget_monitor = (ROOT / ".forgejo/workflows/monitor-winget.yml").read_text()
+        self.winget_monitor = (ROOT / ".forgejo/workflows/release-imager-winget.yml").read_text()
 
     def test_release_gate_requires_every_enabled_platform_artifact(self):
         with self.subTest(phase='full native and tags require both macos architectures'):

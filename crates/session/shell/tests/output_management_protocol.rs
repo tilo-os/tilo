@@ -634,8 +634,11 @@ fn await_confirmation(
     transaction
 }
 
-fn in_fifteen_seconds() -> u64 {
-    unix_now_ms().saturating_add(15_000)
+/// A countdown no test outlives: tests end it themselves when they need it
+/// ended, so how long the host takes to get there cannot end it early.
+fn countdown_outlasting_the_test() -> u64 {
+    let bound = u64::try_from(tilo_test_env::hang_bound().as_millis()).expect("bound fits u64");
+    unix_now_ms().saturating_add(bound.saturating_mul(2))
 }
 
 /// The shell, laid out over the fixture's displays, showing the prompt the
@@ -727,7 +730,7 @@ fn a_kanshi_like_tool_lights_up_a_hotplugged_monitor_without_asking() {
     harness.pump("apply reaches the compositor", |_| {
         DisplayTransaction::load().is_some()
     });
-    await_confirmation(&mut harness, in_fifteen_seconds(), |_| {});
+    await_confirmation(&mut harness, countdown_outlasting_the_test(), |_| {});
     assert_eq!(
         harness.state.output_management.take_confirmation(),
         None,
@@ -740,7 +743,7 @@ fn a_kanshi_like_tool_lights_up_a_hotplugged_monitor_without_asking() {
 fn a_refresh_rate_the_connector_does_not_list_shows_the_card() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    let transaction = apply_and_await(&mut harness, in_fifteen_seconds());
+    let transaction = apply_and_await(&mut harness, countdown_outlasting_the_test());
     assert_eq!(
         harness.state.output_management.take_confirmation(),
         Some(DisplayConfirmation {
@@ -764,7 +767,7 @@ fn turning_off_the_display_under_the_pointer_shows_the_card() {
     harness.pump("apply reaches the compositor", |_| {
         DisplayTransaction::load().is_some()
     });
-    await_confirmation(&mut harness, in_fifteen_seconds(), |_| {});
+    await_confirmation(&mut harness, countdown_outlasting_the_test(), |_| {});
     assert!(
         harness
             .state
@@ -779,7 +782,7 @@ fn turning_off_the_display_under_the_pointer_shows_the_card() {
 fn a_tool_reapplying_a_reverted_layout_is_refused_with_one_notice() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Escape);
@@ -839,7 +842,7 @@ fn a_tool_reapplying_a_reverted_layout_is_refused_with_one_notice() {
 fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness
         .state
         .output_management
@@ -890,7 +893,7 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
 fn escape_restores_the_previous_layout() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Escape);
@@ -902,7 +905,7 @@ fn escape_restores_the_previous_layout() {
 fn running_out_of_time_restores_the_previous_layout() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, _layout) = prompt_host(&harness, confirmation.expect("asked"));
     assert!(!host.poll_display_confirmation(), "time is left");
@@ -919,7 +922,7 @@ fn running_out_of_time_restores_the_previous_layout() {
 fn an_answer_given_elsewhere_closes_the_prompt() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, _layout) = prompt_host(&harness, confirmation.expect("asked"));
 
@@ -935,7 +938,7 @@ fn an_answer_given_elsewhere_closes_the_prompt() {
 fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     let confirmation = harness.state.output_management.take_confirmation();
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Tab);
@@ -952,7 +955,7 @@ fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
     assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
     assert!(TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
 
-    let second = apply_and_await(&mut harness, in_fifteen_seconds());
+    let second = apply_and_await(&mut harness, countdown_outlasting_the_test());
     assert_eq!(
         harness.state.output_management.take_confirmation(),
         None,
@@ -968,7 +971,7 @@ fn another_tool_is_still_asked_about() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
     TrustedDisplayTools::trust(DisplayTool::new(KANSHI)).expect("trust");
     let mut harness = Harness::privileged_tool("docked-laptop", Some("/usr/bin/wlr-randr"));
-    apply_and_await(&mut harness, in_fifteen_seconds());
+    apply_and_await(&mut harness, countdown_outlasting_the_test());
     assert_eq!(
         harness
             .state
@@ -1004,11 +1007,15 @@ fn a_change_that_leaves_no_display_on_is_never_kept_on_trust() {
     harness.pump("apply reaches the compositor", |_| {
         DisplayTransaction::load().is_some()
     });
-    await_confirmation(&mut harness, in_fifteen_seconds(), |transaction| {
-        for output in transaction.candidate.outputs.values_mut() {
-            output.enabled = false;
-        }
-    });
+    await_confirmation(
+        &mut harness,
+        countdown_outlasting_the_test(),
+        |transaction| {
+            for output in transaction.candidate.outputs.values_mut() {
+                output.enabled = false;
+            }
+        },
+    );
     assert!(
         harness
             .state

@@ -21,6 +21,10 @@ const SYSEXT_DIR: &str = "/var/lib/extensions";
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/bin/tilo-control";
+/// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity`
+/// reads the machine's device key, which provisioning an identity needs, and
+/// `video` opens `/dev/dri`.
+const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 
 pub struct SystemdApply {
     layers_dir: PathBuf,
@@ -136,6 +140,10 @@ impl Apply for SystemdApply {
 
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         if let Some(uid) = uid_of(user) {
+            run(
+                "usermod",
+                Command::new("usermod").args(["--append", "--groups", SLOT_USER_GROUPS, user]),
+            )?;
             return Ok(uid);
         }
         // A regular (non-system) user, like the production login it stands in for.
@@ -146,6 +154,8 @@ impl Apply for SystemdApply {
                 "--user-group",
                 "--comment",
                 "Tilo dev slot",
+                "--groups",
+                SLOT_USER_GROUPS,
                 user,
             ]),
         )?;
@@ -322,6 +332,26 @@ impl Apply for SystemdApply {
         .map(|out| out.trim().to_owned())
     }
 
+    fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError> {
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        let tilo = Path::new(&home).join(".config/tilo");
+        for name in DESKTOP_STATE {
+            let path = tilo.join(name);
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match removed {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(DaemonError::io(format!("remove {}", path.display()))(error));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn release_seat(&mut self, _slot: &str, seat: &str) -> Result<(), DaemonError> {
         let device = Path::new(VKMS_CONFIGFS).join(seat);
         if device.exists() {
@@ -424,7 +454,11 @@ impl Apply for SystemdApply {
     fn session_environment(&mut self, slot: &str) -> Vec<(String, String)> {
         self.session_pid(slot)
             .and_then(|pid| fs::read(format!("/proc/{pid}/environ")).ok())
-            .map(|environ| crate::exec::session_env(&environ))
+            .map(|environ| {
+                let mut env = crate::exec::session_env(&environ);
+                crate::exec::add_published_wayland_display(&mut env);
+                env
+            })
             .unwrap_or_default()
     }
 
@@ -608,6 +642,15 @@ fn start_input_server(
         ),
     })
 }
+
+/// The desktop layout under `~/.config/tilo`: the tree, its document and
+/// the document's meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 4] = [
+    "state.json",
+    "state.automerge",
+    "state.automerge.meta",
+    "state.json.invocations",
+];
 
 fn home_of(user: &str) -> Option<String> {
     let output = Command::new("getent")

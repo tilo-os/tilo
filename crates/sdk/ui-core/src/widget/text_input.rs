@@ -3889,7 +3889,8 @@ impl Drop for TextInput {
 impl Widget for TextInput {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
     );
 
     fn set_interaction_environment(
@@ -4495,51 +4496,6 @@ impl Widget for TextInput {
             .filter(|deadline| *deadline > crate::time::now())
     }
 
-    fn needs_commit(&self) -> bool {
-        if let Some(t) = self.last_edit_time {
-            t.elapsed() >= Duration::from_secs(1)
-        } else {
-            false
-        }
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    fn get_state(&self) -> Option<String> {
-        if let Some(anchor) = self.selection_anchor {
-            let affinity = if self.caret_affinity == TextAffinity::After {
-                "a"
-            } else {
-                "b"
-            };
-            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
-        }
-        Some(match self.caret_affinity {
-            // Keep the historical state shape for the overwhelmingly common
-            // unambiguous/default caret.
-            TextAffinity::Before => self.cursor_pos.to_string(),
-            TextAffinity::After => format!("{}:a", self.cursor_pos),
-        })
-    }
-
-    fn set_state(&mut self, state: &str) {
-        let mut parts = state.split(':');
-        let byte = parts.next().unwrap_or_default();
-        let affinity = parts.next().unwrap_or("b");
-        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
-        if let Ok(pos) = byte.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.selection_anchor = anchor;
-            self.caret_affinity = if affinity == "a" {
-                TextAffinity::After
-            } else {
-                TextAffinity::Before
-            };
-        }
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         // A secret field never surfaces its contents.
         if !self.is_focused || self.secret {
@@ -4649,15 +4605,85 @@ impl Widget for TextInput {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for TextInput {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.path.is_empty() {
-            None
+impl crate::undo::UndoPoints for TextInput {
+    fn needs_commit(&self) -> bool {
+        if let Some(t) = self.last_edit_time {
+            t.elapsed() >= Duration::from_secs(1)
         } else {
-            Some(PresenceKey::Widget {
-                path: self.path.clone(),
-            })
+            false
         }
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+    fn get_state(&self) -> Option<String> {
+        if let Some(anchor) = self.selection_anchor {
+            let affinity = if self.caret_affinity == TextAffinity::After {
+                "a"
+            } else {
+                "b"
+            };
+            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+        }
+        Some(match self.caret_affinity {
+            // Keep the historical state shape for the overwhelmingly common
+            // unambiguous/default caret.
+            TextAffinity::Before => self.cursor_pos.to_string(),
+            TextAffinity::After => format!("{}:a", self.cursor_pos),
+        })
+    }
+    fn set_state(&mut self, state: &str) {
+        let mut parts = state.split(':');
+        let byte = parts.next().unwrap_or_default();
+        let affinity = parts.next().unwrap_or("b");
+        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
+        if let Ok(pos) = byte.parse::<usize>() {
+            self.cursor_pos = pos;
+            self.selection_anchor = anchor;
+            self.caret_affinity = if affinity == "a" {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for TextInput {
+    /// The widget's path, else the document field it edits (an input bound
+    /// with [`TextInput::with_on_change_path`] or
+    /// [`TextInput::from_document_string`] has no structural path), so peers
+    /// editing the same field share carets.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if !self.path.is_empty() {
+            return Some(PresenceKey::Widget {
+                path: self.path.clone(),
+            });
+        }
+        (!self.on_change_path.is_empty()).then(|| PresenceKey::Widget {
+            path: vec![PathSegment::Field(self.on_change_path.clone())],
+        })
+    }
+
+    /// The caret, or the selection when one is extended, while focused. A
+    /// secret field publishes nothing.
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        if !self.is_focused || self.secret {
+            return None;
+        }
+        let key = self.presence_key()?;
+        let payload = match self.selection_anchor {
+            Some(anchor) if anchor != self.cursor_pos => {
+                crate::collaboration::PresencePayload::Selection {
+                    start: anchor.min(self.cursor_pos),
+                    end: anchor.max(self.cursor_pos),
+                }
+            }
+            _ => crate::collaboration::PresencePayload::Caret {
+                pos: self.cursor_pos,
+            },
+        };
+        Some((key, payload))
     }
 }
 

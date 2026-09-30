@@ -145,6 +145,9 @@ pub struct HostEnvironment {
     pub accessibility: AccessibilityInputs,
     /// The user's preferred locale, as a POSIX or BCP 47 tag.
     pub locale: Option<String>,
+    /// The desktop session (`XDG_CURRENT_DESKTOP`, a colon-separated list),
+    /// which decides who draws History and Search.
+    pub desktop: Option<String>,
     pub diagnostics: RunnerDiagnostics,
     /// Directory `tilo-app dev` uses to hand the open document, route, and
     /// caret to the next process. Absent outside that loop.

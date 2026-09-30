@@ -12,7 +12,6 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/state.rs", "Files"),
     ("shell/state.rs", "Notes"),
     ("shell/state.rs", "Terminal"),
-    ("shell/tab_binding.rs", "While you were away"),
     // Fixed app names.
     ("shell/editor_app.rs", "Editor"),
     ("shell/notes_app.rs", "Note"),
@@ -44,6 +43,8 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/tool_intents.rs", "invalid tool request"),
     ("shell/tool_intents.rs", "tool request is too large"),
     ("shell/tool_intents.rs", "unsupported tool protocol"),
+    // Secret Service / Keychain item label, not shell UI copy.
+    ("shell/collab_mls_authority.rs", "Tilo MLS key"),
 ];
 
 #[test]
@@ -59,6 +60,7 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
             "test_control.rs",
             "test_control_socket.rs",
             "hosted_test_control.rs",
+            "dev_test_identity.rs",
         ])
         .min_files(100)
         .check();

@@ -199,7 +199,7 @@ fn prepare_fixture_owned(
     let records = host.records_for(crate::definition())?;
     let prepared = crate::hosting::prepare_default(&mut host, INSTANCE, Some(&source), inputs)?;
     if matches!(scenario, Some("image" | "image_edit")) {
-        let bytes = std::fs::read(source.join(crate::storage::PAGES_DIR).join("image.png"))
+        let bytes = crate::files::read(&source.join(crate::storage::PAGES_DIR).join("image.png"))
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         records
             .with(&crate::hosting::default_notebook().id, |doc| {
@@ -250,9 +250,12 @@ fn prepare_fixture_owned(
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let document = record_dir.join(app_state::DOCUMENT_FILE);
         let (signal, wait) = std::sync::mpsc::channel();
-        let release =
-            atomic_file::block_replacement(&document, wait, std::time::Duration::from_secs(30))
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let release = tilo_files::native::atomic::block_replacement(
+            &document,
+            wait,
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
         SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
         *directory.failed_save_signal.borrow_mut() = Some(signal);
         *directory.failed_save_release.borrow_mut() = Some(release);
@@ -737,7 +740,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             driver.type_text(" Chen");
         }
         Some("image" | "image_edit") => {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let deadline = ui::time::now() + std::time::Duration::from_secs(2);
             let target = loop {
                 driver.relayout();
                 if let Some(target) =
@@ -745,12 +748,12 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 {
                     break target;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     return Err(LaunchError::Operation(
                         "image preview did not become ready within two seconds".into(),
                     ));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(5));
             };
             if scenario == Some("image_edit") {
                 driver
@@ -866,7 +869,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 alice,
                 block,
                 SelectionRange { start: 0, end: 18 },
-                std::time::Instant::now(),
+                ui::time::now(),
             );
             presence.upsert_remote_cursor("alice".into(), [560.0, 300.0], Some("Alice"));
             if let Some(other) = driver
@@ -908,14 +911,14 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 }
                 // Let the temporary filesystem fault clear. The writer keeps
                 // its real sticky error visible until close retries it.
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(50));
                 for _ in 0..100 {
                     driver.relayout();
                     if semantic_observed(driver, |node| node.name.as_deref() == Some("Save failed"))
                     {
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                 }
             }
         }

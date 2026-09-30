@@ -104,6 +104,10 @@ pub enum Command {
         desktop_id: String,
         display_name: String,
     },
+    /// Mint a throwaway collaboration identity for the session's user.
+    /// Answered by the native test transport, and only by a dev build
+    /// (`compositor::dev_test_identity`); never on the agent-control socket.
+    ProvisionTestIdentity,
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -125,6 +129,35 @@ pub enum Command {
         phase: TouchPhaseKind,
         x: f64,
         y: f64,
+    },
+    /// A touchpad swipe of `fingers` fingers travelling `(dx, dy)` logical
+    /// pixels over `steps` updates (default 10), fed to the gesture tracker
+    /// the DRM runtime feeds from libinput, under the default direction
+    /// preference. Fewer than three fingers are the focused client's and
+    /// are refused. `release: false` keeps the fingers down, to inspect a
+    /// gesture in flight; [`Self::SwipeEnd`] lifts them.
+    Swipe {
+        fingers: u32,
+        dx: f64,
+        dy: f64,
+        #[serde(default)]
+        steps: Option<u32>,
+        #[serde(default = "default_release")]
+        release: bool,
+    },
+    /// Lift the fingers of a swipe left in flight; `cancelled` as libinput
+    /// reports a cancelled gesture.
+    SwipeEnd {
+        #[serde(default)]
+        cancelled: bool,
+    },
+    /// A touchpad pinch of `fingers` fingers to absolute `scale` over `steps`
+    /// updates (default 10), through the same tracker as [`Self::Swipe`].
+    Pinch {
+        fingers: u32,
+        scale: f64,
+        #[serde(default)]
+        steps: Option<u32>,
     },
     /// Copy `text` from in-process chrome, through `ui::text_selection::clipboard_copy` — lands on the real clipboard backend and is published as a Wayland selection on the next tick.
     ClipboardCopy {
@@ -368,9 +401,26 @@ impl ActionRefusal {
     }
 }
 
+fn default_release() -> bool {
+    true
+}
+
+/// One edge of a synthetic touchpad gesture, as libinput reports it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchpadEdge {
+    SwipeBegin { fingers: u32 },
+    SwipeUpdate { dx: f64, dy: f64 },
+    SwipeEnd { cancelled: bool },
+    PinchBegin { fingers: u32 },
+    PinchUpdate { scale: f64 },
+    PinchEnd,
+}
+
 /// Side-effect actions the transport must execute after a `dispatch_command` call. Pure values, no I/O — the transport synthesises `winit::WindowEvent`s from these through `host_and_taffy_mut`, the same wire as `WinitBackend`/`ShellDriver`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedAction {
+    /// One touchpad gesture edge for the shell's gesture tracker.
+    Touchpad(TouchpadEdge),
     /// Move the cursor to `(x, y)` in compositor coordinates.
     CursorMoved { x: f64, y: f64 },
     /// Inject a left mouse button event: `pressed=true` is down, `false` is up.
@@ -589,6 +639,13 @@ pub fn dispatch_command<S: ControlState>(
             },
             Vec::new(),
         ),
+        Command::ProvisionTestIdentity => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "test identities are provisioned by the native test transport".to_string(),
+            },
+            Vec::new(),
+        ),
         Command::Watch { .. } => (
             Response::Err {
                 code: "test_transport_required".to_string(),
@@ -629,6 +686,24 @@ pub fn dispatch_command<S: ControlState>(
                 y: *y,
             }],
         ),
+        Command::Swipe {
+            fingers,
+            dx,
+            dy,
+            steps,
+            release,
+        } => swipe(*fingers, (*dx, *dy), *steps, *release),
+        Command::SwipeEnd { cancelled } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+                cancelled: *cancelled,
+            })],
+        ),
+        Command::Pinch {
+            fingers,
+            scale,
+            steps,
+        } => pinch(*fingers, *scale, *steps),
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
@@ -739,6 +814,73 @@ fn drag(
     (Response::Ok { frame: 0 }, actions)
 }
 
+/// Most updates a synthetic gesture is split into: a 144 Hz touchpad
+/// reports about this many over a two-second swipe.
+const MAX_GESTURE_STEPS: u32 = 288;
+
+fn client_gesture(fingers: u32) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::Err {
+            code: "client_gesture".into(),
+            message: format!(
+                "a {fingers}-finger gesture belongs to the focused client; the shell takes {} or more",
+                crate::compositor::backend::drm::gestures::SHELL_FINGER_THRESHOLD
+            ),
+        },
+        Vec::new(),
+    )
+}
+
+/// [`Command::Swipe`]: begin, `steps` equal updates, and an end unless the
+/// fingers stay down.
+fn swipe(
+    fingers: u32,
+    (dx, dy): (f64, f64),
+    steps: Option<u32>,
+    release: bool,
+) -> (Response, Vec<PlannedAction>) {
+    if !crate::compositor::backend::drm::gestures::claims(fingers) {
+        return client_gesture(fingers);
+    }
+    let steps = steps.unwrap_or(10).clamp(1, MAX_GESTURE_STEPS);
+    let n = f64::from(steps);
+    let mut actions = vec![PlannedAction::Touchpad(TouchpadEdge::SwipeBegin {
+        fingers,
+    })];
+    actions.extend((0..steps).map(|_| {
+        PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+            dx: dx / n,
+            dy: dy / n,
+        })
+    }));
+    if release {
+        actions.push(PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+            cancelled: false,
+        }));
+    }
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// [`Command::Pinch`]: begin, `steps` updates easing the absolute scale
+/// from 1 to `scale`, end.
+fn pinch(fingers: u32, scale: f64, steps: Option<u32>) -> (Response, Vec<PlannedAction>) {
+    if !crate::compositor::backend::drm::gestures::claims(fingers) {
+        return client_gesture(fingers);
+    }
+    let steps = steps.unwrap_or(10).clamp(1, MAX_GESTURE_STEPS);
+    let n = f64::from(steps);
+    let mut actions = vec![PlannedAction::Touchpad(TouchpadEdge::PinchBegin {
+        fingers,
+    })];
+    actions.extend((1..=steps).map(|s| {
+        PlannedAction::Touchpad(TouchpadEdge::PinchUpdate {
+            scale: 1.0 + (scale - 1.0) * f64::from(s) / n,
+        })
+    }));
+    actions.push(PlannedAction::Touchpad(TouchpadEdge::PinchEnd));
+    (Response::Ok { frame: 0 }, actions)
+}
+
 /// [`Command::Key`]: a press+release pair for one key.
 fn key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
     match parse_key_tag(key) {
@@ -786,7 +928,25 @@ fn key_down_or_up(key: &str, pressed: bool) -> (Response, Vec<PlannedAction>) {
 fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
     // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
     let mut actions = Vec::with_capacity(text.chars().count().saturating_mul(2));
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        // A line break or tab in typed text is the key that makes one, as a
+        // person typing it would press; `\r\n` is one line break.
+        let control = match c {
+            '\r' if chars.peek() == Some(&'\n') => continue,
+            '\n' | '\r' => Some(NamedKeyTag::Enter),
+            '\t' => Some(NamedKeyTag::Tab),
+            _ => None,
+        };
+        if let Some(named) = control {
+            for pressed in [true, false] {
+                actions.push(PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(named),
+                    pressed,
+                });
+            }
+            continue;
+        }
         let tag = KeyTag::Char(c);
         let shift = KeyTag::Named(NamedKeyTag::Shift);
         // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
@@ -1650,6 +1810,93 @@ mod tests {
     }
 
     #[test]
+    fn touchpad_gestures_plan_tracker_edges_and_leave_few_fingers_to_the_client() {
+        let state = StaticState::new(&[]);
+        let wire: Command = serde_json::from_value(serde_json::json!({
+            "op": "swipe", "fingers": 3, "dx": -300.0, "dy": 0.0, "steps": 3
+        }))
+        .expect("swipe parses with release defaulted");
+        let (resp, actions) = dispatch_command(&wire, &state);
+        assert_eq!(resp, Response::Ok { frame: 0 });
+        assert_eq!(
+            actions,
+            vec![
+                PlannedAction::Touchpad(TouchpadEdge::SwipeBegin { fingers: 3 }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeUpdate {
+                    dx: -100.0,
+                    dy: 0.0
+                }),
+                PlannedAction::Touchpad(TouchpadEdge::SwipeEnd { cancelled: false }),
+            ]
+        );
+
+        let (_, held) = dispatch_command(
+            &Command::Swipe {
+                fingers: 4,
+                dx: 0.0,
+                dy: 50.0,
+                steps: Some(2),
+                release: false,
+            },
+            &state,
+        );
+        assert!(
+            !held.contains(&PlannedAction::Touchpad(TouchpadEdge::SwipeEnd {
+                cancelled: false
+            })),
+            "a held swipe keeps its fingers down"
+        );
+
+        let (_, pinch) = dispatch_command(
+            &Command::Pinch {
+                fingers: 3,
+                scale: 0.5,
+                steps: Some(2),
+            },
+            &state,
+        );
+        assert_eq!(
+            pinch,
+            vec![
+                PlannedAction::Touchpad(TouchpadEdge::PinchBegin { fingers: 3 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchUpdate { scale: 0.75 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchUpdate { scale: 0.5 }),
+                PlannedAction::Touchpad(TouchpadEdge::PinchEnd),
+            ]
+        );
+
+        for two in [
+            Command::Swipe {
+                fingers: 2,
+                dx: 10.0,
+                dy: 0.0,
+                steps: None,
+                release: true,
+            },
+            Command::Pinch {
+                fingers: 2,
+                scale: 2.0,
+                steps: None,
+            },
+        ] {
+            let (resp, actions) = dispatch_command(&two, &state);
+            assert!(
+                matches!(&resp, Response::Err { code, .. } if code == "client_gesture"),
+                "{two:?} answered {resp:?}"
+            );
+            assert!(actions.is_empty());
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1834,6 +2081,39 @@ mod tests {
                         },
                     ]
                 );
+            }
+
+            // Phase `line_breaks_and_tabs_in_typed_text_press_enter_and_tab`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Type {
+                        text: "a\nb\r\nc\td\r".to_string(),
+                    },
+                    &state,
+                );
+                let pressed: Vec<KeyTag> = actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        PlannedAction::KeyboardKey { key, pressed: true } => Some(*key),
+                        _ => None,
+                    })
+                    .collect();
+                let enter = KeyTag::Named(NamedKeyTag::Enter);
+                assert_eq!(
+                    pressed,
+                    vec![
+                        KeyTag::Char('a'),
+                        enter,
+                        KeyTag::Char('b'),
+                        enter,
+                        KeyTag::Char('c'),
+                        KeyTag::Named(NamedKeyTag::Tab),
+                        KeyTag::Char('d'),
+                        enter,
+                    ]
+                );
+                assert_eq!(actions.len(), pressed.len() * 2, "every press is released");
             }
 
             // Phase `typing_a_capital_holds_shift_around_it`.
@@ -2514,6 +2794,23 @@ mod agent_request_tests {
             assert_eq!(code(response), AGENT_REQUIRED);
             assert!(actions.is_empty());
         }
+    }
+
+    #[test]
+    fn test_identity_provisioning_is_neither_pure_nor_agent_reachable() {
+        struct NoState;
+        impl ControlState for NoState {
+            fn widget_registry(&self) -> HashMap<String, Rect> {
+                HashMap::new()
+            }
+        }
+        let request = parse_request(r#"{"op":"provision_test_identity"}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert!(matches!(request.command, Command::ProvisionTestIdentity));
+        assert!(!Command::ProvisionTestIdentity.agent_permitted());
+        let (response, actions) = dispatch_command(&Command::ProvisionTestIdentity, &NoState);
+        assert_eq!(code(response), "test_transport_required");
+        assert!(actions.is_empty());
     }
 }
 

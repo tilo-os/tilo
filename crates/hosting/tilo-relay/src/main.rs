@@ -9,6 +9,11 @@
 //! - `dev` (feature `web`) — a throwaway local host for browser development:
 //!   its own user root, the browser listener, and an approver that
 //!   certifies every browser that asks.
+//! - `room` (feature `web`) — a short-lived shared room: like `dev`, but it
+//!   certifies only the browsers whose pairing codes its operator admits
+//!   (`admit <code>` on stdin) and announces each on stdout.
+//! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
+//!   with `--agent-model settings|scripted|openai:<url>|cloud:<url>`.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
@@ -68,6 +73,10 @@ enum Cmd {
     /// it certifies every browser device that asks).
     #[cfg(feature = "web")]
     Dev(web_cli::DevArgs),
+    /// A short-lived shared room: its own user root and browser listener,
+    /// certifying only the browsers its operator admits on stdin.
+    #[cfg(feature = "web")]
+    Room(web_cli::RoomArgs),
     /// Print current metrics + hosted workspace list.
     Status,
     /// Add a workspace to the config file.
@@ -120,6 +129,10 @@ fn run() -> anyhow::Result<()> {
         #[cfg(feature = "web")]
         Cmd::Dev(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::dev(args, wait_for_shutdown()))?
+        }
+        #[cfg(feature = "web")]
+        Cmd::Room(args) => {
+            tilo_rt::daemon("tilo-relay").run(web_cli::room(args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
@@ -342,6 +355,22 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
         fs::full_replica::save_status(&status_path, &status).unwrap();
+        // The filesystem process keeps its status fresh; the relay honours
+        // only a recent one. Relay start can take longer than that bound.
+        let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let heartbeat = std::thread::spawn({
+            let (path, beating) = (status_path.clone(), std::sync::Arc::clone(&beating));
+            move || {
+                while beating.load(std::sync::atomic::Ordering::Acquire) {
+                    let mut status = status.clone();
+                    status.updated_at_ms = tilo_clock::unix_now_ms();
+                    let staged = path.with_extension("staged");
+                    std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
+                    std::fs::rename(&staged, &path).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        });
 
         let bundle_path = temp.path().join("home-peer.toml");
         let bundle = fs::full_replica::HomePeerSet {
@@ -365,7 +394,7 @@ mod tests {
         // These paths model the firstboot-generated handoff while keeping the
         // test hermetic instead of writing under /etc or /var/lib.
         config.home_peer_bundle = bundle_path;
-        config.full_replica_status = status_path;
+        config.full_replica_status = status_path.clone();
         config.state_root = temp.path().join("relay-state");
         config.identity_root = temp.path().join("identity");
         config.services = ServiceCapabilities::home_peer();
@@ -390,6 +419,8 @@ mod tests {
         );
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
+        beating.store(false, std::sync::atomic::Ordering::Release);
+        heartbeat.join().unwrap();
         relay.shutdown().await;
     }
 }

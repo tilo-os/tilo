@@ -1,0 +1,523 @@
+//! The cell-level agent surface on each `sheets.sheet`: read a range, write
+//! values and formulas, style a range, sort rows and delete rows.
+//!
+//! Every mutating action compiles to one ordinary [`SheetsAction`], so it is
+//! one undo step and replays like the same edit made on screen. Arguments are
+//! A1 references and plain JSON values, and the read returns only the cells a
+//! caller asked for, so a whole task fits in a few compact calls.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use automerge::{AutoCommit, ChangeHash};
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
+    ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind,
+    ParamType, Resource, ResultSpec,
+};
+use ui::semantic_document_read::{
+    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+};
+
+use crate::actions::{CellWrite, SearchableCell, SheetsAction, encode, sheet_resource_id};
+use crate::doc::SheetsDoc;
+use crate::model::{
+    Addr, CellFormat, CellValue, Currency, DateStyle, TimeStyle, a1_to_addr, addr_to_a1,
+    letters_to_col,
+};
+
+pub const READ_OPERATION_TYPE: &str = "sheets.read";
+pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
+    READ_OPERATION_TYPE,
+    read_result_schema,
+    validate_read,
+    project_read,
+)];
+
+/// The most cells one read returns; a larger range asks for a smaller one.
+pub const MAX_READ_CELLS: usize = 4096;
+const MAX_WRITES: usize = 16 * 1024;
+
+const FORMATS: [&str; 7] = [
+    "general", "number", "currency", "percent", "date", "time", "text",
+];
+
+fn invalid(message: impl Into<String>) -> EncodedAction {
+    EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: message.into().into_bytes(),
+    }
+}
+
+/// `A1` or `A1:D6`, normalised so the first corner is the top-left one.
+pub fn parse_range(text: &str) -> Option<(Addr, Addr)> {
+    let (a, b) = text.split_once(':').unwrap_or((text, text));
+    let (a, b) = (a1_to_addr(a)?, a1_to_addr(b)?);
+    Some(((a.0.min(b.0), a.1.min(b.1)), (a.0.max(b.0), a.1.max(b.1))))
+}
+
+fn range_label(start: Addr, end: Addr) -> String {
+    if start == end {
+        addr_to_a1(start.0, start.1)
+    } else {
+        format!(
+            "{}:{}",
+            addr_to_a1(start.0, start.1),
+            addr_to_a1(end.0, end.1)
+        )
+    }
+}
+
+/// A JSON cell value as the raw input Sheets stores; `None` leaves the cell.
+fn raw_of(value: &serde_json::Value) -> Result<Option<String>, String> {
+    Ok(Some(match value {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Bool(true) => "TRUE".into(),
+        serde_json::Value::Bool(false) => "FALSE".into(),
+        _ => return Err("cell values are strings, numbers, booleans or null".into()),
+    }))
+}
+
+fn format_code(name: &str) -> Option<String> {
+    Some(
+        match name {
+            "general" => CellFormat::General,
+            "number" => CellFormat::Number,
+            "currency" => CellFormat::Currency(Currency::USD),
+            "percent" => CellFormat::Percent,
+            "date" => CellFormat::Date(DateStyle::Iso),
+            "time" => CellFormat::Time(TimeStyle::H24),
+            "text" => CellFormat::Text,
+            _ => return None,
+        }
+        .as_str(),
+    )
+}
+
+fn set_cells_spec(sheet: usize, sheet_id: &str) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed(
+        "set-cells",
+        "Set cells",
+        "start cell and rows of values",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("start", ParamType::Text, "Top-left cell, e.g. A1"),
+            ActionParam::required(
+                "rows",
+                ParamType::Array,
+                "Rows of values written rightward and down from start; \"=…\" is a formula, \"\" clears, null skips",
+            ),
+        ],
+        move |args| {
+            let Some(start) = args.text("start").and_then(a1_to_addr) else {
+                return invalid("start must be a cell such as A1");
+            };
+            let Some(rows) = args.array("rows") else {
+                return invalid("rows must be an array of rows");
+            };
+            let mut cells = Vec::new();
+            for (dr, row) in (0u32..).zip(rows) {
+                let Some(row) = row.as_array() else {
+                    return invalid("each row must be an array of values");
+                };
+                for (dc, value) in (0u32..).zip(row) {
+                    match raw_of(value) {
+                        Ok(Some(raw)) => cells.push(CellWrite {
+                            col: start.0.saturating_add(dc),
+                            row: start.1.saturating_add(dr),
+                            raw,
+                            fmt: None,
+                        }),
+                        Ok(None) => {}
+                        Err(message) => return invalid(message),
+                    }
+                }
+            }
+            if cells.is_empty() {
+                return invalid("rows hold no values to write");
+            }
+            if cells.len() > MAX_WRITES {
+                return invalid(format!("at most {MAX_WRITES} cells per call"));
+            }
+            encode(&SheetsAction::SetCells {
+                sheet,
+                sheet_id: sheet_id.clone(),
+                cells,
+            })
+        },
+    )
+    .reversible()
+}
+
+fn format_cells_spec(sheet_id: &str) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed(
+        "format-cells",
+        "Format cells",
+        "range, bold and/or format",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("range", ParamType::Text, "Cell or range, e.g. A1:D1"),
+            ActionParam::optional("bold", ParamType::Boolean, "Bold text on or off"),
+            ActionParam::optional("format", ParamType::Text, "Number format").with_choices(FORMATS),
+        ],
+        move |args| {
+            let Some((start, end)) = args.text("range").and_then(parse_range) else {
+                return invalid("range must look like A1 or A1:D1");
+            };
+            let bold = args.boolean("bold");
+            let fmt = args.text("format").and_then(format_code);
+            if bold.is_none() && fmt.is_none() {
+                return invalid("give bold, format or both");
+            }
+            encode(&SheetsAction::SetStyle {
+                sheet_id: sheet_id.clone(),
+                c0: start.0,
+                r0: start.1,
+                c1: end.0,
+                r1: end.1,
+                bold,
+                fmt,
+            })
+        },
+    )
+    .reversible()
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+enum SortKey {
+    Number(f64),
+    Text(String),
+    Blank,
+}
+
+fn sort_key(cell: Option<&SearchableCell>) -> SortKey {
+    let Some(cell) = cell else {
+        return SortKey::Blank;
+    };
+    let shown = if cell.raw.starts_with('=') {
+        &cell.display
+    } else {
+        &cell.raw
+    };
+    let shown = shown.trim();
+    if shown.is_empty() {
+        SortKey::Blank
+    } else if let Ok(number) = shown.parse::<f64>() {
+        SortKey::Number(number)
+    } else {
+        SortKey::Text(shown.to_lowercase())
+    }
+}
+
+fn compare(a: &SortKey, b: &SortKey) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    // Numbers before text, blanks last, as spreadsheets sort.
+    match (a, b) {
+        (SortKey::Number(x), SortKey::Number(y)) => x.total_cmp(y),
+        (SortKey::Text(x), SortKey::Text(y)) => x.cmp(y),
+        (SortKey::Blank, SortKey::Blank) => Ordering::Equal,
+        (SortKey::Number(_), _) | (SortKey::Text(_), SortKey::Blank) => Ordering::Less,
+        _ => Ordering::Greater,
+    }
+}
+
+/// The writes that reorder the rows of `start..=end` by the column `by`.
+/// Formulas move with their row and keep pointing at it.
+pub fn sort_writes(
+    cells: &[SearchableCell],
+    (start, end): (Addr, Addr),
+    by: u32,
+    descending: bool,
+) -> Vec<CellWrite> {
+    let at: HashMap<Addr, &SearchableCell> = cells
+        .iter()
+        .map(|cell| ((cell.col, cell.row), cell))
+        .collect();
+    let mut rows: Vec<u32> = (start.1..=end.1).collect();
+    rows.sort_by(|a, b| {
+        let order = compare(
+            &sort_key(at.get(&(by, *a)).copied()),
+            &sort_key(at.get(&(by, *b)).copied()),
+        );
+        if descending { order.reverse() } else { order }
+    });
+    let mut writes = Vec::new();
+    for (to, from) in (start.1..).zip(rows) {
+        if to == from {
+            continue;
+        }
+        for col in start.0..=end.0 {
+            let raw = at.get(&(col, from)).map_or_else(String::new, |cell| {
+                let shift = i64::from(to) - i64::from(from);
+                if cell.raw.starts_with('=') && shift != 0 {
+                    crate::formula::offset_refs(&cell.raw, 0, shift)
+                } else {
+                    cell.raw.clone()
+                }
+            });
+            writes.push(CellWrite {
+                col,
+                row: to,
+                raw,
+                fmt: None,
+            });
+        }
+    }
+    writes
+}
+
+fn sort_rows_spec(sheet: usize, sheet_id: &str, cells: Vec<SearchableCell>) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed(
+        "sort-rows",
+        "Sort rows",
+        "range and the column to sort by",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required(
+                "range",
+                ParamType::Text,
+                "Rows to reorder, e.g. A2:C9 (leave the header out)",
+            ),
+            ActionParam::required("by", ParamType::Text, "Column letter to sort by, e.g. C"),
+            ActionParam::optional(
+                "descending",
+                ParamType::Boolean,
+                "Largest first; default smallest first",
+            ),
+        ],
+        move |args| {
+            let Some(range) = args.text("range").and_then(parse_range) else {
+                return invalid("range must look like A2:C9");
+            };
+            let Some(by) = args.text("by").and_then(|by| letters_to_col(by.trim())) else {
+                return invalid("by must be a column letter");
+            };
+            if by < range.0.0 || by > range.1.0 {
+                return invalid("by must be a column inside range");
+            }
+            let writes = sort_writes(
+                &cells,
+                range,
+                by,
+                args.boolean("descending").unwrap_or(false),
+            );
+            if writes.len() > MAX_WRITES {
+                return invalid(format!("at most {MAX_WRITES} cells per sort"));
+            }
+            encode(&SheetsAction::SetCells {
+                sheet,
+                sheet_id: sheet_id.clone(),
+                cells: writes,
+            })
+        },
+    )
+    .reversible()
+}
+
+fn delete_rows_spec(sheet_id: &str) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed(
+        "delete-rows",
+        "Delete rows",
+        "row numbers",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "rows",
+            ParamType::Array,
+            "Row numbers as shown (1-based) to delete in one step; rows below move up",
+        )],
+        move |args| {
+            let Some(rows) = args.array("rows") else {
+                return invalid("rows must be an array of row numbers");
+            };
+            let mut zero_based = Vec::new();
+            for row in rows {
+                match row.as_u64().and_then(|row| u32::try_from(row).ok()) {
+                    Some(row) if row >= 1 => zero_based.push(row - 1),
+                    _ => return invalid("rows are row numbers starting at 1"),
+                }
+            }
+            if zero_based.is_empty() {
+                return invalid("name at least one row");
+            }
+            encode(&SheetsAction::DeleteRows {
+                sheet_id: sheet_id.clone(),
+                rows: zero_based,
+            })
+        },
+    )
+    .reversible()
+    .destructive()
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadRequest {
+    sheet: String,
+    range: Option<String>,
+}
+
+fn read_cells_spec(sheet_id: &str) -> ActionSpec {
+    let sheet_id = sheet_id.to_string();
+    ActionSpec::typed_operation(
+        "read-cells",
+        "Read cells",
+        "range (omit for every used cell)",
+        OperationKind::Effect,
+        READ_OPERATION_TYPE,
+        vec![ActionParam::optional(
+            "range",
+            ParamType::Text,
+            "Cell or range, e.g. A1:D6; omit for the used range",
+        )],
+        move |args| {
+            let request = ReadRequest {
+                sheet: sheet_id.clone(),
+                range: args.text("range").map(str::to_owned),
+            };
+            EncodedAction::encode_operation(READ_OPERATION_TYPE, &request)
+                .unwrap_or_else(|_| invalid("the read request cannot be encoded"))
+        },
+    )
+    .with_contract(ActionContract {
+        result: ResultSpec::Json {
+            schema: read_result_schema().clone(),
+        },
+        ..ActionContract::view()
+    })
+}
+
+/// The cell actions each sheet publishes beside rename/delete/insert.
+pub fn sheet_actions(sheet: usize, sheet_id: &str, cells: &[SearchableCell]) -> Vec<ActionSpec> {
+    vec![
+        read_cells_spec(sheet_id),
+        set_cells_spec(sheet, sheet_id),
+        format_cells_spec(sheet_id),
+        sort_rows_spec(sheet, sheet_id, cells.to_vec()),
+        delete_rows_spec(sheet_id),
+    ]
+}
+
+fn validate_read(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
+    if payload.len() > MAX_REQUEST_BYTES {
+        return Err(SemanticReadError::Limit);
+    }
+    let request: ReadRequest =
+        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    if resource.kind != "sheets.sheet" || resource.id.as_str() != sheet_resource_id(&request.sheet)
+    {
+        return Err(SemanticReadError::InvalidRequest);
+    }
+    if request
+        .range
+        .as_deref()
+        .is_some_and(|range| parse_range(range).is_none())
+    {
+        return Err(SemanticReadError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn json_value(value: &CellValue) -> serde_json::Value {
+    match value {
+        CellValue::Empty => serde_json::Value::Null,
+        CellValue::Number(number) => serde_json::Number::from_f64(*number).map_or_else(
+            || serde_json::Value::String(number.to_string()),
+            serde_json::Value::Number,
+        ),
+        CellValue::Bool(value) => serde_json::Value::Bool(*value),
+        CellValue::Text(_) | CellValue::Error(_) => {
+            serde_json::Value::String(value.to_plain_string())
+        }
+    }
+}
+
+/// `rows` are computed values (numbers stay numbers), `formulas` and `bold`
+/// name only the cells that have them.
+fn project_read(
+    document: &AutoCommit,
+    _heads: &[ChangeHash],
+    payload: &[u8],
+) -> Result<ReadPage, SemanticReadError> {
+    let request: ReadRequest =
+        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let mut doc = document.clone();
+    let sheet = SheetsDoc::sheet_index_by_resource_id(&doc, &request.sheet)
+        .ok_or(SemanticReadError::InvalidRequest)?;
+    let snap = SheetsDoc::snapshot_sheet(&mut doc, sheet, Currency::USD);
+    let used = snap.raw.keys().chain(snap.bold.iter()).copied();
+    let (start, end) = match request.range.as_deref() {
+        Some(range) => parse_range(range).ok_or(SemanticReadError::InvalidRequest)?,
+        None => used.fold(((0, 0), (0, 0)), |(_, end), (col, row)| {
+            ((0, 0), (end.0.max(col), end.1.max(row)))
+        }),
+    };
+    let width = usize::try_from(end.0 - start.0).map_err(|_| SemanticReadError::Limit)? + 1;
+    let height = usize::try_from(end.1 - start.1).map_err(|_| SemanticReadError::Limit)? + 1;
+    if width.saturating_mul(height) > MAX_READ_CELLS {
+        return Err(SemanticReadError::Limit);
+    }
+    let values = crate::formula::recalculate(&snap.raw);
+    let mut rows = Vec::with_capacity(height);
+    let mut formulas = serde_json::Map::new();
+    let mut bold = Vec::new();
+    for row in start.1..=end.1 {
+        let mut line = Vec::with_capacity(width);
+        for col in start.0..=end.0 {
+            line.push(
+                values
+                    .get(&(col, row))
+                    .map_or(serde_json::Value::Null, json_value),
+            );
+            if let Some(raw) = snap.raw.get(&(col, row)).filter(|raw| raw.starts_with('=')) {
+                formulas.insert(addr_to_a1(col, row), raw.clone().into());
+            }
+            if snap.bold.contains(&(col, row)) {
+                bold.push(serde_json::Value::String(addr_to_a1(col, row)));
+            }
+        }
+        rows.push(serde_json::Value::Array(line));
+    }
+    Ok(ReadPage {
+        content: serde_json::json!({
+            "sheet": snap.name,
+            "range": range_label(start, end),
+            "rows": rows,
+            "formulas": formulas,
+            "bold": bold,
+        }),
+        next_cursor: None,
+    })
+}
+
+pub fn read_result_schema() -> &'static serde_json::Value {
+    static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let content = serde_json::json!({"type":"object","required":["sheet","range","rows","formulas","bold"],"additionalProperties":false,"properties":{
+            "sheet":{"type":"string"},
+            "range":{"type":"string"},
+            "rows":{"type":"array","items":{"type":"array"}},
+            "formulas":{"type":"object","additionalProperties":true},
+            "bold":{"type":"array","items":{"type":"string"}}
+        }});
+        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
+            "version":{"type":"integer","enum":[1]},
+            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
+                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+            }},
+            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
+                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
+            }},
+            "content":content,
+            "nextCursor":{"type":["string","null"],"maxLength":1024}
+        }})
+    })
+}
+
+#[cfg(test)]
+mod tests;

@@ -26,6 +26,7 @@ pub mod client_input;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
+pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
 pub mod device_rotation;
 pub mod drag_feedback;
@@ -62,7 +63,6 @@ pub mod output_heads;
 #[cfg(target_os = "linux")]
 pub mod output_management;
 pub mod pacing;
-#[cfg(target_os = "linux")]
 pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
@@ -380,6 +380,12 @@ fn value_to_backend(value: &str) -> BackendKind {
         "headless" => BackendKind::Headless,
         _ => BackendKind::Winit,
     }
+}
+
+/// The chord that releases a held pointer or captured keys, as the on-screen
+/// display names it.
+pub fn release_chord_label() -> String {
+    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
 }
 
 #[cfg(test)]

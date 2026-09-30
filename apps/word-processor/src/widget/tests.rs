@@ -249,7 +249,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let mut wp = WordProcessorWidget::new();
         wp.lifecycle.needs_commit = true;
 
-        let context = wp.take_commit_context().expect("native edit provenance");
+        let context = ui::undo::take_commit_context(&mut wp).expect("native edit provenance");
         assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
@@ -297,7 +297,7 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
     {
         let mut report = WordProcessorWidget::new();
         assert!(
-            report.record_intent().is_none(),
+            ui::record::capability::record_intent(&report).is_none(),
             "an untitled document names no record"
         );
         let report_path = std::env::temp_dir().join("report.odt");
@@ -307,10 +307,9 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
         let mut minutes = WordProcessorWidget::new();
         minutes.set_file(minutes_path, WpFormat::Markdown);
 
-        let a = report
-            .record_intent()
-            .expect("an open file names its record");
-        let b = minutes.record_intent().expect("and so does the other");
+        let a =
+            ui::record::capability::record_intent(&report).expect("an open file names its record");
+        let b = ui::record::capability::record_intent(&minutes).expect("and so does the other");
         assert_eq!(a.id, ui::RecordId::for_file(&report_path));
         assert_eq!(a.kind, ui::RecordKind::new("document"));
         assert_ne!(a.id, b.id, "two files are never one record");
@@ -8781,10 +8780,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
         wp.set_recovery_dir(dir.clone());
         wp.sync(&mut state.doc, &state.root);
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         wp.model_mut().insert_str(&mut state.doc, "unsaved ");
         wp.save_status = DocumentSaveStatus::Modified;
-        let before = wp.unsaved_documents(&state.doc);
+        let before = ui::component_lifecycle::unsaved_documents(&wp, &state.doc);
         assert_eq!(before.len(), 1);
         let pending_ops = state.doc.pending_ops();
         let invocation = tilo_actions::InvocationId::new();
@@ -8796,7 +8795,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
             Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
-        assert_eq!(wp.unsaved_documents(&state.doc), before);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
+            before
+        );
         assert_eq!(state.doc.pending_ops(), pending_ops);
         let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
             path: Some(dir.to_string_lossy().into_owned()),
@@ -8815,7 +8817,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             )
             .is_err()
         );
-        assert_eq!(wp.unsaved_documents(&state.doc), before);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
+            before
+        );
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "original source");
         let payload =
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
@@ -8834,7 +8839,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Completed(_))
         ));
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         assert!(
             std::fs::read_to_string(&source)
                 .unwrap()
@@ -8858,7 +8863,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         wp.sync(&mut state.doc, &state.root);
         assert_eq!(state.doc.pending_ops(), 0);
         assert_eq!(wp.blocks, saved_projection);
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -8877,7 +8882,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         state.commit_action(None, None);
         wp.try_write_to_current_path(&state.doc).unwrap();
         let saved_bytes = std::fs::read(&source).unwrap();
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         assert!(
             state.undo(None, None).is_some(),
             "use the host State undo service"
@@ -8887,7 +8892,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             "host undo bypasses widget event bookkeeping"
         );
         let before = state.doc.pending_ops();
-        assert_eq!(wp.unsaved_documents(&state.doc).len(), 1);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc).len(),
+            1
+        );
         assert_eq!(
             state.doc.pending_ops(),
             before,
@@ -9074,7 +9082,7 @@ fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draf
     wp.editing_field = Some(NumField::Size);
     wp.pending_resource_open = Some((invocation, PathBuf::from("pending.md")));
     wp.resource_file_invocation = Some(invocation);
-    assert!(wp.release_record_scope().is_err());
+    assert!(ui::record::capability::release_record_scope(&mut wp).is_err());
     assert!(wp.pending_resource_open.is_some());
     assert_eq!(wp.resource_file_invocation, Some(invocation));
     assert_eq!(wp.path, Some(selected.clone()));
@@ -9088,7 +9096,7 @@ fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draf
         invocation,
         output: tilo_actions::ActionOutput::default(),
     });
-    wp.release_record_scope().unwrap();
+    ui::record::capability::release_record_scope(&mut wp).unwrap();
     assert!(wp.pending_resource_open.is_none());
     assert!(wp.pending_replacement.is_none());
     assert!(!wp.replace_after_save);
@@ -9104,8 +9112,8 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-release-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -9177,6 +9185,12 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
         tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
             .is_none()
     );
+    // The records' writer commits in the background: every write lands and
+    // the writer stops before its directory goes.
+    drop(tile);
+    store.flush();
+    drop(store);
+    drop(owners);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -9191,8 +9205,8 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-recovery-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));

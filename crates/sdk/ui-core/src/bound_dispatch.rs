@@ -1598,6 +1598,13 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    // An agent principal names one writer; a person may write from several
+    // devices at once.
+    let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
+        actor.as_bytes().to_vec()
+    } else {
+        crate::history_source::authors::device_actor(actor, doc.get_actor())
+    };
     let dispatched =
         if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
             tilo_actions::Dispatched::AppliedLocal(
@@ -1605,7 +1612,7 @@ fn execute_document(
                     doc,
                     action,
                     encoded,
-                    Some(actor.as_bytes()),
+                    Some(writer.as_slice()),
                     context,
                 )
                 .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?,
@@ -1616,7 +1623,7 @@ fn execute_document(
                 action,
                 encoded,
                 transport,
-                Some(actor.as_bytes()),
+                Some(writer.as_slice()),
                 context,
             )
             .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
@@ -1699,6 +1706,9 @@ pub(crate) fn execute_resource_operation(
             tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
             tilo_actions::Dispatched::SubmittedToHost(_) => None,
         };
+        let before = applied
+            .as_ref()
+            .map(|envelope| envelope.base_change_hashes());
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
@@ -1710,7 +1720,21 @@ pub(crate) fn execute_resource_operation(
                 path,
             );
         }
-        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+        let value =
+            matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. }).then(|| {
+                // Submitted to another host, nothing here shows its effect.
+                before
+                    .and_then(|before| {
+                        let after = doc.get_heads();
+                        let changes = doc.diff(&before, &after);
+                        crate::resources::document_action_result(&*widget, doc, address, &changes)
+                    })
+                    .unwrap_or(serde_json::Value::Null)
+            });
+        crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+            value,
+            ..tilo_actions::ActionOutput::default()
+        })
     } else if let Some(readers) =
         crate::semantic_document_read::registered_in_tree(&*widget, &encoded.type_id)
     {
@@ -2750,13 +2774,13 @@ impl CallbackBinding {
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
         let bracket = crate::undo::take_committed_action(widget);
-        let commit = widget.needs_commit();
+        let commit = crate::undo::needs_commit(widget);
         if bracket.is_none() && !commit {
             return Ok(false);
         }
         let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let context = widget.take_commit_context();
-        let metadata = widget.get_state();
+        let context = crate::undo::take_commit_context(widget);
+        let metadata = crate::undo::get_state(widget);
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
             .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
@@ -2767,7 +2791,7 @@ impl CallbackBinding {
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             if !frame.operations.is_empty() {
                 drop(owned);
-                widget.on_commit();
+                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             frame.settle_segment(doc);
@@ -2781,7 +2805,7 @@ impl CallbackBinding {
                 // acknowledgement must not consume the pending owner's burst
                 // or replace the saved metadata/context.
                 drop(owned);
-                widget.on_commit();
+                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             if let Some(before) = bracket {
@@ -2811,7 +2835,7 @@ impl CallbackBinding {
             self.finish_action_boundary(doc)?;
         }
         // Arbitrary widget delivery happens after releasing the frame borrow.
-        widget.on_commit();
+        crate::undo::on_commit(widget);
         Ok(true)
     }
 
@@ -3640,14 +3664,14 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
                 && history.commit_action_authored_with_message(
                     doc,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
                 );
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-                widget.on_commit();
+                crate::undo::on_commit(widget);
             }
             Ok((result, changed))
         })
@@ -3769,7 +3793,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
             let bracket = crate::undo::take_committed_action(widget);
-            let requested = widget.needs_commit();
+            let requested = crate::undo::needs_commit(widget);
             if bracket.is_none() && !requested {
                 return Ok(false);
             }
@@ -3779,7 +3803,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
             if bracket.is_some() && doc.pending_ops() == 0 && history.matches_recorded_frontier(doc)
             {
                 if requested {
-                    widget.on_commit();
+                    crate::undo::on_commit(widget);
                 }
                 return Ok(false);
             }
@@ -3788,11 +3812,11 @@ pub(crate) unsafe fn drain_legacy_node_action(
                     doc,
                     before,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                 )
             } else {
-                let context = widget.take_commit_context().unwrap_or_else(|| {
+                let context = crate::undo::take_commit_context(widget).unwrap_or_else(|| {
                     tilo_actions::ActionContext::for_resource(
                         "Edit",
                         checkout.id.as_str(),
@@ -3804,7 +3828,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 history.commit_action_authored_with_message(
                     doc,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
                 )
@@ -3814,7 +3838,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 state.statuses.clear();
             }
             if requested {
-                widget.on_commit();
+                crate::undo::on_commit(widget);
             }
             Ok(changed)
         })
@@ -3840,3 +3864,7 @@ mod semantic_authority_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]
 mod author_writer_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/device_actor_tests.rs"]
+mod device_actor_tests;

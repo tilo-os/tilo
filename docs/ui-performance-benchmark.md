@@ -22,16 +22,16 @@ cargo build -p ui-examples --release --example ui-perf
 Native 4K animated redraw and resource gate:
 
 ```sh
-QUICK_UI_DASH_ITERS=1000 \
-QUICK_UI_DASH_WIDTH=3840 \
-QUICK_UI_DASH_HEIGHT=2160 \
-QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW=650 \
-QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW=70000 \
-QUICK_UI_DASH_RASTER_PIXEL_BUDGET=600000 \
-QUICK_UI_DASH_GPU_BUDGET_BYTES=65000000 \
-QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES=4194304 \
-QUICK_UI_DASH_RSS_BUDGET_KIB=350000 \
-QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB=32768 \
+TILO_UI_DASH_ITERS=1000 \
+TILO_UI_DASH_WIDTH=3840 \
+TILO_UI_DASH_HEIGHT=2160 \
+TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW=650 \
+TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW=70000 \
+TILO_UI_DASH_RASTER_PIXEL_BUDGET=600000 \
+TILO_UI_DASH_GPU_BUDGET_BYTES=65000000 \
+TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES=4194304 \
+TILO_UI_DASH_RSS_BUDGET_KIB=350000 \
+TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB=32768 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
@@ -48,29 +48,29 @@ frame fail independently of timing noise.
 
 The redraw allocation budgets enable phase attribution automatically and fail
 if total allocator traffic exceeds either rate. To print the same phase table
-without enforcing a budget, set `QUICK_UI_DASH_ALLOC_PROFILE=1` together with
-`QUICK_UI_DASH_ALLOC_BREAKDOWN=1`. The no-redraw gate deliberately omits phase
+without enforcing a budget, set `TILO_UI_DASH_ALLOC_PROFILE=1` together with
+`TILO_UI_DASH_ALLOC_BREAKDOWN=1`. The no-redraw gate deliberately omits phase
 snapshots so profiler bookkeeping does not contaminate its event timings.
 
 One-million-event no-redraw CPU/allocation gate:
 
 ```sh
-QUICK_UI_DASH_ITERS=1000000 \
-QUICK_UI_DASH_STATIC=1 \
-QUICK_UI_DASH_FROZEN=1 \
-QUICK_UI_DASH_EVENT_BUDGET_US=3 \
-QUICK_UI_DASH_ALLOC_BUDGET_PER_1000=1 \
+TILO_UI_DASH_ITERS=1000000 \
+TILO_UI_DASH_STATIC=1 \
+TILO_UI_DASH_FROZEN=1 \
+TILO_UI_DASH_EVENT_BUDGET_US=3 \
+TILO_UI_DASH_ALLOC_BUDGET_PER_1000=1 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
 Pixel-equivalence preflight (separate from performance measurements):
 
 ```sh
-QUICK_UI_DASH_VERIFY=1 \
-QUICK_UI_DASH_VERIFY_FRAMES=40 \
-QUICK_UI_DASH_ITERS=40 \
-QUICK_UI_DASH_WIDTH=3840 \
-QUICK_UI_DASH_HEIGHT=2160 \
+TILO_UI_DASH_VERIFY=1 \
+TILO_UI_DASH_VERIFY_FRAMES=40 \
+TILO_UI_DASH_ITERS=40 \
+TILO_UI_DASH_WIDTH=3840 \
+TILO_UI_DASH_HEIGHT=2160 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
@@ -84,10 +84,10 @@ Current requested native-4K gate (1,000 redraws, p99 at most 30,000 microseconds
 with default renderer options and no optimization environment overrides):
 
 ```sh
-QUICK_UI_DASH_ITERS=1000 \
-QUICK_UI_DASH_WIDTH=3840 \
-QUICK_UI_DASH_HEIGHT=2160 \
-QUICK_UI_DASH_FRAME_BUDGET_US=30000 \
+TILO_UI_DASH_ITERS=1000 \
+TILO_UI_DASH_WIDTH=3840 \
+TILO_UI_DASH_HEIGHT=2160 \
+TILO_UI_DASH_FRAME_BUDGET_US=30000 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
@@ -109,7 +109,7 @@ These current gates do not establish constant 60 fps; older 8,000 us mean and
 30,000 us p99 targets are not the executable's present thresholds. The older
 `crates/session/shell/examples/draw_bench.rs` measures CPU scene painting only and cannot
 establish this target. The UI harness also accepts
-`QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
+`TILO_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
 different workload, not a replacement for the shell measurement.
 
 For a separate shell diagnostic, run the same release binary with
@@ -126,10 +126,10 @@ unset the profiling variable for acceptance measurements.
 The earlier, stricter 4K/60 frame gate remains available:
 
 ```sh
-QUICK_UI_DASH_ITERS=1000 \
-QUICK_UI_DASH_WIDTH=3840 \
-QUICK_UI_DASH_HEIGHT=2160 \
-QUICK_UI_DASH_FRAME_BUDGET_US=16667 \
+TILO_UI_DASH_ITERS=1000 \
+TILO_UI_DASH_WIDTH=3840 \
+TILO_UI_DASH_HEIGHT=2160 \
+TILO_UI_DASH_FRAME_BUDGET_US=16667 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 

@@ -4,7 +4,7 @@
 //! hit-testing, and drawing. The map app remains responsible only for effects:
 //! starting/deleting tile downloads and recording collaborative region rows.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
@@ -150,6 +150,11 @@ impl OfflinePanel {
             self.results.clear();
             self.input.set_suggestions_open(Vec::new());
         }
+    }
+
+    /// When the typed city settles into a live geocode.
+    pub const fn query_deadline(&self) -> Option<Instant> {
+        self.debounce
     }
 
     /// Return the settled query exactly once when live geocoding should begin.
@@ -367,7 +372,7 @@ impl OfflinePanel {
                 self.results.clear();
                 self.input.set_suggestions_open(Vec::new());
             } else {
-                self.debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
+                self.debounce = Some(ui::time::now() + SEARCH_DEBOUNCE);
             }
         }
         match self.input.take_outcome() {

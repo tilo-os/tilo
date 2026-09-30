@@ -21,6 +21,38 @@ standalone-history-restore-pending = Finish the current edit, then restore the v
 standalone-history-restore-denied = Only editors can restore a version.
 standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
+host-search = Search…
+host-search-placeholder = Search
+host-undo = Undo
+host-undo-named = Undo { $change }
+host-redo = Redo
+host-redo-named = Redo { $change }
+host-history-show = Show History
+host-history-hide = Hide History
+host-history-compare = Compare Selection
+host-history-recent = { $author } · { $change } — { $when }
+host-history-unavailable = There is no document to show History for.
+host-history-compare-unavailable = Select two or more changes to compare them.
+host-menu-file = File
+host-menu-edit = Edit
+host-menu-view = View
+host-menu-history = History
+host-menu-window = Window
+host-menu-help = Help
+host-menu-about = About { $app }
+host-menu-services = Services
+host-menu-hide = Hide { $app }
+host-menu-hide-others = Hide Others
+host-menu-show-all = Show All
+host-menu-quit = Quit { $app }
+host-menu-close = Close Window
+host-menu-minimize = Minimize
+host-menu-zoom = Zoom
+host-menu-front = Bring All to Front
+host-window-minimize = Minimize
+host-window-maximize = Maximize
+host-window-close = Close
+history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
    *[other] Edited { $path } and { $more } more
@@ -28,6 +60,14 @@ history-edited-field = { $more ->
 history-removed-field = { $more ->
     [0] Removed { $path }
    *[other] Removed { $path } and { $more } more
+}
+history-edited-fields = { $count ->
+    [one] Edited 1 field
+   *[other] Edited { $count } fields
+}
+history-removed-fields = { $count ->
+    [one] Removed 1 field
+   *[other] Removed { $count } fields
 }
 history-review-title = Restore { $resource }
 history-review-confirm = Restore version
@@ -71,6 +111,69 @@ history-media-too-many = Historical media exceeds the 4096 asset preview limit
 history-media-too-large = Historical media is too large
 history-media-over-limit = Historical media exceeds the 128 MiB preview limit
 history-media-hash-mismatch = Historical media does not match its recorded content hash
+
+## History groups and catch-up briefs
+history-group-changes = { $count ->
+    [one] 1 change
+   *[other] { $count } changes
+}
+history-group-edits = { $count ->
+    [one] 1 edit
+   *[other] { $count } edits
+}
+history-group-comments = { $count ->
+    [one] 1 comment
+   *[other] { $count } comments
+}
+history-group-access-changes = { $count ->
+    [one] 1 permission change
+   *[other] { $count } permission changes
+}
+history-group-deletions = { $count ->
+    [one] 1 deletion
+   *[other] { $count } deletions
+}
+history-group-over = { $count } over { $span }
+history-group-chars = +{ $inserted } -{ $deleted } chars
+history-group-from = from “{ $summary }”
+history-group-named-by = named by { $name }
+history-span-minutes = { $count } min
+history-span-hours = { $count } h
+history-span-days = { $count } d
+history-authors-two = { $first } and { $second }
+history-authors-more = { $first }, { $second } + { $rest }
+history-outcome-access = Updated workspace access
+history-outcome-discussion = Continued the discussion
+history-outcome-discussed = Discussed { $resource }
+history-outcome-organized-content = Organized shared content
+history-outcome-organized = Organized { $resource }
+history-outcome-updated-content = Updated shared content
+history-outcome-worked-on = Worked on { $resource }
+history-outcome-workspace = Updated the workspace
+history-chip-all = All
+history-chip-edits = Edits
+history-chip-edits-short = Edit
+history-chip-comments = Comments
+history-chip-comments-short = Note
+history-chip-access = Access
+history-chip-access-short = Access
+history-chip-deletions = Deletions
+history-chip-deletions-short = Del.
+history-op-splice = Text / structure
+history-op-edit-meta = Metadata
+history-op-move = Move
+history-op-comment = Comments
+history-op-tombstone = Delete
+history-op-restore = Restore
+history-op-govern = Access
+history-op-compaction = Checkpoints
+history-op-redact = Redaction
+history-selection-count = { $count ->
+    [one] 1 change selected
+   *[other] { $count } changes selected
+}
+history-selection-name = Name these
+history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
@@ -174,6 +277,7 @@ block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: w
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
+widget-maximized-restore = Restore
 tree-rename-field = Rename
 tree-move-up = Move up
 tree-move-down = Move down
@@ -269,3 +373,20 @@ history-action-stale-cursor = The history changed since this page. List it again
 history-action-unknown-entry = That change isn't in this document's history.
 history-action-unknown-session = That preview isn't open.
 history-action-invalid = That History request isn't valid.
+
+# Command palette chrome: footer key hints, result count and empty states.
+palette-name = Command palette
+palette-results = Results
+palette-placeholder = Search…
+palette-hint-navigate = Navigate
+palette-hint-select = Select
+palette-hint-open = Open
+palette-hint-run = Run
+palette-hint-close = Close
+palette-result-count = { $count ->
+    [one] 1 result
+   *[other] { $count } results
+}
+palette-empty = Nothing to show
+palette-no-results = No results for “{ $query }”
+palette-no-results-hint = Try fewer words, or widen the scope

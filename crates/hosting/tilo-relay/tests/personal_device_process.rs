@@ -350,7 +350,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 /// put the freshly-built binary at the production path without touching the
 /// runner's mount namespace.
 #[test]
-#[ignore = "requires root plus CAP_SYS_ADMIN; fs-fuse.yml runs this explicitly"]
+#[ignore = "requires root plus CAP_SYS_ADMIN; ci-filesystem.yml runs this explicitly"]
 #[allow(
     clippy::too_many_lines,
     reason = "keeps privileged helper setup and ownership assertions in one auditable trace"

@@ -18,6 +18,12 @@ name: Release / OS
 #            installs, boots and publishes a dev disk.
 on:
   workflow_call:
+    inputs:
+      arches:
+        description: JSON list of the architectures a dev build builds
+        type: string
+        required: false
+        default: '["x86_64","aarch64"]'
   schedule:
     # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
     - cron: "0 2 * * *"
@@ -92,8 +98,10 @@ concurrency:
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
   group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  # A dev build is superseded by the next commit of its ref.
-  cancel-in-progress: ${{ github.event_name == 'workflow_call' }}
+  # A pull request's dev build is superseded by its next commit. On main the
+  # running build finishes and only the newest waiting commit follows it, so a
+  # stream of merges cannot starve every build of completion.
+  cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
@@ -108,7 +116,48 @@ jobs:
       publish: ${{ steps.matrix.outputs.publish }}
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
+      boards: ${{ steps.matrix.outputs.boards }}
+      app_collection_source: ${{ steps.pins.outputs.app_collection_source }}
+      app_collection_url: ${{ steps.pins.outputs.app_collection_url }}
+      app_collection_sha256: ${{ steps.pins.outputs.app_collection_sha256 }}
+      app_collection_url_x86_64: ${{ steps.pins.outputs.app_collection_url_x86_64 }}
+      app_collection_sha256_x86_64: ${{ steps.pins.outputs.app_collection_sha256_x86_64 }}
+      app_collection_url_aarch64: ${{ steps.pins.outputs.app_collection_url_aarch64 }}
+      app_collection_sha256_aarch64: ${{ steps.pins.outputs.app_collection_sha256_aarch64 }}
+      app_collection_publisher: ${{ steps.pins.outputs.app_collection_publisher }}
+      desktop_payload_url: ${{ steps.pins.outputs.desktop_payload_url }}
+      desktop_payload_sha256: ${{ steps.pins.outputs.desktop_payload_sha256 }}
+      desktop_payload_url_x86_64: ${{ steps.pins.outputs.desktop_payload_url_x86_64 }}
+      desktop_payload_sha256_x86_64: ${{ steps.pins.outputs.desktop_payload_sha256_x86_64 }}
+      desktop_payload_url_aarch64: ${{ steps.pins.outputs.desktop_payload_url_aarch64 }}
+      desktop_payload_sha256_aarch64: ${{ steps.pins.outputs.desktop_payload_sha256_aarch64 }}
     steps:
+      # Both lanes of a release must build from the same prebuilt inputs.
+      # Each job reads repository variables when it starts, and Release / apps
+      # moves the collection pins while a release runs (in run 48898 the two
+      # lanes packed different collections), so every lane takes them from here.
+      - name: Pin the prebuilt inputs for every lane
+        id: pins
+        env:
+          APP_COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          APP_COLLECTION_URL: ${{ vars.TILO_APP_COLLECTION_URL }}
+          APP_COLLECTION_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256 }}
+          APP_COLLECTION_URL_X86_64: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 }}
+          APP_COLLECTION_SHA256_X86_64: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 }}
+          APP_COLLECTION_URL_AARCH64: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          APP_COLLECTION_SHA256_AARCH64: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          APP_COLLECTION_PUBLISHER: ${{ vars.TILO_APP_COLLECTION_PUBLISHER }}
+          DESKTOP_PAYLOAD_URL: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
+          DESKTOP_PAYLOAD_SHA256: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256 }}
+          DESKTOP_PAYLOAD_URL_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_X86_64 }}
+          DESKTOP_PAYLOAD_SHA256_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_X86_64 }}
+          DESKTOP_PAYLOAD_URL_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_AARCH64 }}
+          DESKTOP_PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+        run: |
+          for name in APP_COLLECTION_SOURCE APP_COLLECTION_URL APP_COLLECTION_SHA256 APP_COLLECTION_URL_X86_64 APP_COLLECTION_SHA256_X86_64 APP_COLLECTION_URL_AARCH64 APP_COLLECTION_SHA256_AARCH64 APP_COLLECTION_PUBLISHER DESKTOP_PAYLOAD_URL DESKTOP_PAYLOAD_SHA256 DESKTOP_PAYLOAD_URL_X86_64 DESKTOP_PAYLOAD_SHA256_X86_64 DESKTOP_PAYLOAD_URL_AARCH64 DESKTOP_PAYLOAD_SHA256_AARCH64; do
+            printf '%s=%s\n' "${name,,}" "${!name}" >> "$GITHUB_OUTPUT"
+          done
+
       # The nightly run exists to keep a fresh image available, not to spend a
       # generation and two native lanes on a revision that is already out.
       # Every published image carries its source commit as the OCI revision
@@ -158,12 +207,14 @@ jobs:
           # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_RELEASE: ${{ github.event.inputs.release }}
+          DEV_ARCHES: ${{ inputs.arches }}
           PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
           INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
           # Publication refuses to start without these protected inputs. Until
           # they are configured the nightly run is a main integration build, so
           # dev VMs still get a same-commit image every night.
           PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
+          LENOVO_FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
           HARDWARE_PROFILE: ${{ github.event.inputs.hardware_profile }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
@@ -212,21 +263,30 @@ jobs:
           # Build / OS dev: both native lanes, no reproduction lane.
           if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
             [[ $profile == generic ]] || { echo '::error::dev builds are generic'; exit 1; }
-            matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"}]}'
+            matrix="$(jq -c '{include: [.[] | if . == "x86_64" then {arch: ., runner: "runner-large"}
+                                              elif . == "aarch64" then {arch: ., runner: "runner-large-arm64"}
+                                              else error("unknown architecture \(.)") end]}' <<< "${DEV_ARCHES:-[\"x86_64\",\"aarch64\"]}")"
           elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
-            matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+            # Both lanes run on the release class like a generic publication's.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
           elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
             else
-              # A protected manual or nightly main publication uses the same native
-              # runner-large fleet as the integration build below; its runner
-              # image carries the release signer. The early KVM probe rejects
-              # publishing if nested virtualization is unavailable. Tags retain
-              # the dedicated release fleet above.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"x86_64","runner":"runner-large","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+              # A protected manual or nightly main publication runs on the
+              # release class: the large runners' image (it carries the release
+              # signer) with 32 CPUs and 128 GiB, since both lanes compile with
+              # thin LTO and no layer cache, and a shell link alone peaks near
+              # 10 GiB. The early KVM probe rejects publishing if nested
+              # virtualization is unavailable. Tags retain the dedicated release
+              # fleet above.
+              # A publication lane holds its slot while it waits for its
+              # reproduction, so each class has at least two slots per
+              # architecture: an uncached thin-LTO reproduction on a large ARM
+              # runner (2 jobs) does not fit in three hours.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
@@ -248,6 +308,13 @@ jobs:
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "::notice::$mode build"
           echo "hardware-profile=$profile" >> "$GITHUB_OUTPUT"
+          # Board dev images layer on a dev build's aarch64 dev image.
+          boards=false
+          if [[ $GITHUB_EVENT_NAME == workflow_call && $skip != true && -n ${LENOVO_FIRMWARE_REF:-} ]] \
+             && jq -e 'any(.include[]; .arch == "aarch64")' <<< "$matrix" >/dev/null; then
+            boards=true
+          fi
+          echo "boards=$boards" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
     needs: plan
@@ -275,7 +342,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
-    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # build-rpms.yml owns all signing as a standalone main workflow. Resolve
     # only its exact content fingerprint here; never fall back to a stale tag.
     runs-on: runner-quality
     timeout-minutes: 10
@@ -306,7 +373,7 @@ jobs:
         run: |
           set -euo pipefail
           ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
+            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone build-rpms.yml main run, then retry this release.'
             exit 1
           }
 
@@ -320,7 +387,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 600
+    # No job may need more than three hours; a slower one is a bug to fix.
+    timeout-minutes: 180
     enable-openid-connect: true
     env:
       # Board images carry private firmware: they stay in the forge's private
@@ -403,22 +471,50 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Default to the apps of this commit
+        run: echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+
+      # A Build / OS dev image carries the apps of its own commit: a VM moved
+      # onto the image of commit X runs X's apps. It takes the published
+      # collection only when that collection was built from a commit whose
+      # app inputs are this commit's; otherwise the image build compiles the
+      # apps through the warm compiler cache. Releases and dispatches always
+      # take the pinned, independently published collection.
       - name: Materialize the pinned app collection
         env:
-          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
+          COLLECTION_SOURCE: ${{ needs.plan.outputs.app_collection_source }}
           PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
+          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
-          COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
-          COLLECTION_SHA256_DEFAULT: ${{ vars.TILO_APP_COLLECTION_SHA256 }}
-          COLLECTION_URL_X86_64: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 }}
-          COLLECTION_SHA256_X86_64: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 }}
-          COLLECTION_URL_AARCH64: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
-          COLLECTION_SHA256_AARCH64: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
-          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.TILO_APP_COLLECTION_PUBLISHER }}
+          COLLECTION_URL_DEFAULT: ${{ needs.plan.outputs.app_collection_url }}
+          COLLECTION_SHA256_DEFAULT: ${{ needs.plan.outputs.app_collection_sha256 }}
+          COLLECTION_URL_X86_64: ${{ needs.plan.outputs.app_collection_url_x86_64 }}
+          COLLECTION_SHA256_X86_64: ${{ needs.plan.outputs.app_collection_sha256_x86_64 }}
+          COLLECTION_URL_AARCH64: ${{ needs.plan.outputs.app_collection_url_aarch64 }}
+          COLLECTION_SHA256_AARCH64: ${{ needs.plan.outputs.app_collection_sha256_aarch64 }}
+          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || needs.plan.outputs.app_collection_publisher }}
         run: |
           set -euo pipefail
-          echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+          if [[ $DEV_BUILD == true ]]; then
+            [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] || { echo '::notice::no collection source recorded; compiling the apps'; exit 0; }
+            if [[ $COLLECTION_SOURCE != "$GITHUB_SHA" ]]; then
+              git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
+                || { echo "::notice::collection source $COLLECTION_SOURCE is not fetchable; compiling the apps"; exit 0; }
+              # The inputs Release / apps publishes a new collection for.
+              mapfile -t inputs < <(awk '
+                /^    paths:$/ { on = 1; next }
+                on && /^      - / { gsub(/^      - "|"$/, ""); print ":(glob)" $0; next }
+                on { exit }' .forgejo/workflows/release-apps.yml)
+              (( ${#inputs[@]} > 10 ))
+              if ! git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"; then
+                echo "::notice::app inputs changed since the published collection ($COLLECTION_SOURCE); compiling the apps"
+                exit 0
+              fi
+            fi
+            echo "::notice::the published collection of $COLLECTION_SOURCE has this commit's app inputs; taking it"
+          fi
           # The Authorized Integration grants only short-lived package read to
           # this workflow. Pull requests therefore test the exact immutable
           # app/OS boundary without receiving a reusable registry credential.
@@ -499,6 +595,13 @@ jobs:
             fi
           done < <(tar -tzf "$work/apps.tar.gz")
           [[ $found == 1 ]]
+          if [[ $DEV_BUILD == true ]]; then
+            source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
+            [[ $source == "$COLLECTION_SOURCE" ]] || {
+              echo "::notice::the collection records source '$source', not $COLLECTION_SOURCE; compiling the apps"
+              exit 0
+            }
+          fi
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
             --no-same-owner --no-same-permissions
           if find "$work/tapp" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
@@ -524,12 +627,12 @@ jobs:
           PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
-          PAYLOAD_URL_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
-          PAYLOAD_SHA256_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256 }}
-          PAYLOAD_URL_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_X86_64 }}
-          PAYLOAD_SHA256_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_X86_64 }}
-          PAYLOAD_URL_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_AARCH64 }}
-          PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+          PAYLOAD_URL_DEFAULT: ${{ needs.plan.outputs.desktop_payload_url }}
+          PAYLOAD_SHA256_DEFAULT: ${{ needs.plan.outputs.desktop_payload_sha256 }}
+          PAYLOAD_URL_X86_64: ${{ needs.plan.outputs.desktop_payload_url_x86_64 }}
+          PAYLOAD_SHA256_X86_64: ${{ needs.plan.outputs.desktop_payload_sha256_x86_64 }}
+          PAYLOAD_URL_AARCH64: ${{ needs.plan.outputs.desktop_payload_url_aarch64 }}
+          PAYLOAD_SHA256_AARCH64: ${{ needs.plan.outputs.desktop_payload_sha256_aarch64 }}
         run: |
           set -euo pipefail
           # Building the compositor from source links shell alongside the other
@@ -671,9 +774,16 @@ jobs:
           # Podman reads an existing authfile before login; mktemp leaves it
           # empty, which Podman rejects as invalid JSON.
           printf '{}\n' > "$firmware_authfile"
-          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.tilo.so \
+          # The login needs no image store; give it a throwaway one. Left to
+          # the default, root's store was created with the vfs driver here and
+          # the installed-image gate's overlay store later refused it ("contains
+          # several valid graphdrivers", run 50750).
+          login_store=$(mktemp -d "${RUNNER_TEMP:-/tmp}/tilo-firmware-login.XXXXXX")
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+            --root "$login_store/graph" --runroot "$login_store/run" login code.tilo.so \
             --authfile "$firmware_authfile" \
             --username "${{ github.actor }}" --password-stdin
+          sudo -n rm -rf -- "$login_store"
           sudo -n python3 -c 'import json,sys; assert "code.tilo.so" in json.load(open(sys.argv[1]))["auths"]' \
             "$firmware_authfile"
           sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \
@@ -789,10 +899,11 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "::notice::Windows provider: with_windows=$with_windows"
 
-      # The shared setup gives the builder the runner pool's registries (the
-      # Oregon pull-through mirror and layer cache) and exports
-      # TILO_LAYER_CACHE_REGISTRY; the docker-container driver supports the
-      # registry cache export that must survive across ephemeral runners.
+      # The shared setup gives the builder the runner pool's registry mirrors.
+      # Layer caches go to the runner's Actions cache (type=gha): one scope
+      # per image, stage and architecture, private to this repository, and a
+      # pull request writes only its own scope. The BuildKit image is pinned
+      # (and prewarmed on the slots).
       #
       # The OS graph contains several large RPM and Rust stages. Letting
       # BuildKit run all of them at once exhausts the ephemeral runner's
@@ -802,30 +913,31 @@ jobs:
       # operation has exhausted that headroom on otherwise healthy runners.
       # Serialize the solver so the installed-image and AT-SPI gates are not
       # skipped because an unrelated stage consumed composefs's workspace.
+      # Build / OS dev seals no composefs and runs neither gate; serialized, its
+      # pulls, layer extraction and small stages queued behind each other on
+      # the critical path, so it lets four operations run at once.
+      #
+      # No garbage collection: the builder lives for this job only, and its
+      # default policy (keep 40% of the disk free) pruned the compile step's
+      # results between steps, so the rootfs step compiled the workspace
+      # again (runs 48581, 49019, 49047).
       - name: Set up buildx (docker-container driver for cache export)
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
         with:
+          driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          # A publication and its reproduction must not depend on when a seed
+          # was unpacked.
+          seed: ${{ needs.plan.outputs.publish != 'true' }}
           buildkitd-config-inline: |
             [worker.oci]
-              max-parallelism = 1
+              max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
+              gc = false
 
-      # A board build's layers include its private firmware, so its layer
-      # cache must never reach the public registry.
-      - name: Keep the board layer cache private
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
-        run: |
-          if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
-            echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
-          fi
-
-      # Read the manifest through the builder that consumes the snapshot, so
-      # its large RPM layer is pulled once, into BuildKit, instead of into
-      # Docker first and BuildKit again.
+      # Reads only the snapshot's metadata layer; BuildKit pulls the package
+      # layers when a stage actually mounts them.
       - name: Verify frozen package snapshot matches every consumer
-        env:
-          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
-        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"
 
       - name: Require the promoted native WPE buildroot
         env:
@@ -873,14 +985,32 @@ jobs:
       # File mtimes are another matter: COPY keeps the checkout's and RUN
       # leaves the build's wall clock, so every OCI export below sets
       # rewrite-timestamp=true to clamp them to it as well.
+      #
+      # Build / OS dev is not reproduced, and every stage that declares
+      # SOURCE_DATE_EPOCH carries it in its cache key: the commit time would
+      # rebuild the whole package rootfs on every push. It takes the newest
+      # creation time of its base and package images instead, which moves only
+      # when those do (and never precedes an RPM signature the offline dnf
+      # clock checks). The commit time stays in image.created.
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
+        env:
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
+          set -euo pipefail
           epoch="$(git log -1 --format=%ct)"
-          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           # metadata-action stamps image.created with the time it runs. The
           # publication and its independent rebuild run in separate jobs, so
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          if [[ $DEV_BUILD == true ]]; then
+            epoch=0
+            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+              created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
+              if (( created > epoch )); then epoch=$created; fi
+            done
+            (( epoch > 0 ))
+          fi
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
 
       - name: Select build, validation, or publication mode
         id: release-mode
@@ -941,6 +1071,21 @@ jobs:
             series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
           fi
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
+          # A release and its reproduction clamp every mtime and compress
+          # alike. A Build / OS dev image needs neither: no rewrite, and fast
+          # zstd for new layers only; cached layers keep the blobs they have,
+          # already in the registry, instead of being recompressed and pushed
+          # again every run.
+          if [[ $fast == true ]]; then
+            # Pushed straight from BuildKit to its tilo-ci name; no archive.
+            {
+              echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"
+              echo 'TILO_IMAGE_OUTPUT=type=image,push=true,compression=zstd,compression-level=1'
+            } >> "$GITHUB_ENV"
+          else
+            [[ $validate != true ]] \
+              || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
+          fi
           echo "dev-gate=$([[ $validate == true && $publish != true && $fast != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
@@ -962,10 +1107,41 @@ jobs:
           else
             echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
             echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
-            # Without LTO nothing bounds link memory: every core compiles.
-            echo "TILO_DEV_CARGO_JOBS=$(nproc)" >> "$GITHUB_ENV"
           fi
-          echo "::notice::OS integration validation: $validate; publication: $publish"
+          # Every core compiles, bounded only by memory. The builder gets the
+          # slot's memory less 4 GiB; thin-LTO links of the large binaries
+          # overlap at the end of the release pass (11 jobs at 3 GiB each were
+          # OOM-killed linking file-explorer in run 48204, 5 at 6 GiB linking
+          # shell on aarch64 in run 48581).
+          # The job count never reaches the image, so the two lanes of a
+          # release may differ.
+          # Without LTO the release binaries at 16 jobs peaked at 10.4 GiB
+          # together (shell 7.2 GiB, tilo-ui 5.7, the rest under 3; measured on
+          # a 247 GiB builder), so a dev lane takes 16 jobs where 1.5 GiB each
+          # fits. At one job per GiB it had driven its slot into swap and
+          # starved the host's disk path for every other slot.
+          # The job's own limit (cgroup), else the VM's memory.
+          memory_mib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 ))
+          limit="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
+          [[ $limit == max ]] || (( limit / 1048576 >= memory_mib )) || memory_mib=$(( limit / 1048576 ))
+          memory_mib=$(( memory_mib - 4096 ))
+          per_job_mib=1536
+          [[ $publish != true ]] || per_job_mib=8192
+          jobs=$(( memory_mib / per_job_mib ))
+          memory_gib=$(( memory_mib / 1024 ))
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          [[ $publish == true ]] || (( jobs <= 16 )) || jobs=16
+          # The ARM shell thin-LTO link was OOM-killed with five cargo jobs on
+          # the 35 GiB release slot (#48581). Keep at most two overlapping
+          # release links there, even when the host advertises more memory
+          # than the job can safely use alongside BuildKit and other slots.
+          # The release class (128 GiB) keeps the memory-derived count.
+          if [[ $publish == true && '${{ matrix.arch }}' == aarch64 && $jobs -gt 2 && $memory_mib -lt 65536 ]]; then
+            jobs=2
+          fi
+          (( jobs < 1 )) && jobs=1
+          echo "TILO_CARGO_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "::notice::OS integration validation: $validate; publication: $publish; cargo jobs: $jobs of $(nproc) CPUs, ${memory_gib} GiB"
 
       # The browser-only bundle and tapp are built in the OS image. Both
       # independently compiled publication lanes must sign their bytes with
@@ -1001,7 +1177,7 @@ jobs:
       # guest kernel has FUSE and loop devices; expose its devtmpfs and prove a
       # real loop mount before spending hours building the sealed image.
       - name: Prepare and prove Kata disk devices
-        if: steps.release-mode.outputs.validate == 'true' && startsWith(matrix.runner, 'runner-large')
+        if: steps.release-mode.outputs.validate == 'true' && (startsWith(matrix.runner, 'runner-large') || startsWith(matrix.runner, 'runner-release'))
         run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
 
       # A publication signs only after hours of building. Prove the runner's
@@ -1077,97 +1253,31 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Prefer the runner's compiler cache. When that set is incomplete, use
-      # this repository's cache secret. A missing cache compiles without it.
+      # The runner's compiler cache (sccache over the Actions cache protocol,
+      # infra docs/ci-caching.md) reaches the Rust compile as two BuildKit
+      # secrets. A slot without it compiles without the cache.
       #
       # A publication's primary lane uses it too. Any CI job can write that
       # cache, but the reproduction lane compiles with no cache at all and
       # the publication must match it byte for byte, so a planted object
-      # fails the gate instead of reaching a signed image. A publication
-      # does not require the cache: an outage compiles uncached.
+      # fails the gate instead of reaching a signed image.
       - name: Bind the runner compiler cache
         id: compiler-cache
-        env:
-          PUBLISH: ${{ steps.release-mode.outputs.publish }}
-          # Publications may use only their own cache: a bucket that only a
-          # main or v* token can reach through this OIDC role, and that no
-          # other principal can write (tilo/infra
-          # clusters/burst-eks-us-west-2/tilo-publication-cache.tf).
-          PUBLICATION_CACHE_ROLE_ARN: ${{ vars.TILO_PUBLICATION_CACHE_ROLE_ARN }}
-          PUBLICATION_CACHE_BUCKET: ${{ vars.TILO_PUBLICATION_CACHE_BUCKET }}
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          if [[ $PUBLISH == true && -n ${PUBLICATION_CACHE_ROLE_ARN:-} ]]; then
-            [[ $PUBLICATION_CACHE_ROLE_ARN =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ \
-               && $PUBLICATION_CACHE_BUCKET =~ ^[a-z0-9][a-z0-9.-]{2,62}$ ]] || {
-              echo '::error::TILO_PUBLICATION_CACHE_ROLE_ARN or TILO_PUBLICATION_CACHE_BUCKET is malformed'
-              exit 1
-            }
-            creds="$(./os/dev/publication-cache-credentials.sh "$PUBLICATION_CACHE_ROLE_ARN")"
-            key_id="$(jq -er .AccessKeyId <<<"$creds")"
-            secret="$(jq -er .SecretAccessKey <<<"$creds")"
-            token="$(jq -er .SessionToken <<<"$creds")"
-            echo "::add-mask::$secret"
-            echo "::add-mask::$token"
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
             {
-              printf 'TILO_PUBLICATION_AWS_ACCESS_KEY_ID=%s\n' "$key_id"
-              printf 'TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY=%s\n' "$secret"
-              printf 'TILO_PUBLICATION_AWS_SESSION_TOKEN=%s\n' "$token"
-            } >> "$GITHUB_ENV"
-            region="$(sed -E 's/^.*-([a-z]{2}-[a-z]+-[0-9])$/\1/' <<<"$PUBLICATION_CACHE_BUCKET")"
-            [[ $region =~ ^[a-z]{2}-[a-z]+-[0-9]$ ]]
-            {
-              echo 'mode=publication'
-              echo 'required=0'
-              printf 'bucket=%s\n' "$PUBLICATION_CACHE_BUCKET"
-              printf 'endpoint=https://s3.%s.amazonaws.com\n' "$region"
-              printf 'region=%s\n' "$region"
-              echo 'use_ssl=true'
-              echo 'prefix=tilo/publication/v1'
+              echo 'mode=shared'
               echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
-              echo 'aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID'
-              echo 'aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY'
-              echo 'aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN'
+              echo 'actions_cache_url=ACTIONS_CACHE_URL'
+              echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
               echo 'TILO_COMPILER_CACHE_SECRETS'
             } >> "$GITHUB_OUTPUT"
-            echo "::notice::publication: compiling through the publication-only cache $PUBLICATION_CACHE_BUCKET"
-            exit 0
+            echo "::notice::compiler cache: the runner's Actions cache"
+          else
+            printf '%s\n' 'mode=off' 'secret-envs=' >> "$GITHUB_OUTPUT"
+            echo "::notice::this slot provides no compiler cache; compiling without it"
           fi
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-            value="${!name:-}"
-            if [[ -z $value || $value == *$'\n'* ]]; then
-              {
-                echo 'mode=off'
-                echo 'required=0'
-                echo 'bucket='
-                echo 'endpoint='
-                echo 'region=auto'
-                echo 'use_ssl=false'
-                echo 'prefix=tilo/image/v1'
-                echo 'secret-envs='
-              } >> "$GITHUB_OUTPUT"
-              echo "::notice::runner compiler cache is not configured; compiling without it"
-              exit 0
-            fi
-          done
-          {
-            echo 'mode=shared'
-            if [[ $PUBLISH == true ]]; then echo 'required=0'; else echo 'required=1'; fi
-            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
-            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
-            printf 'region=%s\n' "$SCCACHE_REGION"
-            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
-            echo 'prefix=tilo/image/v1'
-            echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
-            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
-            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
-            echo 'TILO_COMPILER_CACHE_SECRETS'
-          } >> "$GITHUB_OUTPUT"
-          echo "::notice::compiler cache: $SCCACHE_ENDPOINT bucket $SCCACHE_BUCKET prefix tilo/image/v1"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -1205,9 +1315,54 @@ jobs:
       # step needs that layer's content. Their failures are therefore handled
       # below: that one error rebuilds without imported cache, and every other
       # error still fails the job.
+      # The engine's layer cache is addressed by everything that goes into
+      # it, so a build of any other commit with the same engine inputs finds
+      # it: in effect a prebuilt artifact, rebuilt only when an input changes.
+      #
+      # Normally no build compiles it at all: build-buildroots.yml publishes
+      # each architecture's engine, signed and pinned in
+      # os/wpe-stage-snapshot.env and labelled with its inputs, and every lane,
+      # the reproduction lane included, takes that stage when its label matches
+      # this checkout's inputs.
+      - name: Take the browser engine from its pinned stage, or address its cache
+        if: env.TILO_WITH_BROWSER == '1'
+        env:
+          ARCH: ${{ matrix.arch }}
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
+        run: |
+          set -euo pipefail
+          key="$(os/dev/wpe-stage-key.sh "$ARCH")"
+          legacy_key="$(os/dev/wpe-stage-key.sh "$ARCH" --legacy)"
+          echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
+          echo "TILO_WPE_LEGACY_CACHE_KEY=$legacy_key" >> "$GITHUB_ENV"
+          # Match the snapshot publisher's memory-safe job count: 3.5 GiB per
+          # job of the builder's share. Eight jobs preserves the cache made by
+          # existing large-runner OS builds; a publication uses no cache and
+          # takes what its release-class slot allows.
+          jobs=$(( ($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 - 4096) / 3584 ))
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          [[ $PUBLISH == true ]] || (( jobs <= 8 )) || jobs=8
+          (( jobs < 1 )) && jobs=1
+          echo "TILO_WPE_JOBS=$jobs" >> "$GITHUB_ENV"
+          name="WPE_STAGE_${ARCH^^}_REF"
+          stage="$(sed -n "s/^$name=//p" os/wpe-stage-snapshot.env)"
+          if [[ $stage =~ ^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:[0-9a-f]{64}$ ]]; then
+            cosign verify --key keys/cosign.pub "$stage" >/dev/null
+            label="$(skopeo inspect "docker://$stage" | jq -r '.Labels["org.tilo.wpe.inputs"] // empty')"
+            # A signed stage promoted by the previous workflow carries the
+            # full-manifest key. Its exact old inputs are still valid here.
+            if [[ $label == "$key" || $label == "$legacy_key" ]]; then
+              echo "TILO_WPE_STAGE_REF=$stage" >> "$GITHUB_ENV"
+              echo "::notice::browser engine from its pinned stage $stage"
+              exit 0
+            fi
+            echo "::warning::the pinned engine stage was built from other inputs ($label, not $key); compiling it"
+          fi
+          echo "::notice::browser engine cache key $key"
+
       - name: Build and cache the browser engine stage
         id: wpe-stage
-        if: env.TILO_WITH_BROWSER == '1'
+        if: env.TILO_WITH_BROWSER == '1' && env.TILO_WPE_STAGE_REF == ''
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -1220,16 +1375,77 @@ jobs:
           outputs: type=oci,dest=/var/tmp/tilo-wpe,tar=false
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            WPE_BUILD_JOBS=${{ env.TILO_WPE_JOBS }}
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
-          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe,mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: |
+            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
-      # Build and export the compile stages (the Rust builder and its inputs)
-      # before anything else. A registry cache is only written when its build
-      # succeeds, so a later rootfs, UKI or installation failure must not
-      # discard hours of compilation. The arguments match the image build
-      # exactly; the next step reuses these results from local BuildKit state.
+      # The build toolchain first, cached on its own, then the compile, which
+      # goes through the compiler cache. A registry cache is only written when
+      # its build succeeds; the compiler cache keeps compiled crates even when a
+      # later step fails. The arguments match the image build exactly; the next
+      # steps reuse these results from local BuildKit state.
+      - name: Build and cache the build toolchain
+        id: toolchain-stage
+        if: matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && steps.wpe-stage.outcome != 'failure'
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: builder-base
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+          # The toolchain is the builder stage up to the workspace sources. A
+          # publication skips this step: it neither imports nor writes layer
+          # caches, since a cached layer keeps the file times of the build
+          # that made it and any older than this commit escape
+          # rewrite-timestamp's clamp (run 48898).
+          cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }},mode=min,ignore-error=true
+
       - name: Build and cache the compile stages
         id: compile-stages
         if: matrix.role != 'reproduce' && steps.wpe-stage.outcome != 'failure'
@@ -1243,7 +1459,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           target: native-builder-payload
           push: false
@@ -1262,21 +1478,16 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
@@ -1285,19 +1496,20 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
+          # No layer cache: the compile goes through the compiler cache, and its
+          # layer, the whole build output, took up to ten minutes to upload
+          # (run 49176) for a next build that hardly ever has the same sources.
+          # The steps below take its results from this builder.
 
-      # Build the multi-stage bootc image. Publishing deliberately happens only
-      # after the sealed image has been installed and booted below. On a release
-      # run buildx writes an OCI archive for that gate; pull requests exercise
-      # the complete build and registry cache without retaining output.
-      - name: Build the Tilo image
-        id: build
+      # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
+      # slow step. It changes only with os/ inputs, packages and the kernel;
+      # the image build below adds the build outputs on top of it.
+      - name: Build and cache the rootfs
+        id: rootfs-stage
         if: steps.compile-stages.outcome == 'success'
+        # Cold about 25 minutes. BuildKit's cache export has hung for an hour
+        # (moby/buildkit#6008); bound it so the lane fails and frees its group.
+        timeout-minutes: 60
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1308,11 +1520,128 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: rootfs-base
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+          cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # Its own lineage only, the rootfs layers: mode=max over the whole
+          # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+
+      - name: Build and cache the image tool stages
+        id: tool-stages
+        if: steps.rootfs-stage.outcome == 'success'
+        # The UKI tools and the small desktop builders, RPM transactions
+        # included: a few seconds when cached, a few minutes cold.
+        timeout-minutes: 20
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: image-tool-stages
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+          cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # A small graph: its intermediate steps are what the image build
+          # reuses.
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+
+      # Build the multi-stage bootc image. Publishing deliberately happens only
+      # after the sealed image has been installed and booted below. On a release
+      # run buildx writes an OCI archive for that gate; pull requests exercise
+      # the complete build and registry cache without retaining output.
+      - name: Build the Tilo image
+        id: build
+        if: steps.rootfs-stage.outcome == 'success'
+        # The build outputs, split, UKI and export on top of the stages above:
+        # about 10 minutes. A hung push or export fails here instead.
+        timeout-minutes: 30
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: ${{ env.TILO_IMAGE_OUTPUT }}
+          tags: ${{ env.TILO_IMAGE_TAGS || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
           # engine stage, which is ~45 of the ~60 minutes a cold build takes.
@@ -1338,21 +1667,16 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
@@ -1361,21 +1685,18 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          # Registry-backed layer cache: each run starts with empty BuildKit
-          # storage. mode=max keeps intermediate stages (WPE engine, builder
-          # toolchain, Windows and media inputs), not only final-image layers.
-          # The compile stages were already built and exported above, so this
-          # reuses them locally and exports the remaining stages.
+          # The compile results are this builder's own; the rootfs and the
+          # tool stages come from their scopes. It exports nothing, so imports
+          # cost no cache normalization (moby/buildkit#6008).
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # No cache export: the steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
       - name: Recognize a missing registry cache blob
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"
@@ -1395,14 +1716,14 @@ jobs:
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+          cache-to: type=gha,scope=tilo-os-wpe-${{ env.TILO_WPE_CACHE_KEY }}-${{ matrix.arch }},mode=max,ignore-error=true
 
       # The same image build without cache-from. Layers this builder already
       # holds are reused; the lazily imported ones are rebuilt. It writes every
       # cache tag, replacing the manifests that named the missing blob.
       - name: Build the Tilo image without the damaged layer cache
         id: build-uncached
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1412,11 +1733,11 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' || '' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: ${{ env.TILO_IMAGE_OUTPUT }}
+          tags: ${{ env.TILO_IMAGE_TAGS || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
@@ -1433,29 +1754,23 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
@@ -1472,19 +1787,26 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
           ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
-          # Buildx writes a full image name and a bare OCI ref for each tag.
-          # Skopeo selects the latter; verify its descriptor and digest first.
-          source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
-          test -n "$source_tag"
-          source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
-          digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
-          TMPDIR=/var/tmp skopeo copy --retry-times 3 \
-            --digestfile "$digest_file" \
-            "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
-          digest="$(tr -d '[:space:]' < "$digest_file")"
+          if [[ $DEV_FAST == true ]]; then
+            # BuildKit pushed it already.
+            digest="$BUILD_DIGEST"
+          else
+            # Buildx writes a full image name and a bare OCI ref for each tag.
+            # Skopeo selects the latter; verify its descriptor and digest first.
+            source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            test -n "$source_tag"
+            source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" "$BUILD_DIGEST")"
+            digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
+            TMPDIR=/var/tmp skopeo copy --retry-times 3 \
+              --digestfile "$digest_file" \
+              "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+          fi
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           revision="$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-ci@$digest" \
             | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
@@ -1521,7 +1843,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true
@@ -1543,8 +1865,9 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1575,11 +1898,16 @@ jobs:
       # Hand the rebuild's manifest digest to the publication lane of this run,
       # which waits for it before installing or signing anything. A failed
       # rebuild says so, so the publication fails instead of waiting it out.
+      #
+      # It reports even when the lane failed before its builder or registry
+      # login existed: it logs in itself and builds the one-label image with
+      # the default builder when this job never started its own.
       - name: Report the independent rebuild to the publication lane
         if: always() && matrix.role == 'reproduce'
         env:
           REPRO_OUTCOME: ${{ steps.repro.outcome }}
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           manifest=failed
@@ -1591,7 +1919,10 @@ jobs:
           fi
           context="$(mktemp -d)"
           printf 'FROM scratch\nLABEL org.tilo.reproduction.manifest=%s\n' "$manifest" > "$context/Containerfile"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false --push \
+          printf '%s' "$REGISTRY_PASSWORD" | docker login registry.tilo.so --username '${{ github.actor }}' --password-stdin
+          builder=()
+          [[ -z $BUILDER_NAME ]] || builder=(--builder "$BUILDER_NAME")
+          docker buildx build "${builder[@]}" --provenance=false --push \
             -f "$context/Containerfile" -t 'registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
           echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
           [[ $manifest != failed ]]
@@ -1601,7 +1932,7 @@ jobs:
       # source-bound list of layer/config digests from each lane, with no blob
       # payload or environment values, so the first difference is actionable.
       - name: Record OCI layer digests
-        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -1616,7 +1947,7 @@ jobs:
             --arch '${{ matrix.arch }}' --role "$role"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
           name: oci-layer-report-${{ matrix.arch }}-${{ matrix.role == 'reproduce' && 'reproduce' || 'primary' }}
@@ -1644,7 +1975,7 @@ jobs:
           echo "::notice::independent rebuild reported manifest sha256:$manifest"
 
       - name: Release build cache before image installation
-        if: steps.release-mode.outputs.validate == 'true'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-fast != 'true'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: |
@@ -1658,58 +1989,128 @@ jobs:
           df -h /var/tmp
 
       # Build / OS dev: build the dev image FROM the tilo-ci image this lane
-      # just pushed and publish it as tilo-vm:<series>-ci, which
-      # `tilo-vm vm upgrade --from sha:` pulls. No disk install, no boot.
+      # just pushed, in the same BuildKit session (the base's layers are still
+      # in its store), through the shared compiler cache, and push it straight
+      # to tilo-vm:<series>-ci-<arch>. No layer cache: every stage but the
+      # scratch staging sits on this commit's base, so no layer is reusable
+      # by the next commit, and exporting one crashed BuildKit (run 48837).
+      # The index tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:`
+      # pulls, collects both architectures. No disk install, no boot.
       - name: Build and publish the dev image
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
+        timeout-minutes: 30
         env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
-          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
           ARCH: ${{ matrix.arch }}
-          CACHE_BUCKET: ${{ steps.compiler-cache.outputs.bucket }}
-          CACHE_ENDPOINT: ${{ steps.compiler-cache.outputs.endpoint }}
-          CACHE_REGION: ${{ steps.compiler-cache.outputs.region }}
-          CACHE_USE_SSL: ${{ steps.compiler-cache.outputs.use_ssl }}
+          COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
         run: |
           set -euo pipefail
           started=$(date +%s)
-          if ! command -v podman >/dev/null; then
-            if command -v apt-get >/dev/null; then
-              export DEBIAN_FRONTEND=noninteractive
-              sudo -n apt-get update
-              sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs uidmap slirp4netns jq skopeo
-            else
-              sudo -n dnf install -y podman fuse-overlayfs jq skopeo
-            fi
+          base="registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST"
+          # tilo-vm refuses a base older than the VM's; its config carries
+          # the fixed dev epoch, so the commit time orders dev bases.
+          created="$SOURCE_DATE_ISO"
+          child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
+          cache=()
+          if [[ $COMPILER_CACHE == shared ]]; then
+            cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                   --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
-          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
-            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
-            export CONTAINERS_STORAGE_CONF
-          fi
-          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
-          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
-          dev_base="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
-          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "containers-storage:$dev_base"
-          rm -f /var/tmp/tilo-image.tar
-          [[ "$(podman image inspect --format '{{.Digest}}' "$dev_base")" == "$DEV_BASE_DIGEST" ]] || {
-            echo "::error::the local base is not the published $dev_base ($DEV_BASE_DIGEST)"
-            exit 1
-          }
-          cache_args=""
-          if [[ -n $CACHE_BUCKET ]]; then
-            cache_args="--build-arg SCCACHE_BUCKET=$CACHE_BUCKET --build-arg SCCACHE_ENDPOINT=$CACHE_ENDPOINT --build-arg SCCACHE_REGION=$CACHE_REGION --build-arg SCCACHE_S3_USE_SSL=$CACHE_USE_SSL --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY"
-          fi
-          TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
-            TILO_CARGO_FRESHNESS=clean \
-            TILO_BUILD_ARGS="--build-arg TILO_DEV_RUST_LTO=off $cache_args --label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST --label org.opencontainers.image.base.digest=$DEV_BASE_DIGEST --label sh.tilo.dev.base-trust=integration" \
-            ./os/dev/build-dev-image.sh
-          DEV_IMAGE=localhost/tilo-vm:ci DEV_TAG="$DEV_SERIES-ci" SOURCE_REVISION="$GITHUB_SHA" \
+          metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
+          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+            -f os/Containerfile.dev \
+            --build-arg "BASE_IMAGE=$base" \
+            --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
+            --build-arg "TILO_BASE_CREATED=$created" \
+            --build-arg TILO_CARGO_FRESHNESS=clean \
+            --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
+            --build-arg TILO_DEV_RUST_LTO=off \
+            --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+            "${cache[@]}" \
+            --label "org.opencontainers.image.version=$DEV_SERIES-ci" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.base.name=$base" \
+            --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
+            --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
+            --label sh.tilo.dev.base-trust=integration \
+            --metadata-file "$metadata" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
+            .
+          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+          DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
             DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
             BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
             BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
             ./os/dev/publish-dev-disk.sh
           echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+
+      - name: Publish the rootfs base for the runners' seed
+        id: rootfs-publish
+        if: github.event_name == 'workflow_call' && github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' && steps.rootfs-stage.outcome == 'success' && steps.dev-image.outcome == 'success'
+        timeout-minutes: 20
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: rootfs-base
+          push: false
+          # Main's dev builds publish the rootfs base, so large runner slots can
+          # hold it already unpacked: BuildKit reuses a layer it has by digest,
+          # and these are the cached layers themselves, not a recompression.
+          # Last, after the dev image: this builder holds it, so this is only
+          # the push, which takes minutes whenever the rootfs changed.
+          outputs: type=image,name=registry.tilo.so/tilo/os-rootfs-base:main-${{ matrix.arch }},push=true
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+
+      - name: Report the published rootfs base
+        if: steps.rootfs-publish.outputs.digest != ''
+        env:
+          DIGEST: ${{ steps.rootfs-publish.outputs.digest }}
+        run: echo "::notice::rootfs registry.tilo.so/tilo/os-rootfs-base:main-${{ matrix.arch }}@$DIGEST"
 
       # On a mismatch, retain both images under scratch tags and print which
       # layers and files differ before failing.
@@ -1881,7 +2282,7 @@ jobs:
             TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=1 \
               TILO_CARGO_FRESHNESS=clean TILO_OUTPUT="$DEV_OUTPUT" TILO_DISK="$DEV_OUTPUT/qcow2/disk.qcow2" \
               TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci" TILO_DISK_SIZE=64G \
-              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
+              TILO_BUILD_ARGS="--label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$dev_base_digest --label org.opencontainers.image.base.digest=$dev_base_digest --label org.opencontainers.image.base.child.digest=$dev_base_digest --label sh.tilo.dev.base-trust=integration" \
               ./os/dev/build-dev-image.sh
             test -s "$DEV_OUTPUT/qcow2/disk.qcow2"
             # Gate a throwaway overlay so the disk published below is never
@@ -2483,6 +2884,216 @@ jobs:
           path: tilo-os-release-index.json
           if-no-files-found: error
 
+  # A board's dev image, the board layer on this commit's aarch64 dev image,
+  # and the flashable disk installed from it: a job of its own, so a broken
+  # board layer is visible without holding back the generic dev images, which
+  # the build-and-push lanes publish first. A board image is sealed
+  # (os/Containerfile.board), and installing it is what closes the seal
+  # (bootc#2334), so the job installs the disk before it publishes the image.
+  board-lenovo-83ed:
+    name: "board: lenovo-83ed"
+    needs: [plan, build-and-push]
+    if: ${{ always() && needs.plan.outputs.boards == 'true' }}
+    runs-on: runner-large-arm64
+    timeout-minutes: 45
+    env:
+      BOARD_IMAGE: localhost/tilo-board:ci
+      BOARD_OUTPUT: /var/tmp/tilo-board-disk
+      BOARD_RUN: /var/tmp/tilo-board-vm
+    steps:
+      - name: Checkout the monorepo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Name this commit's dev images
+        id: series
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            series="main-${GITHUB_SHA:0:7}"
+          elif [[ $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
+            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+          else
+            branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
+            series="${branch:0:100}-${GITHUB_SHA:0:7}"
+          fi
+          echo "series=$series" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install image tooling
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs jq podman \
+              qemu-utils skopeo systemd uidmap util-linux
+            command -v systemd-repart >/dev/null \
+              || sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends systemd-repart
+          else
+            sudo -n dnf --setopt=retries=3 install -y binutils btrfs-progs dosfstools e2fsprogs \
+              fuse-overlayfs jq podman qemu-img skopeo systemd util-linux
+          fi
+          command -v jq objcopy podman qemu-img skopeo systemd-repart >/dev/null
+
+      # As dev-disk.yml: Kata's static /dev hides the guest's FUSE and loop
+      # devices until devtmpfs is mounted.
+      - name: Expose guest FUSE and loop devices
+        run: |
+          set -euo pipefail
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
+            sudo -n mount -t devtmpfs devtmpfs /dev
+            sudo -n mkdir -p /dev/pts /dev/shm
+            mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/fuse && test -c /dev/loop-control
+          sudo -n chmod 0666 /dev/fuse
+          sudo -n losetup --find >/dev/null
+
+      - name: Use native Podman overlay for the disk install
+        run: ./os/dev/ci-native-podman-store.sh
+
+      - name: Require this commit's aarch64 dev image
+        env:
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
+          raw="$(skopeo inspect --raw "docker://$base")" || {
+            echo "::error::$base is missing: the aarch64 dev lane did not publish it"; exit 1; }
+          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
+
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+
+      - name: Resolve RPMS_REF (frozen package snapshot)
+        run: |
+          set -euo pipefail
+          rpms_ref="$(./os/dev/resolve-rpm-snapshot.sh)"
+          echo "RPMS_REF=$rpms_ref" >> "$GITHUB_ENV"
+
+      - name: Import the pinned Lenovo firmware
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
+          FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
+          store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
+          trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
+          printf '{}\n' > "$authfile"
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+            --root "$store/graph" --runroot "$store/run" login code.tilo.so \
+            --authfile "$authfile" --username "${{ github.actor }}" --password-stdin
+          sudo -n env REGISTRY_AUTH_FILE="$authfile" \
+            python3 os/dev/hardware-firmware-artifact.py import \
+            --reference "$FIRMWARE_REF" --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
+            --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
+          sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
+
+      - name: Set up buildx
+        id: buildx
+        uses: ./.forgejo/actions/setup-buildx
+        with:
+          driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      # The first build seals an all-zero placeholder digest. It goes to an
+      # immutable candidate tag only so the disk install below can pull it
+      # with the dev image's layers it shares.
+      - name: Build the Lenovo 83ED dev image
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          candidate="registry.tilo.so/tilo/tilo-vm:build-candidate-${GITHUB_SHA:0:12}-lenovo-83ed-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          metadata="$(mktemp "${RUNNER_TEMP:?}/tilo-board-build.XXXXXX")"
+          docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+            -f os/Containerfile.board \
+            --build-arg "BASE_IMAGE=$BOARD_BASE" \
+            --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg TILO_HARDWARE_PROFILE=lenovo-83ed \
+            --build-arg TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:lenovo-83ed-dev \
+            --label "org.opencontainers.image.version=$SERIES-lenovo-83ed" \
+            --metadata-file "$metadata" \
+            --output "type=image,name=$candidate,push=true,compression=zstd,compression-level=1" \
+            .
+          digest="$(jq -er '."containerimage.digest"' "$metadata")"
+          podman pull "registry.tilo.so/tilo/tilo-vm@$digest"
+          podman tag "registry.tilo.so/tilo/tilo-vm@$digest" "$BOARD_IMAGE"
+          echo "::notice::Lenovo 83ED dev image built in $(( $(date +%s) - started ))s: $candidate ($digest)"
+
+      # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
+      # does; its install refuses the placeholder with the digest it wants, and
+      # it reseals the local image's UKI with that digest and installs again.
+      - name: Install the flashable disk and close the seal
+        timeout-minutes: 30
+        env:
+          TILO_IMAGE: ${{ env.BOARD_IMAGE }}
+          TILO_SKIP_BUILD: "1"
+          TILO_DISTROBOX: ""
+          TILO_OUTPUT: ${{ env.BOARD_OUTPUT }}
+          TILO_RUN: ${{ env.BOARD_RUN }}
+          TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci
+          TILO_DISK_SIZE: 64G
+          TILO_QCOW2_COMPRESS: "1"
+          TILO_DEV_DIRECT_BUNDLE_DIR: ${{ env.BOARD_OUTPUT }}/direct-boot
+        run: |
+          set -euo pipefail
+          mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          ./os/dev/build-image.sh
+          test -s "$TILO_OUTPUT/qcow2/disk.qcow2"
+
+      # Main also moves tilo-vm:lenovo-83ed-ci, the origin the disk records, so
+      # an installed laptop follows main with `bootc upgrade`.
+      - name: Publish the Lenovo 83ED dev image
+        env:
+          SERIES: ${{ steps.series.outputs.series }}
+        run: |
+          set -euo pipefail
+          image="registry.tilo.so/tilo/tilo-vm:$SERIES-lenovo-83ed"
+          digest_file="$(mktemp "${RUNNER_TEMP:?}/tilo-board-digest.XXXXXX")"
+          podman push --compression-format zstd --digestfile "$digest_file" "$BOARD_IMAGE" "docker://$image"
+          digest="$(tr -d '[:space:]' < "$digest_file")"
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            skopeo copy --preserve-digests "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
+              docker://registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci
+          fi
+          echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "::notice::published $image ($digest)"
+
+      - name: Publish the flashable disk
+        env:
+          ARCH: aarch64
+          SOURCE_REVISION: ${{ github.sha }}
+          DISK_TOOLING_REVISION: ${{ github.sha }}
+          DEV_TAG: lenovo-83ed-ci
+          BASE_TRUST: integration
+          SOURCE_DISK: ${{ env.BOARD_OUTPUT }}/qcow2/disk.qcow2
+          SOURCE_BOOT: ${{ env.BOARD_OUTPUT }}/direct-boot
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
+            | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')" \
+            ./os/dev/publish-dev-disk-candidate.sh
+
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
   # installation; it intentionally has no mutable upgrade channel yet.
@@ -2597,9 +3208,9 @@ jobs:
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends jq podman skopeo
+            sudo -n apt-get install -y --no-install-recommends git jq podman skopeo
           elif command -v dnf >/dev/null; then
-            sudo -n dnf install -y jq podman skopeo
+            sudo -n dnf install -y git jq podman skopeo
           else
             echo '::error::integration runner must provide apt-get or dnf'
             exit 1
@@ -2633,6 +3244,10 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<< "$children")"
           done
           manifest="tilo-integration-index-$GITHUB_RUN_ID"
+          # The job container's own storage is on overlayfs, which Podman's
+          # overlay driver refuses; a manifest list needs no layers anyway.
+          store="$(mktemp -d /var/tmp/tilo-index-store.XXXXXX)"
+          podman() { command podman --storage-driver vfs --root "$store/root" --runroot "$store/run" "$@"; }
           podman manifest create "$manifest"
           for digest in $(jq -r '.[].digest' <<< "$children"); do
             podman manifest add "$manifest" "docker://$repository@$digest"
@@ -2666,7 +3281,8 @@ jobs:
             exit 1
           }
           if [[ -z "$existing" ]]; then
-            skopeo copy --all "docker://$image" "docker://$durable"
+            # Only the index: its children are already in the repository.
+            skopeo copy --multi-arch index-only --preserve-digests "docker://$image" "docker://$durable"
           fi
           [[ "$(skopeo inspect --raw "docker://$durable" | sha256sum | awk '{print "sha256:" $1}')" == "$index_digest" ]] || {
             echo "::error::registry did not persist $durable as $index_digest"
@@ -2675,6 +3291,33 @@ jobs:
           jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
             '{image:$image,sourceRevision:$source}' > tilo-os-integration-index.json
           echo "::notice::published unsigned development index $durable ($index_digest)"
+      # tilo-vm:main-ci follows main's dev images, both architectures: the
+      # origin a machine installed from a dev-disk.yml disk of tag main-ci
+      # upgrades from. It only moves forward along main.
+      - name: Move tilo-vm:main-ci to this commit's dev images
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repository=registry.tilo.so/tilo/tilo-vm
+          source="$repository:main-${GITHUB_SHA:0:7}-ci"
+          moving="$repository:main-ci"
+          raw="$(skopeo inspect --raw "docker://$source")"
+          digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+          jq -e '[.manifests[].platform.architecture] | sort == ["amd64","arm64"]' <<< "$raw" >/dev/null || {
+            echo "::error::$source does not hold both native dev images"; exit 1; }
+          if current="$(skopeo inspect --override-arch amd64 "docker://$moving" 2>/dev/null \
+                | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" && [[ -n $current ]]; then
+            history="$(mktemp -d "${RUNNER_TEMP:?}/tilo-main-history.XXXXXX")"
+            git -c "http.extraheader=Authorization: token $GIT_TOKEN" clone -q --bare --filter=tree:0 \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$history"
+            git -C "$history" merge-base --is-ancestor "$current" "$GITHUB_SHA" || {
+              echo "::notice::$moving names $current, which is not an ancestor of $GITHUB_SHA; leaving it"
+              exit 0
+            }
+          fi
+          skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
+          echo "::notice::$moving -> $source ($digest)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-os-integration-index

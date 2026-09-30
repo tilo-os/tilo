@@ -460,6 +460,7 @@ pub fn domain_xml_with_uuid(
     </interface>
     <serial type='pty'/>
     <console type='pty'/>
+    <controller type='usb' model='qemu-xhci'/>
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
     <graphics type='spice' autoport='yes'/>{gl}
@@ -1024,7 +1025,10 @@ impl Hypervisor for Whpx {
             .collect::<Vec<_>>()
             .join(" ");
         let pid = ps_quote(&Self::pid(vm));
-        let stderr = ps_quote(&whpx_file(disk, "stderr.log"));
+        let serial = ps_quote(&whpx_file(disk, "ttyS0.log"));
+        // Keep Start-Process detached. Redirecting even one QEMU stream made
+        // Command::output wait for the VM to exit on Windows ARM, although the
+        // guest was already serving SSH. QEMU's serial devices log boot output.
         let script = format!(
             "$ErrorActionPreference='Stop'; \
              $free=([IO.DriveInfo]::new([IO.Path]::GetPathRoot({}))).AvailableFreeSpace; \
@@ -1032,9 +1036,9 @@ impl Hypervisor for Whpx {
              if (Test-Path -LiteralPath {pid}) {{ $old=[int](Get-Content -LiteralPath {pid}); \
              $oldProcess=Get-Process -Id $old -ErrorAction SilentlyContinue; \
              if ($oldProcess -and $oldProcess.ProcessName -eq 'qemu-system-aarch64') {{ throw 'WHPX VM is already running' }} }}; \
-             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden -RedirectStandardError {stderr}; \
+             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden; \
              Set-Content -LiteralPath {pid} -Value $p.Id; Start-Sleep -Seconds 1; \
-             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode+'; see '+{stderr}) }}",
+             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode+'; see '+{serial}) }}",
             ps_quote(disk),
             ps_quote(qemu),
             ps_quote(&args)
@@ -1303,7 +1307,8 @@ mod tests {
                     .contains("io.systemd.credential.binary")
             );
             assert!(start[0].args.last().unwrap().contains("15GB"));
-            assert!(start[0].args.last().unwrap().contains("stderr.log"));
+            assert!(!start[0].args.last().unwrap().contains("-RedirectStandard"));
+            assert!(start[0].args.last().unwrap().contains("ttyS0.log"));
             assert!(
                 Whpx.stop(&vm)[0]
                     .args
@@ -1454,6 +1459,12 @@ mod tests {
             assert!(xml.contains("<features><acpi/></features>"), "{xml}");
             assert!(!xml.contains("<apic/>"), "{xml}");
             assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+            // libvirt adds no USB controller to an aarch64 `virt` machine and then
+            // refuses the USB tablet and keyboard.
+            assert!(
+                xml.contains("<controller type='usb' model='qemu-xhci'/>"),
+                "{xml}"
+            );
         }
 
         // Phase: domain_xml_when_emulated_uses_tcg.

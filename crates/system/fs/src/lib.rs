@@ -115,6 +115,8 @@ pub mod store;
 #[cfg(feature = "filesystem")]
 pub mod sync;
 #[cfg(feature = "filesystem")]
+pub mod sync_folder;
+#[cfg(feature = "filesystem")]
 pub mod syncstate;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;

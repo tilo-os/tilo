@@ -2,15 +2,20 @@
 name = "fs-content"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "The storage daemon's content format: size-tiered FastCDC chunking, BLAKE3 chunk hashes and self-describing HashSeq manifests, with the legacy format still readable."
 
 [dependencies]
 blake3.workspace = true
 fastcdc.workspace = true
 serde.workspace = true
-workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

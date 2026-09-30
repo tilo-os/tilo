@@ -52,7 +52,6 @@ targets = [
 ignored = ["cfg_aliases", "windows-result"]
 
 [features]
-tilo-presentation-feedback = ["objc2-metal/objc2-core-foundation"]
 device_lost_panic = []
 dx12 = [
     "dep:arrayvec",
@@ -114,6 +113,7 @@ gles = [
 internal_error_panic = []
 metal = [
     "naga/msl-out",
+    "objc2-metal/objc2-core-foundation",
     "dep:arrayvec",
     "dep:block2",
     "dep:bytemuck",

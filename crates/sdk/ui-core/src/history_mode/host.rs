@@ -60,6 +60,15 @@ impl PendingControlCallback {
     }
 }
 
+/// The children a [`HistoryHost`] layout presents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Composition {
+    toolbar: u64,
+    review: bool,
+    timeline: Option<bool>,
+    preview: Option<super::PreviewSide>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
@@ -88,7 +97,12 @@ pub struct HistoryHost {
     unavailable: Text,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
+    /// The change to select once History next refreshes open.
+    requested_entry: Option<crate::HistoryEntryId>,
     open: bool,
+    /// Whether the closed toolbar offers its own History button. Off where
+    /// the host's chrome (a menu bar, the Tilo shell) presents History.
+    open_button: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -106,6 +120,10 @@ pub struct HistoryHost {
     #[cfg(test)]
     pending_control_callbacks: HashMap<String, PendingControlCallback>,
     toolbar_dirty: bool,
+    /// Bumped whenever the retained toolbar is replaced.
+    toolbar_generation: u64,
+    /// The composition the last layout build admitted, if any.
+    built_composition: Option<Composition>,
     live_root_lifetime: uuid::Uuid,
     control_domain: Option<crate::ControlDomain>,
     control_lease: Option<crate::control_custody::SuspensionLease>,
@@ -129,6 +147,47 @@ impl HistoryHost {
             self.open_requested.set(true);
         }
         true
+    }
+
+    /// Return to the live app, as the History button does while open.
+    pub(crate) fn request_close(&self) {
+        if self.open {
+            self.open_requested.set(true);
+        }
+    }
+
+    /// Open with `entry` selected, as choosing a recent change in a History
+    /// menu does. Selecting a change shows its before and after.
+    pub(crate) fn request_open_at(&mut self, entry: crate::HistoryEntryId) -> bool {
+        if !self.request_open() {
+            return false;
+        }
+        self.requested_entry = Some(entry);
+        true
+    }
+
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The changes the timeline would list now, in causal order, whether
+    /// or not History is open.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
+        let Some(controller) = self.controller.as_ref().filter(|_| !self.invalid_owner) else {
+            return Vec::new();
+        };
+        self.source()
+            .document(doc)
+            .map(|document| controller.entries_at(&document))
+            .unwrap_or_default()
+    }
+
+    /// The host's own chrome presents History: drop the toolbar's button.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn remove_open_button(&mut self) {
+        self.open_button = false;
+        self.rebuild_toolbar();
     }
 
     pub(crate) fn new(
@@ -199,7 +258,9 @@ impl HistoryHost {
             unavailable_node: None,
             timeline: ActivityTimeline::new().with_preview_selection(),
             open_requested: request,
+            requested_entry: None,
             open: false,
+            open_button: true,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -224,6 +285,8 @@ impl HistoryHost {
             #[cfg(test)]
             pending_control_callbacks: HashMap::new(),
             toolbar_dirty: false,
+            toolbar_generation: 0,
+            built_composition: None,
             live_root_lifetime: uuid::Uuid::new_v4(),
             control_domain: None,
             control_lease: None,
@@ -699,6 +762,14 @@ impl HistoryHost {
     ) -> Vec<super::pending_controls::ContinuationCommand> {
         self.pending_controls.drain_commands()
     }
+    /// The changes the timeline shows selected.
+    pub(crate) fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
+        self.timeline
+            .selection()
+            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
+            .map(|entries| entries.iter().map(|entry| entry.id).collect())
+            .unwrap_or_default()
+    }
     #[cfg(test)]
     pub(crate) fn queue_pending_control_command_for_test(
         &self,
@@ -908,17 +979,13 @@ impl HistoryHost {
             || self.toolbar_dirty
             || !self.pending_controls.commands().borrow().is_empty()
             || self.open_requested.get()
+            || self.requested_entry.is_some()
             || !self.commands.borrow().is_empty()
             || (self.width < 600.0) != (width < 600.0)
         {
             return true;
         }
-        let selected: Vec<_> = self
-            .timeline
-            .selection()
-            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect())
-            .unwrap_or_default();
+        let selected = self.timeline_selection();
         if !selected.is_empty() && selected != self.selected {
             return true;
         }
@@ -969,6 +1036,7 @@ impl HistoryHost {
             }
             changed = true;
         }
+        let requested = self.requested_entry.take().filter(|_| self.open);
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
@@ -1096,12 +1164,7 @@ impl HistoryHost {
         }
         // Resolve actual current selected IDs before replacing the projection;
         // positions are never retained as version authority.
-        let selected: Vec<_> = self
-            .timeline
-            .selection()
-            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect())
-            .unwrap_or_default();
+        let selected = requested.map_or_else(|| self.timeline_selection(), |entry| vec![entry]);
         // Projecting history replays the document's change log, and the live
         // frontier moves with every keystroke. Only an open history view needs
         // it — or the copy of the document it projects from, which costs as
@@ -1139,6 +1202,16 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            if let Some(entry) = requested
+                && self.selected == [entry]
+                && let Some(index) = self
+                    .timeline
+                    .entries()
+                    .iter()
+                    .position(|row| row.id == entry)
+            {
+                self.timeline.set_selection(Some((index, index)));
+            }
         }
         self.refresh_media();
         let now_has_updates = self
@@ -1201,19 +1274,22 @@ impl HistoryHost {
             .with_intrinsic_height();
         if self.invalid_owner {
             self.toolbar = toolbar.push(Box::new(Text::new("history-mode-unavailable")));
+            self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
             return;
         }
         if self.selected.is_empty() {
-            let clicked = self.open_requested.clone();
-            toolbar = toolbar.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("history-open", "history-mode-title", None)
-                            .fit_content(32.0)
-                            .on_click(move || clicked.set(true)),
-                    ))
-                    .push(Box::new(Text::new(title))),
-            ));
+            if self.open_button || self.open {
+                let clicked = self.open_requested.clone();
+                toolbar = toolbar.push(Box::new(
+                    Row::new()
+                        .push(Box::new(
+                            Button::new("history-open", "history-mode-title", None)
+                                .fit_content(32.0)
+                                .on_click(move || clicked.set(true)),
+                        ))
+                        .push(Box::new(Text::new(title))),
+                ));
+            }
             for review in self.pending_controls.review() {
                 let mut row = Row::new().push(Box::new(Text::new(&I18nManager::format(
                     "history-mode-pending",
@@ -1437,6 +1513,25 @@ impl HistoryHost {
         }
         self.toolbar = toolbar;
         self.toolbar_dirty = false;
+        self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
+    }
+    /// What this host's layout presents: which widgets its children are.
+    pub(super) fn composition(&self) -> Composition {
+        Composition {
+            toolbar: self.toolbar_generation,
+            review: self.review.is_some(),
+            timeline: self.show_timeline().then(|| self.timeline_available()),
+            preview: self.show_preview().then_some(self.side),
+        }
+    }
+    pub(super) fn admit_composition(&mut self) {
+        self.built_composition = Some(self.composition());
+    }
+    /// Whether this host replaced or swapped a child since its layout was
+    /// built: every raw layout map into it is then stale.
+    pub(super) fn composition_changed(&self) -> bool {
+        self.built_composition
+            .is_some_and(|built| built != self.composition())
     }
     pub(crate) fn live_visible(&self) -> bool {
         let external = self

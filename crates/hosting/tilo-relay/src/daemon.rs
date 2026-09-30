@@ -595,6 +595,10 @@ impl Relay {
             app_serving,
             live_bridge: Arc::default(),
             agents: Arc::default(),
+            compactor: crate::compaction::Compactor::new(
+                identity.device_signing_key.clone(),
+                identity.device_cert.clone(),
+            ),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -880,6 +884,17 @@ impl Relay {
         self.endpoint.addr()
     }
 
+    /// The compactor keeping this relay's retained document channels short.
+    pub fn compactor(&self) -> &crate::compaction::Compactor {
+        &self.web.relay.compactor
+    }
+
+    /// The local sockets the relay's endpoint is bound to.
+    #[must_use]
+    pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
+        self.endpoint.bound_sockets()
+    }
+
     /// Bind (or re-bind) a workspace's membership set. Called by
     /// the admin CLI after `bind-workspace`.
     ///
@@ -1005,6 +1020,18 @@ impl Relay {
     /// Own user identity — for tests.
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
+    }
+
+    /// In-process access to the records of the workspaces this relay hosts,
+    /// for a service embedded in the host process.
+    #[must_use]
+    pub fn room_records(&self) -> crate::room_records::RoomRecords {
+        crate::room_records::RoomRecords::new(
+            self.workspaces.clone(),
+            self.own_cert.device_public_key,
+            self.own_user_public_key,
+            self.own_signing_key.clone(),
+        )
     }
 }
 
@@ -1819,6 +1846,7 @@ pub(crate) struct RelayProtocol {
     /// Set once when the host starts serving browsers.
     pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
     pub(crate) agents: crate::peer::AgentRegistry,
+    pub(crate) compactor: crate::compaction::Compactor,
 }
 
 impl RelayProtocol {
@@ -1836,6 +1864,10 @@ impl RelayProtocol {
             app_serving: self.app_serving.clone(),
             live_bridge: self.live_bridge.get().cloned(),
             agents: self.agents.clone(),
+            positions: Some(crate::position::PositionIssuer::new(
+                &self.own_sk.to_bytes(),
+            )),
+            compactor: Some(self.compactor.clone()),
         }
     }
 }
@@ -2906,13 +2938,13 @@ mod tests {
 
     impl StatusHeartbeat {
         fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
-            fs::full_replica::save_status(path, status).unwrap();
+            publish_status(path, status);
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
             let beat = std::thread::spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(250));
-                    fs::full_replica::save_status(&path, &status).unwrap();
+                    publish_status(&path, &status);
                 }
             });
             Self {
@@ -2920,6 +2952,17 @@ mod tests {
                 beat: Some(beat),
             }
         }
+    }
+
+    /// Replace the status file with a freshly stamped record. Not fsynced: a
+    /// durable write stalled on a slow disk would age the record past the
+    /// relay's 5 s freshness bound, and these tests only read it.
+    fn publish_status(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) {
+        let mut status = status.clone();
+        status.updated_at_ms = tilo_clock::unix_now_ms();
+        let staged = path.with_extension("staged");
+        std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
+        std::fs::rename(&staged, path).unwrap();
     }
 
     impl Drop for StatusHeartbeat {

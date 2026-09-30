@@ -34,9 +34,14 @@ const PRESENCE_SUBSCRIPTION = Object.freeze({priority: 0, maxAge: 50});
 const HEX64 = /^[0-9a-f]{64}$/;
 const OPS_TRACK = /^ops\/[0-9a-f]{64}$/;
 
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** An HTTPS `/moq/live` URL, or a loopback `http:` one (a local relay's
+ * `--web-plain` origin, which only the HTTPS stream fallback can use). */
 export function validateLiveEndpoint(value) {
   const endpoint = new URL(value instanceof URL ? value.href : value);
-  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password
+  const secure = endpoint.protocol === 'https:' || (endpoint.protocol === 'http:' && LOOPBACK.has(endpoint.hostname));
+  if (!secure || endpoint.username || endpoint.password
     || endpoint.search || endpoint.hash || endpoint.pathname !== LIVE_PATH) {
     throw new TypeError('live endpoint must be an exact credential-free HTTPS /moq/live URL');
   }

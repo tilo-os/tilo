@@ -32,7 +32,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
 # Durable replace-after-portal-write; a failed/crashed export never leaves a
 # partially-written attachment at the destination the user chose.
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }
@@ -77,7 +77,7 @@ reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
 tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 

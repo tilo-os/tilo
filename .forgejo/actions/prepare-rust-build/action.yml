@@ -1,5 +1,5 @@
 name: Prepare Rust build
-description: Ensure native build tools, restore Cargo downloads, and select the runner compiler cache or this repository's cache.
+description: Ensure native build tools and restore Cargo downloads. The runner provides the compiler cache.
 
 outputs:
   cargo-cache-hit:
@@ -23,6 +23,3 @@ runs:
     - name: Restore Cargo downloads
       id: cargo-downloads
       uses: ./.forgejo/actions/restore-cargo-downloads
-
-    - name: Use the compiler cache
-      uses: ./.forgejo/actions/compiler-cache

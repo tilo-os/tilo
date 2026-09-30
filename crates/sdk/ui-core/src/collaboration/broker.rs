@@ -403,6 +403,12 @@ impl CollabTransport for BrokerTransport {
         channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
     }
 
+    fn take_action_surface_failed(&mut self) -> bool {
+        self.state
+            .action_surface_failed
+            .swap(false, Ordering::AcqRel)
+    }
+
     fn send_native_media(
         &mut self,
         channel: String,
@@ -1241,6 +1247,9 @@ struct BridgeState {
     document_reads: committed_document::Reads,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
+    /// The broker refused or failed an action-surface publication; the owner
+    /// takes this and republishes.
+    action_surface_failed: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1382,6 +1391,7 @@ impl BridgeState {
             document_reads: committed_document::Reads::default(),
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
+            action_surface_failed: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
@@ -3412,20 +3422,28 @@ async fn ensure_sdk_route(
         } else {
             super::route_keys::RouteKeys::plain()
         }));
-    if !committed {
-        spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
-    }
-    spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
-    spawn_action_stream(&channel, inbound_tx).await;
-    spawn_invocation_stream(&channel, inbound_tx).await;
-    spawn_realtime_stream(&channel, inbound_tx).await;
-    // This intentionally fails quietly for person sessions. An admitted
-    // agent gets a separate broker-addressed queue; a document agent never
-    // has to infer task work from room traffic.
-    if !crate::host::environment().identity.managed_agent_context {
-        spawn_task_run_stream(&channel, inbound_tx).await;
-    }
-    let presence = spawn_presence_stream(&channel, inbound_tx).await;
+    // The streams are independent: subscribing to them together costs the
+    // join one broker round trip instead of one per stream.
+    let ((), (), (), (), (), (), presence) = tokio::join!(
+        async {
+            if !committed {
+                spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
+            }
+        },
+        spawn_context_stream(&channel, spec.clone(), inbound_tx),
+        spawn_action_stream(&channel, inbound_tx),
+        spawn_invocation_stream(&channel, inbound_tx),
+        spawn_realtime_stream(&channel, inbound_tx),
+        async {
+            // This intentionally fails quietly for person sessions. An
+            // admitted agent gets a separate broker-addressed queue; a
+            // document agent never has to infer task work from room traffic.
+            if !crate::host::environment().identity.managed_agent_context {
+                spawn_task_run_stream(&channel, inbound_tx).await;
+            }
+        },
+        spawn_presence_stream(&channel, inbound_tx),
+    );
     // Subscriptions are installed first so an existing holder's response
     // cannot race ahead of our document stream.
     if !committed && let Err(error) = channel.request_document_snapshot().await {
@@ -4947,7 +4965,12 @@ async fn dispatch_sdk_request(
                 })
                 .collect::<Vec<_>>();
             if let Err(error) = route.channel.publish_actions(&app_id, &actions).await {
-                tracing::warn!(%error, "collab: publishing resource/action surface failed");
+                tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
+                inbound_tx
+                    .state
+                    .action_surface_failed
+                    .store(true, Ordering::Release);
+                inbound_tx.state.notify_events();
             }
         }
         CollabRequest::ReportContinuation {
@@ -5782,6 +5805,10 @@ mod tests {
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
         action_publications: Vec<(String, Vec<(String, String)>)>,
+        /// Refuse this many action-surface publications, as a broker whose
+        /// admission is momentarily unavailable does.
+        refuse_action_publications: usize,
+        refused_action_publications: usize,
         action_directories: Vec<String>,
     }
 
@@ -6141,11 +6168,15 @@ mod tests {
                     )
                 })
                 .collect();
-            self.captures
-                .lock()
-                .unwrap()
-                .action_publications
-                .push((app_id, actions));
+            let mut captures = self.captures.lock().unwrap();
+            if captures.refuse_action_publications > 0 {
+                captures.refuse_action_publications -= 1;
+                captures.refused_action_publications += 1;
+                return Promise::err(capnp::Error::failed(
+                    "current host worker authority unavailable".into(),
+                ));
+            }
+            captures.action_publications.push((app_id, actions));
             Promise::ok(())
         }
 
@@ -8986,6 +9017,49 @@ mod tests {
                 },
             );
         }
+
+        // Case `a_refused_action_publication_is_republished`.
+        {
+            let broker = FakeBroker {
+                captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+                op_backlog: vec![],
+                presence_backlog: vec![],
+                context_backlog: vec![],
+                scrollback_response: None,
+            };
+            let (fd, captures, _thread) = stand_up_fake_broker(broker);
+            captures.lock().unwrap().refuse_action_publications = 1;
+            let app_id = crate::collaboration::local_app_id();
+            let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
+            let mut app = crate::App::with_collaboration_manager(
+                crate::State::new(),
+                Box::new(crate::widget::Button::new(
+                    "complete",
+                    "Complete",
+                    Some("completed"),
+                )),
+                manager,
+            );
+            crate::app::draw_prepared_component_test_frame(&mut app);
+            tilo_test_env::wait_until("the broker must see the first surface", || {
+                captures.lock().unwrap().refused_action_publications == 1
+            });
+            // Nothing about the surface changes: only the refusal can make the
+            // app publish it again.
+            tilo_test_env::wait_until(
+                "a surface the broker refused must be republished, not counted as published",
+                || {
+                    app.pump_collab_presence();
+                    let seen = captures.lock().unwrap();
+                    seen.action_publications.iter().any(|(id, actions)| {
+                        id == &app_id
+                            && actions
+                                .iter()
+                                .any(|(label, action)| label == "Complete" && action == "activate")
+                    })
+                },
+            );
+        }
     }
 
     #[test]
@@ -10051,7 +10125,7 @@ mod tests {
         let cluster = Uuid::new_v4();
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("document"),
+            crate::record::RecordKind::new("report"),
         );
         let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut original = crate::state::State::new();
@@ -10103,7 +10177,7 @@ mod tests {
         );
         assert_eq!(
             captures.lock().unwrap().joined_record_kinds,
-            ["", "document"],
+            ["", "report"],
             "the record route names its resource kind for the owner; the launch route none"
         );
         assert!(

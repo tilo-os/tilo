@@ -16,8 +16,31 @@ fn configure_profile(profile: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Runs this executable as the file chooser a confined app's request is
+/// shown in (macOS): a process of its own, since panels need a main-thread
+/// run loop the daemon does not have.
+pub const CHOOSER_HELPER_ARG: &str = "--file-chooser";
+
+/// Runs this executable as the consent prompt shown before a confined app
+/// first captures from a camera or microphone (macOS).
+pub const CONSENT_HELPER_ARG: &str = "--device-consent";
+
 fn run<S: RuntimeServices>() -> io::Result<()> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    #[cfg(target_os = "macos")]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == CHOOSER_HELPER_ARG)
+    {
+        return tilo_dialogs::confined::run_chooser_helper();
+    }
+    #[cfg(target_os = "macos")]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == CONSENT_HELPER_ARG)
+    {
+        return tilo_dialogs::confined::run_consent_helper();
+    }
     // Legacy manifest invocation remains an independently owned stdio session.
     if arguments
         .iter()
@@ -37,6 +60,10 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         configure_profile(&args.profile)?;
     }
     let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .with_writer(std::io::stderr)
         .try_init();
     match args.mode {

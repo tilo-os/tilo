@@ -228,6 +228,10 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
 /// a multi-GPU host); [`push_gpu_selection`] narrows to one.
 const DRM_DIR: &str = "/dev/dri";
 
+/// Where a shell-issued startup trace may land: the app's state directory,
+/// never its home.
+const STARTUP_METRICS_PREFIX: &str = "/run/tilo/app/.local/state/startup-";
+
 /// Splice the compositor's GPU choice into the argv, before the
 /// entrypoint token. Three things: (1) a tmpfs over `/dev/dri` hides
 /// the manifest's grant, then only the chosen render node is bound
@@ -359,12 +363,14 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
         }
     }
-    // The shell owns this path and always points it inside the app's one
-    // writable bind. Preserve it across `--clearenv` so startup checkpoints
-    // survive a compositor crash or forced reboot. Refuse arbitrary paths:
-    // this diagnostic must never turn into a sandbox write primitive.
+    // The shell owns this path and always points it at the app's state
+    // directory inside its one writable bind — not the directory itself,
+    // which is the app's home and what Files shows. Preserve it across
+    // `--clearenv` so startup checkpoints survive a compositor crash or
+    // forced reboot. Refuse arbitrary paths: this diagnostic must never turn
+    // into a sandbox write primitive.
     if let Ok(value) = std::env::var("TILO_STARTUP_METRICS_PATH")
-        && value.starts_with("/run/tilo/app/startup-")
+        && value.starts_with(STARTUP_METRICS_PREFIX)
         && std::path::Path::new(&value)
             .extension()
             .is_some_and(|extension| extension == "json")
@@ -379,6 +385,36 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             value,
         ]);
     }
+    // Where an unattended session's Save chooser answers. It only names a
+    // destination: whether the app may write there is still its file grants'.
+    if let Ok(value) = std::env::var(SAVE_DIRECTORY_ENV)
+        && is_plain_absolute_path(&value)
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            SAVE_DIRECTORY_ENV.to_string(),
+            value,
+        ]);
+    }
+}
+
+/// The session's save directory for an unattended guest (see
+/// `tilo_dialogs::portal::SAVE_DIRECTORY_ENV`).
+const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
+
+/// An absolute path of ordinary components, bounded and free of control
+/// characters.
+fn is_plain_absolute_path(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    value.len() <= 4096
+        && !value.chars().any(char::is_control)
+        && path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
 }
 
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
@@ -618,29 +654,17 @@ pub struct NetGateBind {
 }
 
 /// Wire the egress gate into the sandbox: socket + env vars for an
-/// ordinary HTTP client.
+/// ordinary HTTP client ([`crate::netgate::proxy_env`]), pointed at the
+/// in-sandbox relay.
 ///
 /// `--bind`, not `--ro-bind`: `connect(2)` on a pathname socket needs
 /// write access.
-///
-/// Both proxy forms advertised since picking one breaks apps:
-/// `HTTP(S)_PROXY` works with no feature flags (matters since
-/// `reqwest`'s SOCKS support is non-default); `ALL_PROXY` →
-/// `socks5h://…`, where the `h` sends the **hostname** to the proxy
-/// instead of resolving locally, which the sandbox can't do.
 pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
-    let http = format!("http://127.0.0.1:{}", bind.port);
-    for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+    for (var, value) in crate::netgate::proxy_env(bind.port) {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
-        argv.push(http.clone());
-    }
-    let socks = format!("socks5h://127.0.0.1:{}", bind.port);
-    for var in ["ALL_PROXY", "all_proxy"] {
-        argv.push("--setenv".to_string());
-        argv.push(var.to_string());
-        argv.push(socks.clone());
+        argv.push(value);
     }
     // Convenience for an app that speaks to the gate directly instead of
     // via the loopback relay.
@@ -842,6 +866,7 @@ mod tests {
         MinimalManifest {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
+            localized_names: BTreeMap::default(),
             category: Some("Office".to_string()),
             icon: None,
             version: "0.1.0".to_string(),
@@ -1250,6 +1275,26 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn argv_exports_only_validated_launch_metadata() {
+        // Phase `argv_forwards_only_a_plain_save_directory`.
+        {
+            for (value, forwarded) in [
+                ("/data/out", true),
+                ("/data/../etc", false),
+                ("relative/out", false),
+                ("/data/out\n", false),
+            ] {
+                let mut argv = Vec::new();
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(SAVE_DIRECTORY_ENV, value);
+                push_continuity_environment(&mut argv);
+                assert_eq!(
+                    argv.windows(3)
+                        .any(|w| w[0] == "--setenv" && w[1] == SAVE_DIRECTORY_ENV),
+                    forwarded,
+                    "{value:?}"
+                );
+            }
+        }
         // Phase `argv_forwards_the_complete_validated_continuation_envelope`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -1281,7 +1326,7 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(
                 "TILO_STARTUP_METRICS_PATH",
-                "/run/tilo/app/startup-42-dead_beef.json",
+                "/run/tilo/app/.local/state/startup-42-dead_beef.json",
             );
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
@@ -1294,8 +1339,24 @@ mod tests {
             );
             assert_eq!(
                 setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"),
-                Some("/run/tilo/app/startup-42-dead_beef.json")
+                Some("/run/tilo/app/.local/state/startup-42-dead_beef.json")
             );
+
+            // The app's home itself is what Files lists; a trace there is refused.
+            env.set(
+                "TILO_STARTUP_METRICS_PATH",
+                "/run/tilo/app/startup-42-dead_beef.json",
+            );
+            let argv = build_bwrap_argv(
+                &mk_manifest("off"),
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
 
             env.set("TILO_STARTUP_METRICS_PATH", "/home/user/metrics.json");
             let argv = build_bwrap_argv(

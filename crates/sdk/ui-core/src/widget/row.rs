@@ -227,7 +227,8 @@ impl Row {
 impl Widget for Row {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
     );
 
     fn start_operation(
@@ -452,14 +453,6 @@ impl Widget for Row {
     fn is_focused(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
 
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
     // children once one reports dirty, leaving their flags uncleared --
@@ -554,6 +547,19 @@ impl Widget for Row {
         self.descendant_caches_released = true;
         for child in &mut self.children {
             child.release_scene_cache();
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for Row {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
         }
     }
 }

@@ -524,7 +524,9 @@ impl Widget for ProbeRoot {
     tilo_ui::provides!(
         dyn tilo_ui::widget::NativeViewLifecycle,
         dyn tilo_ui::resources::PublishesResources,
-        dyn tilo_ui::search::capability::SearchSource
+        dyn tilo_ui::search::capability::SearchSource,
+        dyn tilo_ui::view::capability::ViewState,
+        dyn tilo_ui::undo::UndoPoints
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -533,21 +535,6 @@ impl Widget for ProbeRoot {
                 observations.borrow_mut().motion.push(reduced);
             }
         });
-    }
-    fn needs_commit(&self) -> bool {
-        COMMIT_REQUEST.get()
-    }
-    fn on_commit(&mut self) {
-        COMMIT_REQUEST.set(false);
-        COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
-    }
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Some(tilo_actions::ActionContext::for_resource(
-            &self.caret,
-            "probe:shared",
-            "probe",
-            &self.caret,
-        ))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -664,12 +651,33 @@ impl Widget for ProbeRoot {
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
     }
+}
+
+impl tilo_ui::undo::UndoPoints for ProbeRoot {
+    fn needs_commit(&self) -> bool {
+        COMMIT_REQUEST.get()
+    }
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
+        Some(tilo_actions::ActionContext::for_resource(
+            &self.caret,
+            "probe:shared",
+            "probe",
+            &self.caret,
+        ))
+    }
+    fn on_commit(&mut self) {
+        COMMIT_REQUEST.set(false);
+        COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+    }
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
     fn set_state(&mut self, state: &str) {
         self.caret = state.into();
     }
+}
+
+impl tilo_ui::view::capability::ViewState for ProbeRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),

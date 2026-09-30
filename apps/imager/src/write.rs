@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 #[cfg(any(test, target_os = "macos", target_os = "windows"))]
-use std::time::Instant;
+use ui::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -1792,14 +1792,14 @@ fn run_finite_status(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;
-    let deadline = Instant::now()
+    let deadline = ui::time::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
         }
-        if Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             return Err(io::Error::new(
@@ -2290,7 +2290,7 @@ mod tests {
         {
             let mut command = Command::new("sh");
             command.args(["-c", "sleep 10"]);
-            let started = Instant::now();
+            let started = ui::time::now();
             let error = run_finite_status(command, Duration::from_millis(20)).unwrap_err();
 
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);

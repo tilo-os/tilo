@@ -133,6 +133,8 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
 }
 
 impl Widget for Card {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
@@ -276,20 +278,21 @@ impl Widget for Card {
         "Card"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.inner.take_structure_dirty()
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.inner.wants_pointer_capture()
+    }
+}
+
+impl crate::undo::UndoPoints for Card {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.inner.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.inner.as_mut());
     }
 }
 
@@ -418,6 +421,8 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
@@ -551,22 +556,25 @@ impl Widget for CardGrid {
         "CardGrid"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.cards.iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for card in &mut self.cards {
-            card.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = false;
         for card in &mut self.cards {
             dirty |= card.take_structure_dirty();
         }
         dirty
+    }
+}
+
+impl crate::undo::UndoPoints for CardGrid {
+    fn needs_commit(&self) -> bool {
+        self.cards
+            .iter()
+            .any(|c| crate::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for card in &mut self.cards {
+            crate::undo::on_commit(card.as_mut());
+        }
     }
 }
 

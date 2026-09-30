@@ -498,7 +498,8 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
     assert!(inspection.contains("activity_timeline"), "{inspection}");
-    let checkout = notes::hosting::default_notebook();
+    // A launch into a workspace opens the room's shared default record.
+    let checkout = notes::hosting::launch_notebook(true);
     let directory = app_state::DocStore::room_record_dir_at(
         &profile,
         canonical::PACKAGE,
@@ -630,7 +631,6 @@ enum OutgoingTransition {
     reason = "one failed outgoing-owner lifecycle keeps retry, sibling isolation and durable reopen assertions together"
 )]
 fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_incoming: bool) {
-    use ui::Widget as _;
     let f = LegacyFixture::rich();
     let notes::production::PreparedNotebook {
         root: mut tile,
@@ -721,7 +721,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
     }
     tile.bind_record(incoming.clone(), requested.clone());
     tile.bind_record(incoming.clone(), requested);
-    let mut reports = tile.take_component_close_reports();
+    let mut reports = ui::component_lifecycle::take_component_close_reports(&mut tile);
     assert_eq!(
         reports.len(),
         1,
@@ -755,7 +755,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
             .unwrap(),
         incoming_before
     );
-    assert!(tile.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
     // Only the recovery report may retain A when B admission fails or succeeds.
     drop(tile);
     drop(records);

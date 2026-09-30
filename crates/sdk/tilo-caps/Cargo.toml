@@ -1,0 +1,25 @@
+[package]
+name = "tilo-caps"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo app capability vocabulary and its availability on Linux, macOS and the web, as data the CLI, the registry and the docs share."
+
+# Data only. Rows that a platform crate owns are read from that crate's
+# `CAPABILITIES` table, so the build-time check cannot drift from the backend.
+[dependencies]
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
+tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

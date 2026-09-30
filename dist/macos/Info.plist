@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Tilo.app: the Store (so.tilo.store) is the visible launcher; the
+     tilo-runtime executable beside it is the per-user runtime it attaches to.
+     build-app.sh sets both version keys from dist/VERSION. -->
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Tilo</string>
+  <key>CFBundleExecutable</key><string>Tilo</string>
+  <key>CFBundleIdentifier</key><string>so.tilo.runtime</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Tilo</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSCameraUsageDescription</key><string>Tilo turns the camera on for an app only after you allow that app in Tilo.</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>Tilo contributors</string>
+  <key>NSMicrophoneUsageDescription</key><string>Tilo turns the microphone on for an app only after you allow that app in Tilo.</string>
+</dict></plist>

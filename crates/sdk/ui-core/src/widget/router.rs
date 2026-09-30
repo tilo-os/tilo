@@ -386,6 +386,8 @@ impl Router {
 }
 
 impl Widget for Router {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -479,14 +481,6 @@ impl Widget for Router {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn on_nav_gesture(
         &mut self,
         direction: NavDirection,
@@ -500,6 +494,15 @@ impl Widget for Router {
             NavDirection::Back => self.handle.back(),
             NavDirection::Forward => self.handle.forward(),
         }
+    }
+
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.child
+            .nav_availability()
+            .or(crate::gesture::NavAvailability {
+                back: self.handle.can_back(),
+                forward: self.handle.can_forward(),
+            })
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -539,6 +542,15 @@ impl Widget for Router {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for Router {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 

@@ -56,10 +56,16 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
 
 # BuildKit applies SOURCE_DATE_EPOCH to file mtimes only when the exporter
 # rewrites them; without it COPY keeps checkout times and RUN the wall clock.
-oci_exports="$(grep -Ec 'type=oci,dest=/var/tmp/tilo-image' "$workflow")"
-[ "$oci_exports" -ge 3 ] \
-  && [ "$(grep -Ec "type=oci,dest=/var/tmp/tilo-image[^ ',]*,rewrite-timestamp=true" "$workflow")" -eq "$oci_exports" ] \
-  && ok 'every OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
+# Only a Build / OS dev image, never compared or released, skips it: BuildKit
+# pushes it straight to tilo-ci.
+release_rule="$(awk '/- name: Select build, validation, or publication mode/,/dev-channel=/' "$workflow")"
+grep -Fq "outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true" "$workflow" \
+  && [ "$(grep -Fc 'outputs: ${{ env.TILO_IMAGE_OUTPUT }}' "$workflow")" -eq 2 ] \
+  && grep -Fq "echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> \"\$GITHUB_ENV\"" <<<"$release_rule" \
+  && grep -Fq "if [[ \$GITHUB_EVENT_NAME == workflow_call ]]; then" <<<"$release_rule" \
+  && grep -Fq '[[ $publish != true ]]' <<<"$release_rule" \
+  && grep -Fq 'echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"' <<<"$release_rule" \
+  && ok 'every compared or released OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
   || bad 'an OS image export keeps build-time file mtimes'
 
 # Integration images skip the second uncached build, but every publication
@@ -77,7 +83,7 @@ grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow"
     | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
   && grep -Fq 'REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}' "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 3 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
@@ -115,7 +121,7 @@ fi
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
   "$repo/.forgejo/workflows/build-kernel.yml"
-  "$repo/.forgejo/workflows/snapshot-rpms.yml"
+  "$repo/.forgejo/workflows/build-rpms.yml"
   "$repo/os/dev/build-image.sh"
 )
 attestation_shape_safe=1
@@ -174,7 +180,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
    && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
-   && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="registry.tilo.so/tilo/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then

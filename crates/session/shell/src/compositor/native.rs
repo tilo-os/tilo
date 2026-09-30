@@ -262,9 +262,9 @@ fn dispatch_wayland_clients_fairly(
     Ok(dispatched)
 }
 
-/// Select how long calloop may sleep. Presentation cadence is a deadline only
-/// while visual work is pending; a static desktop instead sleeps until the
-/// earliest real service/widget deadline and wakes early on registered fds.
+/// [`native_loop_park_named`]'s timeout alone, for tests about how long the
+/// loop sleeps rather than why.
+#[cfg(test)]
 fn native_loop_park(
     now: Instant,
     backend_has_event_wake: bool,
@@ -273,18 +273,87 @@ fn native_loop_park(
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
+    native_loop_park_named(
+        now,
+        backend_has_event_wake,
+        wayland_dispatch_pending,
+        cadence_needed,
+        frame_deadline,
+        deadlines.into_iter().map(|deadline| ("deadline", deadline)),
+    )
+    .0
+}
+
+/// Select how long calloop may sleep. Presentation cadence is a deadline only
+/// while visual work is pending; a static desktop instead sleeps until the
+/// earliest real service/widget deadline and wakes early on registered fds.
+///
+/// Also names the deadline the park ends on — the `wake` column of the frame
+/// trace, and what paint-stats blames when an idle desktop keeps waking.
+/// `None` names a park only an fd can end.
+fn native_loop_park_named(
+    now: Instant,
+    backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
+    cadence_needed: bool,
+    frame_deadline: Instant,
+    deadlines: impl IntoIterator<Item = (&'static str, Option<Instant>)>,
+) -> (Option<Duration>, Option<&'static str>) {
     let wayland_retry = wayland_dispatch_pending
         .then(|| now.checked_add(WAYLAND_PENDING_RETRY_FLOOR).unwrap_or(now));
     let semantic_deadline = deadlines
         .into_iter()
-        .flatten()
-        .chain(wayland_retry)
-        .chain(cadence_needed.then_some(frame_deadline))
-        .min();
+        .filter_map(|(name, deadline)| deadline.map(|at| (at, name)))
+        .chain(wayland_retry.map(|at| (at, "wayland-retry")))
+        .chain(cadence_needed.then_some((frame_deadline, "cadence")))
+        .min_by_key(|(at, _)| *at);
 
-    semantic_deadline
-        .map(|deadline| deadline.saturating_duration_since(now))
-        .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+    match semantic_deadline {
+        Some((deadline, name)) => (Some(deadline.saturating_duration_since(now)), Some(name)),
+        None if !backend_has_event_wake => (Some(IDLE_BACKEND_POLL), Some("idle-backend-poll")),
+        None => (None, None),
+    }
+}
+
+/// Name what ended a park of `park` that lasted `slept`: the deadline it was
+/// set for when the timeout ran out, [`metrics::WAKE_IO`] when an fd fired
+/// first. A timeout returns a little late, never early, so a sleep within
+/// [`WAKE_TIMER_SLACK`] of the timeout still counts as the timer.
+fn park_wake_reason(
+    park: Option<Duration>,
+    deadline: Option<&'static str>,
+    slept: Duration,
+) -> &'static str {
+    match (park, deadline) {
+        (Some(timeout), Some(name)) if slept.saturating_add(WAKE_TIMER_SLACK) >= timeout => name,
+        _ => super::metrics::WAKE_IO,
+    }
+}
+
+const WAKE_TIMER_SLACK: Duration = Duration::from_micros(200);
+
+/// Paint-stats' count of what ended each park, by wake name.
+#[derive(Default)]
+struct WakeTally(Vec<(&'static str, u32)>);
+
+impl WakeTally {
+    fn note(&mut self, reason: &'static str) {
+        match self.0.iter_mut().find(|(name, _)| *name == reason) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.0.push((reason, 1)),
+        }
+    }
+
+    fn take_summary(&mut self) -> String {
+        let summary = self
+            .0
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.0.clear();
+        summary
+    }
 }
 
 /// A lock-state edge replaces every pixel on screen.  Keep that edge pending
@@ -320,6 +389,32 @@ fn widget_deadline_for_presenter(
 // carry the pending frame; future animation deadlines still wake the idle loop.
 fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
     deadline.filter(|deadline| *deadline > now)
+}
+
+/// How long after the last input a visible lock backdrop keeps moving. It
+/// then holds still until someone touches the machine: a locked laptop left
+/// on the desk must not repaint at the backdrop's cadence until it blanks.
+const LOCK_BACKDROP_MOTION: Duration = Duration::from_secs(20);
+
+/// The lock backdrop animates only while it can be seen and someone is
+/// there. Behind a blanked panel the backend drops every frame, so building
+/// them would keep an unattended, locked machine awake at the backdrop's
+/// cadence.
+fn lock_animation_deadline(
+    theme: &ui::theme::Theme,
+    session: &SessionManager,
+    has_wallpaper: bool,
+    last_frame: Instant,
+    now: Instant,
+) -> Option<Instant> {
+    lock_screen::animation_deadline(
+        theme,
+        session.is_locked()
+            && !session.is_blanked()
+            && session.idle_for(now) < LOCK_BACKDROP_MOTION,
+        has_wallpaper,
+        last_frame,
+    )
 }
 
 /// How often a locked session re-reads its players, so the lock card follows
@@ -472,10 +567,15 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         return None;
     }
     if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity));
+        return Some(ClientState::attributed_arc(identity, pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
-        .then(ClientState::new_arc)
+        .then(|| {
+            Arc::new(ClientState {
+                pid: Some(pid),
+                ..ClientState::default()
+            })
+        })
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -2238,6 +2338,10 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
+            // Maximize is a different field (`workspace_tree` group.maximized).
+            "fullscreen_group": chrome.fullscreen_group(),
+            "fullscreen": chrome.is_fullscreen(),
         })
     }
 }
@@ -2280,6 +2384,9 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Synthetic touchpad gestures go through the tracker the DRM runtime
+    /// feeds from libinput, so they mean exactly what the fingers would.
+    gestures: crate::compositor::backend::drm::gestures::GestureTracker,
     /// Attached input devices and the last kind of input used, from the
     /// backend or from injected test-control input alike. The shell chrome's
     /// shortcut help follows it.
@@ -2302,6 +2409,7 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
             agents: crate::compositor::agent_seats::AgentSeats::new(),
@@ -2335,7 +2443,8 @@ impl TestControlCtx {
             PlannedAction::CursorMoved { .. }
             | PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
-            | PlannedAction::MouseWheel { .. } => self.input.note_used(ui::InputModality::Pointer),
+            | PlannedAction::MouseWheel { .. }
+            | PlannedAction::Touchpad(_) => self.input.note_used(ui::InputModality::Pointer),
             _ => false,
         };
         if changed {
@@ -3000,6 +3109,11 @@ fn execute_planned_action(
             x,
             y,
         } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
+        PlannedAction::Touchpad(edge) => {
+            if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
+                apply_shell_gesture(fb, gesture);
+            }
+        }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -3110,6 +3224,7 @@ fn execute_locked_action(
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
         | PlannedAction::Touch { .. }
+        | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -3390,8 +3505,8 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// The agent's strip on screen: its coordinates' origin and its
-    /// screenshots' extent.
+    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
+    /// its screenshots' extent.
     viewport: Rect,
 }
 
@@ -3447,7 +3562,6 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
-    let current = ctx.agents.seat(&agent.id).and_then(|seat| seat.strip);
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3456,7 +3570,19 @@ fn seat_agent(
                 .strip_owner(id)
                 .is_some_and(|owner| owner != agent.id)
         };
-        fb.with_chrome(|chrome| strip = chrome.agent_strip(current, claimed, &label));
+        let mut current = agents.seat(&agent.id).and_then(|seat| seat.strip);
+        // The seated agent moved to another strip nobody else works in: that
+        // strip is its own now, so its next command does not pull it back.
+        if agents.seated() == Some(agent.id.as_str())
+            && let Some(active) = fb.chrome().active_strip_id()
+            && !claimed(active)
+        {
+            current = Some(active);
+        }
+        fb.with_chrome(|chrome| {
+            chrome.set_single_strip(true);
+            strip = chrome.agent_strip(current, claimed, &label);
+        });
     }
     let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
     let peer = {
@@ -3465,8 +3591,8 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb, strip)
-        .ok_or_else(|| agent_refusal("strip_hidden", "the agent's strip is not on screen"))?;
+    let viewport = agent_viewport(fb)
+        .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3487,7 +3613,6 @@ fn seat_agent(
     if let Some(modifiers) = handover.modifiers {
         apply_modifier_mask(ctx, modifiers);
     }
-    let viewport = agent_viewport(fb, strip).unwrap_or(viewport);
     Ok(Some(AgentScope {
         agent: agent.id.clone(),
         peer,
@@ -3496,23 +3621,14 @@ fn seat_agent(
     }))
 }
 
-/// Where an agent working in `strip` sees and acts: the strip's row. A
-/// workspace with no window at all draws its empty-workspace card over the
-/// whole screen instead of rows, and that card is where any agent opens its
-/// first app, so there the viewport is the screen.
-fn agent_viewport(fb: &FrameBuilder, strip: crate::shell::state::StripId) -> Option<Rect> {
-    if let Some(row) = fb.host().strip_row_rect(strip) {
-        return Some(row);
-    }
-    let empty = {
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        tree.desktop
-            .active_workspace()
-            .is_some_and(|ws| ws.strips.iter().all(|s| s.window_groups.is_empty()))
-    };
+/// Where an agent sees and acts: the whole screen. While agents drive the
+/// compositor only the focused strip is presented, filling the work area, and
+/// the seat focuses the agent's own strip on its turn; the launcher, palette,
+/// menus and dialogs its actions open are drawn over the whole screen, so
+/// anything narrower would hide them from it.
+fn agent_viewport(fb: &FrameBuilder) -> Option<Rect> {
     let (w, h) = fb.scene_size();
-    (empty && w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+    (w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
 }
 
 /// Retire `agent`: its window sees the release of everything it still holds,
@@ -3523,19 +3639,26 @@ fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, sta
     };
     run_as_participant(seat.peer, &releases, fb, ctx, state);
     state.remote_seats.drop_peer(seat.peer);
-    if let Some(strip) = seat.strip {
-        let mut removed = false;
-        fb.with_chrome(|chrome| removed = chrome.remove_strip_if_empty(strip));
-        if removed {
-            fb.relayout();
-            client_input::sync_keyboard_focus(state, fb);
+    let last = ctx.agents.is_empty();
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        if let Some(strip) = seat.strip {
+            changed = chrome.remove_strip_if_empty(strip);
         }
+        if last && chrome.single_strip() {
+            chrome.set_single_strip(false);
+            changed = true;
+        }
+    });
+    if changed {
+        fb.relayout();
+        client_input::sync_keyboard_focus(state, fb);
     }
 }
 
 /// Dispatch `command` for the seated agent in `scope`: its coordinates are
-/// relative to its strip, what it lists is what its strip shows, and a pointer
-/// it would move outside the strip is refused.
+/// relative to its viewport, what it lists is what its viewport shows, and a
+/// pointer it would move outside the viewport is refused.
 fn dispatch_for_agent(
     command: test_control::Command,
     scope: &AgentScope,
@@ -3590,10 +3713,7 @@ fn dispatch_for_agent(
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
         return (
-            agent_refusal(
-                "outside_viewport",
-                "the pointer would leave the agent's strip",
-            ),
+            agent_refusal("outside_viewport", "the pointer would leave the screen"),
             Vec::new(),
         );
     }
@@ -3679,6 +3799,9 @@ fn dispatch_control_command(
                 })),
                 Vec::new(),
             )
+        }
+        test_control::Command::ProvisionTestIdentity => {
+            (crate::compositor::dev_test_identity::respond(), Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
@@ -4755,6 +4878,19 @@ fn load_session_tree(
             adopted.len()
         );
     }
+    if let Some(account) = std::env::var("USER")
+        .ok()
+        .filter(|account| !account.is_empty())
+    {
+        let rebound = tree
+            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
+        if !rebound.is_empty() {
+            tracing::info!(
+                "capabilities: {} workspace(s) created before this device's identity now belong to it",
+                rebound.len()
+            );
+        }
+    }
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
     // background publisher coalesces this with any immediate mutation.
@@ -5281,6 +5417,11 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
+    let records = crate::shell::document_import::NativeHostedRooms(Arc::clone(&net));
+    crate::shell::peer_windows::set_hosted_record_reader(Box::new(move |room, app, record| {
+        use crate::shell::document_import::HostedRooms as _;
+        records.read(room, app, record)
+    }));
     let hosted_net = Arc::clone(&net);
     frame_builder.with_chrome(move |chrome| {
         chrome.window_transfers.set_hosted_rooms(Box::new(
@@ -6013,6 +6154,55 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
 /// Clamped rather than wrapped: a client-visible fullscreen target derived
 /// from a bogus size is far less harmful than the sign flip a bare `as`
 /// cast would produce, and no real display size comes anywhere near `i32::MAX`.
+/// A headless session has no seat anyone sits at: blanking, locking or
+/// suspending it on idle protects nothing, and a lock strands the agents
+/// driving it, since nobody there can type the unlock password. Explicit
+/// locking stays available.
+fn idle_policy_for_backend(
+    policy: tilo_power_mgmt::PowerPolicy,
+    headless: bool,
+) -> tilo_power_mgmt::PowerPolicy {
+    if !headless {
+        return policy;
+    }
+    tilo_power_mgmt::PowerPolicy {
+        idle_blank: None,
+        idle_lock: None,
+        idle_suspend: None,
+        ..policy
+    }
+}
+
+#[cfg(test)]
+mod idle_policy_tests {
+    use super::idle_policy_for_backend;
+    use std::time::Duration;
+
+    #[test]
+    fn only_a_headless_session_drops_idle_blank_lock_and_suspend() {
+        let configured = tilo_power_mgmt::PowerPolicy {
+            idle_blank: Some(Duration::from_secs(60)),
+            idle_lock: Some(Duration::from_secs(300)),
+            idle_suspend: Some(Duration::from_secs(900)),
+            ..tilo_power_mgmt::config::default_policy()
+        };
+        let seated = idle_policy_for_backend(configured, false);
+        assert_eq!(seated.idle_lock, configured.idle_lock);
+        assert_eq!(seated.idle_blank, configured.idle_blank);
+        assert_eq!(seated.idle_suspend, configured.idle_suspend);
+        let headless = idle_policy_for_backend(configured, true);
+        assert_eq!(
+            (
+                headless.idle_blank,
+                headless.idle_lock,
+                headless.idle_suspend
+            ),
+            (None, None, None)
+        );
+        assert_eq!(headless.lid_close_action, configured.lid_close_action);
+    }
+}
+
 fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
     (
         i32::try_from(size.0).unwrap_or(i32::MAX),
@@ -6768,7 +6958,9 @@ pub fn run() {
     // lock-overlay paints. The power policy from `settings.json` owns the
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
-    let mut power_policy = tilo_power_mgmt::config::load_policy();
+    let headless = backend_kind == BackendKind::Headless;
+    let mut power_policy =
+        idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
     let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
         && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
             || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
@@ -6826,9 +7018,23 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
-    frame_builder
-        .host_mut()
-        .set_power_bridge(power_bridge.clone());
+    // Only a DRM session owns the seat. A headless or nested session runs
+    // beside another desktop on the same machine and logind, so it must never
+    // suspend, lock-on-lid or power off that machine, nor take its lid and
+    // power-key delegation.
+    let owns_host_power = matches!(backend_kind, BackendKind::Drm);
+    if owns_host_power {
+        frame_builder
+            .host_mut()
+            .set_power_bridge(power_bridge.clone());
+    } else {
+        frame_builder.host_mut().detach_from_host();
+        tracing::info!(
+            target: "tilo::power",
+            ?backend_kind,
+            "session does not own the seat: host power actions and logind power service disabled"
+        );
+    }
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -6969,7 +7175,7 @@ pub fn run() {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the session runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = notif_runtime {
+    if owns_host_power && let Some(rt) = notif_runtime {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -7060,6 +7266,22 @@ pub fn run() {
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    // The poll runs only on a loop tick, and an idle desktop parks with no
+    // deadline, so a write from Settings or a display transaction staged by
+    // another process wakes the loop and is looked at on that tick.
+    let settings_written = Arc::new(AtomicBool::new(false));
+    let _settings_file_watch = {
+        let written = Arc::clone(&settings_written);
+        let wake = Arc::clone(&session_wake);
+        settings_store::watch::watch_settings(move || {
+            written.store(true, Ordering::Release);
+            wake();
+        })
+        .map_err(|error| {
+            tracing::warn!(%error, "settings file watch unavailable; an idle desktop applies Settings changes on its next wake");
+        })
+        .ok()
+    };
     let mut switch_control = SwitchControlRuntime::new(Instant::now());
     // Local game controllers drive the desktop through the same input
     // funnel; their evdev descriptors wake this loop like hardware input.
@@ -7174,6 +7396,9 @@ pub fn run() {
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+    let mut animating_content_leaves: Vec<String> = Vec::new();
+    let mut wakes_seen = WakeTally::default();
+    let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -7236,7 +7461,10 @@ pub fn run() {
         // Poll before processing launch actions so closed workspaces have
         // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&frame_builder.chrome_handle());
+            xwayland.poll(
+                &frame_builder.chrome_handle(),
+                &state.mapped_xwayland_pids(),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
@@ -8049,6 +8277,9 @@ pub fn run() {
 
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if settings_written.swap(false, Ordering::AcqRel) {
+            settings_watch.check_now();
+        }
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
@@ -8080,7 +8311,7 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
-            let policy = tilo_power_mgmt::config::load_policy();
+            let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_lock_timeout(policy.idle_lock);
@@ -8329,6 +8560,7 @@ pub fn run() {
                     session_changed = true;
                 }
                 tilo_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                    let timeout = timeout.filter(|_| !headless);
                     session.set_suspend_timeout(timeout);
                     tracing::info!(target: "tilo::power", ?timeout, "live idle-suspend timeout updated");
                 }
@@ -8502,24 +8734,7 @@ pub fn run() {
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = {
-                    let mut tree = state.workspace_tree.write();
-                    crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                        &mut tree, surface_id,
-                    )
-                };
-                if let Some(toplevel) = state
-                    .xdg_shell_state
-                    .toplevel_surfaces()
-                    .iter()
-                    .find(|toplevel| {
-                        crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
-                    })
-                    .cloned()
-                {
-                    toplevel.send_close();
-                }
-                state.close_sheets_over(surface_id);
+                state.close_surface_on_request(surface_id);
             }
             let mut fullscreen_toggle = false;
             frame_builder.with_chrome(|chrome| {
@@ -9332,11 +9547,12 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
-            lock_animation: lock_screen::animation_deadline(
+            lock_animation: lock_animation_deadline(
                 frame_builder.theme(),
-                session.is_locked(),
+                &session,
                 lock_has_wallpaper,
                 last_lock_animation_frame,
+                iter_t0,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
@@ -9389,6 +9605,10 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
+                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    {
+                        animating_content_leaves = frame_builder.content_animating_leaves();
+                    }
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -9405,10 +9625,14 @@ pub fn run() {
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
-                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
+                     locked={} blanked={} | \
+                     anim_sources host=0x{:04x} host_labels={:?} content={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    session.is_locked(),
+                    session.is_blanked(),
                     animation_sources_seen.host,
                     animation_host_labels,
+                    animating_content_leaves.join(","),
                     animation_sources_seen.floating,
                     animation_sources_seen.transient,
                     animation_sources_seen.osk,
@@ -9427,7 +9651,13 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
+                eprintln!(
+                    "paint-stats: wakes {} | widget-deadline owner {:?}",
+                    wakes_seen.take_summary(),
+                    widget_wake_owner.take().unwrap_or_default(),
+                );
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+                animating_content_leaves.clear();
                 stats_since = Instant::now();
             }
         }
@@ -10158,31 +10388,44 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
-        let park = native_loop_park(
+        let (park, park_deadline) = native_loop_park_named(
             park_now,
             backend_event_wake,
             display.backend().has_pending_client_dispatch(),
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
-                lock_animation_park_deadline(
-                    park_now,
-                    lock_screen::animation_deadline(
-                        frame_builder.theme(),
-                        session.is_locked(),
-                        lock_has_wallpaper,
-                        last_lock_animation_frame,
+                (
+                    "widget",
+                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                ),
+                (
+                    "lock-animation",
+                    lock_animation_park_deadline(
+                        park_now,
+                        lock_animation_deadline(
+                            frame_builder.theme(),
+                            &session,
+                            lock_has_wallpaper,
+                            last_lock_animation_frame,
+                            park_now,
+                        ),
                     ),
                 ),
-                lock_clock_deadline,
-                lock_media_deadline,
-                run_deadline,
-                controller_nav.next_deadline(park_now),
-                backend.next_service_deadline(),
-                wayland_client_service_deadline(wayland_client_wake, park_now),
-                state.text_commit_deadline(),
-                client_followup_deadline(clients_dispatched, park_now),
+                ("lock-clock", lock_clock_deadline),
+                ("lock-media", lock_media_deadline),
+                ("run-deadline", run_deadline),
+                ("controller-nav", controller_nav.next_deadline(park_now)),
+                ("backend-service", backend.next_service_deadline()),
+                (
+                    "wayland-client-fallback",
+                    wayland_client_service_deadline(wayland_client_wake, park_now),
+                ),
+                ("text-commit", state.text_commit_deadline()),
+                (
+                    "client-followup",
+                    client_followup_deadline(clients_dispatched, park_now),
+                ),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -10190,7 +10433,16 @@ pub fn run() {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
-        metrics.mark_sleep(t_sleep_start.elapsed());
+        let slept = t_sleep_start.elapsed();
+        metrics.mark_sleep(slept);
+        let wake = park_wake_reason(park, park_deadline, slept);
+        metrics.mark_wake(wake);
+        if paint_stats {
+            wakes_seen.note(wake);
+            if wake == "widget" && widget_wake_owner.is_none() {
+                widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
+            }
+        }
         metrics.end_tick();
         if let Some(deadline) = run_deadline
             && Instant::now() >= deadline
@@ -10447,6 +10699,60 @@ mod tests {
             ),
             None,
             "a tick that dispatched nothing parks"
+        );
+    }
+
+    #[test]
+    fn a_park_names_the_deadline_that_ends_it() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let (park, name) = native_loop_park_named(
+            now,
+            true,
+            false,
+            false,
+            frame,
+            [
+                ("lock-clock", Some(now + Duration::from_secs(30))),
+                ("widget", Some(now + Duration::from_millis(250))),
+                ("text-commit", None),
+            ],
+        );
+        assert_eq!(park, Some(Duration::from_millis(250)));
+        assert_eq!(name, Some("widget"), "the earliest deadline owns the wake");
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(250)),
+            "widget",
+            "a park that ran its full timeout was ended by that deadline"
+        );
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(40)),
+            super::metrics::WAKE_IO,
+            "a park cut short was ended by an fd, not the deadline"
+        );
+        assert_eq!(
+            native_loop_park_named(now, true, false, true, frame, []).1,
+            Some("cadence")
+        );
+        assert_eq!(
+            native_loop_park_named(now, false, false, false, frame, []).1,
+            Some("idle-backend-poll"),
+            "the bounded poll that stands in for a missing wake fd is named too"
+        );
+        assert_eq!(
+            park_wake_reason(None, None, Duration::from_secs(5)),
+            super::metrics::WAKE_IO,
+            "only an fd can end an unbounded park"
+        );
+        let mut tally = WakeTally::default();
+        for wake in ["widget", "io", "widget"] {
+            tally.note(wake);
+        }
+        assert_eq!(tally.take_summary(), "widget=2,io=1");
+        assert_eq!(
+            tally.take_summary(),
+            "",
+            "each report covers its own window"
         );
     }
 
@@ -10906,6 +11212,58 @@ mod tests {
                     [lock_animation_park_deadline(now, future)]
                 ),
                 Some(Duration::from_millis(42))
+            );
+        }
+        // Phase `blanked_lock_stops_animating_until_the_panel_wakes`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: Some(Duration::from_secs(10)),
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some(),
+                "a visible lock animates its backdrop"
+            );
+            session.tick(at(11));
+            assert!(session.is_locked() && session.is_blanked());
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(11)).is_none(),
+                "a blanked panel must not keep the loop building lock frames"
+            );
+            session.note_activity(at(12));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(12)).is_some());
+        }
+        // Phase `an_untouched_visible_lock_stops_animating`.
+        {
+            let theme = ui::theme::Theme::dark();
+            let t0 = Instant::now();
+            let config = IdleConfig {
+                blank_timeout: None,
+                lock_timeout: Some(Duration::from_secs(5)),
+                suspend_timeout: None,
+            };
+            let mut session = SessionManager::new(config, t0);
+            let at = |secs| t0 + Duration::from_secs(secs);
+            session.tick(at(6));
+            assert!(session.is_locked() && !session.is_blanked());
+            assert!(lock_animation_deadline(&theme, &session, false, t0, at(6)).is_some());
+            session.tick(at(21));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(21)).is_none(),
+                "a lock nobody has touched for {LOCK_BACKDROP_MOTION:?} holds still"
+            );
+            session.note_activity(at(30));
+            assert!(
+                lock_animation_deadline(&theme, &session, false, t0, at(30)).is_some(),
+                "input moves it again"
             );
         }
         // Phase `lock_osd_fade_repaints_only_while_the_lock_is_visible`.
@@ -12231,6 +12589,55 @@ mod tests {
                  {initial_count}"
             );
         }
+        // Phase `synthetic_touchpad_gestures_reach_the_shell_through_the_tracker`.
+        // The same tracker as libinput's path decides what the fingers meant.
+        {
+            use crate::shell::test_control::TouchpadEdge;
+            let mut fb = FrameBuilder::new((1600, 900));
+            let mut ctx = TestControlCtx::new();
+            let mut run = |fb: &mut FrameBuilder, edges: &[TouchpadEdge]| {
+                for edge in edges {
+                    execute_planned_action(&PlannedAction::Touchpad(*edge), fb, &mut ctx);
+                }
+            };
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 0.7 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(
+                fb.chrome().overlays.overview,
+                "pinching in opens the overview"
+            );
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::PinchBegin { fingers: 3 },
+                    TouchpadEdge::PinchUpdate { scale: 1.4 },
+                    TouchpadEdge::PinchEnd,
+                ],
+            );
+            assert!(!fb.chrome().overlays.overview, "pinching out closes it");
+
+            let first = fb.chrome().tree().desktop.active;
+            run(
+                &mut fb,
+                &[
+                    TouchpadEdge::SwipeBegin { fingers: 4 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeUpdate { dx: 0.0, dy: 80.0 },
+                    TouchpadEdge::SwipeEnd { cancelled: false },
+                ],
+            );
+            assert_ne!(
+                fb.chrome().tree().desktop.active,
+                first,
+                "a four-finger downward swipe switches workspace"
+            );
+        }
         // Phase `set_modifiers_action_updates_ctx_mask`.
         // `SetModifiers` mutates `ctx.modifiers` directly; the host reads the
         // snapshot on the next chord, so this is what chord injection (Ctrl+K, …) depends on.
@@ -13141,6 +13548,32 @@ fn reconcile_surface_output_memberships(
     send_surface_output_changes(state, output_globals, changes);
 }
 
+/// What one synthetic touchpad edge means to `tracker`, as the DRM
+/// runtime asks it of every libinput gesture event.
+fn feed_touchpad_edge(
+    tracker: &mut crate::compositor::backend::drm::gestures::GestureTracker,
+    edge: crate::shell::test_control::TouchpadEdge,
+) -> Option<crate::compositor::backend::drm::gestures::GestureAction> {
+    use crate::shell::test_control::TouchpadEdge;
+    match edge {
+        TouchpadEdge::SwipeBegin { fingers } => {
+            tracker.swipe_begin(fingers);
+            None
+        }
+        TouchpadEdge::SwipeUpdate { dx, dy } => tracker.swipe_update(dx, dy),
+        TouchpadEdge::SwipeEnd { cancelled } => tracker.swipe_end_with_cancel(cancelled),
+        TouchpadEdge::PinchBegin { fingers } => {
+            tracker.pinch_begin(fingers);
+            None
+        }
+        TouchpadEdge::PinchUpdate { scale } => tracker.pinch_update(scale),
+        TouchpadEdge::PinchEnd => {
+            tracker.pinch_end();
+            None
+        }
+    }
+}
+
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
 /// way to ask for something the shell already does, not a parallel model.
 fn apply_shell_gesture(
@@ -13164,6 +13597,9 @@ fn apply_shell_gesture(
         _ => {}
     }
     frame_builder.with_chrome(|st| match action {
+        GestureAction::SwitchStrip(dir) => {
+            st.switch_strip(dir);
+        }
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
@@ -13207,7 +13643,7 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_maximized();
+        let _ = frame.host_mut().toggle_focused_group_fullscreen();
         return;
     };
     if state
@@ -13579,15 +14015,42 @@ mod gesture_wireup_tests {
                 st.add_workspace("second");
             });
             let before = fb.chrome().tree().desktop.active;
-            // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
+            // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
             apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
-                "a three-finger swipe must move the active workspace, not just resolve to an intent"
+                "a four-finger swipe must move the active workspace, not just resolve to an intent"
             );
         }
-        // Phase `a_four_finger_swipe_opens_and_closes_the_overview`.
+        // Phase `a_three_finger_vertical_swipe_focuses_the_neighbouring_strip`.
+        {
+            let mut fb = builder();
+            fb.with_chrome(|st| {
+                let mut tree = st.tree_mut();
+                let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+                ws.strips.push(crate::shell::state::Strip::new(
+                    crate::shell::state::StripId(9_000),
+                    "Below".to_owned(),
+                ));
+                drop(tree);
+                st.bump();
+            });
+            let workspace = fb.chrome().tree().desktop.active;
+            let (_, focused) = fb.chrome().strip_focus();
+            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            assert_eq!(
+                fb.chrome().strip_focus().1,
+                focused + 1,
+                "a three-finger swipe down must focus the strip below, as Super+↓ does"
+            );
+            assert_eq!(
+                fb.chrome().tree().desktop.active,
+                workspace,
+                "a strip switch stays on the workspace"
+            );
+        }
+        // Phase `a_pinch_opens_and_closes_the_overview`.
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);

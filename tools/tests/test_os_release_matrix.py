@@ -34,6 +34,7 @@ def plan(
     published: str = "",
     configured: str = "true",
     integration: str = "",
+    arches: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "output"
@@ -48,6 +49,7 @@ def plan(
                 "PUBLISHED_REVISION": published,
                 "PUBLICATION_CONFIGURED": configured,
                 "INTEGRATION_REVISION": integration,
+                "DEV_ARCHES": arches,
             }
         )
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
@@ -80,16 +82,16 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
-        with self.subTest(phase='protected manual main publish uses native large disk fleet'):
+        with self.subTest(phase='protected manual main publish uses the release class'):
             publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "true")
             self.assertTrue(publish)
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -106,10 +108,10 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
 
@@ -202,29 +204,62 @@ class OsDevLaneTests(unittest.TestCase):
                     {"arch": "x86_64", "runner": "runner-large"},
                     {"arch": "aarch64", "runner": "runner-large-arm64"},
                 ])
+        with self.subTest(phase='a pull request builds the architectures os-dev chose'):
+            _, _, lanes = plan("refs/pull/12/head", "workflow_call", "", arches='["x86_64"]')
+            self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
+            self.assertIn("arches: ${{ needs.arches.outputs.arches }}",
+                          (ROOT / ".forgejo/workflows/os-dev.yml").read_text())
         with self.subTest(phase='a newer commit of the ref supersedes the build'):
             self.assertEqual(
                 concurrency_group("refs/pull/12/head", "workflow_call", ""),
                 "tilo-os-dev-refs/pull/12/head",
             )
-            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' }}", WORKFLOW.read_text())
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='main pushes and image pull requests call it'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
             self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
             self.assertIn("branches: [main]", caller)
             self.assertIn('- "os/**"', caller)
-            self.assertIn("cancel-in-progress: true", caller)
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", caller)
             self.assertIn("  workflow_call:", WORKFLOW.read_text())
         with self.subTest(phase='the dev build publishes images and skips the disk install'):
             workflow = WORKFLOW.read_text()
             step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
             self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
-            self.assertIn("TILO_DEV_DISK=0", step)
+            self.assertIn("-f os/Containerfile.dev", step)
+            self.assertNotIn("--cache-to", step)
+            self.assertIn("--secret id=actions_cache_url,env=ACTIONS_CACHE_URL", step)
+            self.assertIn("push=true", step)
+            self.assertIn("PUSHED_DIGEST=", step)
             self.assertIn("IMAGE_ONLY=1", step)
             self.assertIn("TILO_DEV_RUST_LTO=off", step)
             gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
             self.assertIn("steps.release-mode.outputs.dev-fast != 'true'", gate.splitlines()[1])
+
+    def test_dev_images_carry_the_apps_of_their_commit(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Materialize the pinned app collection\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertNotIn("        if:", step)
+        # A dev build takes the published collection only when its source has
+        # this commit's app inputs, as Release / apps defines them.
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn(".forgejo/workflows/release-apps.yml", step)
+        self.assertIn("index.json | jq -r '.source // empty'", step)
+        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+                        step.index("echo 'TILO_PREBUILT_APPS=1'"))
+        self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
+                        workflow.index("      - name: Materialize the pinned app collection\n"))
+
+    def test_dev_builds_keep_a_cacheable_epoch(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        # image.created keeps the commit time either way.
+        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
 
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()
@@ -321,7 +356,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 7)
+            self.assertEqual(len(uses), 6)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],

@@ -19,14 +19,22 @@ TILO_REPO="$(cd "$TILO_OS_DIR/.." && pwd)"             # cargo workspace root
 
 # --- tunables ----------------------------------------------------------------
 TILO_DISTROBOX="${TILO_DISTROBOX-my-distrobox}"        # "" => run tools on host
-TILO_IMAGE="${TILO_IMAGE:-localhost/tilo:latest}"
+# The tag of the locally built images (localhost/tilo, localhost/tilo-vm,
+# localhost/tilo-installer), so builds from different checkouts sharing one
+# podman store keep theirs apart. TILO_IMAGE and the like still win.
+TILO_LOCAL_TAG="${TILO_LOCAL_TAG:-latest}"
+if [ "${#TILO_LOCAL_TAG}" -gt 128 ] || ! [[ "$TILO_LOCAL_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+  printf 'TILO_LOCAL_TAG=%s is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)\n' "$TILO_LOCAL_TAG" >&2
+  exit 1
+fi
+TILO_IMAGE="${TILO_IMAGE:-localhost/tilo:$TILO_LOCAL_TAG}"
 TILO_OUTPUT="${TILO_OUTPUT:-$TILO_OS_DIR/output}"
 TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
 
 # Custom (self-install) installer: a bootable live qcow2 that runs the Tilo
 # graphical installer (installer/, binary tilo-installer). Built by
 # os/dev/build-custom-installer.sh; booted by vm.sh boot-installer.
-TILO_INSTALLER_IMAGE="${TILO_INSTALLER_IMAGE:-localhost/tilo-installer:latest}"
+TILO_INSTALLER_IMAGE="${TILO_INSTALLER_IMAGE:-localhost/tilo-installer:$TILO_LOCAL_TAG}"
 TILO_INSTALLER_OUTPUT="${TILO_INSTALLER_OUTPUT:-$TILO_OUTPUT/installer}"   # distinct subdir
 TILO_INSTALLER_DISK="${TILO_INSTALLER_DISK:-$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
 # Writable overlay used by VM install cycles. The live installer needs scratch
@@ -148,6 +156,31 @@ podman_epoch_args() {
     printf '%s\n' --source-date-epoch "$epoch" --rewrite-timestamp
   else
     printf '%s\n' --timestamp "$epoch"
+  fi
+}
+
+# The creation time of an image, in seconds since the epoch: from local storage
+# when it is there, else from its registry.
+tilo_image_epoch() {
+  local created
+  created="$(podman image inspect --format '{{.Created.Unix}}' "$1" 2>/dev/null)" \
+    || created="$(skopeo inspect --format '{{.Created.Unix}}' "docker://$1" 2>/dev/null)" \
+    || return 1
+  [[ "$created" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$created"
+}
+
+# When the source of a local image was made, as an RFC 3339 UTC time: its
+# org.tilo.source-date-epoch label (the commit time; a local build's layers may
+# be dated by its base instead, TILO_LAYER_EPOCH=base), else the image's
+# creation time. Empty when neither is readable.
+tilo_image_source_time() {
+  local epoch
+  epoch="$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$1" 2>/dev/null || true)"
+  if [[ "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
+  else
+    podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$1" 2>/dev/null || true
   fi
 }
 

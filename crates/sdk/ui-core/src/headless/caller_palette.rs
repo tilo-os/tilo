@@ -11,6 +11,8 @@ pub(super) struct CallerPalette {
     pub palette: Option<ActionPalette>,
     pub resources: Vec<tilo_actions::Resource>,
     pub pending: Option<PendingOperation>,
+    /// Set by a root that answers the command chord itself.
+    pub disabled: bool,
 }
 
 impl FrameHarness {
@@ -30,6 +32,12 @@ impl FrameHarness {
     }
     /// Replace the caller's currently authenticated action projection. Resource
     /// addresses must include immutable host/route/catalogue identity.
+    /// Whether the command chord opens the caller palette. A root that
+    /// answers the chord with its own search (the web desktop) turns it off.
+    pub fn set_caller_palette_enabled(&mut self, enabled: bool) {
+        self.caller_palette.disabled = !enabled;
+    }
+
     pub fn set_caller_actions(&mut self, resources: Vec<tilo_actions::Resource>) {
         self.caller_palette.resources = resources;
         let resources = self.caller_resources();
@@ -66,7 +74,8 @@ impl FrameHarness {
 
     pub(super) fn caller_palette_event(&mut self, event: &WindowEvent) -> bool {
         if self.caller_palette.palette.is_none() {
-            if let WindowEvent::KeyboardInput { event: key, .. } = event
+            if !self.caller_palette.disabled
+                && let WindowEvent::KeyboardInput { event: key, .. } = event
                 && key.state == ElementState::Pressed
                 && matches!(&key.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("k"))
                 && self.platform.command_modifier_down(self.modifiers.state())

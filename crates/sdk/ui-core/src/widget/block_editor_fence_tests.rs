@@ -243,21 +243,21 @@ fn typed_fences_promote_track_language_and_undo() {
         state.commit_action(None, None);
         type_text(&mut editor, &mut state.doc, "``");
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         type_text(&mut editor, &mut state.doc, "`");
         assert!(
-            editor.needs_commit(),
+            crate::undo::needs_commit(&editor),
             "replacing the line must retain its undo checkpoint"
         );
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         type_text(&mut editor, &mut state.doc, "python");
         assert!(
-            editor.needs_commit(),
+            crate::undo::needs_commit(&editor),
             "language metadata is an undoable edit"
         );
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         assert!(state.undo(None, None).is_some());
         editor.sync(&mut state.doc, &ROOT);
         assert_eq!(editor.blocks[0].kind, BlockKind::CodeBlock { lang: None });

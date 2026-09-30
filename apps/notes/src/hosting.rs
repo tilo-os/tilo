@@ -28,6 +28,20 @@ pub fn default_notebook() -> RecordCheckout {
     )
 }
 
+/// The notebook a launch opens: in a room, the room's default record, which
+/// every device's first Notes window shares; standalone, the personal
+/// notebook it always opened.
+pub fn launch_notebook(workspace_scoped: bool) -> RecordCheckout {
+    if workspace_scoped {
+        RecordCheckout::new(
+            RecordId::room_default(),
+            crate::definition().record_kind.clone(),
+        )
+    } else {
+        default_notebook()
+    }
+}
+
 /// Prepare Notes from the trusted native launcher environment.
 /// # Errors
 /// Refuses invalid host identity, authority, storage or canonical records
@@ -37,7 +51,14 @@ pub fn prepare_native(
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let mut native = NativeProcessHost::open(crate::definition())?;
     let instance_id = native.instance_id();
-    prepare_default(native.host_mut(), instance_id, None, runner_inputs)
+    let checkout = launch_notebook(native.workspace_scoped());
+    prepare_notebook(
+        native.host_mut(),
+        instance_id,
+        checkout,
+        None,
+        runner_inputs,
+    )
 }
 
 /// Prepare the real component, importing a quiescent legacy workspace only
@@ -56,7 +77,27 @@ pub fn prepare_default(
     legacy_root: Option<&Path>,
     runner_inputs: ComponentRunnerInputs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    let checkout = default_notebook();
+    prepare_notebook(
+        host,
+        instance_id,
+        default_notebook(),
+        legacy_root,
+        runner_inputs,
+    )
+}
+
+/// [`prepare_default`] for `checkout`, the notebook this launch opens.
+#[allow(
+    clippy::result_large_err,
+    reason = "launch setup must preserve the recovery-bearing ComponentSetup error variant"
+)]
+fn prepare_notebook(
+    host: &mut ApplicationHost,
+    instance_id: u64,
+    checkout: RecordCheckout,
+    legacy_root: Option<&Path>,
+    runner_inputs: ComponentRunnerInputs,
+) -> Result<PreparedComponentInputs, LaunchError> {
     // A window carried in from another workspace shows the notebook it
     // brought, which the host opens by the instance's saved presentation.
     if host
@@ -99,9 +140,9 @@ fn prepare_default_notebook(
             }
             if let Some(root) = legacy_root {
                 let metadata_path = crate::storage::workspace_file_path(root);
-                let has_source = match std::fs::metadata(&metadata_path) {
+                let has_source = match crate::files::metadata(&metadata_path) {
                     Ok(_) => true,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(tilo_files::FsError::NotFound) => false,
                     Err(error) => {
                         return Err(LaunchError::Operation(format!(
                             "{}: {error}",
