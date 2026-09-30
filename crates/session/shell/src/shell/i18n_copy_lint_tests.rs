@@ -61,6 +61,7 @@ fn copy_builders_take_catalogue_strings_not_english_literals() {
             "test_control.rs",
             "test_control_socket.rs",
             "hosted_test_control.rs",
+            "dev_test_identity.rs",
         ])
         .min_files(100)
         .check();
