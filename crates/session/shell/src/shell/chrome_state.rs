@@ -431,7 +431,7 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
-            brightness_available: true,
+            brightness_available: false,
             displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
