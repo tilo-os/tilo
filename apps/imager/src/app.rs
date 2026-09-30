@@ -6670,9 +6670,15 @@ mod tests {
                     (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
                     "banner is the card's sibling at width {width}"
                 );
+                let setup = if app.offers_write_setup() {
+                    app.write_setup
+                        .extent(lay.content, app.write_setup_top(lay.content))
+                } else {
+                    0.0
+                };
                 assert!(
-                    (field.y0 - (banner.y1 + GROUP + m.label_h + LABEL)).abs() < 1e-6,
-                    "field follows the banner under its caption at width {width}"
+                    (field.y0 - (banner.y1 + GROUP + setup + m.label_h + LABEL)).abs() < 1e-6,
+                    "field follows the banner and write-setup form under its caption at width {width}"
                 );
                 assert!((field.height() - CONTROL_H).abs() < 1e-6);
                 assert_eq!(field, app.confirm_field_rect(lay.content));

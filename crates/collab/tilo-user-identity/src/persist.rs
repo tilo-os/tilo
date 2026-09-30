@@ -1083,6 +1083,18 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
             format!("enrolled device certificate did not verify: {error}"),
         ))
     })?;
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not an imager enrollment, even when its root secret lives in
+    // the identity record rather than user-identity/privkey.bin.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not one the imager already enrolled, so first-boot
+    // provisioning must still run for each OS user.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
     if cert.user_public_key != pubkey
         || cert.device_public_key != device.verifying_key().to_bytes()
         || !cert.capabilities.can_read_all_workspaces
