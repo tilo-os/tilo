@@ -11,10 +11,15 @@ gesture's `begin`, by finger count (`crates/session/shell/src/compositor/backend
 | Fingers | Owner | What happens |
 |---|---|---|
 | 1–2 | Focused client | Forwarded over `zwp_pointer_gestures_v1` (swipe, pinch, hold) |
-| 3 swipe up / down | Shell | Switch workspace |
 | 3 swipe left / right | Shell | Pan the active strip directly |
-| 4 swipe up / down | Shell | Open / close the overview |
+| 3 swipe up / down | Shell | Focus the strip above / below, as Super+↑ / ↓ |
+| 4 swipe up / down | Shell | Switch workspace, as Super+Page Up / Page Down |
+| 4 swipe left / right | Nobody | Deliberately unassigned |
 | 3+ pinch in / out | Shell | Open / close the overview |
+
+Three fingers work the plane you see and four go one level out, the split Super and
+Ctrl+Super make on the keyboard ([window-management.md](architecture/window-management.md)).
+A touchscreen swipe of three or four fingers means the same.
 
 A gesture is never delivered to both. Turning off **Touchpad gestures** in Settings hands
 every gesture to the client. Swipe direction follows the touchpad's natural-scrolling

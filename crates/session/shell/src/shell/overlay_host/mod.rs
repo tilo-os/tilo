@@ -16515,24 +16515,31 @@ impl Widget for ShellOverlayHost {
                 use ui::gesture::{TouchGestureEvent, TouchSwipeDirection};
                 match gesture {
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Left,
                     } => claimed |= self.step_focus_along_strip(1),
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Right,
                     } => claimed |= self.step_focus_along_strip(-1),
+                    // Three fingers are strips, four workspaces: the touchpad's
+                    // levels (`backend::drm::gestures`).
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
-                        direction,
-                    } => {
+                        fingers,
+                        direction: direction @ (TouchSwipeDirection::Up | TouchSwipeDirection::Down),
+                    } if fingers >= 3 => {
                         let step = if direction == TouchSwipeDirection::Up {
                             -1
                         } else {
                             1
                         };
                         if let Some(chrome) = self.chrome.as_ref() {
-                            claimed |= chrome.borrow_mut().switch_workspace(step);
+                            let mut chrome = chrome.borrow_mut();
+                            claimed |= if fingers == 3 {
+                                chrome.switch_strip(step)
+                            } else {
+                                chrome.switch_workspace(step)
+                            };
                         }
                     }
                     TouchGestureEvent::Pinch {
@@ -19815,12 +19822,20 @@ impl ShellOverlayHost {
                         TouchGesture::SwipeRight { fingers: 3 },
                     ),
                     (
-                        "guide-touch-previous-workspace",
+                        "guide-touch-strip-above",
                         TouchGesture::SwipeUp { fingers: 3 },
                     ),
                     (
-                        "guide-touch-next-workspace",
+                        "guide-touch-strip-below",
                         TouchGesture::SwipeDown { fingers: 3 },
+                    ),
+                    (
+                        "guide-touch-previous-workspace",
+                        TouchGesture::SwipeUp { fingers: 4 },
+                    ),
+                    (
+                        "guide-touch-next-workspace",
+                        TouchGesture::SwipeDown { fingers: 4 },
                     ),
                     ("guide-touch-open-overview", TouchGesture::PinchIn),
                     ("guide-touch-close-overview", TouchGesture::PinchOut),

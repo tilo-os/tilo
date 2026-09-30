@@ -69,10 +69,10 @@ unless marked fixed.
 
 | Operation | Relative action | Keyboard | Touchpad and touchscreen | Pointer | Status |
 |---|---|---|---|---|---|
-| Previous / next window (tabs walked as one list, across displays) | `window.focus-previous` / `-next` | Super+← / → | 3 fingers horizontal: direct pan, snap on release, focus follows | click; Super+wheel | today; gestures planned |
+| Previous / next window (tabs walked as one list, across displays) | `window.focus-previous` / `-next` | Super+← / → | 3 fingers horizontal: direct pan, snap on release, focus follows | click; Super+wheel | today; snap and focus-follow planned |
 | Nth / first / last group of the strip | `window.focus-nth` (`index`) | Super+1…9, Super+Home / End | — | click | 1…9 today |
-| Strip above / below | `strip.focus-previous` / `-next` | Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today; gesture planned |
-| Previous / next workspace | `workspace.previous` / `-next` | Ctrl+Super+arrows; Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc; Ctrl+Super+wheel | PageUp / PageDown and the action today |
+| Strip above / below | `strip.focus-previous` / `-next` | Super+↑ / ↓ | 3 fingers vertical | strip ribbon; click the strip | today |
+| Previous / next workspace | `workspace.previous` / `-next` | Ctrl+Super+arrows; Super+PageUp / PageDown (fixed) | 4 fingers vertical, following the fingers | wheel disc; Ctrl+Super+wheel | PageUp / PageDown, 4 fingers (one step, not yet following) and the action today |
 | Neighbouring display | `display.focus-previous` / `-next` | Alt+Super+← / → | — | point and click | planned |
 | Overview | `overview.toggle` | Super+Tab | pinch in / out; tablet posture: swipe up from the bottom edge | top-bar button | today, except the edge swipe |
 | Workspace wheel | `workspace-wheel.toggle` | Super+S (fixed), then ↑ / ↓, Enter | tap the disc | the disc | chord today |
@@ -124,9 +124,9 @@ touchscreen gesture on the display the touchscreen is mapped to.
 | 3 | pan the strip 1:1; release carries a fling and settles on a group edge | strip above / below | overview in / out |
 | 4 | reserved | workspace, following the fingers | overview in / out |
 
-Today three fingers vertical switch workspace and four fingers vertical open
-the overview. The pinch already covers the overview, so four fingers take
-workspaces and three take strips, the same level split as the modifiers.
+The pinch covers the overview, so four fingers take workspaces and three take
+strips, the same level split as the modifiers. Today a vertical swipe steps
+once, the moment it passes its threshold; following the fingers is planned.
 "Following the fingers" means the desk slides with the hand and the release
 decides: past a quarter of the display height, or a flick, commits; less
 springs back. A gesture during the settle catches the motion where it is.
