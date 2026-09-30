@@ -26,12 +26,11 @@ ROOT = Path(__file__).resolve().parents[2]
 WASM = "wasm32-unknown-unknown"
 HACK = "workspace-hack"
 
-# What the browser builds for wasm32: the web core with every feature, and the
-# apps build-web-app.sh links against it.
+# What the browser builds for wasm32: the desktop bundle, which links the
+# browser runtime and every web app, and the registry verifier.
 ROOTS = (
-    ("tilo-browser-runtime", ("cloud", "static-apps", "dylink")),
-    ("ebook", ()),
-    ("word-processor", ()),
+    ("tilo-web-desktop", ()),
+    ("tilo-browser-runtime", ()),
     ("registry-web-bindgen", ()),
 )
 

@@ -41,6 +41,9 @@ postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tilo-test-env = { path = "../../dev/test-env" }
 
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
 [[test]]
 name = "it"
 path = "tests/it.rs"

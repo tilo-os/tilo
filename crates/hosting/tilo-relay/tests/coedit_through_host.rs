@@ -74,7 +74,10 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
                 return;
             }
             // Ready / presence carry no document bytes — keep draining.
-            Inbound::Ready { .. } | Inbound::Presence { .. } | Inbound::RemoteAction { .. } => {}
+            Inbound::Ready { .. }
+            | Inbound::Presence { .. }
+            | Inbound::RemoteAction { .. }
+            | Inbound::Live { .. } => {}
         }
     }
     panic!("no document delta arrived");
@@ -333,7 +336,9 @@ async fn catch_up_first_connection(
                 assert_eq!(pending, 1, "host reports the one queued co-edit");
                 got_ready = true;
             }
-            other @ (Inbound::Presence { .. } | Inbound::RemoteAction { .. }) => {
+            other @ (Inbound::Presence { .. }
+            | Inbound::RemoteAction { .. }
+            | Inbound::Live { .. }) => {
                 panic!("unexpected inbound {other:?}")
             }
         }
@@ -341,4 +346,47 @@ async fn catch_up_first_connection(
     assert!(got_delta, "B must receive the queued co-edit after restart");
     assert!(got_ready, "B must receive Ready");
     doc_b
+}
+
+/// A session measures how long the host has been silent, and a ping is
+/// answered: what a device's watchdog uses to tell a host that stopped
+/// serving its session from one that is merely idle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pinged_host_answers_and_resets_the_silence() {
+    const WS: u64 = 23;
+
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &[a.device_pubkey()]).await;
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        host.node_addr(),
+        user.user_pk,
+        a.cert.clone(),
+        a.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("connect");
+    let session = RelayCoeditSession::join(client, WS, a.device_pubkey()).unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), session.recv())
+            .await
+            .expect("Ready timeout"),
+        Some(Inbound::Ready { .. })
+    ));
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(session.silent_for() >= Duration::from_secs(1));
+    session.ping().unwrap();
+    // A Pong carries no co-edit event, so `recv` keeps waiting after it.
+    let _ = tokio::time::timeout(Duration::from_millis(200), session.recv()).await;
+    assert!(
+        session.silent_for() < Duration::from_millis(500),
+        "the Pong counts as hearing from the host"
+    );
+    // The host serves until here.
+    drop(host);
 }

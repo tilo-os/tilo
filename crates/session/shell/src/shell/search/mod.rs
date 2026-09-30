@@ -680,7 +680,9 @@ impl SearchRegistry {
     /// Resolve one exact provider-local id under the same scope and kind
     /// routing used by search. This keeps invocation attached to the source
     /// that disclosed the id while allowing that provider to revalidate its
-    /// current retained state.
+    /// current retained state: its index is refreshed first, because an
+    /// invocation need not follow any search or open palette that would
+    /// otherwise take in a finished build.
     pub fn resolve(
         &self,
         provider_id: &str,
@@ -707,22 +709,17 @@ impl SearchRegistry {
         if wanted.is_empty() {
             return None;
         }
-        provider
-            .resolve(
-                id,
-                SearchContext {
-                    needle: "",
-                    wanted: &wanted,
-                    chrome: args.chrome,
-                    doc: args.doc,
-                    doc_root: args.doc_root,
-                },
-            )
-            .filter(|result| {
-                result.provider_id == provider_id
-                    && result.id == id
-                    && wanted.contains(&result.kind)
-            })
+        let ctx = SearchContext {
+            needle: "",
+            wanted: &wanted,
+            chrome: args.chrome,
+            doc: args.doc,
+            doc_root: args.doc_root,
+        };
+        provider.refresh_search_index(&ctx);
+        provider.resolve(id, ctx).filter(|result| {
+            result.provider_id == provider_id && result.id == id && wanted.contains(&result.kind)
+        })
     }
 
     /// Poll/start retained index maintenance without routing a query. This is
