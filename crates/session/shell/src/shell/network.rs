@@ -711,6 +711,24 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
     tilo_relay_protocol::personal_continuity_workspace_id(user_public_key)
 }
 
+/// Topics a machine dials on startup and on home-peer refresh.
+///
+/// Local rooms are included, and so is the person topic, so a device with no
+/// rooms yet still reaches the peers enrolled for that identity.
+fn relay_topics_for_home_peers(
+    rooms: impl IntoIterator<Item = RoomId>,
+    user: Option<[u8; 32]>,
+) -> std::collections::BTreeSet<u64> {
+    let mut topics = rooms
+        .into_iter()
+        .map(room_topic_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(user) = user {
+        topics.insert(personal_continuity_topic_id(&user));
+    }
+    topics
+}
+
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
@@ -1494,11 +1512,8 @@ impl ShellNetwork {
             spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
         }
 
-        let mut relay_workspace_ids: std::collections::BTreeSet<_> =
-            tree.read().rooms().into_iter().map(room_topic_id).collect();
-        if let Some(user) = personal_continuity_user {
-            relay_workspace_ids.insert(personal_continuity_topic_id(&user));
-        }
+        let relay_workspace_ids =
+            relay_topics_for_home_peers(tree.read().rooms(), personal_continuity_user);
         let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids)
             .unwrap_or_default();
         let home_peer_ids = home_peers
@@ -2571,15 +2586,7 @@ impl ShellNetwork {
             .replica
             .lock()
             .ok()
-            .map(|replica| {
-                replica
-                    .tree
-                    .read()
-                    .rooms()
-                    .into_iter()
-                    .map(room_topic_id)
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
+            .map(|replica| relay_topics_for_home_peers(replica.tree.read().rooms(), None))
             .unwrap_or_default();
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
@@ -9839,7 +9846,7 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let rooms = std::collections::BTreeSet::from([topic]);
+            let rooms = relay_topics_for_home_peers(std::iter::empty(), Some(own_user));
             let peers = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
             assert_eq!(peers.len(), 1);
             assert_eq!(peers[0].addr.id, service);
