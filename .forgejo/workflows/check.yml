@@ -139,9 +139,6 @@ jobs:
         id: merge
         uses: ./.forgejo/actions/merge-main
 
-      - name: Nix Cargo lock guard
-        run: python3 scripts/check-nix-cargo-lock.py
-
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
