@@ -39,6 +39,8 @@ mod capability_enforcement;
 mod capture_protection;
 #[path = "client_exit_closes_its_tabs.rs"]
 mod client_exit_closes_its_tabs;
+#[path = "closing_window_frames.rs"]
+mod closing_window_frames;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
 #[path = "collab_policy_state.rs"]
