@@ -138,7 +138,9 @@ jobs:
     name: package lane / ${{ matrix.arch }}
     # Desktop packaging uses the larger native runner class.
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    # Five serial lanes, each building and install-testing session and runtime
+    # packages, took about 185 minutes on amd64.
+    timeout-minutes: 300
     # One architecture job runs all five native userspaces serially. Forgejo
     # does not enforce matrix max-parallel or job-level concurrency groups, so
     # splitting distros into jobs overcommits the shared fat-LTO builder.
