@@ -7174,11 +7174,26 @@ impl ShellOverlayHost {
                     .group_total(group.total)
                     .icon(icon_for_kind(&r.kind));
                 // The unconfined-host glyph stays the fallback; the app's own
-                // artwork is what a person recognises it by.
+                // artwork is what a person recognises it by. Window rows wear
+                // the same tile face as the tab strip, not the magnifier.
                 if r.kind == crate::shell::search::ResourceKind::HostApplication
                     && let Some(image) = crate::app_icons::for_desktop_id(&r.id)
                 {
                     e = e.image(image);
+                }
+                if matches!(
+                    r.kind,
+                    crate::shell::search::ResourceKind::Tab
+                        | crate::shell::search::ResourceKind::WindowGroup
+                ) && let Some(chrome) = &self.chrome
+                {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
+                        && let Some(image) = crate::app_icons::for_tile(tile)
+                    {
+                        e = e.image(image);
+                    }
                 }
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());

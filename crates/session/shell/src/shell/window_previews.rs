@@ -56,15 +56,7 @@ impl WindowSource for ShellWindows {
     }
 
     fn app_icon(&self, tile: &TileContent) -> Option<ui::icons::AppImage> {
-        match tile {
-            TileContent::Foreign { .. } => crate::app_icons::for_tile(tile),
-            TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
-                crate::app_icons::for_window_app_id(app_id)
-            }
-            TileContent::AppPlaceholder { .. }
-            | TileContent::Stub { .. }
-            | TileContent::WorkspaceActivity => None,
-        }
+        crate::app_icons::for_tile(tile)
     }
 
     fn preview_source(
