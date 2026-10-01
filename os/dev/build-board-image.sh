@@ -40,34 +40,48 @@ common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerf
 push="push=true,compression=zstd,compression-level=1"
 placeholder="$(printf '0%.0s' $(seq 128))"
 
-# The BuildKit steps of one build that took 10 s or more, for the lane log.
+# One buildx build with plain progress, each line prefixed with its arrival
+# time, into LOG.
+run_build() {
+  local log="$1"; shift
+  docker buildx build --progress=plain "$@" 2>&1 >/dev/null \
+    | while IFS= read -r line; do printf '%(%s)T %s\n' -1 "$line"; done > "$log"
+  return "${PIPESTATUS[0]}"
+}
+
+# The BuildKit steps of one build that took 2 s or more, and pauses of 5 s or
+# more before a step or a client message, for the lane log.
 slow_steps() {
   awk -v board="$board" '
-    $1 ~ /^#[0-9]+$/ && $2 ~ /^\[/ { name[$1] = substr($0, length($1) + 2, 70); next }
-    $1 ~ /^#[0-9]+$/ && $2 == "DONE" && $3 ~ /^[0-9.]+s$/ {
-      secs = $3; sub(/s$/, "", secs)
-      if (secs + 0 >= 10) printf "%s:   %6.1fs %s\n", board, secs, name[$1]; next }
-    $1 ~ /^#[0-9]+$/ && $NF == "done" && $(NF - 1) ~ /^[0-9.]+s$/ {
-      secs = $(NF - 1); sub(/s$/, "", secs)
-      if (secs + 0 >= 10) { $1 = ""; $NF = ""; $(NF - 1) = ""; printf "%s:   %6.1fs %s\n", board, secs, $0 } }
+    { ts = $1; $1 = ""; $0 = substr($0, 2) }
+    NF == 0 { next }
+    prev && ts - prev >= 5 && ($1 !~ /^#[0-9]+$/ || !($1 in name)) {
+      printf "%s:   %6ds   (waited before) %s\n", board, ts - prev, substr($0, 1, 70) }
+    { prev = ts }
+    $1 !~ /^#[0-9]+$/ { next }
+    $2 == "DONE" && $3 ~ /^[0-9.]+s$/ { secs = $3; sub(/s$/, "", secs); if (secs + 0 >= 2) printf "%s:   %6.1fs %s\n", board, secs, name[$1]; next }
+    $NF == "done" && $(NF - 1) ~ /^[0-9.]+s$/ {
+      secs = $(NF - 1); sub(/s$/, "", secs); line = $0; sub(/^#[0-9]+ /, "", line); sub(/ [0-9.]+s done$/, "", line)
+      if (secs + 0 >= 2) printf "%s:   %6.1fs   %s (%s)\n", board, secs, line, name[$1]; next }
+    $2 !~ /^[0-9.]+$/ && !($1 in name) { line = $0; sub(/^#[0-9]+ /, "", line); name[$1] = substr(line, 1, 70) }
   ' "$1" >&2
 }
 
 started=$(date +%s)
-docker buildx build --progress=plain "${common[@]}" --build-arg "TILO_CFS_DIGEST=$placeholder" \
+run_build "$work/unsealed.log" "${common[@]}" --build-arg "TILO_CFS_DIGEST=$placeholder" \
   --metadata-file "$work/unsealed.json" \
-  --output "type=image,name=$repository,push-by-digest=true,$push" "$TILO_REPO" 2> "$work/unsealed.log" \
+  --output "type=image,name=$repository,push-by-digest=true,$push" "$TILO_REPO" \
   || { cat "$work/unsealed.log" >&2; die "$board: build failed"; }
 slow_steps "$work/unsealed.log"
 unsealed="$(jq -er '."containerimage.digest"' "$work/unsealed.json")"
 msg "$board: layers pushed in $(( $(date +%s) - started ))s ($unsealed)"
 
 started=$(date +%s)
-docker buildx build --progress=plain "${common[@]}" --target cfs-digest-out \
+run_build "$work/cfs.log" "${common[@]}" --target cfs-digest-out \
   --build-arg "BOOTC_HELPER_IMAGE=$BOOTC_HELPER_IMAGE" \
   --build-arg "TILO_CFS_SOURCE=docker://$repository@$unsealed" \
   --secret "id=registry_auth,src=$auth" \
-  --output "type=local,dest=$work/cfs" "$TILO_REPO" 2> "$work/cfs.log" \
+  --output "type=local,dest=$work/cfs" "$TILO_REPO" \
   || { cat "$work/cfs.log" >&2; die "$board: composefs digest failed"; }
 slow_steps "$work/cfs.log"
 cfs="$(tr -d '[:space:]' < "$work/cfs/digest")"
@@ -75,9 +89,9 @@ cfs="$(tr -d '[:space:]' < "$work/cfs/digest")"
 msg "$board: composefs digest computed in $(( $(date +%s) - started ))s (${cfs:0:16}…)"
 
 started=$(date +%s)
-docker buildx build --progress=plain "${common[@]}" --build-arg "TILO_CFS_DIGEST=$cfs" \
+run_build "$work/sealed.log" "${common[@]}" --build-arg "TILO_CFS_DIGEST=$cfs" \
   --metadata-file "$work/sealed.json" \
-  --output "type=image,name=$image,$push" "$TILO_REPO" 2> "$work/sealed.log" \
+  --output "type=image,name=$image,$push" "$TILO_REPO" \
   || { cat "$work/sealed.log" >&2; die "$board: sealed build failed"; }
 slow_steps "$work/sealed.log"
 sealed="$(jq -er '."containerimage.digest"' "$work/sealed.json")"
