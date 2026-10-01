@@ -1041,17 +1041,17 @@ pub(crate) enum WorkspaceUpload {
     Skip,
 }
 
-/// The frame run after a workspace switch. The held return stays on the
-/// workspace clip; a settled return may still replay. Every later sample of
-/// either direction skips the upload. The first visit still renders.
+/// The frame run after a workspace switch. Every held sample, including the
+/// first visit, stays on one display's clip. A settled return may still
+/// replay. Later samples of either direction skip the upload.
 pub(crate) fn workspace_frame_upload(
     changed: bool,
     has_snapshot: bool,
     hold: bool,
 ) -> WorkspaceUpload {
-    if hold && changed && has_snapshot {
+    if hold && changed {
         WorkspaceUpload::Clip
-    } else if hold && !changed {
+    } else if hold {
         WorkspaceUpload::Skip
     } else if changed && has_snapshot {
         WorkspaceUpload::Replay
@@ -1742,9 +1742,9 @@ fn present_workspace_clip(
 
 /// Composite the overview fade onto the desktop already in memory.
 ///
-/// `None` means there is no desktop image yet, so the caller may seed one
-/// readback. Any other result is final: a failed clip must not GPU-read both
-/// outputs in the middle of the fade.
+/// `None` means there is no bridge to composite with. A missing desktop
+/// image skips the frame: seeding a combined readback here is the stall
+/// that finishes the fade before a single present.
 fn present_overview_patch(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
@@ -1761,8 +1761,7 @@ fn present_overview_patch(
             &composed,
             Some(patch.panel),
         )),
-        Err(_) if bridge.has_complete_readback() => Some(PaintScanoutSample::default()),
-        Err(_) => None,
+        Err(_) => Some(PaintScanoutSample::default()),
     }
 }
 
@@ -2318,8 +2317,9 @@ mod tests {
     #[test]
     fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
         use super::WorkspaceUpload::{Clip, Render, Replay, Skip};
-        // First visit renders. The frame run after that does not upload.
-        assert_eq!(super::workspace_frame_upload(true, false, true), Render);
+        // A held switch stays on one display's clip, including the first
+        // visit. Rendering here is the combined two-output readback.
+        assert_eq!(super::workspace_frame_upload(true, false, true), Clip);
         assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
         // The held return stays on the clip. A settled return may still replay.
         assert_eq!(super::workspace_frame_upload(true, true, true), Clip);
