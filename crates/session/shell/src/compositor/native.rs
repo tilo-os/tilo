@@ -377,8 +377,7 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
 /// loop is not a present: the tree, the layout, and any animation are the
 /// pump's result and the animation bit. Painting because the deadline
 /// merely came due kept idle apps submitting frames.
-fn present_for_app_poll(pump_changed: bool, deadline_due: bool) -> bool {
-    let _poll_ran = deadline_due;
+fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
     pump_changed
 }
 
