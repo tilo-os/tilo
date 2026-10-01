@@ -11,7 +11,11 @@
 //! only — a `--shots` render must produce the same pixels everywhere,
 //! so with no poller the readings stay `None`, rendered as *nothing*.
 
+use std::io::{BufRead, BufReader};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -20,10 +24,11 @@ use crate::shell::i18n::{t, t_args};
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
-/// Fast enough that plugging in a charger shows up while the user is
-/// still thinking about it, slow enough that two `nmcli` calls a
-/// minute is the whole cost.
-const POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// When `nmcli monitor` or `pw-dump --monitor` is silent, still refresh
+/// battery and missed events. Thirty seconds is slow enough that idle
+/// does not fork `nmcli`/`wpctl` twice a second, and fast enough that
+/// a charger still shows up while the user is looking at the tray.
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Every field is `Option` because "not read yet" and "this machine
 /// has none" are both real and both drawn as absence, not a zero.
@@ -182,13 +187,22 @@ impl StatusBridge {
         if self.polling.swap(true, Ordering::SeqCst) {
             return;
         }
+        let (wake_tx, wake_rx) = mpsc::channel();
+        spawn_change_monitor("tilo-nm-watch", &["nmcli", "monitor"], wake_tx.clone());
+        spawn_change_monitor(
+            "tilo-pw-watch",
+            &["pw-dump", "--monitor", "--no-colors"],
+            wake_tx,
+        );
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
             .spawn(move || {
                 loop {
                     bridge.set(read_once());
-                    std::thread::sleep(POLL_INTERVAL);
+                    if wake_rx.recv_timeout(FALLBACK_INTERVAL).is_ok() {
+                        while wake_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                    }
                 }
             });
         if let Err(e) = spawned {
@@ -275,6 +289,47 @@ pub(crate) fn privacy_watch_followup(frame_requested: bool) -> PrivacyWatchFollo
 /// frames must not schedule another watch per frame.
 pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool) -> (bool, bool) {
     (frame_requested, frame_requested && !was_requested)
+}
+
+fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: Sender<()>) {
+    let Some((program, rest)) = argv.split_first() else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            loop {
+                if monitor_until_exit(program, rest, &tx).is_err() {
+                    std::thread::sleep(FALLBACK_INTERVAL);
+                }
+            }
+        });
+}
+
+fn monitor_until_exit(program: &str, args: &[&str], tx: &Sender<()>) -> Result<(), ()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|_| ())?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        return Err(());
+    };
+    for line in BufReader::new(stdout).lines() {
+        if line.is_err() {
+            break;
+        }
+        if tx.send(()).is_err() {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(())
 }
 
 /// Public so a diagnostic or a test can take a reading without owning a poller.
@@ -457,6 +512,25 @@ mod tests {
                 "a screenshot render must not depend on the host's hardware"
             );
         }
+    }
+
+    #[test]
+    fn idle_status_thread_sleeps_between_reads() {
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+        let (_bridge, tid) = crate::idle_thread_probe::spawned_thread("tilo-stat-wait", || {
+            let bridge = StatusBridge::new();
+            let poller = bridge.clone();
+            std::thread::Builder::new()
+                .name("tilo-stat-wait".into())
+                .spawn(move || {
+                    poller.set(SystemStatus::default());
+                    let _ = wake_rx.recv_timeout(FALLBACK_INTERVAL);
+                })
+                .expect("status idle thread");
+            bridge
+        });
+        crate::idle_thread_probe::assert_stays_asleep(&tid, "status fallback wait");
+        drop(wake_tx);
     }
 
     #[test]

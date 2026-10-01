@@ -35,12 +35,13 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
+use notify::Watcher as _;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
-/// How long an installed-package enumeration is reused before re-reading
-/// the registry. Short enough that an app installed elsewhere shows up
-/// while the palette query is still being typed.
-const APP_CACHE_TTL: Duration = Duration::from_secs(2);
+/// Fallback only: the registry is watched with inotify, so a new install
+/// shows up on the next `installed_apps()` without waiting. This bound
+/// catches a missed watch (NFS, the watch limit, a swapped `TILO_APPS_DATA_DIR`).
+const APP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
 /// the dynamic loader's complaint, small enough a chatty app can't grow
@@ -1058,6 +1059,11 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
 
 static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
 static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
+/// Bumped when a watch (or an explicit invalidate) makes the memoised
+/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: a
+/// recursive inotify walk must not look like a new generation of apps.
+static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -1418,14 +1424,15 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             return Ok(apps.clone());
         }
     }
-    let revision = APP_CACHE_REVISION.load(Ordering::Acquire);
+    let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
     let mut cache = lock(&APP_CACHE);
-    if APP_CACHE_REVISION.load(Ordering::Acquire) != revision {
+    if APP_CACHE_EPOCH.load(Ordering::Acquire) != epoch {
         // The cache was invalidated (an install, a removal, a repointed
         // registry) while this read was in flight, so the read may predate
         // it. Memoising it would hide the change for a whole TTL.
         drop(cache);
+        ensure_app_cache_watch();
         return Ok(apps);
     }
     let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
@@ -1437,6 +1444,9 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     }
     drop(cache);
+    // Watch after the first memoize so opening the registry to fill the
+    // cache cannot look like an install and wipe the snapshot we just wrote.
+    ensure_app_cache_watch();
     Ok(apps)
 }
 
@@ -1445,6 +1455,92 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 pub fn invalidate_app_cache() {
     *lock(&APP_CACHE) = None;
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+fn expire_watched_app_cache() {
+    if let Some((_, at)) = lock(&APP_CACHE).as_mut()
+        && let Some(expired) = Instant::now().checked_sub(APP_CACHE_TTL)
+    {
+        *at = expired;
+    }
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+fn app_cache_roots() -> Vec<PathBuf> {
+    [
+        package_store::layout::default_user_root(),
+        package_store::layout::system_data_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn ensure_app_cache_watch() {
+    let roots = app_cache_roots();
+    if roots.is_empty() {
+        return;
+    }
+    let mut watched = lock(&APP_CACHE_WATCH);
+    if watched.as_ref() == Some(&roots) {
+        return;
+    }
+    let watch_roots = roots.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    if std::thread::Builder::new()
+        .name("tilo-apps-watch".into())
+        .spawn(move || watch_app_cache_roots(&watch_roots, &ready_tx))
+        .is_ok()
+    {
+        *watched = Some(roots);
+        drop(watched);
+        // A write that lands before the recursive watch is armed never
+        // arrives; wait so the first fill is already subscribed.
+        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+fn app_cache_event_matters(event: &notify::Event) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    match event.kind {
+        EventKind::Modify(ModifyKind::Metadata(_))
+        | EventKind::Access(_)
+        | EventKind::Any
+        | EventKind::Other => false,
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => true,
+    }
+}
+
+fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|event| app_cache_event_matters(&event)) {
+            let _ = tx.send(());
+        }
+    });
+    let mut watcher = match watcher {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::warn!(%error, "app registry cannot be watched; falling back to TTL");
+            let _ = ready.send(());
+            return;
+        }
+    };
+    for root in roots {
+        if let Err(error) = watcher.watch(root, notify::RecursiveMode::Recursive) {
+            tracing::info!(%error, path = %root.display(), "app registry path is not watched");
+        }
+    }
+    // Keep `watcher` alive for the thread lifetime. Drop the walk that
+    // `watch` itself performs so it does not look like a registry change.
+    let _watcher = watcher;
+    while rx.try_recv().is_ok() {}
+    let _ = ready.send(());
+    while rx.recv().is_ok() {
+        while rx.try_recv().is_ok() {}
+        expire_watched_app_cache();
+    }
 }
 
 /// Immutable installed-app snapshot revision for retained search projections.
@@ -4468,6 +4564,29 @@ mod tests {
         installed_continuity_lookup_reads_signed_manifest_contract();
         display_name_title_cases_the_trailing_component();
         managed_entry_registry_generation_changes_only_with_its_snapshot();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn app_registry_watch_invalidates_without_waiting_for_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        assert_eq!(initial[0].version, "1.2.3");
+        let manifest = payload.join("manifest.toml");
+        let changed = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed).unwrap();
+        tilo_test_env::wait_until("inotify invalidates the app cache", || {
+            installed_apps()
+                .is_ok_and(|apps| apps.first().is_some_and(|app| app.version == "1.2.4"))
+        });
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
     }
 
     #[test]
