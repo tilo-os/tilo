@@ -16,14 +16,17 @@
 //! projections and issues their typed control requests without duplicating a
 //! second durable record store.
 //!
-//! Local preferences such as favourites and zoom live in the user's Files
-//! config directory. They are deliberately not collaborative. Likewise,
-//! inline rename uses a process-local [`ui::widget::TextInput`]; it is a
+//! Unhosted favourites and zoom stay in the user's Files config directory.
+//! Inline rename uses a process-local [`ui::widget::TextInput`]; it is a
 //! proposed external mutation until committed, not content that another peer
 //! should see or undo.
 //!
-//! Consequently Files has no replayable CRDT actions. `take_committed_action`
-//! stays empty; external work is surfaced through the canonical resource
+//! A framework-hosted surface submits view preferences and bookmark paths
+//! through [`crate::resource::ActionSink`], which calls
+//! `Dispatcher::apply_now_with`. Standalone, `--shots`, and these tests keep
+//! the local host and do not write that document. Listing rows and disk
+//! places stay on the widget. `take_committed_action` stays empty on that
+//! unhosted path; external work is surfaced through the canonical resource
 //! operation lifecycle and its typed status/result updates.
 
 #[cfg(test)]

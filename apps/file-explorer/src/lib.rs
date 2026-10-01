@@ -31,6 +31,7 @@ pub mod breadcrumb_bar;
 pub mod breadcrumbs;
 pub mod command;
 pub mod config;
+mod doc;
 pub mod external_drag;
 pub mod favorites;
 pub mod fileops;

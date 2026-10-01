@@ -367,8 +367,9 @@ fn go_to_folder_action() -> ActionSpec {
     )
 }
 
-/// Places for [`crate::resource::FileExplorer::children`]: Open is a View,
-/// not a CRDT mutation. Favourites live in user config, never the Automerge doc.
+/// Places for [`crate::resource::FileExplorer::children`]: Open is a View.
+/// This catalogue is still loaded from disk. Hosted pin and unpin edits are
+/// document actions on the sink, not a second action tree beside publish.
 pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<Resource> {
     favorites
         .iter()
@@ -717,9 +718,17 @@ pub struct FileExplorerWidget {
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
-    /// Framework-hosted surfaces leave the palette tree to
-    /// `tilo_resource::publish`; standalone keeps the contextual builder.
-    framework_hosted: bool,
+    /// Framework dispatcher when hosted; local action host otherwise.
+    /// Standalone, `--shots`, and unit tests leave `framework` empty.
+    actions: crate::resource::ActionSink,
+    /// Document edits queued until `sync` can submit them through the sink.
+    pending_shared: Vec<crate::resource::FilesDocAction>,
+    /// Set while adopting a presented document so that adoption does not
+    /// queue another edit.
+    adopting_shared: bool,
+    /// Bookmark paths last copied in from the shared document. Only these
+    /// are removed when a later document drops them; disk defaults stay.
+    adopted_bookmarks: Vec<String>,
     /// Right-click menu, owned here (not in the rebuilt composition) so it
     /// stays open across frames. `menu_commands[i]` is the command to run
     /// for menu item `i` (None for separators).
@@ -888,10 +897,23 @@ impl FileExplorerWidget {
         widget
     }
 
+    /// Keep the framework dispatcher. Hosted document edits then go through
+    /// [`Dispatcher::apply_now_with`](ui::framework::Dispatcher::apply_now_with).
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
     /// Mark this explorer as a framework-hosted surface so
     /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    ///
+    /// Tests use this without a live dispatcher. The sink then records the
+    /// edit on its local action host. Production [`Self::attach_framework`]
+    /// stores the dispatcher and submits with `apply_now_with`.
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.framework_hosted = hosted;
+        self.actions.set_hosted(hosted);
     }
 
     #[allow(
@@ -899,7 +921,108 @@ impl FileExplorerWidget {
         reason = "called from this crate's tests; dependents compile the library without cfg(test)"
     )]
     pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.framework_hosted
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_shared_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    fn share_document_edit(&mut self, action: crate::resource::FilesDocAction) {
+        if self.adopting_shared || !self.actions.is_hosted() {
+            return;
+        }
+        self.pending_shared.push(action);
+    }
+
+    fn share_sort(&mut self) {
+        self.share_document_edit(crate::resource::FilesDocAction::SetSort {
+            key: crate::doc::sort_key_token(self.sort_by).to_owned(),
+            order: crate::doc::sort_order_token(self.sort_order).to_owned(),
+        });
+    }
+
+    fn share_bookmarks(&mut self) {
+        self.share_document_edit(crate::resource::FilesDocAction::SetBookmarks {
+            paths: self.bookmark_paths(),
+        });
+    }
+
+    fn bookmark_paths(&self) -> Vec<String> {
+        self.favs
+            .borrow()
+            .favorites
+            .iter()
+            .map(|favorite| favorite.path.display().to_string())
+            .collect()
+    }
+
+    fn flush_shared_edits(&mut self, doc: &mut automerge::AutoCommit) {
+        let pending = std::mem::take(&mut self.pending_shared);
+        if !self.actions.is_hosted() {
+            return;
+        }
+        for action in pending {
+            self.actions.dispatch(doc, &action);
+        }
+    }
+
+    /// Copy shared view preferences and bookmarks onto the widget.
+    ///
+    /// An empty document (`shared == false`) leaves the local sidebar and
+    /// view alone. Listing rows, the current path, and selection are not
+    /// touched.
+    pub(crate) fn adopt_shared_state(&mut self, state: &crate::resource::FilesState) {
+        if !state.shared {
+            return;
+        }
+        self.adopting_shared = true;
+        self.set_view_mode(crate::doc::parse_view_mode(&state.view_mode));
+        self.set_sort_by(crate::doc::parse_sort_key(&state.sort_key));
+        if self.sort_order != crate::doc::parse_sort_order(&state.sort_order) {
+            self.sort_order = crate::doc::parse_sort_order(&state.sort_order);
+            sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        }
+        self.set_zoom(state.zoom);
+        if self.show_hidden != state.show_hidden {
+            self.show_hidden = state.show_hidden;
+            self.refresh();
+        }
+        self.adopt_bookmarks(&state.bookmarks);
+        self.adopting_shared = false;
+    }
+
+    fn adopt_bookmarks(&mut self, paths: &[String]) {
+        let gone: Vec<std::path::PathBuf> = self
+            .adopted_bookmarks
+            .iter()
+            .filter(|path| !paths.iter().any(|kept| kept == *path))
+            .map(std::path::PathBuf::from)
+            .collect();
+        let home = self
+            .home_path
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let mut changed = false;
+        for path in &gone {
+            let mut favs = self.favs.borrow_mut();
+            changed |= favorites::remove(&mut favs.favorites, path);
+        }
+        for path in paths {
+            let mut favs = self.favs.borrow_mut();
+            changed |= favorites::add(
+                &mut favs.favorites,
+                std::path::PathBuf::from(path),
+                &home,
+                &self.user_dirs,
+            );
+        }
+        if changed {
+            self.save_favorites();
+            self.refresh_places_search();
+        }
+        self.adopted_bookmarks = paths.to_vec();
     }
 
     /// Surface a bounded result from startup portals such as received-file
@@ -1133,7 +1256,10 @@ impl FileExplorerWidget {
             composed_once: false,
             cmds,
             structure_dirty: false,
-            framework_hosted: false,
+            actions: crate::resource::ActionSink::default(),
+            pending_shared: Vec::new(),
+            adopting_shared: false,
+            adopted_bookmarks: Vec::new(),
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
@@ -2207,8 +2333,12 @@ impl FileExplorerWidget {
     }
 
     pub fn set_sort_by(&mut self, s: SortBy) {
+        let changed = self.sort_by != s;
         self.sort_by = s;
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        if changed {
+            self.share_sort();
+        }
     }
     pub fn toggle_sort_order(&mut self) {
         self.sort_order = match self.sort_order {
@@ -2216,9 +2346,16 @@ impl FileExplorerWidget {
             SortOrder::Descending => SortOrder::Ascending,
         };
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
+        self.share_sort();
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
+        if self.view_mode == m {
+            return;
+        }
         self.view_mode = m;
+        self.share_document_edit(crate::resource::FilesDocAction::SetView {
+            mode: crate::doc::view_mode_token(m).to_owned(),
+        });
     }
 
     pub fn entries_snapshot(&self) -> &[Entry] {
@@ -3285,6 +3422,9 @@ impl FileExplorerWidget {
             }
             FileCommand::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
+                self.share_document_edit(crate::resource::FilesDocAction::SetHidden {
+                    shown: self.show_hidden,
+                });
                 self.refresh();
                 true
             }
@@ -3617,6 +3757,7 @@ impl FileExplorerWidget {
             self.save_favorites();
             self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
+            self.share_bookmarks();
         }
         true
     }
@@ -3631,6 +3772,7 @@ impl FileExplorerWidget {
             self.save_favorites();
             self.refresh_places_search();
             self.status = Some(t("files-removed-favourite"));
+            self.share_bookmarks();
         }
         true
     }
@@ -3638,12 +3780,19 @@ impl FileExplorerWidget {
     /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
     /// (drag-to-reorder drop).
     fn apply_reorder_favorite(&mut self, from: usize, to: usize) -> bool {
+        let before = self.bookmark_paths();
         {
             let mut favs = self.favs.borrow_mut();
             favorites::reorder(&mut favs.favorites, from, to);
         }
         self.save_favorites();
         self.refresh_places_search();
+        let after = self.bookmark_paths();
+        if before != after {
+            self.share_document_edit(crate::resource::FilesDocAction::SetBookmarks {
+                paths: after,
+            });
+        }
         true
     }
 
@@ -3873,9 +4022,12 @@ impl FileExplorerWidget {
         let level = config::clamp_zoom(level);
         if level != self.zoom_level {
             self.zoom_level = level;
-            if let Some(dir) = self.config_dir.as_deref() {
+            if !self.adopting_shared
+                && let Some(dir) = self.config_dir.as_deref()
+            {
                 config::save_zoom(dir, level);
             }
+            self.share_document_edit(crate::resource::FilesDocAction::SetZoom { level });
         }
     }
 
@@ -6908,10 +7060,12 @@ impl FileExplorerWidget {
     /// does not already have that place.
     fn published_folder(&self, doc: &automerge::AutoCommit) -> Resource {
         let live = self.action_directory_folder_root();
+        let state = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
         let mut folder = ui::tilo_resource::publish::<crate::resource::FileExplorer>(
             &crate::search_provider::folder_resource_id(&self.current_path),
             &self.current_path.display().to_string(),
-            &(),
+            &state,
         );
         for action in live.actions {
             if let Some(existing) = folder
@@ -8216,7 +8370,15 @@ impl Widget for FileExplorerWidget {
         self.poll_share_result() | received
     }
 
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        {
+            let (doc, _) = ui::doc::document(state, path);
+            self.flush_shared_edits(doc);
+        }
         self.poll_deferred_document_open();
         self.poll_pending_launch();
         self.refresh_framework_history_target();
@@ -8888,7 +9050,7 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         // Hosted: ResourceRoot already published folder Views/Effects, places,
         // and templates via tilo_resource::publish. Keep only live filesystem
         // listing rows (and other live extras) — never a second files.folder.
-        if self.framework_hosted {
+        if self.is_framework_hosted() {
             return self.live_filesystem_extras(doc);
         }
         vec![self.published_folder(doc)]
@@ -8899,7 +9061,7 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        if self.framework_hosted {
+        if self.is_framework_hosted() {
             // Folder root is ResourceRoot's publish, not a second page.
             return Some(ui::widget::ActionDirectoryResourcePage {
                 resources: Vec::new(),
@@ -8934,12 +9096,12 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         }
         let folder = self.published_folder(doc);
         if let Some(found) = find(&folder, id) {
-            if self.framework_hosted && found.id == folder.id {
+            if self.is_framework_hosted() && found.id == folder.id {
                 return None;
             }
             return Some(found);
         }
-        if !self.framework_hosted
+        if !self.is_framework_hosted()
             && id == crate::search_provider::folder_resource_id(&self.current_path)
         {
             return Some(self.published_folder(doc));
