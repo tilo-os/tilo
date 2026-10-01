@@ -937,23 +937,102 @@ pub(crate) fn resource_ctx_from_library_with_limits(
 
 /// Build the resource tree Feeds currently has open: the reader (with a "New
 /// folder" action), each folder (rename + delete), and each subscription
-/// (open + rename + move + mark-all-read + unsubscribe), and each article
-/// (open + read + star). Every document-mutating operation is exported as the
-/// same action the on-screen affordance dispatches; open is a local View.
-/// Standalone / `--shots` / unit tests use this door; when hosted,
-/// [`tilo_resource::publish`] owns it instead.
-pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
-    for spec in reader_effect_specs(!ctx.feeds.is_empty()) {
-        root = root.with_action(spec);
+/// The published reader for this library page. Folder, subscription, and
+/// article rows are its children; open stays a local View.
+pub fn provide_resources(ctx: &FeedsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // The library is the document once it holds folders, feeds, or articles.
+    // A caller that has not written one yet still publishes its context.
+    if let Ok(from_doc) = <crate::resource::Feeds as ui::tilo_resource::Resource>::read(doc)
+        && (!from_doc.store.feeds.is_empty()
+            || !from_doc.store.folders.is_empty()
+            || !from_doc.store.articles.is_empty())
+    {
+        return crate::resource::provide_resources(&from_doc);
     }
-    for spec in bound_reader_actions(ctx) {
-        root = root.with_action(spec);
+    vec![published_reader_from_ctx(ctx)]
+}
+
+/// A library projection `Resource::children` can publish. Urls and feed kinds
+/// are not on the palette context; the rows it does carry (folders, titles,
+/// unread flags, tags) are.
+fn store_from_ctx(ctx: &FeedsResourceCtx) -> crate::model::Store {
+    let mut store = crate::model::Store::default();
+    for (index, folder) in ctx.folders.iter().enumerate() {
+        store.folders.push(crate::model::Folder {
+            id: folder.id,
+            name: folder.name.clone(),
+            order: u32::try_from(index).unwrap_or(u32::MAX),
+            collapsed: folder.collapsed,
+        });
     }
-    for child in publish_children(ctx) {
-        root = root.with_child(child);
+    for (index, feed) in ctx.feeds.iter().enumerate() {
+        store.feeds.push(crate::model::Feed {
+            id: feed.id,
+            title: feed.title.clone(),
+            url: String::new(),
+            site_url: String::new(),
+            folder: feed.folder,
+            order: u32::try_from(index).unwrap_or(u32::MAX),
+            kind: crate::model::FeedKind::Rss,
+        });
+        for article in &feed.articles {
+            store.articles.push(crate::model::Article {
+                id: article.id,
+                feed_id: feed.id,
+                title: article.title.clone(),
+                author: String::new(),
+                url: String::new(),
+                published: 0,
+                summary: String::new(),
+                blocks: Vec::new(),
+                read: article.read,
+                starred: article.starred,
+                tags: article.tags.clone(),
+            });
+        }
     }
-    vec![root]
+    store
+}
+
+/// The published reader for one exact address. Children come from
+/// [`tilo_resource::publish`]. Root Document actions keep the live unread list
+/// and next-order values from `ctx`.
+fn published_reader_from_ctx(ctx: &FeedsResourceCtx) -> Resource {
+    let state = crate::resource::FeedsState {
+        store: store_from_ctx(ctx),
+        settings: ctx.settings,
+    };
+    let mut root = ui::tilo_resource::publish::<crate::resource::Feeds>(
+        crate::resource::READER_RESOURCE_ID,
+        "Feeds",
+        &state,
+    );
+    for spec in bound_reader_actions(ctx)
+        .into_iter()
+        .chain(reader_effect_specs(!ctx.feeds.is_empty()))
+    {
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        }
+    }
+    for tag in ctx.tags.iter().take(MAX_CONTEXT_TAG_RESOURCES) {
+        let id = tag_resource_id(&tag.name);
+        if root.children.iter().any(|child| child.id.as_str() == id) {
+            continue;
+        }
+        root.children.push(tag_resource(tag));
+    }
+    root
+}
+
+fn find_resource_id(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .into_iter()
+        .find_map(|child| find_resource_id(child, id))
 }
 
 /// Resolve one current stable id without expanding the contextual snapshot.
@@ -968,17 +1047,7 @@ pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
         ..FeedsResourceCtx::default()
     };
     if id == "feeds.reader" || id == "feeds.reader-settings" {
-        return provide_resources(&scoped, &AutoCommit::new())
-            .into_iter()
-            .find_map(|root| {
-                if root.id.as_str() == id {
-                    Some(root)
-                } else {
-                    root.children
-                        .into_iter()
-                        .find(|child| child.id.as_str() == id)
-                }
-            });
+        return find_resource_id(published_reader_from_ctx(&scoped), id);
     }
     if let Some(raw) = id.strip_prefix("feeds.folder:") {
         let folder_id = raw.parse::<Id>().ok()?;
@@ -1011,26 +1080,41 @@ pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
         feed.articles.retain(|article| article.id == article_id);
         scoped.feeds.push(feed);
     }
-    let root = provide_resources(&scoped, &AutoCommit::new()).pop()?;
-    root.children.into_iter().find_map(|child| {
-        if child.id.as_str() == id {
-            Some(child)
-        } else {
-            child
-                .children
-                .into_iter()
-                .find(|article| article.id.as_str() == id)
-        }
-    })
+    find_resource_id(published_reader_from_ctx(&scoped), id)
 }
 
 // Inherent resource publication (was ResourceProvider)
+fn find_feed(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_feed(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl crate::app::FeedsApp {
-    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if let Ok(from_doc) = <crate::resource::Feeds as ui::tilo_resource::Resource>::read(doc)
+            && (!from_doc.store.feeds.is_empty()
+                || !from_doc.store.folders.is_empty()
+                || !from_doc.store.articles.is_empty())
+        {
+            return crate::resource::provide_resources(&from_doc);
+        }
+        // An unsynced demo still has its library on the widget. Once sync
+        // writes that library, the document is the door.
         self.published_reader()
     }
 
-    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(found) = find_feed(&self.publish_resources(doc), id) {
+            return Some(found);
+        }
+        // A feed or article outside the eager page stays addressable.
         resolve_resource(&self.feeds_resource_ctx_for(id)?, id)
     }
 }
