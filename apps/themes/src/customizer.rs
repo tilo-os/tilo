@@ -224,7 +224,9 @@ impl Default for Customizer {
 
 impl Customizer {
     pub fn new() -> Self {
-        let color_state = LocalState::new(Color::from_rgb8(99, 102, 241));
+        // Before a spec is loaded the picker shows the default theme's
+        // accent. `load_picker` replaces it with the token being edited.
+        let color_state = LocalState::new(Theme::default().accent_primary);
         let radius_state = LocalState::new(0.5);
         let spacing_state = LocalState::new(0.5);
         let font_state = LocalState::new(String::from("Inter"));

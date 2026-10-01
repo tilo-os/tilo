@@ -508,7 +508,7 @@ impl OfflinePanel {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        draw::card(scene, transform, card, 16.0, colors.surfaces.raised);
+        draw::card(scene, transform, theme, card, 16.0, colors.surfaces.raised);
         self.targets.push((card, OfflineAction::Consume));
 
         let left = card.x0 + gutter;

@@ -1581,7 +1581,13 @@ impl GitClientApp {
         if reveal <= 0.001 {
             return;
         }
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.86) as f32);
+        let scrim = ctx
+            .theme
+            .tokens
+            .colors
+            .surfaces
+            .scrim
+            .with_alpha_factor((reveal * 0.86) as f32);
         ctx.scene.fill(
             Fill::NonZero,
             ctx.transform,
