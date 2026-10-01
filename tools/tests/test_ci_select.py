@@ -388,26 +388,6 @@ class SelectorTests(unittest.TestCase):
                 self.assertTrue(plan["rust_required"])
 
     def test_shards_and_matrices_cover_every_package_once_per_architecture(self):
-        with self.subTest(phase='tilo ui test link uses large x86 runner'):
-            self.setUp()
-            self.metadata["packages"].append({
-                "name": "tilo-ui",
-                "manifest_path": str(self.root / "tilo-ui" / "Cargo.toml"),
-                "targets": [{"name": "tilo-ui"}],
-                "dependencies": [],
-            })
-            plan = ci_select.make_plan(
-                self.metadata, self.root, ["tilo-ui/src/lib.rs"], 2
-            )
-            self.assertEqual(plan["matrix"]["include"][0]["runner"], "runner-large")
-            # Only the test links need the large runner; check and Clippy do not.
-            self.assertEqual(plan["matrix"]["include"][0]["check_runner"], "runner")
-
-            ordinary = ci_select.make_plan(
-                self.metadata, self.root, ["leaf/src/lib.rs"], 2
-            )
-            self.assertEqual(ordinary["matrix"]["include"][0]["runner"], "runner")
-            self.assertEqual(ordinary["matrix"]["include"][0]["check_runner"], "runner")
         with self.subTest(phase='global inputs balance large workspaces without losing coverage'):
             self.setUp()
             # Enough genuine package targets/dependencies to exceed the budget,
@@ -623,7 +603,7 @@ class SelectorTests(unittest.TestCase):
             rows = plan["matrix"]["include"]
             self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
             for row in rows:
-                self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
             clippy = plan["clippy_matrix"]["include"]
             self.assertEqual({row["arch"] for row in clippy}, {"x86_64"})
             self.assertEqual(" ".join(row["packages"] for row in clippy).split()[1::2],
@@ -632,7 +612,7 @@ class SelectorTests(unittest.TestCase):
             check = plan["check_matrix"]["include"]
             self.assertEqual({row["arch"] for row in check}, set(ci_select.NATIVE_RUNNERS) - {"x86_64"})
             for row in clippy + check:
-                self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
             self.assertEqual(sorted(row["packages"] for row in check),
                              sorted(row["packages"] for row in clippy))
             output = self.root / "github-output"
