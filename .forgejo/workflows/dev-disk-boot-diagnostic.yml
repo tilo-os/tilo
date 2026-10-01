@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           sudo -n apt-get update
           sudo -n apt-get install -y --no-install-recommends \
-            curl ipxe-qemu jq openssh-client qemu-efi-aarch64 qemu-system-arm \
+            curl gcc ipxe-qemu jq openssh-client qemu-efi-aarch64 qemu-system-arm \
             qemu-utils socat sshpass
           test -r /usr/lib/ipxe/qemu/efi-virtio.rom
           python3 os/dev/probe-kvm.py aarch64 || {
@@ -107,6 +107,11 @@ jobs:
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
             os/usr/libexec/tilo-cage-session "$TILO_USER@127.0.0.1:/tmp/tilo-cage-session"
           ./os/dev/vm.sh ssh "chmod 0755 /tmp/tilo-cage-session"
+          cc -shared -fPIC -O0 -Wall -Wextra -o "$TILO_RUN/tilo-sigill-probe.so" os/dev/sigill-probe.c -ldl
+          sshpass -p "$TILO_PASS" scp -q -P 2222 \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            "$TILO_RUN/tilo-sigill-probe.so" "$TILO_USER@127.0.0.1:/tmp/tilo-sigill-probe.so"
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-child-status.log' > "$TILO_RUN/cage-child-status.log" || true
           sleep 3
