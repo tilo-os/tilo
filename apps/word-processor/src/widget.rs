@@ -53,7 +53,7 @@ use crate::paint_context::PaintContext;
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
 use crate::review_overlay::{
-    COMMENT_HIGHLIGHT, DELETION_INK, INSERTION_INK, ReviewAction, ReviewOverlay,
+    DELETION_INK, INSERTION_INK, ReviewAction, ReviewColors, ReviewOverlay,
 };
 #[cfg(test)]
 use crate::review_overlay::{DELETION_RGB, INSERTION_RGB};
@@ -197,19 +197,17 @@ const PAPER_DEFAULT: Color = Color::from_rgb8(0xfc, 0xfc, 0xfa);
 const PAPER_INK: Color = Color::from_rgb8(0x1c, 0x1c, 0x20);
 /// Muted ink for paper chrome (running heads/footers, placeholders on paper).
 const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
-/// Selection highlight painted on paper (a translucent accent so text reads
-/// through it). Tied to paper, not the theme, so it always contrasts the sheet.
-const PAPER_SELECTION: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x4d);
-/// Caret colour on paper.
-const PAPER_CARET: Color = Color::from_rgb8(0x28, 0x5a, 0xc8);
-/// Translucent accent wash behind the header/footer band that is the active edit
-/// context (Word-style header/footer edit mode), so the focused band stands out.
-const ACTIVE_BAND_FILL: Color = Color::from_rgba8(0x46, 0x78, 0xe6, 0x14);
-/// Accent edge (dashed outline + the "Header"/"Footer" tab) of the active band.
-const ACTIVE_BAND_EDGE: Color = Color::from_rgb8(0x46, 0x78, 0xe6);
-/// A translucent veil drawn over the body content while a header/footer is being
+/// Alpha of the selection highlight painted on paper: translucent so the
+/// text reads through it.
+const PAPER_SELECTION_ALPHA: u8 = 0x4d;
+/// Alpha of the find-match band painted on paper.
+const FIND_HIGHLIGHT_ALPHA: u8 = 0x80;
+/// Alpha of the accent wash behind the header/footer band that is the active
+/// edit context (Word-style header/footer edit mode).
+const ACTIVE_BAND_FILL_ALPHA: u8 = 0x14;
+/// Alpha of the veil drawn over the body while a header/footer is being
 /// edited, so the body visibly recedes (like Word dimming the body in that mode).
-const BODY_DIM_VEIL: Color = Color::from_rgba8(0xfc, 0xfc, 0xfa, 0x66);
+const BODY_DIM_VEIL_ALPHA: u8 = 0x66;
 
 /// OS-theme-driven chrome palette, resolved once per frame from the [`Theme`]
 /// (see [`ChromeColors::for_theme`]) so chrome honours light/dark mode. Paper
@@ -246,6 +244,21 @@ struct ChromeColors {
     on_accent: Color,
     /// Scrollbar thumb tone.
     scrollbar: Color,
+    /// The OS accent made legible on the paper: the caret, the selection
+    /// tint and the active header/footer band's edge and tab.
+    paper_accent: Color,
+    /// Label ink on a [`Self::paper_accent`] fill (the band's tab).
+    on_paper_accent: Color,
+    /// The theme's `danger` made legible on the paper: the spelling squiggle.
+    paper_danger: Color,
+    /// Find-match highlight painted on the paper (warning, translucent).
+    find_highlight: Color,
+    /// Whisper tint on the sheet (missing-image / fidelity placeholders).
+    paper_tint: Color,
+    /// Hairline on the sheet (placeholder edges, image-handle contrast).
+    paper_edge: Color,
+    /// The margin review cards beside the page.
+    review: ReviewColors,
     /// The paper sheet, derived from the theme's lightest surface when it is
     /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
     /// dark-authored document ink stays readable.
@@ -269,6 +282,10 @@ impl ChromeColors {
             PAPER_DEFAULT
         };
         let bar = c.surfaces.raised;
+        let non_text = ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        let paper_accent = c.ink_on(paper, theme.accent_primary, non_text);
+        let paper_warning = c.ink_on(paper, c.semantic.warning, non_text);
+        let on_paper = theme.on_surface(paper);
         Self {
             canvas: c.surfaces.base,
             bar,
@@ -292,6 +309,13 @@ impl ChromeColors {
                 ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
             paper,
+            paper_accent,
+            on_paper_accent: theme.on_surface(paper_accent).ink,
+            paper_danger: c.ink_on(paper, c.semantic.danger, non_text),
+            find_highlight: with_alpha(paper_warning, FIND_HIGHLIGHT_ALPHA),
+            paper_tint: on_paper.tint,
+            paper_edge: ui::surface::edge_on(paper),
+            review: ReviewColors::for_theme(theme, paper),
             paper_elevation: theme.tokens.elevation.e3,
         }
     }
@@ -589,17 +613,15 @@ const STYLES_PANEL_W: f64 = 250.0;
 /// Width of the document outline / navigation pane reserved on the LEFT of the
 /// canvas (mirrors the styles panel on the right).
 const OUTLINE_PANEL_W: f64 = 230.0;
-/// Find-match highlight (amber, semi-transparent).
-const FIND_HL: Color = Color::from_rgba8(0xff, 0xc8, 0x4a, 0x80);
-/// Spell-check squiggle colour (a familiar red).
-const SQUIGGLE: Color = Color::from_rgb8(0xd0, 0x32, 0x2a);
+/// Find-match highlight is chrome on the paper — see `ChromeColors::find_highlight`.
 /// Amplitude (px) of the wavy spell-check underline.
 const SQUIGGLE_AMP: f64 = 1.6;
 /// Horizontal period (px) of one full wave of the spell-check underline.
 const SQUIGGLE_PERIOD: f64 = 4.0;
 /// Thin separator above the footnote area at the bottom of a page.
+/// Paper content (the footnote rule), not OS chrome.
 const NOTE_SEP: Color = Color::from_rgb8(0xb8, 0xb8, 0xbe);
-/// Footnote body text colour (slightly muted vs. body ink).
+/// Footnote body text colour (slightly muted vs. body ink). Paper content.
 const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
 /// Footnote text size (smaller than body) and the gap above the separator.
 const NOTE_FONT: f32 = 11.0;
@@ -1109,7 +1131,7 @@ type Pass2Inputs = (
               (clamped to x1), so this is bounded by (x1-x0)/step, not float \
               imprecision"
 )]
-fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64) {
+fn draw_squiggle(scene: &mut Scene, transform: Affine, color: Color, x0: f64, x1: f64, y: f64) {
     if x1 <= x0 {
         return;
     }
@@ -1127,7 +1149,7 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64)
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        SQUIGGLE,
+        color,
         None,
         &path,
     );
@@ -4097,6 +4119,12 @@ struct NotesSpellcheckInput<'a> {
 }
 
 impl WordProcessorWidget {
+    /// The selection highlight painted on paper: the paper accent, translucent
+    /// so the text reads through it.
+    fn paper_selection(&self) -> Color {
+        with_alpha(self.chrome.paper_accent, PAPER_SELECTION_ALPHA)
+    }
+
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
         self.layout_mode = if self.layout_mode == mode {
@@ -4223,11 +4251,18 @@ impl WordProcessorWidget {
     ) {
         // A faint fill so the active band reads as the focused surface.
         let pad = Rect::new(band.x0 - 2.0, band.y0 - 1.0, band.x1 + 2.0, band.y1 + 1.0);
-        scene.fill(Fill::NonZero, ctf, ACTIVE_BAND_FILL, None, &pad);
+        let edge = self.chrome.paper_accent;
+        scene.fill(
+            Fill::NonZero,
+            ctf,
+            with_alpha(edge, ACTIVE_BAND_FILL_ALPHA),
+            None,
+            &pad,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 3.0]),
             ctf,
-            ACTIVE_BAND_EDGE,
+            edge,
             None,
             &pad,
         );
@@ -4246,17 +4281,15 @@ impl WordProcessorWidget {
         scene.fill(
             Fill::NonZero,
             ctf,
-            ACTIVE_BAND_EDGE,
+            edge,
             None,
             &vello::kurbo::RoundedRect::from_rect(tab, 2.0),
         );
-        // White label on the blue accent tab (a fixed contrast pair, not theme ink,
-        // since the tab colour is fixed).
         tr.draw_text(
             scene,
             &label,
             10.0,
-            Color::WHITE,
+            self.chrome.on_paper_accent,
             ctf * Affine::translate((tab.x0 + 6.0, tab.y0 + 1.5)),
             None,
         );
@@ -4284,7 +4317,7 @@ impl WordProcessorWidget {
                     rl.origin.x + f64::from(rx1),
                     rl.origin.y + f64::from(ry1),
                 );
-                scene.fill(Fill::NonZero, ctf, PAPER_SELECTION, None, &r);
+                scene.fill(Fill::NonZero, ctf, self.paper_selection(), None, &r);
             }
         }
         if let Some(rl) = self.region_laid.iter().find(|r| r.id == caret.block) {
@@ -4297,7 +4330,7 @@ impl WordProcessorWidget {
                 rl.origin.y + f64::from(cy) + f64::from(ch),
             );
             self.ime_rect = Some(ctf.transform_rect_bbox(c));
-            scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &c);
+            scene.fill(Fill::NonZero, ctf, self.chrome.paper_accent, None, &c);
             if !self.ime_preedit.is_empty() {
                 tr.draw_text(
                     scene,
@@ -8032,7 +8065,7 @@ impl WordProcessorWidget {
             }
 
             if l.kind == "fidelity" {
-                Self::draw_laid_fidelity(scene, fg, text_renderer, l);
+                Self::draw_laid_fidelity(scene, fg, text_renderer, l, &self.chrome);
                 continue;
             }
 
@@ -8114,7 +8147,13 @@ impl WordProcessorWidget {
                     ly + f64::from(cy) + f64::from(ch),
                 );
                 self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
-                scene.fill(Fill::NonZero, fg.ctf, PAPER_CARET, None, &caret);
+                scene.fill(
+                    Fill::NonZero,
+                    fg.ctf,
+                    self.chrome.paper_accent,
+                    None,
+                    &caret,
+                );
                 if !self.ime_preedit.is_empty() {
                     text_renderer.draw_text(
                         scene,
@@ -8147,6 +8186,8 @@ impl WordProcessorWidget {
         bx: Rect,
         cell_row: Option<usize>,
     ) {
+        // Document table styling on the sheet (not OS chrome): default header
+        // tint, zebra and hairline the authored table carries.
         let fill = match cell_row {
             Some(0) => Color::from_rgb8(0xec, 0xee, 0xf3), // header row tint
             Some(r) if r % 2 == 0 => Color::from_rgb8(0xf6, 0xf6, 0xf9), // zebra
@@ -8201,13 +8242,19 @@ impl WordProcessorWidget {
                 }
             }
         } else {
-            Self::draw_missing_image(scene, fg.ctf, text_renderer, rect);
+            Self::draw_missing_image(scene, fg.ctf, text_renderer, rect, &self.chrome);
         }
         // Selection chrome: when this image is the caret's block, ring it
         // with an accent border + corner resize handles so it reads as
         // "selected" (the panel then shows the resize / flip controls).
         if l.id == self.inner.caret.block {
-            Self::draw_selected_image_chrome(scene, fg.ctf, rect, self.chrome.accent);
+            Self::draw_selected_image_chrome(
+                scene,
+                fg.ctf,
+                rect,
+                self.chrome.accent,
+                self.chrome.paper,
+            );
         }
     }
 
@@ -8216,19 +8263,14 @@ impl WordProcessorWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         rect: Rect,
+        chrome: &ChromeColors,
     ) {
         let rounded = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgb8(0xee, 0xee, 0xf2),
-            None,
-            &rounded,
-        );
+        scene.fill(Fill::NonZero, transform, chrome.paper_tint, None, &rounded);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            Color::from_rgb8(0xcc, 0xce, 0xd6),
+            chrome.paper_edge,
             None,
             &rounded,
         );
@@ -8242,7 +8284,13 @@ impl WordProcessorWidget {
         );
     }
 
-    fn draw_selected_image_chrome(scene: &mut Scene, transform: Affine, rect: Rect, accent: Color) {
+    fn draw_selected_image_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        accent: Color,
+        handle_fill: Color,
+    ) {
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
             transform,
@@ -8254,8 +8302,8 @@ impl WordProcessorWidget {
         for (x, y) in [
             (rect.x0, rect.y0),
             (rect.x1, rect.y0),
-            (rect.x0, rect.y1),
             (rect.x1, rect.y1),
+            (rect.x0, rect.y1),
         ] {
             let handle = Rect::new(
                 x - handle_radius,
@@ -8263,7 +8311,7 @@ impl WordProcessorWidget {
                 x + handle_radius,
                 y + handle_radius,
             );
-            scene.fill(Fill::NonZero, transform, Color::WHITE, None, &handle);
+            scene.fill(Fill::NonZero, transform, handle_fill, None, &handle);
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
@@ -8280,6 +8328,7 @@ impl WordProcessorWidget {
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
         l: &Laid,
+        chrome: &ChromeColors,
     ) {
         let box_rect = Rect::new(
             l.text_x,
@@ -8290,7 +8339,7 @@ impl WordProcessorWidget {
         scene.fill(
             Fill::NonZero,
             fg.ctf,
-            Color::from_rgb8(0xee, 0xee, 0xf2),
+            chrome.paper_tint,
             None,
             &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0),
         );
@@ -8320,7 +8369,7 @@ impl WordProcessorWidget {
         if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
             if let (Some(bx), true) = (l.cell_box, multi_sel) {
                 // Multi-cell selection: highlight the whole cell (spreadsheet-style).
-                scene.fill(Fill::NonZero, fg.ctf, PAPER_SELECTION, None, &bx);
+                scene.fill(Fill::NonZero, fg.ctf, self.paper_selection(), None, &bx);
             } else {
                 for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
                     let r = Rect::new(
@@ -8329,7 +8378,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, PAPER_SELECTION, None, &r);
+                    scene.fill(Fill::NonZero, fg.ctf, self.paper_selection(), None, &r);
                 }
             }
         }
@@ -8353,7 +8402,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, FIND_HL, None, &r);
+                    scene.fill(Fill::NonZero, fg.ctf, self.chrome.find_highlight, None, &r);
                 }
             }
         }
@@ -8374,7 +8423,13 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, COMMENT_HIGHLIGHT, None, &r);
+                    scene.fill(
+                        Fill::NonZero,
+                        fg.ctf,
+                        self.chrome.review.comment_highlight,
+                        None,
+                        &r,
+                    );
                 }
                 // Anchor the marker at the start line's top, and remember
                 // the range's right edge (max rect x1) for the inline tab.
@@ -8484,6 +8539,7 @@ impl WordProcessorWidget {
                     draw_squiggle(
                         scene,
                         fg.ctf,
+                        self.chrome.paper_danger,
                         l.text_x + f64::from(rx0),
                         l.text_x + f64::from(rx1),
                         y,
@@ -8689,7 +8745,13 @@ impl WordProcessorWidget {
                     fg.page_x + fg.page_w - fg.m.right,
                     body_bot,
                 );
-                scene.fill(Fill::NonZero, fg.ctf, BODY_DIM_VEIL, None, &veil);
+                scene.fill(
+                    Fill::NonZero,
+                    fg.ctf,
+                    with_alpha(self.chrome.paper, BODY_DIM_VEIL_ALPHA),
+                    None,
+                    &veil,
+                );
             }
             self.draw_band_caret(scene, fg.ctf, text_renderer);
         }
@@ -10601,6 +10663,7 @@ impl Widget for WordProcessorWidget {
             fg.canvas,
             markers.comment_markers,
             markers.change_markers,
+            &self.chrome.review,
         );
         self.draw_footnotes(
             scene,
