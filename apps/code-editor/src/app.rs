@@ -1131,10 +1131,46 @@ impl CodeApp {
         }
     }
 
+    /// The embedded terminal's document map. A hosted window creates it
+    /// through the dispatcher; a standalone window creates it in
+    /// [`EditorDoc::terminal_root`].
+    fn terminal_document_root(&mut self, doc: &mut AutoCommit) -> ObjId {
+        if self.actions.is_hosted() {
+            if EditorDoc::terminal_panel(doc).is_none() {
+                let action = actions::CodeEditorAction::EnsureTerminalPanel;
+                self.actions.dispatch_with_context(
+                    doc,
+                    actions::CODE_EDITOR_ACTION_TYPE,
+                    &action,
+                    actions::history_context(&action, "Terminal", &self.project_id),
+                );
+            }
+            if let Some(id) = EditorDoc::terminal_panel(doc) {
+                return id;
+            }
+        }
+        EditorDoc::terminal_root(doc)
+    }
+
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
+        if self.actions.is_hosted() {
+            let action = actions::CodeEditorAction::EnsureProjectId {
+                id: self.project_id.clone(),
+            };
+            self.actions.dispatch_with_context(
+                doc,
+                actions::CODE_EDITOR_ACTION_TYPE,
+                &action,
+                actions::history_context(&action, "Project", &self.project_id),
+            );
+            if let Some(id) = EditorDoc::project_id(doc) {
+                self.project_id = id;
+            }
+        } else {
+            self.project_id = EditorDoc::ensure_project_id(doc, &self.project_id);
+        }
         self.import_project_file_records(doc);
         self.sync_collaborative_files(doc);
         // A Ctrl+K resource action can create the captured UUID without going
@@ -1182,7 +1218,22 @@ impl CodeApp {
             }
             match self.session.project.file_seed(node) {
                 Ok((text, stamp)) => {
-                    EditorDoc::ensure_buffer_key(doc, &key, &text);
+                    if !has_text {
+                        if self.actions.is_hosted() {
+                            let action = actions::CodeEditorAction::EnsureBuffer {
+                                key: key.clone(),
+                                seed: text.clone(),
+                            };
+                            self.actions.dispatch_with_context(
+                                doc,
+                                actions::CODE_EDITOR_ACTION_TYPE,
+                                &action,
+                                actions::history_context(&action, "File", &self.project_id),
+                            );
+                        } else {
+                            EditorDoc::ensure_buffer_key(doc, &key, &text);
+                        }
+                    }
                     let Some(buf) = self.session.open.get_mut(i) else {
                         continue;
                     };
@@ -3346,7 +3397,7 @@ impl CodeApp {
         if !(term_active && self.terminal_focused) {
             return false;
         }
-        let tr = EditorDoc::terminal_root(state);
+        let tr = self.terminal_document_root(state);
         if let Some(t) = self.terminal.as_mut() {
             let mut th = false;
             let mut tf = None;
@@ -3639,7 +3690,7 @@ impl Widget for CodeApp {
         // reflects it into the grid (the plain `ui::App` loop never calls
         // `update`, so pumping happens here — see `TerminalWidget::sync`).
         if self.terminal.is_some() {
-            let tr = EditorDoc::terminal_root(state);
+            let tr = self.terminal_document_root(state);
             if let Some(t) = self.terminal.as_mut() {
                 t.sync(state, &tr);
             }
@@ -4305,9 +4356,9 @@ impl ui::search::capability::SearchSource for CodeApp {
 }
 
 impl ui::resources::PublishesResources for CodeApp {
-    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
-    /// file Document ops ride [`tilo_resource::publish`]; this returns only
-    /// live extras (save / symbols / search) — never a second project root.
+    /// Standalone / `--shots` publishes the project. When hosted, file
+    /// Document ops ride [`tilo_resource::publish`]; this returns only live
+    /// extras (save / symbols / search) — never a second project root.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
             return crate::resource::live_extras(self);
@@ -4316,12 +4367,14 @@ impl ui::resources::PublishesResources for CodeApp {
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the project. The directory page
+        // keeps the same live extras as `resources`, never a second root.
         let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::project_root(&self.code_resource_ctx())]
+            self.resources(doc)
         } else {
             Vec::new()
         };
@@ -4335,6 +4388,10 @@ impl ui::resources::PublishesResources for CodeApp {
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the project door.
+        if self.is_hosted() && id == crate::actions::project_resource_id(&self.project_id) {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
