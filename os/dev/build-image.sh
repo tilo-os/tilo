@@ -711,6 +711,12 @@ rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
 OUTDIR="$(dirname "$TILO_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
 disk_args=(--user "$TILO_ACCOUNT")
+if [ -n "${TILO_DISK_ROOTFS:-}" ]; then
+  case "$TILO_DISK_ROOTFS" in
+    btrfs|ext4) disk_args+=(--rootfs "$TILO_DISK_ROOTFS") ;;
+    *) die "TILO_DISK_ROOTFS must be btrfs or ext4" ;;
+  esac
+fi
 if [ -n "${TILO_DEV_DIRECT_BUNDLE_DIR:-}" ]; then
   disk_args+=(--direct-boot-bundle "$TILO_DEV_DIRECT_BUNDLE_DIR")
 fi
