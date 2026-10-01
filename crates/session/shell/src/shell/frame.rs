@@ -1458,6 +1458,39 @@ impl FrameBuilder {
         scene
     }
 
+    /// A transition frame is the clip, not a new encoding of both displays.
+    /// `None` when the desktop itself has to be drawn.
+    fn paint_content_clip(&mut self) -> Option<FramePaint> {
+        // Reduced motion is a settled frame, not a clip run. The retained
+        // oracle has to see the new workspace's commands.
+        if self.theme.reduce_motion || !self.host.presents_on_content_clip() {
+            return None;
+        }
+        self.host
+            .prepare_content_clip(&mut self.text_renderer, &self.theme);
+        let revision = self.next_scene_revision;
+        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let previous_revision = self
+            .last_produced_sections
+            .as_ref()
+            .map(|last| last.revision);
+        let overview_patch = self.host.take_overview_fast_patch();
+        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
+        let workspace_hold = self.host.workspace_switch_holding();
+        let workspace_clip = self.host.workspace_switch_clip();
+        Some(FramePaint {
+            scene: Scene::new(),
+            revision,
+            previous_revision,
+            damage_regions: None,
+            overview_patch,
+            workspace_id,
+            workspace_hold,
+            workspace_clip,
+            hdr_layers: Vec::new(),
+        })
+    }
+
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
     /// independent for capture and pixel-oracle use.
@@ -1468,6 +1501,10 @@ impl FrameBuilder {
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
         self.refresh_magnifier();
+        if let Some(frame) = self.paint_content_clip() {
+            return frame;
+        }
+        self.host.dense_scene_covers_content_rebuild();
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
@@ -5317,6 +5354,79 @@ mod tests {
                 clip.width
             );
         }
+    }
+
+    #[test]
+    fn overview_open_and_workspace_switch_paint_a_content_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        fn clip_scene(frame: &FramePaint) {
+            assert_eq!(
+                frame.scene.encoding().n_paths,
+                0,
+                "a transition frame does not encode both outputs"
+            );
+        }
+
+        fn overview_open_is_a_clip() {
+            let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+            ]);
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            for index in 0..8 {
+                let frame = fb.paint_with_damage();
+                clip_scene(&frame);
+                let patch = frame
+                    .overview_patch
+                    .unwrap_or_else(|| panic!("open frame {index} paints the overview clip"));
+                let right = patch.panel.x.saturating_add(patch.panel.width);
+                assert!(
+                    right <= 1920,
+                    "open frame {index} stays on the first display (clip ends at {right})"
+                );
+            }
+        }
+
+        fn workspace_open_is_a_clip() {
+            let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+            ]);
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            fb.host_mut().start_workspace_switch_frames();
+            for index in 0..8 {
+                let frame = fb.paint_with_damage();
+                clip_scene(&frame);
+                assert!(
+                    frame.workspace_hold,
+                    "open frame {index} stays in the frame run"
+                );
+                let clip = frame
+                    .workspace_clip
+                    .unwrap_or_else(|| panic!("open frame {index} paints the workspace clip"));
+                let right = clip.x.saturating_add(clip.width);
+                assert!(
+                    right <= 1920,
+                    "open frame {index} stays on the first display (clip ends at {right})"
+                );
+            }
+        }
+
+        overview_open_is_a_clip();
+        workspace_open_is_a_clip();
     }
 
     #[test]

@@ -351,6 +351,34 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     assert_legacy_and_segmented_match(&mut frame, "workspace root rebuild", false);
 }
 
+#[test]
+fn workspace_root_rebuild_encodes_the_new_scene_before_the_clip_run() {
+    let mut frame = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    frame.relayout();
+    let warm = frame.paint_with_damage();
+    assert!(
+        !warm.scene.encoding().is_empty(),
+        "the desktop before the switch records source commands"
+    );
+    frame.with_chrome(|chrome| {
+        chrome.add_workspace("clip after rebuild");
+    });
+    let mut document = AutoCommit::new();
+    let document_root = automerge::ROOT;
+    frame.pump_apps(&mut document, &document_root);
+    frame.relayout();
+    let rebuilt = frame.paint_with_damage();
+    assert!(
+        !rebuilt.scene.encoding().is_empty(),
+        "the rebuilt workspace root has to reach the screen before the clip run"
+    );
+    let following = frame.paint_with_damage();
+    assert!(
+        following.scene.encoding().is_empty() && following.workspace_hold,
+        "the rest of the switch stays on the content clip"
+    );
+}
+
 fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
