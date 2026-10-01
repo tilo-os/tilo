@@ -132,6 +132,11 @@ impl CalculatorApp {
         Self::with_model(CalcModel::default())
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// Project an already admitted Calculator record without authoring schema
     /// or replacing malformed content. The checked component initializes New
     /// records before calling this constructor; Existing records stay read-only.
@@ -1939,6 +1944,30 @@ impl ui::resources::PublishesResources for CalculatorApp {
             "Calculator",
             &state,
         )]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == crate::resource::Calculator::KIND {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let state = crate::resource::Calculator::read(doc).unwrap_or_default();
+        let root = ui::tilo_resource::publish::<crate::resource::Calculator>(
+            crate::resource::Calculator::KIND,
+            "Calculator",
+            &state,
+        );
+        find(&[root], id)
     }
 }
 
