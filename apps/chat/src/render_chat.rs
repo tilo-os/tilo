@@ -1872,7 +1872,7 @@ impl ChatApp {
             tf,
             visual.inflate(3.0, 3.0),
             12.0,
-            Color::from_rgba8(0, 0, 0, 74),
+            theme.tokens.elevation.e3.color,
         );
         fill_round(scene, tf, visual, 10.0, c.accent[5]);
         let (tw, th) = tr.measure(label_text, 12.5, None);
@@ -2733,12 +2733,13 @@ impl ChatApp {
             );
         }
         // Caption gradient scrim + filename, then a framing stroke.
+        let caption = ui::paint::with_alpha(c.surfaces.scrim, 120);
         fill_round(
             scene,
             tf,
             Rect::new(rect.x0, rect.y1 - 30.0 * scale, rect.x1, rect.y1),
             12.0,
-            Color::from_rgba8(0, 0, 0, 120),
+            caption,
         );
         stroke_round(
             scene,
@@ -2754,7 +2755,7 @@ impl ChatApp {
             tf,
             &format!("🖼  {name}"),
             12.0,
-            Color::WHITE,
+            c.readable_on(c.surfaces.scrim, Color::WHITE),
             rect.x0 + 12.0 * scale.min(1.2),
             rect.y1 - 22.0 * scale,
         );
@@ -2813,7 +2814,7 @@ impl ChatApp {
             tf,
             cc,
             25.0 * scale.min(1.3),
-            Color::from_rgba8(0, 0, 0, 150),
+            ui::paint::with_alpha(c.surfaces.scrim, 150),
         );
         fill_circle(scene, tf, cc, 24.0 * scale.min(1.3), c.lift(0.72));
         let (pw, ph) = tr.measure("▶", 20.0, None);
@@ -2831,7 +2832,7 @@ impl ChatApp {
             tf,
             Rect::new(rect.x0, rect.y1 - 30.0 * scale, rect.x1, rect.y1),
             12.0,
-            Color::from_rgba8(0, 0, 0, 120),
+            ui::paint::with_alpha(c.surfaces.scrim, 120),
         );
         stroke_round(
             scene,
@@ -2847,7 +2848,7 @@ impl ChatApp {
             tf,
             &format!("🎬  {name}"),
             12.0,
-            Color::WHITE,
+            c.readable_on(c.surfaces.scrim, Color::WHITE),
             rect.x0 + 12.0 * scale.min(1.2),
             rect.y1 - 22.0 * scale,
         );

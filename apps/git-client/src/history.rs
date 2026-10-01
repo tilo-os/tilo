@@ -6,7 +6,6 @@
 use vello::kurbo::{BezPath, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -589,11 +588,11 @@ fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
         RefKind::LocalBranch => (c.text_primary, c.accent[2]),
         RefKind::RemoteBranch => {
             let g = c.semantic.success;
-            (Color::WHITE, Color::from_rgba8(g.r(), g.g(), g.b(), 60))
+            (Color::WHITE, ui::paint::with_alpha(g, 60))
         }
         RefKind::Tag => {
             let a = c.semantic.warning;
-            (c.surfaces.base, Color::from_rgba8(a.r(), a.g(), a.b(), 220))
+            (c.surfaces.base, ui::paint::with_alpha(a, 220))
         }
     }
 }

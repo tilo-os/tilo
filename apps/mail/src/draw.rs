@@ -77,8 +77,10 @@ pub fn avatar_color(theme: &Theme, email: &str, tint: u8) -> Color {
         c.semantic.warning,
         c.accent[6],
         c.accent[3],
-        Color::from_rgb8(217, 70, 239),
-        Color::from_rgb8(20, 184, 166),
+        // The last two slots are the accent's own categorical series, so a
+        // high-contrast accent retints them with the rest of the disc.
+        c.categorical(1),
+        c.categorical(2),
     ];
     let h = email.bytes().fold(u32::from(tint), |a, b| {
         a.wrapping_mul(31).wrapping_add(u32::from(b))
@@ -159,6 +161,24 @@ pub fn draw_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avatar_colours_follow_the_theme() {
+        let dark = Theme::dark();
+        let contrast = Theme::high_contrast();
+        let mut changed = false;
+        for n in 0..32 {
+            let email = format!("person{n}@example.com");
+            if avatar_color(&dark, &email, 0) != avatar_color(&contrast, &email, 0) {
+                changed = true;
+                break;
+            }
+        }
+        assert!(
+            changed,
+            "avatar discs are theme colours, including high contrast"
+        );
+    }
 
     #[test]
     #[allow(

@@ -727,7 +727,7 @@ pub fn draw_markers(
                 t,
                 Point::new(p.x, p.y + 1.0),
                 6.5,
-                Color::from_rgba8(0, 0, 0, 60),
+                theme.tokens.elevation.e2.color,
             );
             draw::fill_circle(scene, t, p, 6.0, theme.tokens.colors.surfaces.base);
             draw::stroke_circle(scene, t, p, 6.0, 3.0, theme.accent_primary);
@@ -771,7 +771,14 @@ pub fn draw_markers(
             // would be sliced at the drawer/panel edge into an unreadable
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
+                draw::card(
+                    scene,
+                    t,
+                    theme,
+                    rect,
+                    6.0,
+                    theme.tokens.colors.surfaces.raised,
+                );
                 PaintCtx::new(scene, t, tr, theme).text(
                     label,
                     &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
