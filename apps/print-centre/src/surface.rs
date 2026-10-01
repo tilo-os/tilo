@@ -3458,6 +3458,40 @@ impl ui::resources::PublishesResources for PrintCentre {
         }
         vec![root]
     }
+
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.hosted && id == "print-centre" {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
+            "print-centre",
+            "Print Centre",
+            &crate::resource::PrintCentreState,
+        );
+        if let Some(snapshot) = &self.snapshot {
+            if let Ok(queues) = &snapshot.queues {
+                root.children.extend(queues.iter().map(printer_resource));
+            }
+            if let Ok(jobs) = &snapshot.jobs {
+                root.children.extend(jobs.iter().map(job_resource));
+            }
+            if let Ok(scanners) = &snapshot.scanners {
+                root.children.extend(scanners.iter().map(scanner_resource));
+            }
+        }
+        find(&[root], id).or_else(|| find(&self.live_device_resources(), id))
+    }
 }
 
 #[cfg(test)]
@@ -3482,6 +3516,18 @@ mod tests {
         );
 
         centre.mark_hosted_for_test();
+        let printer_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "print-centre.printer")
+            .map(|child| child.id.as_str().to_owned())
+            .expect("printer");
+        assert!(ui::resources::resource(&centre, &doc, "print-centre").is_none());
+        assert!(
+            ui::resources::resource(&centre, &doc, &printer_id)
+                .is_some_and(|printer| printer.actions.iter().any(|action| action.id == "open")),
+            "a hosted printer stays the published row"
+        );
         let extras = ui::resources::resources(&centre, &doc);
         assert!(
             extras
