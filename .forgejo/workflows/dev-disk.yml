@@ -463,6 +463,7 @@ jobs:
           sparse-checkout: |
             os/dev/build-image.sh
             os/dev/disk-image.sh
+            os/dev/check-composefs-verity.py
             os/dev/export-direct-boot-bundle.sh
             os/dev/hold-loop-partition-nodes.py
             os/dev/private_disk_image.py
@@ -485,7 +486,7 @@ jobs:
           # The dev image is already built from SOURCE_REVISION. Install the
           # reviewed disk-only entry point with its disk helpers, so checkpoint
           # runs do not download external build assets again.
-          for file in build-image.sh disk-image.sh export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
+          for file in build-image.sh disk-image.sh check-composefs-verity.py export-direct-boot-bundle.sh hold-loop-partition-nodes.py private_disk_image.py \
                        check-dev-vm.sh diagnose-boot-failure.sh publish-dev-disk-candidate.sh \
                        publish-dev-disk.sh _common.sh probe-kvm.py; do
             test -s ".ci-disk-tooling/os/dev/$file"
