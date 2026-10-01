@@ -320,6 +320,16 @@ mod tests {
             "standalone overlays live catalogue apps"
         );
         assert!(
+            standalone[0].children.iter().any(|child| {
+                child.id.as_str() == "windows.app:adobe-reader"
+                    && child
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "reset-route")
+            }),
+            "standalone keeps the document route override on the catalogue app"
+        );
+        assert!(
             standalone[0]
                 .children
                 .iter()
@@ -329,6 +339,11 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, actions::MANAGER_RESOURCE_ID).is_none());
+        assert!(
+            ui::resources::resource(&app, &seeded, "windows.app:adobe-reader").is_some(),
+            "a hosted route override stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
