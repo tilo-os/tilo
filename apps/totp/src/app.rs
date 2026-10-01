@@ -1235,27 +1235,24 @@ impl Widget for AuthenticatorApp {
             self.seed();
             self.seeded = true;
         }
-        // Mirror the freshly-loaded vault into the shared document once, on the
-        // seed frame — the initial-load population, not an undoable edit. After
-        // that the document is authoritative: every mutation is an action, and
-        // the vault is re-projected from the document below.
+        // Publish the freshly-loaded vault once, on the seed frame. Each new
+        // account is an `AddAccount`, hosted or standalone, so the first mirror
+        // is the same replayable write as a later add. Accounts already in the
+        // document are left alone: deleting one this device has not stored
+        // would be a destructive collaboration bug.
         if self.doc_dirty {
-            if self.actions.is_hosted() {
-                let existing: std::collections::HashSet<_> = AuthDoc::list_accounts(state)
-                    .into_iter()
-                    .map(|account| account.id)
-                    .collect();
-                for account in self.vault.ordered() {
-                    if existing.contains(&account.id) {
-                        continue;
-                    }
-                    self.perform_action(
-                        state,
-                        &crate::actions::add_account_action(&account, account.order),
-                    );
+            let existing: std::collections::HashSet<_> = AuthDoc::list_accounts(state)
+                .into_iter()
+                .map(|account| account.id)
+                .collect();
+            for account in self.vault.ordered() {
+                if existing.contains(&account.id) {
+                    continue;
                 }
-            } else {
-                AuthDoc::sync_vault(state, &self.vault.ordered());
+                self.perform_action(
+                    state,
+                    &crate::actions::add_account_action(&account, account.order),
+                );
             }
             self.doc_dirty = false;
         }
@@ -1931,6 +1928,26 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             assert!(!app.doc_dirty, "idle sync leaves the doc-dirty flag clear");
         }
+    }
+
+    /// A fresh vault is published by account actions, not a raw document write.
+    #[test]
+    fn a_fresh_vault_is_published_by_account_actions() {
+        let mut app = AuthenticatorApp::demo();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let published = AuthDoc::list_accounts(&state.doc);
+        let local = app.vault.ordered();
+        assert!(!local.is_empty());
+        assert_eq!(published.len(), local.len());
+        assert!(
+            published.iter().all(|account| account.secret.is_empty()),
+            "the collaborative document contains metadata only"
+        );
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the seed mirror is an AddAccount on the action host"
+        );
     }
 
     /// Resource, accessibility, event and Enter copies share the row's clipboard semantics; toasts distinguish failures.
