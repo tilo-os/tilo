@@ -5,7 +5,7 @@
 use tilo_document::RichText;
 use ui::framework::testing::TestApp;
 use ui::permissions::Role;
-use word_processor::framework::WordProcessorApp;
+use word_processor::framework::{Document, WordProcessorApp};
 
 fn paragraphs(app: &TestApp<WordProcessorApp>) -> Vec<String> {
     app.read_document(|doc| {
@@ -124,7 +124,7 @@ fn one_apply_creates_a_filled_table_and_one_undo_takes_it_back() {
         .collect();
     let versions = app.versions().len();
     app.invoke_confirmed(
-        ui::tilo_resource::Invoke::<RichText>::apply(&insert_filled_table_action(&after, cells))
+        ui::tilo_resource::Invoke::<Document>::apply(&insert_filled_table_action(&after, cells))
             .unwrap(),
     )
     .unwrap();
@@ -186,7 +186,7 @@ fn long_document(paragraphs: usize) -> TestApp<WordProcessorApp> {
         blocks,
         adopt_first_style: false,
     };
-    app.invoke_confirmed(ui::tilo_resource::Invoke::<RichText>::apply(&paste).unwrap())
+    app.invoke_confirmed(ui::tilo_resource::Invoke::<Document>::apply(&paste).unwrap())
         .unwrap();
     app
 }
@@ -256,7 +256,7 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
     let load = RichTextAction::ReplaceBody {
         markdown: "Background\n\nMethod\n\nResults\n".into(),
     };
-    app.invoke_confirmed(Invoke::<RichText>::apply(&load).unwrap())
+    app.invoke_confirmed(Invoke::<Document>::apply(&load).unwrap())
         .unwrap();
     let before = snapshot(&app);
     let spans = before
@@ -276,7 +276,7 @@ fn undoing_a_mark_over_several_paragraphs_clears_it_from_every_one() {
         also_clear: Vec::new(),
     };
     // Through `group`, the door an agent uses for a multi-part edit.
-    app.invoke_confirmed(Invoke::group([Invoke::<RichText>::apply(&bold).unwrap()]))
+    app.invoke_confirmed(Invoke::group([Invoke::<Document>::apply(&bold).unwrap()]))
         .unwrap();
     let marked = snapshot(&app);
     assert_eq!(marked.blocks.len(), 3);

@@ -119,7 +119,6 @@ pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::Seman
 }
 use automerge::{ObjId, ObjType, ROOT};
 use std::{cmp::Ordering, ops::ControlFlow};
-use tilo_doc::semantic_read::{json_len, source::Source};
 use tilo_doc::semantic_read::{
     json_len,
     source::{self, Source},

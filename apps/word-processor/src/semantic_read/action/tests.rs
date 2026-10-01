@@ -23,6 +23,9 @@ fn semantic_read_action_encodes_requested_capacity_and_closed_resource() {
         validate_request(&wrong, br#"{"pageSize":1,"cursor":null}"#).unwrap_err(),
         SemanticReadError::InvalidRequest
     );
+    let framework =
+        Resource::new("tilo.rich-text", "tilo.rich-text", "Document").with_action(spec());
+    validate_request(&framework, br#"{"pageSize":1,"cursor":null}"#).unwrap();
 }
 
 #[test]

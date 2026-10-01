@@ -138,9 +138,10 @@ fn open_standalone(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
 /// time.
 fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
     use tilo_doc_codecs::FormatProvider;
+    use tilo_document::ClipBlock;
     use tilo_document::action::{RegionKind, RichTextAction};
-    use tilo_document::{ClipBlock, RichText};
     use ui::tilo_resource::Invoke;
+    use word_processor::framework::Document;
 
     let failed = |error: String| std::io::Error::other(error);
     let bytes = std::fs::read(path)?;
@@ -192,7 +193,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
             adopt_first_style: false,
         };
         let invoke =
-            Invoke::<RichText>::apply(&paste).map_err(|error| failed(error.to_string()))?;
+            Invoke::<Document>::apply(&paste).map_err(|error| failed(error.to_string()))?;
         app.invoke_confirmed(invoke)
             .map_err(|error| failed(error.to_string()))?;
     }

@@ -247,36 +247,30 @@ fn range_label(
 }
 
 fn document_resource(doc: &AutoCommit) -> Resource {
-    let state =
-        <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap_or_else(|_| {
+    let state = <crate::framework::Document as ui::tilo_resource::Resource>::read(doc)
+        .unwrap_or_else(|_| {
             let mut empty = AutoCommit::new();
-            <tilo_document::RichText as ui::tilo_resource::Resource>::initialize(&mut empty)
+            <crate::framework::Document as ui::tilo_resource::Resource>::initialize(&mut empty)
                 .expect("empty rich text initializes");
-            <tilo_document::RichText as ui::tilo_resource::Resource>::read(&empty)
+            <crate::framework::Document as ui::tilo_resource::Resource>::read(&empty)
                 .expect("empty rich text reads")
         });
-    let mut root = ui::tilo_resource::publish::<tilo_document::RichText>(
+    let root = ui::tilo_resource::publish::<crate::framework::Document>(
         "word-processor.document",
         "Document",
         &state,
     );
-    if !root
-        .actions
-        .iter()
-        .any(|action| action.id.as_str() == "read-text")
-    {
-        root.actions.push(crate::semantic_read::action::spec());
-    }
     root
 }
 
-fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
+pub(crate) fn file_operation_specs(file: Option<&continuation::FileContext>) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root.actions.push(continuation::file(
+        specs.push(continuation::file(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -311,6 +305,18 @@ fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileCont
             variant,
             file,
         ));
+    }
+    specs
+}
+
+fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
+    // Replace a spec with the same id so open/save are not listed twice.
+    for spec in file_operation_specs(file) {
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
     }
 }
 
@@ -363,7 +369,13 @@ pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
 }
 
 fn add_view_operations(root: &mut Resource) {
-    root.actions.extend(view_operations(true));
+    for spec in view_operations(true) {
+        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+            *existing = spec;
+        } else {
+            root.actions.push(spec);
+        }
+    }
 }
 
 fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
@@ -650,8 +662,10 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
     ));
 }
 
-/// Selection, comment, and find-hit rows that depend on this peer's caret.
-/// Not a second `word-processor.document` root.
+/// Selection, comment, find-hit, and caret-edit rows that depend on this
+/// peer's caret. Not a second `word-processor.document` root. Typing, marks,
+/// placing an image, inserting a table, moving the caret, and page breaks stay
+/// addressable when the framework already publishes the document.
 pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut scratch = Resource::new("word-processor.live", "word_processor.live", "Live");
     add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, None));
@@ -676,6 +690,15 @@ pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit)
         );
         selection.actions.extend(scratch.actions);
         extras.insert(0, selection);
+    }
+    let mut caret = Resource::new("word-processor.caret", "word_processor.caret", "Caret");
+    editing::add_operations(&mut caret, ctx, doc, None);
+    add_document_edit_actions(&mut caret, ctx);
+    add_caret_actions(&mut caret, ctx);
+    add_body_append_actions(&mut caret, ctx, doc, None);
+    view_ops::add_operations(&mut caret, ctx);
+    if !caret.actions.is_empty() {
+        extras.push(caret);
     }
     extras
 }
@@ -882,6 +905,18 @@ fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
     resource
 }
 
+fn place_child(root: &mut Resource, child: Resource) {
+    if let Some(existing) = root
+        .children
+        .iter_mut()
+        .find(|existing| existing.id == child.id)
+    {
+        *existing = child;
+    } else {
+        root.children.push(child);
+    }
+}
+
 fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
         return;
@@ -937,7 +972,7 @@ fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocS
             )),
         );
     }
-    root.children.push(review);
+    place_child(root, review);
 }
 
 fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
@@ -994,7 +1029,7 @@ fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::Do
                 format!("{}: {}", note.kind, short(&text, "Empty note")),
             ));
         }
-        root.children.push(notes);
+        place_child(root, notes);
     }
     if !snapshot.bookmarks.is_empty() {
         let mut bookmarks = Resource::new(
@@ -1009,8 +1044,50 @@ fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::Do
                 bookmark.name.clone(),
             ));
         }
-        root.children.push(bookmarks);
+        place_child(root, bookmarks);
     }
+}
+
+fn add_region_resources(
+    root: &mut Resource,
+    id: &str,
+    label: &str,
+    region: RegionKind,
+    blocks: &[tilo_doc::snapshot::BlockView],
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    let mut region_resource = Resource::new(
+        format!("word-processor.{id}"),
+        format!("word_processor.{id}"),
+        label,
+    );
+    for block in blocks.iter().take(MAX_RESOURCE_OBJECTS) {
+        let mut child = Resource::new(
+            format!("word-processor.{id}:{}", block.id),
+            format!("word_processor.{id}-block"),
+            short(&block.text, label),
+        );
+        for (action_id, action_label, align) in [
+            ("align-left", "Align left", "left"),
+            ("align-center", "Align centre", "center"),
+            ("align-right", "Align right", "right"),
+        ] {
+            child.actions.push(immediate_spec(
+                action_id,
+                action_label,
+                &set_block_attr_action(
+                    region,
+                    vec![block.id.clone()],
+                    "align",
+                    AttrVal::Str(align.to_string()),
+                ),
+            ));
+        }
+        region_resource.children.push(child);
+    }
+    place_child(root, region_resource);
 }
 
 fn add_style_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
@@ -1054,7 +1131,7 @@ fn add_style_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSn
         }
         styles.children.push(child);
     }
-    root.children.push(styles);
+    place_child(root, styles);
 }
 
 fn image_resource(block: &tilo_doc::snapshot::BlockView) -> Resource {
@@ -1101,6 +1178,38 @@ fn image_resource(block: &tilo_doc::snapshot::BlockView) -> Resource {
             id,
             label,
             &set_image_placement_action(&block.id, anchor, wrap, 0, 0, 0),
+        ));
+    }
+    let block_id = block.id.clone();
+    resource.actions.push(ActionSpec::typed(
+        "set-size",
+        "Set image size",
+        "width and height in pixels",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("width", ParamType::Integer, "Width in px"),
+            ActionParam::required_owned("height", ParamType::Integer, "Height in px"),
+        ],
+        move |args: &ActionArgs| {
+            let width = args.integer("width").unwrap_or(0);
+            let height = args.integer("height").unwrap_or(0);
+            encode(&set_image_size_action(&block_id, width, height))
+        },
+    ));
+    let flipped = |key: &str| matches!(block.attrs.get(key), Some(tilo_doc::AttrVal::Bool(true)));
+    for (id, label, key) in [
+        ("flip-horizontal", "Flip horizontally", "flip_h"),
+        ("flip-vertical", "Flip vertically", "flip_v"),
+    ] {
+        resource.actions.push(immediate_spec(
+            id,
+            label,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![block.id.clone()],
+                key,
+                AttrVal::Bool(!flipped(key)),
+            ),
         ));
     }
     resource
@@ -1182,14 +1291,27 @@ fn table_resource(table_id: &str, table_blocks: &[&tilo_doc::snapshot::BlockView
     resource
 }
 
+/// Images, tables and headings already on the published document stay that
+/// node. A listing may replace one when it carries at least as much (a full
+/// table the eager page split). Anything the eager page omitted is added.
+fn place_structural(root: &mut Resource, child: Resource) {
+    if let Some(existing) = root
+        .children
+        .iter_mut()
+        .find(|existing| existing.id == child.id)
+    {
+        if child.children.len() >= existing.children.len() {
+            *existing = child;
+        }
+    } else {
+        root.children.push(child);
+    }
+}
+
 fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
-    root.children.extend(
-        snapshot
-            .blocks
-            .iter()
-            .filter(|block| block.kind == "image")
-            .map(image_resource),
-    );
+    for block in snapshot.blocks.iter().filter(|block| block.kind == "image") {
+        place_structural(root, image_resource(block));
+    }
     let mut table_ids = Vec::new();
     for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
         if let Some(tilo_doc::AttrVal::Str(table_id)) = block.attrs.get("table")
@@ -1207,7 +1329,7 @@ fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::
                     && matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == table_id)
             })
             .collect::<Vec<_>>();
-        root.children.push(table_resource(table_id, &blocks));
+        place_structural(root, table_resource(table_id, &blocks));
     }
     for block in snapshot
         .blocks
@@ -1230,8 +1352,76 @@ fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::
                 &set_align_action(vec![block.id.clone()], align),
             ));
         }
-        root.children.push(section);
+        place_structural(root, section);
     }
+}
+
+/// A table of contents built from the document's headings. Page numbers stay
+/// with the laid-out view; this door inserts the headings the document holds.
+pub(crate) fn toc_action(state: &tilo_document::RichTextState) -> Option<ActionSpec> {
+    let entries: Vec<TocTarget> = state
+        .headings()
+        .into_iter()
+        .map(|heading| TocTarget {
+            heading: heading.id,
+            level: heading.level,
+            text: heading.text,
+            page: None,
+        })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    Some(immediate_spec(
+        "generate-toc",
+        "Generate table of contents",
+        &generate_toc_action(entries),
+    ))
+}
+
+/// Images, tables, headings, notes, review, paragraph styles, and the page
+/// header and footer the document resource publishes as its own children.
+/// Structural objects are bounded in document order; a caret listing adds
+/// only what this page omitted.
+pub(crate) fn structural_children(state: &tilo_document::RichTextState) -> Vec<Resource> {
+    let mut blocks = Vec::new();
+    for (kind, limit) in [
+        ("heading", MAX_RESOURCE_OBJECTS),
+        ("image", MAX_RESOURCE_OBJECTS),
+        ("cell", MAX_RESOURCE_OBJECTS.saturating_mul(16)),
+    ] {
+        let mut of_kind = state.featured(kind);
+        of_kind.truncate(limit);
+        blocks.extend(of_kind.into_iter().map(|view| (*view).clone()));
+    }
+    let snapshot = tilo_doc::snapshot::DocSnapshot {
+        blocks,
+        notes: state.notes().as_ref().clone(),
+        comments: state.comments().as_ref().clone(),
+        changes: state.changes().as_ref().clone(),
+        styles: state.styles().as_ref().clone(),
+        ..tilo_doc::snapshot::DocSnapshot::default()
+    };
+    let mut root = Resource::new("word-processor.document", "tilo.rich-text", "Document");
+    add_structural_resources(&mut root, &snapshot);
+    add_review_resources(&mut root, &snapshot);
+    add_metadata_resources(&mut root, &snapshot);
+    add_style_resources(&mut root, &snapshot);
+    add_region_resources(
+        &mut root,
+        "header",
+        "Header",
+        RegionKind::Header,
+        state.header().as_slice(),
+    );
+    add_region_resources(
+        &mut root,
+        "footer",
+        "Footer",
+        RegionKind::Footer,
+        state.footer().as_slice(),
+    );
+    root.children
 }
 
 /// Stable id standing for every view-derived `word-processor.selection:…`
@@ -1715,6 +1905,14 @@ mod tests {
                 .unwrap();
             assert!(image.actions.iter().any(|action| action.id == "delete"));
             assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
+            let published = <crate::framework::Document as ui::tilo_resource::Resource>::children(
+                &<crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+                    .expect("the seeded document reads"),
+            );
+            assert!(
+                published.iter().any(|child| child.id == image.id),
+                "the image is a child of the document resource"
+            );
             assert!(table.actions.iter().any(|action| action.id == "delete"));
             assert!(table.actions.iter().any(|action| action.id == "append-row"));
         }
@@ -1845,6 +2043,292 @@ mod tests {
                     .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
             );
         }
+    }
+
+    /// A comment thread is a child of the document resource, and the open tree
+    /// lists that review once.
+    #[test]
+    fn review_is_a_child_of_the_document_resource() {
+        let (mut state, ids) = seeded("Hello\n");
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::AddComment {
+                block: ids[0].clone(),
+                start: 0,
+                end: 5,
+                author: "Ada".into(),
+                date: "2026-01-01".into(),
+                text: "Note this".into(),
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the commented document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let review = published
+            .iter()
+            .find(|child| child.kind == "word_processor.review")
+            .expect("review is published with the document");
+        assert!(
+            review
+                .children
+                .iter()
+                .any(|child| child.kind == "word_processor.comment"),
+            "the comment is on the published review"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.review")
+                .count(),
+            1,
+            "the open tree does not publish a second review"
+        );
+    }
+
+    /// A named style is a child of the document resource, and the open tree
+    /// lists that style sheet once.
+    #[test]
+    fn a_named_style_is_a_child_of_the_document_resource() {
+        let (mut state, ids) = seeded("Styled paragraph\n");
+        dispatch(
+            &mut state.doc,
+            &set_style_property_action(
+                "custom1",
+                tilo_doc::schema::STYLE_NAME,
+                AttrVal::Str("Callout".into()),
+            ),
+        );
+        dispatch(
+            &mut state.doc,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![ids[0].clone()],
+                "style",
+                AttrVal::Str("custom1".into()),
+            ),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the styled document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let sheet = published
+            .iter()
+            .find(|child| child.kind == "word_processor.styles")
+            .expect("styles are published with the document");
+        let style = sheet
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "word-processor.style:custom1")
+            .expect("the named style is a published child");
+        assert!(
+            style
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-bold"),
+            "the published style can change its bold field"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: ids[0].clone(),
+            caret_offset: 0,
+            target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.styles")
+                .count(),
+            1,
+            "the open tree does not publish a second style sheet"
+        );
+    }
+
+    /// A page header is a child of the document resource, and the open tree
+    /// lists that header once.
+    #[test]
+    fn a_header_is_a_child_of_the_document_resource() {
+        let (mut state, _) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::EnsureRegionBlock {
+                region: RegionKind::Header,
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with a header reads");
+        let block = read
+            .header()
+            .first()
+            .expect("the header has a paragraph")
+            .id
+            .clone();
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::SpliceText {
+                region: RegionKind::Header,
+                block: block.clone(),
+                at: 0,
+                del: 0,
+                ins: "Running head".into(),
+            },
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the headed document reads");
+        let published =
+            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
+        let header = published
+            .iter()
+            .find(|child| child.kind == "word_processor.header")
+            .expect("the header is published with the document");
+        let paragraph = header
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == format!("word-processor.header:{block}"))
+            .expect("the header paragraph is a published child");
+        assert!(
+            paragraph
+                .actions
+                .iter()
+                .any(|action| action.id == "align-center"),
+            "the published header paragraph can be aligned"
+        );
+        let ctx = WpResourceCtx {
+            caret_block: block,
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Header,
+            search_hits: Vec::new(),
+            content: tilo_content::ContentStore::memory(),
+        };
+        let tree = provide_resources(&ctx, &state.doc);
+        assert_eq!(
+            tree[0]
+                .children
+                .iter()
+                .filter(|child| child.kind == "word_processor.header")
+                .count(),
+            1,
+            "the open tree does not publish a second header"
+        );
+    }
+
+    /// Resizing an image is a published action on that image, not only a panel click.
+    #[test]
+    fn image_size_is_a_published_document_action() {
+        let (mut state, ids) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with an image reads");
+        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+            .into_iter()
+            .find(|child| child.kind == "word_processor.image")
+            .expect("the image is published with the document");
+        let spec = image
+            .actions
+            .iter()
+            .find(|action| action.id == "set-size")
+            .expect("set size is published on the image");
+        let encoded = spec
+            .build_args([
+                ("width".into(), tilo_actions::ArgValue::Integer(300)),
+                ("height".into(), tilo_actions::ArgValue::Integer(180)),
+            ])
+            .expect("width and height bind");
+        let action: RichTextAction = serde_json::from_slice(&encoded.payload).expect("decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("size applies");
+        let blocks = body_blocks(&state.doc);
+        let image = blocks
+            .iter()
+            .find(|block| block.kind == "image")
+            .expect("image remains");
+        assert_eq!(image.attrs.get("width"), Some(&tilo_doc::AttrVal::Int(300)));
+        assert_eq!(
+            image.attrs.get("height"),
+            Some(&tilo_doc::AttrVal::Int(180))
+        );
+    }
+
+    /// Flipping an image is a published action on that image, not only a panel click.
+    #[test]
+    fn image_flip_is_a_published_document_action() {
+        let (mut state, ids) = seeded("Body\n");
+        dispatch(
+            &mut state.doc,
+            &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
+        );
+        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the document with an image reads");
+        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+            .into_iter()
+            .find(|child| child.kind == "word_processor.image")
+            .expect("the image is published with the document");
+        let spec = image
+            .actions
+            .iter()
+            .find(|action| action.id == "flip-horizontal")
+            .expect("flip is published on the image");
+        let encoded = spec_encoding(spec, None);
+        let action: RichTextAction =
+            serde_json::from_slice(&encoded.payload).expect("the flip action decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("flip applies");
+        let blocks = body_blocks(&state.doc);
+        let image = blocks
+            .iter()
+            .find(|block| block.kind == "image")
+            .expect("image remains");
+        assert_eq!(
+            image.attrs.get("flip_h"),
+            Some(&tilo_doc::AttrVal::Bool(true))
+        );
+    }
+
+    /// The table of contents is a document action built from the headings the
+    /// document already holds.
+    #[test]
+    fn a_table_of_contents_is_a_published_document_action() {
+        let (mut state, _) = seeded("# Section\n\nBody\n");
+        let root = document_resource(&state.doc);
+        let spec = root
+            .actions
+            .iter()
+            .find(|action| action.id == "generate-toc")
+            .expect("generate table of contents is published");
+        let encoded = spec_encoding(spec, None);
+        let action: RichTextAction =
+            serde_json::from_slice(&encoded.payload).expect("the toc action decodes");
+        tilo_actions::Action::apply(&action, &mut state.doc).expect("toc applies");
+        let blocks = body_blocks(&state.doc);
+        assert!(
+            blocks.iter().any(|block| {
+                matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true)))
+                    && block.text.contains("Section")
+            }),
+            "the published action inserts a contents line for the heading"
+        );
     }
 
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
