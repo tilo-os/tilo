@@ -147,6 +147,11 @@ pub struct FramePaint {
     /// Set while the overview is fading. The multi-output presenter composites
     /// this panel over the previous desktop instead of readback of both outputs.
     pub(crate) overview_patch: Option<crate::shell::overlay_host::OverviewFastPatch>,
+    /// Active workspace, so a switch back can replay pixels already rendered
+    /// instead of uploading both outputs again.
+    pub(crate) workspace_id: Option<u64>,
+    /// The workspace-switch frame run. Intermediate frames must not upload.
+    pub(crate) workspace_hold: bool,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -162,6 +167,8 @@ impl FramePaint {
             previous_revision: None,
             damage_regions: None,
             overview_patch: None,
+            workspace_id: None,
+            workspace_hold: false,
             hdr_layers: Vec::new(),
         }
     }
@@ -1583,12 +1590,16 @@ impl FrameBuilder {
             revision,
         });
         let overview_patch = self.host.take_overview_fast_patch();
+        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
+        let workspace_hold = self.host.workspace_switch_holding();
         FramePaint {
             scene,
             revision,
             previous_revision,
             damage_regions,
             overview_patch,
+            workspace_id,
+            workspace_hold,
             hdr_layers,
         }
     }
@@ -5199,10 +5210,41 @@ mod tests {
             );
         }
 
+        fn both_directions_hold_the_scanout() {
+            let mut fb = FrameBuilder::new((3200, 1080));
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            fb.host_mut().start_workspace_switch_frames();
+            let forward = fb.paint_with_damage();
+            assert!(
+                forward.workspace_hold,
+                "switching away holds the scanouts instead of uploading both"
+            );
+            let held = fb.paint_with_damage();
+            assert!(held.workspace_hold);
+            assert_eq!(held.workspace_id, forward.workspace_id);
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(-1);
+            });
+            assert!(switched, "switching back moves to the previous workspace");
+            fb.host_mut().start_workspace_switch_frames();
+            let back = fb.paint_with_damage();
+            assert!(
+                back.workspace_hold,
+                "switching back holds the scanouts instead of uploading both"
+            );
+            assert_ne!(back.workspace_id, forward.workspace_id);
+        }
+
         overview_toggle_requests_frames_before_draw();
         workspace_switch_requests_frames_before_draw();
         compositor_paint_run_is_not_host_demand();
         latch_asks_the_compositor_for_eight_paints();
+        both_directions_hold_the_scanout();
     }
 
     #[test]

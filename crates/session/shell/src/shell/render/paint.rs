@@ -1632,6 +1632,10 @@ pub struct VelloDrmBridge {
     /// panel over this instead of rendering both outputs again.
     overview_base: Vec<u8>,
     overview_generation: u64,
+    /// Workspace whose pixels are on the scanouts, and up to two retained
+    /// images so switching back does not render both outputs again.
+    shown_workspace: Option<u64>,
+    workspace_snapshots: Vec<(u64, Vec<u8>)>,
     /// Fixed-size renderer for the overview panel. Created once so a fade
     /// does not compile pipelines on the first animated frame.
     panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
@@ -1712,6 +1716,8 @@ impl VelloDrmBridge {
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
             overview_base: Vec::new(),
             overview_generation: 0,
+            shown_workspace: None,
+            workspace_snapshots: Vec::new(),
             panel_renderer: None,
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
@@ -1768,6 +1774,82 @@ impl VelloDrmBridge {
             blit_straight(&mut frame, stride, patch.panel, &panel, patch.panel_size);
         }
         Ok(frame)
+    }
+
+    pub(crate) fn shown_workspace(&self) -> Option<u64> {
+        self.shown_workspace
+    }
+
+    pub(crate) fn has_workspace_snapshot(&self, id: u64) -> bool {
+        self.snapshot_index(id).is_some()
+    }
+
+    /// Keep the image of the workspace currently on screen, before a render
+    /// replaces it.
+    pub(crate) fn retain_shown_workspace(&mut self) {
+        if let Some(prev) = self.shown_workspace {
+            self.store_workspace_snapshot(prev);
+        }
+    }
+
+    /// Remember `id` as what the scanouts show. The image is kept once, when
+    /// this workspace first lands or replaces another — not on every repaint.
+    pub(crate) fn note_shown_workspace(&mut self, id: u64) {
+        let changed = self.shown_workspace != Some(id);
+        self.shown_workspace = Some(id);
+        if changed || !self.has_workspace_snapshot(id) {
+            self.store_workspace_snapshot(id);
+        }
+    }
+
+    /// Leave the workspace on screen and return a retained image of `id`,
+    /// when switching back to one this bridge already rendered.
+    pub(crate) fn replay_workspace(&mut self, id: u64) -> Option<Vec<u8>> {
+        if self.shown_workspace == Some(id) {
+            return None;
+        }
+        self.retain_shown_workspace();
+        let index = self.snapshot_index(id)?;
+        let bytes = self.workspace_snapshots[index].1.clone();
+        self.readback.clone_from(&bytes);
+        self.shown_workspace = Some(id);
+        Some(bytes)
+    }
+
+    fn store_workspace_snapshot(&mut self, id: u64) {
+        if !self.has_complete_readback() {
+            return;
+        }
+        if let Some(pos) = self
+            .workspace_snapshots
+            .iter()
+            .position(|(stored, _)| *stored == id)
+        {
+            self.workspace_snapshots[pos].1.clone_from(&self.readback);
+            // Most recently kept, so the next eviction drops the other one.
+            let entry = self.workspace_snapshots.remove(pos);
+            self.workspace_snapshots.push(entry);
+            return;
+        }
+        if self.workspace_snapshots.len() >= 2 {
+            self.workspace_snapshots.remove(0);
+        }
+        self.workspace_snapshots.push((id, self.readback.clone()));
+    }
+
+    fn expected_readback_len(&self) -> usize {
+        let (width, height) = self.target.size;
+        usize::try_from(width)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_mul(4)
+    }
+
+    fn snapshot_index(&self, id: u64) -> Option<usize> {
+        let needed = self.expected_readback_len();
+        self.workspace_snapshots
+            .iter()
+            .position(|(stored, image)| *stored == id && needed > 0 && image.len() == needed)
     }
 
     fn render_overview_panel(
