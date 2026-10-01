@@ -218,6 +218,9 @@ grep -Fqx 'Requires=firewalld.service' "$network_manager_firewall"
 grep -Fqx 'After=firewalld.service' "$network_manager_firewall"
 grep -Fq 'OnUnitInactiveSec=1h' \
   "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'OnBootSec=2min' "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'CPUSchedulingPolicy=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
+grep -Fqx 'IOSchedulingClass=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
 if grep -Fq 'RemainAfterExit=yes' \
     "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   echo 'security audit oneshot remains active and cannot recur from its timer' >&2
