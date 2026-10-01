@@ -6537,14 +6537,31 @@ impl ui::resources::PublishesResources for SheetsApp {
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the workbook. The directory page
+        // keeps the same live selection extras as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
+                crate::actions::live_presentation_resources(&self.sheets_resource_ctx())
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
         // The workbook is the sole stable top-level root. Sheets/cells remain
         // in the revisioned retained search provider, not this RPC page.
         let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::workbook_root(&self.sheets_resource_ctx())]
+            vec![crate::actions::workbook_root(
+                &self.sheets_resource_ctx(),
+                doc,
+            )]
         } else {
             Vec::new()
         };
@@ -6555,6 +6572,9 @@ impl ui::resources::PublishesResources for SheetsApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "sheets.workbook" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
     fn document_action_result(
@@ -10716,5 +10736,40 @@ mod tests {
             ));
             assert_eq!(app.active_sheet, 1);
         }
+    }
+
+    #[test]
+    fn hosted_directory_keeps_the_selection_without_the_workbook_root() {
+        use ui::resources::PublishesResources;
+        let mut app = SheetsApp::new();
+        let doc = automerge::AutoCommit::new();
+        let standalone = app
+            .action_directory_resource_page(&doc, &[], 8)
+            .expect("standalone directory");
+        assert!(
+            standalone
+                .resources
+                .iter()
+                .any(|resource| resource.kind == "sheets.workbook"),
+            "standalone directory publishes the workbook"
+        );
+        app.actions.mark_hosted_for_test();
+        let hosted = app
+            .action_directory_resource_page(&doc, &[], 8)
+            .expect("hosted directory");
+        assert!(
+            hosted
+                .resources
+                .iter()
+                .all(|resource| resource.kind != "sheets.workbook"),
+            "hosted directory must not republish the workbook: {:?}",
+            hosted
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(hosted.resources.is_empty());
+        assert!(app.resources(&doc).is_empty());
     }
 }
