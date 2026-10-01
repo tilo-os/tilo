@@ -210,17 +210,21 @@ impl Verbs {
     }
 }
 
-/// The focused tab of `workspace`, if it has one.
-fn focused_tab(tree: &DesktopTree, workspace: &Workspace) -> Option<TabId> {
+/// The focused window group of `workspace`, if it has one.
+fn focused_group<'a>(tree: &'a DesktopTree, workspace: &'a Workspace) -> Option<&'a WindowGroup> {
     let strip = tree
         .active_strip
         .get(&workspace.id)
         .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
         .or_else(|| workspace.strips.first())?;
-    let group = tree
-        .active_group_for(strip.id)
+    tree.active_group_for(strip.id)
         .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
-        .or_else(|| strip.window_groups.first())?;
+        .or_else(|| strip.window_groups.first())
+}
+
+/// The focused tab of `workspace`, if it has one.
+fn focused_tab(tree: &DesktopTree, workspace: &Workspace) -> Option<TabId> {
+    let group = focused_group(tree, workspace)?;
     group
         .tabs
         .iter()
@@ -396,6 +400,10 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
     let verbs = Verbs::of(needle);
     let admit = |id: &str, named: bool| named || exact == id;
     let focused = focused_tab(tree, workspace);
+    // An empty listing is "windows to go back to"; a search names every
+    // matching window, including the one already focused. Otherwise
+    // searching for the open Terminal finds only close actions (S05).
+    let searching = !exact.is_empty();
     let multi_strip = workspace.strips.len() > 1;
     let mut rows = Vec::new();
     for strip in &workspace.strips {
@@ -403,7 +411,7 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
             let group_id = group.id;
             for tab in &group.tabs {
                 let id = tab_focus_id(group_id, tab.id);
-                if admit(&id, focused != Some(tab.id)) {
+                if admit(&id, searching || focused != Some(tab.id)) {
                     rows.push(WindowRow {
                         kind: WindowRowKind::Tab,
                         id,
@@ -433,6 +441,20 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
                     tab,
                 );
             }
+        }
+    }
+    // An empty listing is PALETTE-truncated. Keep the focused group's close
+    // after the "go back to" focus rows so invoke and agents still see it
+    // when a long session has more window actions than one page.
+    if !searching && let Some(group) = focused_group(tree, workspace) {
+        let close_id = group_close_id(group.id);
+        if let Some(pos) = rows.iter().position(|row| row.id == close_id) {
+            let row = rows.remove(pos);
+            let insert_at = rows
+                .iter()
+                .position(|row| !row.id.starts_with("tab.focus:"))
+                .unwrap_or(rows.len());
+            rows.insert(insert_at, row);
         }
     }
     rows

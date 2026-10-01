@@ -55,7 +55,12 @@ fn private_wire_preserves_leaf_and_rejects_scope_direction_and_tail() {
         wrong = scope();
         wrong.room = Uuid::from_u128(9);
         assert!(decode_request(op, wrong, &encoded).is_err());
-        assert!(decode_request(PrivateOperation::AgentRead, scope(), &encoded).is_err());
+        let other = if op == PrivateOperation::Status {
+            PrivateOperation::Cancel
+        } else {
+            PrivateOperation::Status
+        };
+        assert!(decode_request(other, scope(), &encoded).is_err());
         let response = DirectedAction {
             room: request.room,
             request_id: request.request_id,
@@ -100,7 +105,6 @@ fn private_wire_closed_routes_registry_and_preflight() {
         PrivateOperation::Invoke,
         PrivateOperation::Status,
         PrivateOperation::Cancel,
-        PrivateOperation::AgentRead,
     ] {
         assert_eq!(
             PrivateOperation::from_target("POST", op.path()).unwrap(),
@@ -174,70 +178,6 @@ fn private_wire_invoke_and_disposable_read_keep_original_identity() {
         *invocation = tilo_actions::InvocationId(Uuid::from_u128(7));
     }
     assert!(decode_response(PrivateOperation::Invoke, &wrong, &bytes).is_err());
-    let read = request(ActionMessage::AgentReadV1 {
-        host,
-        invocation: id.0,
-        request: tilo_agent_control_protocol::AgentRequest::List {
-            version: 1,
-            cursor: None,
-        },
-    });
-    let encoded = encode_request(PrivateOperation::AgentRead, scope(), &read).unwrap();
-    assert_eq!(
-        decode_request(PrivateOperation::AgentRead, scope(), &encoded).unwrap(),
-        read
-    );
-    let agent = tilo_agent_control_protocol::AgentBinding {
-        machine: "machine".into(),
-        room: read.room.to_string(),
-        device: hex::encode(read.source),
-        host: host.to_string(),
-    };
-    let response = DirectedAction {
-        room: read.room,
-        request_id: read.request_id,
-        source: read.target,
-        target: read.source,
-        message: ActionMessage::AgentReadResultV1 {
-            host,
-            invocation: id.0,
-            binding: crate::agent_reads::AgentReadBinding {
-                action_host: host.to_string(),
-                agent: agent.clone(),
-                spawn: None,
-                message: None,
-            },
-            response: tilo_agent_control_protocol::AgentResponse::List {
-                version: 1,
-                invocation_id: id.0.to_string(),
-                binding: agent,
-                agents: vec![],
-                next_cursor: None,
-                revision: "1".into(),
-            },
-        },
-    };
-    let encoded = encode_response(PrivateOperation::AgentRead, &read, &response).unwrap();
-    assert_eq!(
-        decode_response(PrivateOperation::AgentRead, &read, &encoded).unwrap(),
-        response
-    );
-    let mut wrong = read;
-    if let ActionMessage::AgentReadV1 { request, .. } = &mut wrong.message {
-        *request = tilo_agent_control_protocol::AgentRequest::Capabilities { version: 1 };
-    }
-    assert!(decode_response(PrivateOperation::AgentRead, &wrong, &encoded).is_err());
-    let mutation = request(ActionMessage::AgentReadV1 {
-        host,
-        invocation: id.0,
-        request: tilo_agent_control_protocol::AgentRequest::Spawn {
-            version: 1,
-            name: "n".into(),
-            task: "t".into(),
-            grant_set_id: "g".into(),
-        },
-    });
-    assert!(encode_request(PrivateOperation::AgentRead, scope(), &mutation).is_err());
 }
 #[test]
 fn private_wire_preflight_rejects_oversized_json_tree_before_owned_action() {

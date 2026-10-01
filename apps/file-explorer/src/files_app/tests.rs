@@ -11,6 +11,8 @@ mod open_with_tests {
         calls: Vec<(String, Option<PathBuf>)>,
         /// Paths handed to the system default handler (non-document opens).
         opened: Vec<PathBuf>,
+        /// How the desktop answers them; `None` opens.
+        refusal: Option<String>,
     }
     impl CommandRunner for RecRunner {
         fn spawn(&mut self, program: &str, _cwd: &Path) -> std::io::Result<()> {
@@ -22,9 +24,14 @@ mod open_with_tests {
                 .push((program.to_string(), Some(arg.to_path_buf())));
             Ok(())
         }
-        fn open_default(&mut self, path: &Path) -> std::io::Result<()> {
+        fn open_default(&mut self, path: &Path) -> ui::portal::LaunchChannel {
             self.opened.push(path.to_path_buf());
-            Ok(())
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(match self.refusal.clone() {
+                Some(reason) => ui::portal::LaunchOutcome::Failed(reason),
+                None => ui::portal::LaunchOutcome::Opened,
+            });
+            rx
         }
     }
 
@@ -158,7 +165,25 @@ mod open_with_tests {
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
             assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
+            assert_eq!(
+                w.status, None,
+                "{f}: an open the desktop took reports nothing"
+            );
         }
+
+        // A desktop that refuses (the shell has no app for it, or the file
+        // was never granted) is shown, not swallowed.
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("thing.zzz")];
+        let mut runner = RecRunner {
+            refusal: Some("No installed app opens .zzz files".into()),
+            ..RecRunner::default()
+        };
+        assert!(w.open_entry(0, &mut runner).unwrap());
+        assert_eq!(
+            w.status.as_deref(),
+            Some("No installed app opens .zzz files")
+        );
     }
 
     pub(super) fn context_menu_opens_with_selection_aware_items() {
@@ -684,6 +709,112 @@ mod command_path_tests {
         scheduled_metadata_refresh_preserves_record_selection_and_scroll();
         #[cfg(unix)]
         collaborative_search_activation_resolves_the_latest_path_by_record_id();
+    }
+
+    /// The 750ms metadata poll is real work, but an unchanged directory
+    /// must not look like a frame request. The native runner used to turn
+    /// any due `next_wake_deadline` into a Wayland commit (~2 paints/s).
+    #[cfg(unix)]
+    #[test]
+    fn idle_directory_refresh_does_not_request_frames() {
+        use std::collections::HashMap;
+        use taffy::prelude::*;
+        use ui::theme::Theme;
+        use vello::kurbo::Point;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
+        let mut widget = FileExplorerWidget::new();
+        widget.load(dir.path().to_path_buf());
+        let mut state = ui::State::new();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let theme = Theme::dark();
+        let lay_out = |widget: &mut FileExplorerWidget,
+                       state: &mut ui::State,
+                       tr: &mut ui::text_render::TextRenderer| {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            widget.sync(&mut state.doc, &state.root);
+            let node = widget.build_layout(&mut taffy, &theme, &mut nm);
+            let measure_map = nm.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    Size {
+                        width: AvailableSpace::Definite(1100.0),
+                        height: AvailableSpace::Definite(800.0),
+                    },
+                    |k, a, id, _, _| {
+                        if let Some(&p) = measure_map.get(&id) {
+                            unsafe { (*p).measure(k, a, tr) }
+                        } else {
+                            Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            widget.apply_layout(&taffy, node, Point::ORIGIN);
+        };
+        lay_out(&mut widget, &mut state, &mut tr);
+        if widget.take_structure_dirty() {
+            lay_out(&mut widget, &mut state, &mut tr);
+        }
+        ui::widget::Widget::mark_drawn(&mut widget);
+        let _ = widget.take_structure_dirty();
+
+        widget.next_metadata_refresh = ui::time::now();
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        widget.next_metadata_refresh = ui::time::now();
+        assert!(
+            !widget.refresh_metadata_if_due(ui::time::now()),
+            "an idle Files poll must not keep requesting frames"
+        );
+
+        // Production AboutToWait: update + sync on the due deadline. Files
+        // stays `needs_redraw` after `mark_drawn`; the runner must ignore
+        // that bit. A model/structure/animation change is a real present.
+        ui::widget::Widget::mark_drawn(&mut widget);
+        let _ = widget.take_structure_dirty();
+        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
+        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
+        assert!(
+            !updated && !structure && !needs_animation,
+            "idle scheduled sync still dirty: updated={updated} structure={structure} anim={needs_animation}"
+        );
+
+        // Production AboutToWait also drains Nearby Send. An unchanged
+        // snapshot used to set `structure_dirty` and commit at ~0.5 Hz;
+        // together with the 750ms metadata wake that was ~1.8 paint/s.
+        let request_id = widget
+            .take_collab_requests()
+            .iter()
+            .find_map(|request| match request {
+                ui::collaboration::CollabRequest::NearbyTransferCommand { request_id, .. } => {
+                    Some(*request_id)
+                }
+                _ => None,
+            });
+        if let Some(request_id) = request_id {
+            ui::widget::Collaborative::handle_collab_event(
+                &mut widget,
+                &ui::collaboration::CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Ok(ui::collaboration::NearbyTransferReply::Snapshot {
+                        snapshot: ui::collaboration::NearbyTransferSnapshot::default(),
+                    }),
+                },
+            );
+        }
+        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
+        let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
+        assert!(
+            !updated && !structure && !needs_animation,
+            "idle Nearby snapshot still dirty: updated={updated} structure={structure} anim={needs_animation}"
+        );
     }
 
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
@@ -1600,6 +1731,19 @@ mod command_path_tests {
         ] {
             assert!(handlers.contains(&handler), "missing handler {handler}");
         }
+        // One published operation without a handler refuses the app's whole
+        // surface, and a directory search then finds none of its actions.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().to_path_buf());
+        let resources = ui::resources::resources(&files, &automerge::AutoCommit::new());
+        let violations = ui::tilo_actions::validate_surface(
+            &resources,
+            &ui::tilo_actions::ActionRegistry::new(),
+            &Widget::resource_operation_handlers(&files),
+        );
+        assert!(violations.is_empty(), "{violations:?}");
     }
 
     /// An agent sorts a downloads folder with typed actions only: `go-to` an
@@ -1705,6 +1849,68 @@ mod command_path_tests {
             "{refusal}"
         );
         assert!(downloads.join("notes.txt").exists());
+    }
+
+    /// `go-to` and `open` with a path show the folder and answer with its
+    /// new resource id and entries, so the caller needs no query to act.
+    #[test]
+    fn showing_a_folder_answers_with_its_resource_and_entries() {
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        std::fs::create_dir_all(downloads.join("old")).unwrap();
+        for index in 0..70 {
+            std::fs::write(downloads.join(format!("f{index:02}.txt")), "x").unwrap();
+        }
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().into());
+        let mut doc = automerge::AutoCommit::new();
+        let mut show = |action: &str, path: &Path| {
+            let resources = ui::resources::resources(&files, &doc);
+            let folder = crate::search_provider::folder_resource_id(&files.current_path);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(folder, action),
+                serde_json::json!({"path": path}).as_object().unwrap(),
+            )
+            .unwrap();
+            let started = Widget::start_operation(
+                &mut files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
+                &automerge::ROOT,
+            );
+            match started {
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(output))) => output.value,
+                other => panic!("{action} completes at once: {other:?}"),
+            }
+        };
+
+        let opened = show("open", &downloads).unwrap();
+        assert_eq!(
+            opened["resource"],
+            crate::search_provider::folder_resource_id(&downloads)
+        );
+        assert_eq!(opened["path"], downloads.display().to_string());
+        let entries = opened["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), MAX_ANSWERED_ENTRIES);
+        assert_eq!(entries[0], "old/");
+        assert_eq!(entries[1], "f00.txt");
+        assert_eq!(opened["more"], 71 - MAX_ANSWERED_ENTRIES);
+
+        let old = downloads.join("old");
+        let went = show("go-to", &old).unwrap();
+        assert_eq!(
+            went["resource"],
+            crate::search_provider::folder_resource_id(&old)
+        );
+        assert_eq!(went["entries"], serde_json::json!([]));
+        assert!(went.get("more").is_none());
     }
 
     /// `move` takes several entries by name into a folder it creates, answers
