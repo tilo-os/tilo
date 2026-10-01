@@ -2515,6 +2515,17 @@ impl App {
                 }
                 // Fail on an unreachable or non-bootc VM before looking for images.
                 self.vm_facts(vm, endpoint, "vm upgrade")?;
+                // WHPX on Windows needs no host-side image tools. Main dev
+                // tags are deterministic, and bootc pulls inside the VM.
+                if cfg!(windows)
+                    && tag.starts_with("main-")
+                    && let Some(image) = imageup::ci_candidates(&tag, std::env::consts::ARCH)
+                        .dev_images
+                        .into_iter()
+                        .next()
+                {
+                    return Ok(UpgradeSource::Published(image));
+                }
                 Ok(match self.resolve_ci_upgrade(&tag)? {
                     CiUpgrade::Published(image) => UpgradeSource::Published(image),
                     CiUpgrade::Base(base) => UpgradeSource::Local {
@@ -2747,6 +2758,10 @@ impl App {
 
     /// Stage an image with bootc under the VM lock, reboot into it, wait for
     /// SSH and tilo-vmd, and check the VM booted what was staged.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked bootc staging transaction"
+    )]
     fn stage_and_boot(
         &mut self,
         vm: &Resolved,
@@ -2756,7 +2771,7 @@ impl App {
     ) -> Result<Outcome, CliError> {
         // The image is the VM's rollback deployment already (after rollback-image):
         // bootc will not stage it again, but rolling back boots exactly it.
-        let reuse = facts.bootc.staged.is_none()
+        let mut reuse = facts.bootc.staged.is_none()
             && stage.expected.is_some()
             && facts.bootc.rollback.as_ref().map(|r| &r.digest) == stage.expected.as_ref();
         let words = if reuse {
@@ -2764,7 +2779,12 @@ impl App {
         } else {
             imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
         };
-        let staged = self.vm_locked(vm, endpoint, &words)?;
+        let mut staged = self.vm_locked(vm, endpoint, &words)?;
+        if !staged.success && imageup::is_already_rollback(&staged.stderr) {
+            // bootc resolved the requested tag to its existing rollback image.
+            staged = self.vm_locked(vm, endpoint, &["bootc".into(), "rollback".into()])?;
+            reuse = staged.success;
+        }
         if !staged.success && imageup::is_already_booted(&staged.stderr) {
             // The same image under another manifest digest (a disk installs
             // from a recompressed registry copy of the layout's image).
@@ -2886,8 +2906,176 @@ impl App {
         })
     }
 
+    /// WHPX boots a host-side kernel to avoid the broken QEMU UEFI reset path.
+    /// Before a bootc image switch, copy only that deployment's kernel and
+    /// initrd from the VM and point the next QEMU start at its BLS options.
+    fn prepare_whpx_direct_boot(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        digest: &str,
+    ) -> Result<VmEntry, CliError> {
+        let status = self.vm_sh(vm, endpoint, "bootc status --json")?;
+        let value: Value = serde_json::from_str(&status.stdout).map_err(|e| CliError::Config {
+            path: "bootc status --json".into(),
+            detail: e.to_string(),
+        })?;
+        let deployment = ["staged", "rollback"]
+            .iter()
+            .filter_map(|name| value.pointer(&format!("/status/{name}")))
+            .find(|entry| {
+                entry.pointer("/image/imageDigest").and_then(Value::as_str) == Some(digest)
+            })
+            .ok_or_else(|| CliError::Config {
+                path: "bootc status --json".into(),
+                detail: format!("target {digest} is neither staged nor rollback"),
+            })?;
+        let verity = deployment
+            .pointer("/composefs/verity")
+            .and_then(Value::as_str)
+            .filter(|s| s.len() == 128 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| CliError::Config {
+                path: "bootc status --json".into(),
+                detail: "target deployment has no valid composefs verity".into(),
+            })?;
+        let bls = self.vm_sh(
+            vm,
+            endpoint,
+            &format!(
+                "grep -l -F 'composefs={verity}' /boot/loader/entries.staged/*.conf /boot/loader/entries/*.conf 2>/dev/null"
+            ),
+        )?;
+        let mut paths = bls.stdout.lines();
+        let path = paths
+            .next()
+            .filter(|path| {
+                bls.success
+                    && paths.next().is_none()
+                    && (path.starts_with("/boot/loader/entries.staged/")
+                        || path.starts_with("/boot/loader/entries/"))
+                    && path
+                        .rsplit_once('.')
+                        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("conf"))
+                    && !path.contains("..")
+            })
+            .ok_or_else(|| CliError::Config {
+                path: "/boot/loader/entries".into(),
+                detail: format!("expected one BLS entry for composefs={verity}"),
+            })?;
+        let entry = self.vm_sh(vm, endpoint, &format!("cat '{path}'"))?;
+        let field = |prefix: &str| {
+            entry
+                .stdout
+                .lines()
+                .find_map(|line| line.strip_prefix(prefix).map(str::trim))
+        };
+        // bootc stages the new BLS options before shutdown, in
+        // entries.staged. If the kernel did not change, that entry correctly
+        // reuses the previous deployment's kernel and initrd directory.
+        let base = field("linux ")
+            .and_then(|path| path.strip_suffix("vmlinuz"))
+            .ok_or_else(|| CliError::Config {
+                path: path.into(),
+                detail: "BLS kernel and initrd do not match the staged deployment".into(),
+            })?;
+        let kernel_verity = base
+            .strip_prefix("/EFI/Linux/bootc_composefs-")
+            .and_then(|hash| hash.strip_suffix('/'));
+        let valid_kernel = kernel_verity.is_some_and(|hash| {
+            hash.len() == 128 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        if !valid_kernel || field("initrd ") != Some(format!("{base}initrd").as_str()) {
+            return Err(CliError::Config {
+                path: path.into(),
+                detail: "BLS kernel and initrd do not match the staged deployment".into(),
+            });
+        }
+        let options = field("options ")
+            .filter(|s| {
+                s.split_whitespace().any(|arg| arg == "root=tilo-auto")
+                    && s.split_whitespace()
+                        .any(|arg| arg == format!("composefs={verity}"))
+            })
+            .ok_or_else(|| CliError::Config {
+                path: path.into(),
+                detail: "BLS options do not name the staged Tilo root".into(),
+            })?;
+        let disk = vm.entry.disk.as_deref().ok_or_else(|| CliError::Config {
+            path: self.registry_path.display().to_string(),
+            detail: "WHPX VM has no disk path".into(),
+        })?;
+        let dest = Path::new(disk)
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("direct-boot")
+            .join(&vm.name)
+            .join(verity);
+        std::fs::create_dir_all(&dest)
+            .map_err(CliError::io("create WHPX direct boot directory"))?;
+        let key = vm.entry.key.as_deref().ok_or_else(|| CliError::Config {
+            path: self.registry_path.display().to_string(),
+            detail: "WHPX VM has no SSH key".into(),
+        })?;
+        for (source, name) in [("vmlinuz", "Image"), ("initrd", "initrd")] {
+            let target = dest.join(name);
+            if !target.is_file() {
+                let command = CommandLine::new("scp", &["-q", "-P"])
+                    .arg(endpoint.port.to_string())
+                    .arg("-o")
+                    .arg("BatchMode=yes")
+                    .arg("-o")
+                    .arg("StrictHostKeyChecking=accept-new")
+                    .arg("-o")
+                    .arg(format!(
+                        "UserKnownHostsFile={}",
+                        remote::known_hosts_path(key)
+                    ))
+                    .arg("-i")
+                    .arg(key)
+                    .arg(format!(
+                        "{}@{}:/boot{base}{source}",
+                        endpoint.user, endpoint.host
+                    ))
+                    .arg(target.display().to_string());
+                run_all(&mut self.runner, &[command])?;
+            }
+            let size = std::fs::metadata(&target)
+                .map_err(CliError::io("inspect WHPX direct boot file"))?
+                .len();
+            if size < 1_000_000 {
+                return Err(CliError::Config {
+                    path: target.display().to_string(),
+                    detail: "copied boot file is unexpectedly small".into(),
+                });
+            }
+        }
+        let mut updated = vm.entry.clone();
+        let prior = updated
+            .direct_kernel
+            .as_ref()
+            .ok_or_else(|| CliError::Config {
+                path: self.registry_path.display().to_string(),
+                detail: "WHPX VM has no direct boot bundle".into(),
+            })?;
+        updated.direct_kernel = Some(DirectKernel {
+            kernel: dest.join("Image").display().to_string(),
+            initrd: dest.join("initrd").display().to_string(),
+            cmdline: options.to_owned(),
+            loader_partuuid: prior.loader_partuuid.clone(),
+            kver: prior.kver.clone(),
+        });
+        let mut registry = self.registry()?;
+        registry.vms.insert(vm.name.clone(), updated.clone());
+        registry.save(&self.registry_path)?;
+        Ok(updated)
+    }
+
     /// Reboot, wait for a new boot id over SSH, then for tilo-vmd, and check
     /// that the booted image has `digest`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked reboot and image verification"
+    )]
     fn reboot_into(
         &mut self,
         vm: &Resolved,
@@ -2895,6 +3083,11 @@ impl App {
         old_boot: &str,
         digest: &str,
     ) -> Result<imageup::Deployment, CliError> {
+        let boot_entry = if vm.entry.hypervisor == "whpx" && vm.entry.direct_kernel.is_some() {
+            Some(self.prepare_whpx_direct_boot(vm, endpoint, digest)?)
+        } else {
+            None
+        };
         if !self.json {
             eprintln!(
                 "tilo-vm: rebooting VM {} into {}",
@@ -2907,8 +3100,28 @@ impl App {
         let _ = self.vm_sh(vm, endpoint, &reboot);
         let started = Instant::now();
         let mut up = false;
+        let adapter = Self::adapter(vm)?;
+        let mut whpx_restarted = false;
         while started.elapsed() < Duration::from_secs(600) {
-            std::thread::sleep(Duration::from_secs(2));
+            // WHPX QEMU uses -no-reboot because its in-process reset is not
+            // reliable. A guest reboot exits QEMU; launch the same VM again
+            // once its old process has released the disk and ports.
+            if vm.entry.hypervisor == "whpx"
+                && !whpx_restarted
+                && adapter.running(&vm.vm(), &mut self.runner) == Some(false)
+            {
+                let restart_vm = Vm {
+                    name: &vm.name,
+                    entry: boot_entry.as_ref().unwrap_or(&vm.entry),
+                };
+                run_all(&mut self.runner, &adapter.start(&restart_vm))?;
+                whpx_restarted = true;
+            }
+            std::thread::sleep(if vm.entry.hypervisor == "whpx" {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_secs(2)
+            });
             if let Ok(output) = self.vm_sh(vm, endpoint, "cat /proc/sys/kernel/random/boot_id")
                 && output.success
                 && !output.stdout.trim().is_empty()
@@ -2921,7 +3134,6 @@ impl App {
         self.receipt
             .record("reboot", started.elapsed().as_secs_f64());
         if !up {
-            let adapter = Self::adapter(vm)?;
             return Err(CliError::Unreachable {
                 vm: vm.name.clone(),
                 detail: "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into(),
@@ -5501,10 +5713,13 @@ mod tests {
         assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
         assert!(disk.env.contains(&("TILO_DISK_SIZE".into(), "64G".into())));
         // Root podman's copy stays in the scratch directory, not /var/lib/containers.
-        assert!(disk.env.contains(&(
-            "TILO_ROOT_PODMAN_STORE".into(),
-            "/w/target/tilo-vm-build/root-podman".into()
-        )));
+        assert_eq!(
+            disk.env
+                .iter()
+                .find(|(key, _)| key == "TILO_ROOT_PODMAN_STORE")
+                .map(|(_, value)| PathBuf::from(value)),
+            Some(Path::new("/w/target/tilo-vm-build").join("root-podman"))
+        );
         assert!(
             disk.env
                 .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))

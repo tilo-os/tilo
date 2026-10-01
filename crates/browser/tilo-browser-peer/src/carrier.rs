@@ -155,6 +155,31 @@ pub async fn agent_live_grant(
     .await
 }
 
+/// Administer the host's rooms as this session's device (`/rooms`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or governs no rooms.
+pub async fn rooms(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::rooms::RoomsRequest,
+) -> Result<tilo_relay_protocol::rooms::RoomsReply, LinkError> {
+    call(client, "/rooms", Some(session), encode(request)?).await
+}
+
+/// One step of joining a room with no session (`/join`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or governs no rooms.
+pub async fn join(
+    client: &dyn HttpClient,
+    step: &tilo_relay_protocol::rooms::JoinStep,
+) -> Result<tilo_relay_protocol::rooms::JoinReply, LinkError> {
+    call(client, "/join", None, encode(step)?).await
+}
+
 /// An authenticated HTTPS session with the host.
 pub struct HttpsLink {
     outbound: mpsc::UnboundedSender<Envelope>,
@@ -167,7 +192,8 @@ pub struct HttpsLink {
 
 impl HttpsLink {
     /// Run the handshake as the device behind `signer` and start the send
-    /// and poll pumps. The host must present `host_device` under `user`.
+    /// and poll pumps. The host must present `host_device`, certified under
+    /// any person's root.
     ///
     /// # Errors
     ///
@@ -191,9 +217,10 @@ impl HttpsLink {
             })?,
         )
         .await?;
-        auth::verify_hello_ack(
+        // The host device is pinned, so it may be another person's: the
+        // host of a room this device was invited to.
+        auth::verify_pinned_host_ack(
             &challenge.ack,
-            &cert.user_public_key,
             revocations,
             crate::clock::now_ns(),
             &client_nonce,
@@ -258,6 +285,18 @@ impl HttpsLink {
     /// (`Envelope::CompactVolunteer`).
     pub fn compacts(&self) -> bool {
         self.features & tilo_relay_protocol::web::FEATURE_COMPACTION != 0
+    }
+
+    /// Whether the host governs calls in its rooms
+    /// (`Envelope::VoiceJoin`, see [`tilo_relay_protocol::voice`]).
+    pub fn voice(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_VOICE != 0
+    }
+
+    /// Whether the host administers rooms and redeems invitations for pages
+    /// (`/rooms`, `/join`).
+    pub fn rooms(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
     }
 
     /// Queue one envelope for the host, in order.

@@ -21,7 +21,18 @@
 #        --image-only (stop at the unsigned installer layer, before disk/signing)
 #        --dev-login (local diagnostics only; requires TILO_INSTALLER_DEV_PASSWORD)
 #        --compact-ext4 (VM-only validation: fixed 40 GiB ext4 live root)
+# Environment: TILO_INSTALLER_ROOTFS=btrfs|ext4 selects the full-size live root.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+# WSL may allow registry access on the host while Podman's private build
+# namespace cannot reach Fedora's package mirrors. Keep the normal isolated
+# network by default and allow an explicit host-network build in that case.
+build_network_args=()
+case "${TILO_PODMAN_BUILD_NETWORK:-default}" in
+  default) ;;
+  host) build_network_args=(--network=host) ;;
+  *) die "TILO_PODMAN_BUILD_NETWORK must be default or host" ;;
+esac
 
 # Several native build tools ignore Cargo's target directory and create
 # assembly/object scratch files through libc's TMPDIR.  Keep those files with
@@ -53,6 +64,10 @@ for a in "$@"; do
 done
 
 [ "$BINARY_MODES" -le 1 ] || die "choose only one installer binary source"
+case "${TILO_INSTALLER_ROOTFS:-btrfs}" in
+  btrfs|ext4) ;;
+  *) die "TILO_INSTALLER_ROOTFS must be btrfs or ext4" ;;
+esac
 [ "$COMPACT_EXT4" = 0 ] || [ "$IMAGE_ONLY" = 0 ] \
   || die "--compact-ext4 requires disk creation; remove --image-only"
 
@@ -112,6 +127,34 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
          "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
          "$INSTALLER_CONTEXT/rootfs/usr/share/tilo"
 cp -a "$TILO_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
+# `bootc install to-filesystem` otherwise picks the first ESP on the backing
+# disk, which can be Windows' ESP rather than the ESP mounted at /target/boot/efi.
+# Build the pinned corrected bootc once per source revision and put it in the
+# existing single installer overlay layer. The installed OS never inherits it.
+alongside_bootc_key="$(cat \
+  "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+  "$TILO_OS_DIR/external-assets/bootc/0001-probe-missing-partition-metadata.patch" \
+  "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
+  | sha256sum | cut -c1-16)"
+alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
+if ! podman image exists "$alongside_bootc_ref"; then
+  podman build "${build_network_args[@]}" -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+    -t "$alongside_bootc_ref" "$TILO_REPO"
+fi
+(
+  alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"
+  trap 'podman rm -f "$alongside_bootc_container" >/dev/null 2>&1 || true' EXIT
+  install -d -m 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec"
+  podman cp "$alongside_bootc_container:/bootc" \
+    "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
+)
+chmod 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
+if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
+  [ -z "$OFFLINE_TARGET_DIR" ] && [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 0 ] \
+    || die "unverified VM install is only for a disposable self-install medium"
+  install -Dm0444 /dev/null \
+    "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/unverified-vm-install"
+fi
 if [ "$REUSE_IMAGE_INSTALLER" = 0 ]; then
   install -Dm0755 "$TILO_OS_DIR/tilo-installer" \
     "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
@@ -139,7 +182,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   install -Dm0755 "$cosign_asset" \
     "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-cosign"
 fi
-podman build \
+podman build "${build_network_args[@]}" \
   --build-arg "TILO_BASE_IMAGE=$TILO_IMAGE" \
   --build-arg "TILO_INSTALLER_DEV_SSH=$DEV_LOGIN" \
   -t "$TILO_INSTALLER_IMAGE" -f "$TILO_OS_DIR/Containerfile.installer" "$INSTALLER_CONTEXT"
@@ -176,7 +219,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   root_gib=$((root_gib + offline_gib * 2 + 4))
   msg "   reserving 2x ${offline_gib}G for OCI target transport/import plus 4G slack in live /var"
 fi
-rootfs=btrfs
+rootfs="${TILO_INSTALLER_ROOTFS:-btrfs}"
 if [ "$COMPACT_EXT4" = 1 ]; then
   [ "$image_bytes" -le $((18 * gib)) ] \
     || die "--compact-ext4 needs 2x OCI image bytes plus 4 GiB slack within 40 GiB; image is $(numfmt --to=iec-i --suffix=B "$image_bytes"). Use the default growing layout."
@@ -200,16 +243,16 @@ if [ "$DEV_LOGIN" = 1 ]; then
 fi
 INSTALL_LOG="$(dirname "$TILO_INSTALLER_DISK")/.install.log"
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
-  want="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  want="$(composefs_expected_digest "$INSTALL_LOG")"
   [ -n "$want" ] || die "the installer disk-image step failed for a reason other than the
   composefs seal; see the message above and $INSTALL_LOG"
-  had="$(sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  had="$(composefs_sealed_digest "$INSTALL_LOG")"
   msg "bootc#2334: the live UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
   msg "pass 2: rewriting that digest into the live UKI and retrying"
   "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_INSTALLER_IMAGE" "$want" \
     || die "could not rewrite the live installer's sealed composefs digest"
   if ! "$TILO_OS_DIR/dev/disk-image.sh" "${DISK_ARGS[@]}"; then
-    want2="$(sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\).*/\2/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    want2="$(composefs_expected_digest "$INSTALL_LOG")"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
   even though only the UKI under /boot changed. Sealing is circular on this bootc

@@ -28,6 +28,8 @@ concurrency:
 
 jobs:
   app:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
     timeout-minutes: 150
     runs-on: imager-macos-aarch64
     # Forgejo injects the OIDC request variables only with this native key.

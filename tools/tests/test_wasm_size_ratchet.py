@@ -54,6 +54,17 @@ class BudgetRatchetTest(unittest.TestCase):
         self.assertTrue(ratchet.increases(BUDGET, "[bundles.desktop]\nbytes = 1001\n"))
         self.assertTrue(ratchet.increases(BUDGET, ""))
 
+    def test_a_recorded_rebaseline_may_raise_a_budget_once(self) -> None:
+        record = '[bundles.desktop.rebaseline]\nrun = 55499\nreason = "the lane first reached its size check"\n'
+        raised = "[bundles.desktop]\nbytes = 1500\n" + record
+        self.assertEqual(ratchet.increases(BUDGET, raised), [])
+        # The same record cannot raise it again.
+        self.assertTrue(ratchet.increases(raised, "[bundles.desktop]\nbytes = 1600\n" + record))
+        # Nor can a record without a run or a real reason.
+        for weak in ('[bundles.desktop.rebaseline]\nreason = "the lane first reached its size check"\n',
+                     '[bundles.desktop.rebaseline]\nrun = 55499\nreason = "bigger"\n'):
+            self.assertTrue(ratchet.increases(BUDGET, "[bundles.desktop]\nbytes = 1500\n" + weak))
+
     def test_new_bundles_may_be_added(self) -> None:
         after = BUDGET + "[bundles.starter]\nbytes = 5\n"
         self.assertEqual(ratchet.increases(BUDGET, after), [])

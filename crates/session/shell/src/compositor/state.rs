@@ -3129,7 +3129,8 @@ impl State {
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed = !completed.is_empty();
+        let changed =
+            crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
@@ -4428,6 +4429,7 @@ impl XdgShellHandler for State {
     ///
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
             client
@@ -4506,9 +4508,13 @@ impl XdgShellHandler for State {
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
+        if let Some(app_id) = app_id_log.as_deref() {
+            crate::shell::launcher::record_host_window_open(surface_id, app_id);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         crate::shell::launcher::forget_surface_launch(surface_id);
@@ -4571,6 +4577,7 @@ impl XdgShellHandler for State {
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         // Clients call `set_app_id` *after* `get_toplevel` fires
         // `new_toplevel`, so the tab was adopted with a synthetic
         // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the populated one.
@@ -4652,9 +4659,7 @@ impl XdgShellHandler for State {
                     host_launch_title,
                 )
             };
-            crate::shell::launcher::note_launch_presented(&crate::shell::persist::durable_app_id(
-                surface_id, &app_id,
-            ));
+            crate::shell::launcher::record_host_window_open(surface_id, &app_id);
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
@@ -4664,10 +4669,12 @@ impl XdgShellHandler for State {
     /// that window, shown as a sheet on its tile; losing the parent makes
     /// it an ordinary tab again.
     fn parent_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         self.sync_toplevel_parent(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = surface_id(surface.wl_surface());
         let title = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -4682,6 +4689,7 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        crate::compositor::foreign::note_client_pump();
         let Some(parent_surface) = surface.get_parent_surface() else {
             // Smithay will report the protocol violation at commit time; send
             // the required initial configure so a malformed client cannot
@@ -4752,6 +4760,7 @@ impl XdgShellHandler for State {
         positioner: PositionerState,
         token: u32,
     ) {
+        crate::compositor::foreign::note_client_pump();
         let Some(parent) = self
             .popups
             .iter()
@@ -4782,6 +4791,7 @@ impl XdgShellHandler for State {
     /// an absent or stale hint falls back to the combined-session configure
     /// until the native placement path can choose a viable display.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let requested = requested_output_id(wl_output.as_ref())
             .filter(|output| self.output_sizes.contains_key(output));
@@ -4849,6 +4859,7 @@ impl XdgShellHandler for State {
     /// compositor exit flowed back through the UI. Clear the transient
     /// promotion (the native loop restores exact prior tiling) and send a configure clearing `Fullscreen` + the imposed size.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         if self.is_output_presentation_surface(surface_id) {
             let _ = self.remove_output_presentation_surface(surface_id);
@@ -4904,11 +4915,13 @@ impl XdgDecorationHandler for State {
     /// compositor can state a mode. Stating it here matters: this configure
     /// reaches the client before its first buffer, so the size it renders is the one the compositor asked for.
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         Self::decorate(&toplevel);
     }
 
     /// The client has stated a preference; answered with the same mode as always, including `ClientSide` — the request this exists to refuse.
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        crate::compositor::foreign::note_client_pump();
         tracing::debug!(
             target: "shell::compositor::decoration",
             surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
@@ -4972,6 +4985,7 @@ impl TabletSeatHandler for State {}
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: InputMethodPopupSurface) {
+        crate::compositor::foreign::note_client_pump();
         let id = surface_id(surface.wl_surface());
         self.client_input
             .register_transient(id, surface.wl_surface().clone());

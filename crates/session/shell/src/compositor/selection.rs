@@ -162,6 +162,7 @@ pub struct SelectionStore {
     clipboard: Slot,
     primary: Slot,
     history: VecDeque<ClipboardHistoryItem>,
+    revision_watchers: std::sync::Arc<Mutex<Vec<crate::idle_wake::IdleWake>>>,
 }
 
 impl SelectionStore {
@@ -182,6 +183,34 @@ impl SelectionStore {
 
 /// Shared handle to the compositor's selection mirror.
 pub type SharedSelection = Arc<Mutex<SelectionStore>>;
+
+/// Wake `wake` when the clipboard mirror's revision changes.
+///
+/// The clipboard portal emitter parks on this instead of polling the
+/// revision. Primary-selection updates do not poke it.
+pub(crate) fn watch_clipboard_revision(store: &SharedSelection, wake: crate::idle_wake::IdleWake) {
+    if let Ok(store) = store.lock()
+        && let Ok(mut watchers) = store.revision_watchers.lock()
+    {
+        watchers.push(wake);
+    }
+}
+
+fn bump_revision(
+    slot: &mut Slot,
+    watchers: &std::sync::Arc<Mutex<Vec<crate::idle_wake::IdleWake>>>,
+    clipboard: bool,
+) {
+    slot.revision = slot.revision.wrapping_add(1).max(1);
+    if !clipboard {
+        return;
+    }
+    if let Ok(watchers) = watchers.lock() {
+        for watcher in watchers.iter() {
+            watcher.poke();
+        }
+    }
+}
 
 /// Safe metadata shown by the clipboard manager. Payload bytes stay inside the
 /// privileged compositor and can only become the live clipboard via
@@ -498,11 +527,12 @@ pub fn activate_history_item(store: &SharedSelection, id: [u8; 32]) -> bool {
     let Some(mut item) = store.history.remove(index) else {
         return false;
     };
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = &mut store.clipboard;
     slot.values.clone_from(&item.values);
     slot.mime_types.clone_from(&item.mime_types);
     slot.generation = slot.generation.wrapping_add(1).max(1);
-    slot.revision = slot.revision.wrapping_add(1).max(1);
+    bump_revision(slot, &watchers, true);
     slot.compositor_owned = true;
     slot.publish_pending = true;
     slot.clear_pending = false;
@@ -599,6 +629,8 @@ pub fn begin_mirror_offer(
     let Ok(mut store) = store.lock() else {
         return Err("clipboard selection store is unavailable".into());
     };
+    let clipboard = target == Target::Clipboard;
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
     slot.values.clear();
     // Do not advertise an offered type until its bounded transfer completed.
@@ -606,7 +638,7 @@ pub fn begin_mirror_offer(
     // otherwise receive an empty file and mistake it for legitimate content.
     slot.mime_types.clear();
     slot.generation = slot.generation.wrapping_add(1);
-    slot.revision = slot.revision.wrapping_add(1).max(1);
+    bump_revision(slot, &watchers, clipboard);
     slot.compositor_owned = false;
     slot.publish_pending = false;
     // Revoke any old portal selection before the remote producer gives us new
@@ -635,6 +667,8 @@ pub fn set_mirror_bytes(
     let Ok(mut store) = store.lock() else {
         return Err("clipboard selection store is unavailable".into());
     };
+    let clipboard = target == Target::Clipboard;
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     {
         let slot = store.slot_mut(target);
         if !slot.compositor_owned {
@@ -656,7 +690,7 @@ pub fn set_mirror_bytes(
         }
         slot.mime_types = normalized_mimes(std::mem::take(&mut slot.mime_types));
         slot.compositor_owned = true;
-        slot.revision = slot.revision.wrapping_add(1).max(1);
+        bump_revision(slot, &watchers, clipboard);
         slot.publish_pending = true;
         slot.clear_pending = false;
     }
@@ -671,11 +705,13 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
     let Ok(mut store) = store.lock() else {
         return;
     };
+    let clipboard = target == Target::Clipboard;
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
     slot.values.clear();
     slot.mime_types.clear();
     slot.generation = slot.generation.wrapping_add(1);
-    slot.revision = slot.revision.wrapping_add(1).max(1);
+    bump_revision(slot, &watchers, clipboard);
     slot.compositor_owned = false;
     slot.publish_pending = false;
     slot.clear_pending = true;
@@ -691,11 +727,13 @@ pub fn begin_client_selection(
     let Ok(mut store) = store.lock() else {
         return 0;
     };
+    let clipboard = target == Target::Clipboard;
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
     slot.values.clear();
     slot.mime_types = mimes.map_or_else(Vec::new, normalized_mimes);
     slot.generation = slot.generation.wrapping_add(1).max(1);
-    slot.revision = slot.revision.wrapping_add(1).max(1);
+    bump_revision(slot, &watchers, clipboard);
     slot.compositor_owned = false;
     // A client taking the selection supersedes anything chrome had queued.
     slot.publish_pending = false;
@@ -715,6 +753,8 @@ pub fn record_client_bytes(
     let Ok(mut store) = store.lock() else {
         return;
     };
+    let clipboard = target == Target::Clipboard;
+    let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let accepted = {
         let slot = store.slot_mut(target);
         if generation == 0 || slot.generation != generation || bytes.len() > MAX_SELECTION_BYTES {
@@ -729,7 +769,7 @@ pub fn record_client_bytes(
             }
             false
         } else {
-            slot.revision = slot.revision.wrapping_add(1).max(1);
+            bump_revision(slot, &watchers, clipboard);
             true
         }
     };

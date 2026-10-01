@@ -82,7 +82,7 @@ fn publish_clock_command(command: &str, activity_id: Option<&str>) {
         "command": command,
         "activity_id": activity_id,
     });
-    let _ = atomic_file::write(&path, payload.to_string().as_bytes());
+    let _ = tilo_files::native::atomic::write(&path, payload.to_string().as_bytes());
 }
 
 /// Read the Clocks app's private snapshot of its running timer or
