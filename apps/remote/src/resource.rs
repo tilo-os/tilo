@@ -8,7 +8,7 @@ use ui::tilo_actions::{ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{REMOTE_ACTION_TYPE, RemoteAction, provide_resources, register};
+use crate::actions::{REMOTE_ACTION_TYPE, RemoteAction, register};
 use crate::app::RemoteApp;
 use crate::doc::RemoteDoc;
 use crate::model::Connection;
@@ -36,22 +36,14 @@ impl Resource for Remote {
         // List-level View ops. Per-session connect/disconnect Effects (and SSH
         // host-key prompts) are published on children; there is no outbox for
         // undoing a live session — the connection record stays on the resource.
-        provide_resources(&ui::automerge::AutoCommit::new())
+        crate::actions::list_view_specs()
             .into_iter()
-            .flat_map(|resource| resource.actions)
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
 
     fn children(state: &Vec<Connection>) -> Vec<tilo_actions::Resource> {
-        let mut doc = ui::automerge::AutoCommit::new();
-        for connection in state {
-            let _ = crate::doc::RemoteDoc::upsert(&mut doc, connection);
-        }
-        provide_resources(&doc)
-            .into_iter()
-            .flat_map(|root| root.children)
-            .collect()
+        crate::actions::connection_resources(state)
     }
 
     fn search(state: &Vec<Connection>) -> Vec<SearchEntry> {
