@@ -6156,14 +6156,12 @@ fn start_portal_backend(
         "portal",
         async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
-            crate::portal::serve_with_inhibit_and_clipboard(
-                conn,
-                ctx,
-                inhibit_registry,
-                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-                )),
-            )
+            crate::portal::serve_with_inhibit_and_clipboard(conn, ctx, inhibit_registry, {
+                let broker = crate::portal::clipboard::CompositorClipboardBroker::new(selection);
+                let wake = broker.wake.clone();
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(broker))
+                    .with_selection_wake(wake)
+            })
             .await
         },
         move |server: &crate::portal::ServerHandle| {

@@ -798,6 +798,14 @@ impl ChannelKeyAccess {
         }
     }
 
+    /// Whether a timer still has to pump governance. An idle device with no
+    /// channel parks the drainer until the next inbound frame.
+    pub fn has_live_channels(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|service| !service.stewards.is_empty() || !service.members.is_empty())
+    }
+
     /// See [`ChannelEncryption::generation`].
     pub fn generation(&self) -> u64 {
         self.inner.lock().map_or(0, |service| service.generation())

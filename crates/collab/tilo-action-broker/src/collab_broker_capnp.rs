@@ -1715,6 +1715,8 @@ pub struct DirectoryActionTarget {
 #[derive(Clone)]
 pub struct ActionDirectoryRequestQueue {
     sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
+    /// Wakes the accept loop, which is the only drainer of this queue.
+    turn: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl ActionDirectoryRequestQueue {
@@ -1723,7 +1725,26 @@ impl ActionDirectoryRequestQueue {
     pub(crate) fn unavailable() -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(0);
         drop(receiver);
-        Self { sender }
+        Self {
+            sender,
+            turn: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn deliver(
+        &self,
+        request: ActionDirectoryBridgeRequest,
+    ) -> Result<(), ActionDirectoryBridgeError> {
+        match self.sender.try_send(request) {
+            Ok(()) => {
+                self.turn.notify_one();
+                Ok(())
+            }
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                Err(ActionDirectoryBridgeError::Unavailable)
+            }
+        }
     }
 
     /// # Errors
@@ -1744,18 +1765,13 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
+        self.deliver(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
             query,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 
     /// # Errors
@@ -1785,7 +1801,7 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
+        self.deliver(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
             peer_id,
@@ -1793,13 +1809,8 @@ impl ActionDirectoryRequestQueue {
             resource,
             action,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 
     /// [`Self::try_query`] answered as a remote-action pending value.
@@ -1870,13 +1881,7 @@ impl ActionDirectoryRequestQueue {
         &self,
         request: ActionDirectoryBridgeRequest,
     ) -> Result<(), ActionDirectoryBridgeError> {
-        match self.sender.try_send(request) {
-            Ok(()) => Ok(()),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        self.deliver(request)
     }
 
     /// # Errors
@@ -1907,19 +1912,14 @@ impl ActionDirectoryRequestQueue {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let reply = DirectoryReply::Oneshot(reply);
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
+        self.deliver(ActionDirectoryBridgeRequest::Start {
             actor,
             target,
             argument,
             confirmation,
             reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
+        })
+        .map(|()| response)
     }
 }
 
@@ -2323,6 +2323,9 @@ pub struct CapnpBrokerState {
     /// Wakes the broker loop to adopt a newly admitted local worker at once
     /// rather than on its next housekeeping tick.
     worker_admitted: tokio::sync::Notify,
+    /// Queued directory work, a test callback, or a new invocation. The
+    /// accept loop parks until one of these; a timer used to notice them.
+    local_turn: std::sync::Arc<tokio::sync::Notify>,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
     #[cfg(test)]
@@ -2432,6 +2435,7 @@ impl CapnpBrokerState {
 
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
+        self.local_turn.notify_one();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
@@ -2528,6 +2532,7 @@ impl CapnpBrokerState {
             Ok(mut callbacks) => callbacks.push(callback),
             Err(poisoned) => poisoned.into_inner().push(callback),
         }
+        self.local_turn.notify_one();
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -2627,6 +2632,27 @@ impl CapnpBrokerState {
             Self::INVOCATION_IDLE_TIMEOUT,
             Self::CANCELLATION_GRACE,
         );
+    }
+
+    /// When the next pending invocation can expire. `None` while nothing is
+    /// in flight, so the accept loop parks instead of waking every 100 ms.
+    fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
+        let pending = self.pending_invocations.lock().ok()?;
+        pending
+            .values()
+            .filter_map(|invocation| {
+                let idle_at = invocation
+                    .last_activity
+                    .checked_add(Self::INVOCATION_IDLE_TIMEOUT)?;
+                let cancel_at = invocation
+                    .cancellation_requested_at
+                    .and_then(|requested| requested.checked_add(Self::CANCELLATION_GRACE));
+                Some(match cancel_at {
+                    Some(cancel) if cancel < idle_at => cancel,
+                    _ => idle_at,
+                })
+            })
+            .min()
     }
 
     fn expire_stale_invocations_at(
@@ -2896,6 +2922,7 @@ impl CapnpBrokerState {
     ) {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
+        let local_turn = std::sync::Arc::new(tokio::sync::Notify::new());
         let (peer_action_queue, peer_action_rx) = super::peer_actions::PeerActionQueue::channel();
         let journal_root = config
             .map(|config| config.journal_root.clone())
@@ -2935,7 +2962,10 @@ impl CapnpBrokerState {
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
-                action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
+                action_directory_bridge: ActionDirectoryRequestQueue {
+                    sender: bridge_tx,
+                    turn: std::sync::Arc::clone(&local_turn),
+                },
                 peer_action_queue,
                 peer_action_rx: Mutex::new(Some(peer_action_rx)),
                 action_directory_roots: Mutex::new(HashMap::new()),
@@ -2969,6 +2999,7 @@ impl CapnpBrokerState {
                 services,
                 workers: Mutex::new(Vec::new()),
                 worker_admitted: tokio::sync::Notify::new(),
+                local_turn,
                 host_workers: Mutex::new(HashMap::new()),
                 #[cfg(test)]
                 thread_callbacks: Mutex::new(Vec::new()),
@@ -4385,6 +4416,7 @@ impl CapnpBrokerState {
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }
+        self.local_turn.notify_one();
         Ok(InvocationJob { id, completion: rx })
     }
 
@@ -9843,17 +9875,27 @@ pub(super) fn spawn_configured(
                     if quit.load(Ordering::Relaxed) {
                         break;
                     }
+                    let deadline = state.next_invocation_deadline();
+                    // The loop is also the broker's turn: in-process door
+                    // calls and connected apps progress on it. Cap it at the
+                    // old cadence, and sooner when an invocation is about to
+                    // expire. `local_turn` wakes it immediately for queued work.
+                    let tick = deadline
+                        .map_or(Duration::from_millis(100), |deadline| {
+                            deadline.saturating_duration_since(std::time::Instant::now())
+                        })
+                        .min(Duration::from_millis(100));
                     let stream = tokio::select! {
                         biased;
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {
-                            // This cadence is also the broker's lifecycle
-                            // watchdog. Expiration must not depend on a caller
-                            // polling status: completion waiters deserve a
-                            // terminal answer even after an app goes silent.
+                        () = tokio::time::sleep(tick) => {
+                            // Expiration must not depend on a caller polling
+                            // status: completion waiters deserve a terminal
+                            // answer even after an app goes silent.
                             state.expire_stale_invocations();
                             continue;
                         },
                         conn = listener.accept() => conn,
+                        () = state.local_turn.notified() => continue,
                         () = state.worker_admitted.notified() => continue,
                     };
                     let (stream, _) = match stream {

@@ -24,6 +24,7 @@ pub mod firstboot;
 pub mod identity_broker;
 #[cfg(all(test, target_os = "linux"))]
 mod idle_thread_probe;
+mod idle_wake;
 pub mod runtime_host;
 
 pub use tilo_identity_host::registry as identity_registry;
