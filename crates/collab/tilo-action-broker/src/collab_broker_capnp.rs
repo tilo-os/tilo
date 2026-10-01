@@ -9880,10 +9880,9 @@ pub(super) fn spawn_configured(
                     // old cadence, and sooner when an invocation is about to
                     // expire. `local_turn` wakes it immediately for queued work.
                     let tick = deadline
-                        .map(|deadline| {
+                        .map_or(Duration::from_millis(100), |deadline| {
                             deadline.saturating_duration_since(std::time::Instant::now())
                         })
-                        .unwrap_or(Duration::from_millis(100))
                         .min(Duration::from_millis(100));
                     let stream = tokio::select! {
                         biased;
