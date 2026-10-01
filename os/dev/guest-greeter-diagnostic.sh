@@ -79,5 +79,20 @@ for metrics in /tmp/tilo-greeter-metrics-*.json; do
   echo "startup marks from $metrics:"
   jq -r '.events[]? | "\(.name) \(.ns)"' "$metrics" | tail -n 30 || true
 done
+echo '::group::guest SIGILL evidence'
+printf 'core_pattern: '
+cat /proc/sys/kernel/core_pattern 2>&1 || true
+printf 'core_limit: '
+ulimit -c || true
+printf 'gdb: '
+command -v gdb || true
+printf 'recent kernel traps:\n'
+journalctl -k -b --no-pager -o short-monotonic 2>&1 |
+  grep -Ei 'tilo-greeter|undefined instruction|illegal instruction|sigill|trap|pc :' |
+  tail -n 30 || true
+if command -v coredumpctl >/dev/null 2>&1; then
+  coredumpctl --no-pager --no-legend list /usr/bin/tilo-greeter 2>&1 | tail -n 15 || true
+fi
+echo '::endgroup::'
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
