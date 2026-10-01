@@ -756,6 +756,10 @@ mod tests {
         );
         assert!(rows.iter().any(|row| row.id == "room.activity.open"));
         assert!(
+            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
+            "help stays on the empty palette even when it is last in the catalogue"
+        );
+        assert!(
             groups
                 .iter()
                 .all(|group| group.total == group.results.len())
