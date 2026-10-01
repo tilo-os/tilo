@@ -4823,11 +4823,8 @@ impl Widget for BackupsApp {
         let (state, path) = ui::doc::document(state, path);
         self.drain_effects();
         if !self.seeded {
-            // Readers already fall back to the default policy. The hosted
-            // record stays empty until a retention action writes a field.
-            if !self.actions.is_hosted() {
-                BackupsDoc::seed(state, path);
-            }
+            // Readers fall back to the default policy. The record stays empty
+            // until a retention action writes a field.
             self.seeded = true;
         }
         self.load_cache(state, path);
@@ -5190,6 +5187,9 @@ impl ui::resources::PublishesResources for BackupsApp {
         self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::actions::BACKUPS_RESOURCE_ID {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
@@ -6268,5 +6268,21 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let fitted = renderer.elide_to_width(&metadata, 11.5, 342.0);
         assert!(renderer.measure(&fitted, 11.5, None).0 <= 342.0);
+    }
+
+    #[test]
+    fn a_fresh_backup_record_stays_empty_until_a_retention_action() {
+        use automerge::ReadDoc;
+        use ui::widget::Widget;
+        let mut app = BackupsApp::new();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(
+            state
+                .doc
+                .get(automerge::ROOT, "ret_hourly")
+                .unwrap()
+                .is_none()
+        );
     }
 }

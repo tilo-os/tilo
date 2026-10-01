@@ -524,6 +524,18 @@ pub fn resource_with_unavailable_reason(
         .find(|child| child.id.as_str() == id)
 }
 
+fn find_backup(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_backup(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
     let mut resource = Resource::new(
         format!("backups.snapshot:{}", snapshot.id),
@@ -633,6 +645,10 @@ impl crate::app::BackupsApp {
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(found) = find_backup(&self.publish_resources(doc), id) {
+            return Some(found);
+        }
+        // A snapshot outside the recent page stays addressable.
         resource_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),

@@ -259,19 +259,53 @@ mod tests {
         app.sync(&mut seeded, &automerge::ROOT);
         assert!(!app.is_hosted(), "standalone stays on the local host");
         let standalone = app.publish_resources(&seeded);
-        assert!(
-            standalone
+        let daily_id = "backups.retention:ret_daily";
+        let on_tree = {
+            fn find<'a>(
+                resources: &'a [PublishedResource],
+                id: &str,
+            ) -> Option<&'a PublishedResource> {
+                for resource in resources {
+                    if resource.id.as_str() == id {
+                        return Some(resource);
+                    }
+                    if let Some(found) = find(&resource.children, id) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            find(&standalone, daily_id).expect("daily retention is on the published tree")
+        };
+        let looked_up = app
+            .publish_resource(&seeded, daily_id)
+            .expect("daily retention resolves");
+        assert_eq!(
+            looked_up
+                .actions
                 .iter()
-                .any(|resource| resource.kind == "backups.policy"),
-            "standalone keeps the policy root"
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            on_tree
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            "an eager retention row is the published row"
         );
+        let workspace = standalone
+            .iter()
+            .find(|resource| resource.kind == "backups.workspace")
+            .expect("standalone keeps the workspace door");
+        let policy = workspace
+            .children
+            .iter()
+            .find(|child| child.kind == "backups.policy")
+            .expect("standalone keeps the policy on the workspace");
         assert!(
-            standalone.iter().any(|resource| {
-                resource.kind == "backups.policy"
-                    && resource.children.iter().any(|child| {
-                        child.id.as_str() == "backups.retention:ret_daily"
-                            && child.actions.iter().any(|action| action.id == "increment")
-                    })
+            policy.children.iter().any(|child| {
+                child.id.as_str() == "backups.retention:ret_daily"
+                    && child.actions.iter().any(|action| action.id == "increment")
             }),
             "standalone policy keeps Document steppers"
         );
