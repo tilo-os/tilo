@@ -112,9 +112,14 @@ struct ServerFixture {
 
 impl ServerFixture {
     /// From `<prefix>_URL`, `<prefix>_USER`, `<prefix>_PASSWORD`; `None`
-    /// (skip) when unset.
+    /// (skip) when unset. An empty value is unset: a workflow passes a
+    /// secret that is not configured as an empty string.
     fn from_env(prefix: &str, nextcloud: bool) -> Option<Self> {
-        let var = |name: &str| std::env::var(format!("{prefix}_{name}")).ok();
+        let var = |name: &str| {
+            std::env::var(format!("{prefix}_{name}"))
+                .ok()
+                .filter(|value| !value.is_empty())
+        };
         let Some(url) = var("URL") else {
             assert!(
                 std::env::var("TILO_REQUIRE_CLOUD_SERVERS").as_deref() != Ok("1")
