@@ -3,7 +3,7 @@
 //! onto the CRDT. The collection kind matches the published root.
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{Action, ActionError, ActionRegistry};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -75,12 +75,44 @@ impl ResourceApp for ClocksShell {
     }
 }
 
+/// Framework dispatcher when hosted; the local action host for standalone
+/// tests and the screenshot launcher. Clocks has no document action yet.
+#[derive(Default)]
+pub(crate) struct ActionSink {
+    local: ui::ActionHost,
+    framework: Option<Dispatcher<Clocks>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Clocks>) {
+        self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted || self.framework.is_some()
+    }
+
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local.take_committed()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+}
+
 impl ResourceSurface<Clocks> for ClocksApp {
     /// Alarms and timers are device-local. An empty projection must not wipe
     /// an unpublished local collection.
     fn present(&mut self, _state: &std::rc::Rc<ClockState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<Clocks>) {
+    fn attach(&mut self, cx: SurfaceCx<Clocks>) {
+        self.actions.attach(cx.dispatcher());
         self.mark_framework_hosted();
     }
 }
@@ -161,6 +193,40 @@ mod tests {
                 .iter()
                 .any(|action| action.id.as_str() == "lap"),
             "lap already rides publish"
+        );
+    }
+
+    #[test]
+    #[test]
+    fn attach_hosted_surface_does_not_republish_the_collection_root() {
+        let mut app = ClocksApp::scenario("running");
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(!app.is_framework_hosted());
+        assert!(!app.sink_is_hosted());
+        let standalone = app.resources(&state.doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, Clocks::KIND);
+
+        app.mark_hosted_for_test();
+        assert!(app.is_framework_hosted());
+        assert!(app.sink_is_hosted());
+        let extras = app.resources(&state.doc);
+        assert!(
+            extras.iter().all(|resource| {
+                resource.kind != Clocks::KIND && resource.id.as_str() != "clocks"
+            }),
+            "hosted attach must not republish clocks.collection: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "clocks.timer"),
+            "hosted keeps the running timer on the widget"
         );
     }
 
