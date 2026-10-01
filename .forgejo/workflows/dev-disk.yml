@@ -57,6 +57,10 @@ on:
         description: "auto: native boot proof for signed bases, candidate only for tilo-ci; true requires usable KVM; false publishes only an unvalidated candidate."
         required: false
         default: "auto"
+      validate_greeter:
+        description: "After native boot proof, require a stable graphical greeter and report guest DRM state. For targeted KVM display diagnostics."
+        required: false
+        default: "false"
 
 concurrency:
   # One request per tag, source and architecture set at a time; different
@@ -569,6 +573,17 @@ jobs:
           ./os/dev/vm.sh boot --disk "$overlay"
           ./os/dev/vm.sh wait
           ./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            # `vm.sh wait` observes greetd starting, which can precede a
+            # compositor crash. The dev disk is already accessible over SSH;
+            # require the actual greeter to survive and report guest DRM state.
+            sleep 10
+            if ! ./os/dev/vm.sh ssh 'test -c /dev/dri/card0 && systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter'; then
+              ./os/dev/vm.sh ssh 'ls -l /dev/dri 2>&1; systemctl status greetd --no-pager -l; journalctl -b -u greetd --no-pager -n 40; journalctl -b -k --no-pager -n 80' || true
+              echo '::error::native KVM guest did not keep a graphical greeter'
+              exit 1
+            fi
+          fi
 
       - name: Upload failed boot framebuffer
         if: failure() && needs.plan.outputs.validate_boot == 'true'
