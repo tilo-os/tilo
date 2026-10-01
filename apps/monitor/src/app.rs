@@ -427,23 +427,24 @@ fn process_resource_label(process: &ProcessInfo) -> String {
     format!("{} ({})", label, process.pid)
 }
 
-/// The always-addressable root of Monitor's live process catalogue.
-pub(crate) fn monitor_process_root_resource() -> Resource {
-    let mut root = Resource::new("processes", "monitor.processes", "Processes");
-    if let Ok(refresh) = ActionSpec::operation(
+/// Refresh is a palette Effect with no document delta. It rides
+/// [`tilo_resource::publish`] through [`crate::resource::Monitor::local_operations`].
+pub(crate) fn refresh_effect() -> Option<ActionSpec> {
+    ActionSpec::operation(
         "refresh",
         "Refresh processes",
         OperationKind::Effect,
         MONITOR_OPERATION_TYPE,
         &MonitorOperation::Refresh,
-    ) {
-        root.actions.push(refresh.with_contract(ActionContract {
+    )
+    .ok()
+    .map(|refresh| {
+        refresh.with_contract(ActionContract {
             permission: PermissionRequirement::Read,
             retry: RetryPolicy::Idempotent,
             ..ActionContract::default()
-        }));
-    }
-    root
+        })
+    })
 }
 
 /// One exact, PID-generation-bound process resource. This is shared by the
@@ -6075,11 +6076,25 @@ impl ui::resources::PublishesResources for MonitorApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
         if id == "processes" {
             if self.is_hosted() {
                 return None;
             }
             return self.publish_resources(doc).into_iter().next();
+        }
+        if let Some(found) = find(&self.resources(doc), id) {
+            return Some(found);
         }
         let (pid, started_at) = parse_process_resource_id(id)?;
         self.model

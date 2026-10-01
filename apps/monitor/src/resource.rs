@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use ui::automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
-    ParamType, Resource as PublishedResource,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, ParamType,
+    Resource as PublishedResource,
 };
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::app::{MonitorApp, monitor_process_root_resource};
+use crate::app::{MonitorApp, refresh_effect};
 use crate::doc::ViewDoc;
 
 /// Collaborative view preferences. The process snapshot is not document
@@ -196,11 +196,7 @@ impl Resource for Monitor {
     fn local_operations() -> Vec<ActionSpec> {
         // Refresh is a palette Effect with no document delta. Per-process
         // Effects ride live process extras (or the standalone overlay).
-        monitor_process_root_resource()
-            .actions
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+        refresh_effect().into_iter().collect()
     }
 }
 
