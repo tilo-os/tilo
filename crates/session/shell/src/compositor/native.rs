@@ -398,6 +398,13 @@ fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
 }
 
+/// A transition the presenter could not take stays pending. The park while
+/// the pipe is full is not animation time; the next submit still has the
+/// frame run ahead of it.
+fn present_hold_credit(presenter_full: bool, transition_pending: bool) -> bool {
+    presenter_full && transition_pending
+}
+
 /// A widget deadline only matters while the presenter can accept the frame
 /// it would cause. Under back-pressure an overdue animation deadline would
 /// turn every park into an immediate return while the paint gate keeps
@@ -7525,10 +7532,21 @@ pub fn run() {
     // Privacy's `pw-dump` monitor restarts only on the edge into a requested
     // frame. An idle park must not arm that watch on a timer.
     let mut privacy_frame_open = false;
+    // Park spent waiting on a full presenter. Applied on the next tick,
+    // before animation demand is sampled, so the transition does not finish
+    // in the model with nothing presented.
+    let mut transition_hold_sleep = Duration::ZERO;
+    let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        if !transition_hold_sleep.is_zero() {
+            frame_builder
+                .host_mut()
+                .defer_running_transitions(transition_hold_sleep);
+            transition_hold_sleep = Duration::ZERO;
+        }
         if let Some((serial, retired_at)) = present_pipe
             .as_ref()
             .and_then(present::PresentPipe::latest_retirement)
@@ -9708,6 +9726,10 @@ pub fn run() {
         let pipe_ready = present_pipe
             .as_ref()
             .is_none_or(super::present::PresentPipe::has_capacity);
+        credit_transition_hold = present_hold_credit(
+            !pipe_ready,
+            frame_builder.host().transition_present_pending(),
+        );
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -10612,6 +10634,9 @@ pub fn run() {
         }
         let slept = t_sleep_start.elapsed();
         metrics.mark_sleep(slept);
+        if credit_transition_hold {
+            transition_hold_sleep = slept;
+        }
         let wake = park_wake_reason(park, park_deadline, slept);
         metrics.mark_wake(wake);
         if paint_stats {
@@ -11166,6 +11191,16 @@ mod tests {
                  (D-3); got lingering file at {path:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_full_presenter_holds_a_pending_transition() {
+        assert!(present_hold_credit(true, true));
+        assert!(!present_hold_credit(false, true));
+        assert!(
+            !present_hold_credit(true, false),
+            "an idle desktop must not freeze its clock on a full presenter"
+        );
     }
 
     #[test]
