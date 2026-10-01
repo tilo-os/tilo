@@ -1430,7 +1430,14 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     if APP_CACHE_EPOCH.load(Ordering::Acquire) != epoch {
         // The cache was invalidated (an install, a removal, a repointed
         // registry) while this read was in flight, so the read may predate
-        // it. Memoising it would hide the change for a whole TTL.
+        // it. Memoising it would hide the change for a whole TTL. Still
+        // advance the search generation when the observed apps differ —
+        // otherwise a watch-driven epoch bump that races this refresh can
+        // leave callers with a stale generation after a manifest rewrite.
+        let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
+        if changed {
+            APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+        }
         drop(cache);
         ensure_app_cache_watch();
         return Ok(apps);
