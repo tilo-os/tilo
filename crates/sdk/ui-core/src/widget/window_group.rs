@@ -4673,7 +4673,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
         // Case `window_group_close_glyph_is_lucide_x`.
