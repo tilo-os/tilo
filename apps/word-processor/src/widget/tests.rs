@@ -403,6 +403,34 @@ fn paper_affordances_follow_the_accent_and_read_on_paper() {
                 "{name}: paper {role} measures {r:.2}:1 on the sheet"
             );
         }
+        let paper_warning = theme.tokens.colors.ink_on(
+            cc.paper,
+            theme.tokens.colors.semantic.warning,
+            NON_TEXT_MIN_CONTRAST,
+        );
+        assert!(
+            contrast_ratio(paper_warning, cc.paper) >= NON_TEXT_MIN_CONTRAST,
+            "{name}: paper warning must clear the non-text floor"
+        );
+        assert_eq!(
+            cc.find_highlight.a(),
+            FIND_HIGHLIGHT_ALPHA,
+            "{name}: find highlight keeps a translucent wash"
+        );
+        assert_eq!(
+            (
+                cc.find_highlight.r(),
+                cc.find_highlight.g(),
+                cc.find_highlight.b()
+            ),
+            (paper_warning.r(), paper_warning.g(), paper_warning.b()),
+            "{name}: find highlight is the paper warning"
+        );
+        assert_eq!(
+            cc.paper_tint,
+            theme.on_surface(cc.paper).tint,
+            "{name}: paper tint is on_surface(paper).tint"
+        );
         let label = contrast_ratio(cc.on_paper_accent, cc.paper_accent);
         assert!(
             label >= ON_FILL_MIN_CONTRAST,
