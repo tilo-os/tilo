@@ -41,8 +41,8 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# Btrfs needs CAP_SYS_ADMIN; Ext4 online resize also needs CAP_SYS_RESOURCE.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE
 AmbientCapabilities=
 SystemCallArchitectures=native
 

@@ -509,6 +509,18 @@ pub struct ShellOverlayHost {
     /// window preview goes to that window, a drag carries it to another
     /// room.
     overview_press: Option<tilo_desktop::overview::OverviewPress>,
+    /// Settled overview panel recording. Animation frames reuse it and only
+    /// change the transform, instead of re-encoding every room row.
+    overview_panel_cache: Option<OverviewPanelCache>,
+    /// How many times the panel recording was built. Tests use this to prove
+    /// a transition does not rebuild it per frame.
+    overview_panel_cache_fills: u32,
+    /// Bumped when a transition latches, so the presenter can keep the
+    /// pre-transition desktop pixels for the whole fade.
+    overview_generation: u64,
+    /// Set while the overview is fading. The multi-output presenter uploads
+    /// only this panel instead of both full scanouts.
+    overview_fast_patch: Option<OverviewFastPatch>,
     /// Overview panel density for the current theme, refreshed each
     /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
     /// helpers hit-testing calls (no theme in hand) read the same numbers
@@ -518,7 +530,7 @@ pub struct ShellOverlayHost {
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
     /// One-shot driver so a workspace switch requests a run of frames
-    /// instead of painting once and idling (W16).
+    /// instead of painting once and idling (W16). Settles with the curve.
     workspace_switch: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
@@ -1066,6 +1078,10 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
 const WORKSPACE_SWITCH_MS: u64 = 400;
+/// W16 wants ≥ 8 painted frames per open/close. Host demand still
+/// clears when the crossfade settles; the compositor consumes this
+/// many paints on its own.
+const TRANSITION_PAINT_RUN: u32 = 8;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
 /// starts, and the top of the band the room-activity sheet, the
@@ -1988,6 +2004,10 @@ impl ShellOverlayHost {
             overview_selection: None,
             overview_window_selection: None,
             overview_press: None,
+            overview_panel_cache: None,
+            overview_panel_cache_fills: 0,
+            overview_generation: 0,
+            overview_fast_patch: None,
             overview_metrics: OverviewMetrics::default(),
             transition_started: None,
             transition_from: 0.0,
@@ -2995,6 +3015,8 @@ impl ShellOverlayHost {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
+            self.overview_generation = self.overview_generation.wrapping_add(1);
+            self.request_compositor_transition_paints();
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
             self.reseed_overview_selection(target > 0.5);
@@ -3017,10 +3039,10 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
-    /// Latch overview progress during `update`, before the compositor
-    /// samples animation demand. Draw also ticks; starting only there
-    /// left Super+Tab as a one-frame jump (W16).
-    fn latch_overview_transition(&mut self) {
+    /// Latch overview progress on the chord itself, before the compositor
+    /// samples animation demand. Starting only in `update` left Super+Tab
+    /// as a timer the loop parks past (W16).
+    pub(crate) fn latch_overview_transition(&mut self) {
         let open = self
             .chrome
             .as_ref()
@@ -3034,13 +3056,23 @@ impl ShellOverlayHost {
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Draw snaps this when motion is reduced.
-    fn start_workspace_switch_frames(&mut self) {
+    /// Call on the chord, not only from `update`: demand is sampled first.
+    pub(crate) fn start_workspace_switch_frames(&mut self) {
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch.set_open(
             true,
             Duration::from_millis(WORKSPACE_SWITCH_MS),
             ui::Curve::EaseOut,
         );
+        self.request_compositor_transition_paints();
+    }
+
+    fn request_compositor_transition_paints(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome
+                .borrow_mut()
+                .request_transition_paints(TRANSITION_PAINT_RUN);
+        }
     }
 
     #[must_use]
@@ -6406,7 +6438,7 @@ impl ShellOverlayHost {
         let current = chrome.borrow().fullscreen_group();
         chrome
             .borrow_mut()
-            .set_fullscreen_group(if current == Some(group) {
+            .set_user_fullscreen_group(if current == Some(group) {
                 None
             } else {
                 Some(group)
@@ -8505,6 +8537,9 @@ impl ShellOverlayHost {
         } else {
             false
         };
+        if matched && id == "overview.toggle" {
+            self.latch_overview_transition();
+        }
         self.palette_visible = false;
         self.palette.close();
         matched
@@ -11156,6 +11191,8 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
+                drop(st);
+                self.latch_overview_transition();
             }
             *handled = true;
             return true;
@@ -11460,8 +11497,10 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                if let Some(chrome) = self.chrome.clone()
+                    && chrome.borrow_mut().switch_workspace(direction)
+                {
+                    self.start_workspace_switch_frames();
                 }
             }
             _ => return false,
@@ -11559,7 +11598,15 @@ impl ShellOverlayHost {
             A::Notifications => chrome
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
-            A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::ToggleFullscreen => {
+                // Super+M applies on the host. Super+F must too: the
+                // compositor loop then writes `set_fullscreen(None)` every
+                // tick (client xdg is overlay-only), so a later request
+                // parked in `fullscreen_group` is gone before W07 dumps.
+                if !self.toggle_focused_group_fullscreen() {
+                    chrome.borrow_mut().request_fullscreen_toggle();
+                }
+            }
             A::NextInputSource => {
                 if let Some((index, name)) =
                     select_next_input_source(settings_store::settings_path().as_deref())
@@ -12048,6 +12095,8 @@ impl ShellOverlayHost {
         if st.overlays.overview {
             st.overlays.overview = false;
             st.bump();
+            drop(st);
+            self.latch_overview_transition();
             *handled = true;
             return true;
         }
@@ -18196,7 +18245,8 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+        let next_frame = now.checked_add(Duration::from_millis(1));
         [
             (
                 "onboarding",
@@ -18227,6 +18277,11 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
+            ("root-transition", self.transition_started.and(next_frame)),
+            (
+                "workspace-switch",
+                next_frame.filter(|_| self.workspace_switch.is_animating(now)),
+            ),
         ]
     }
 
@@ -18675,6 +18730,76 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     themed
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverviewPanelCacheKey {
+    scroll_bits: u64,
+    selection: Option<usize>,
+    window_selection: Option<usize>,
+    press: Option<(u64, u8, u64, u64)>,
+    panel: (u64, u64, u64, u64),
+    chrome_revision: u64,
+    preview_fingerprint: u64,
+    reduce_motion: bool,
+}
+
+struct OverviewPanelCache {
+    scene: Scene,
+    key: OverviewPanelCacheKey,
+}
+
+/// What the multi-output presenter needs to fade the overview without
+/// uploading both full scanouts. The panel scene is in the clip's local
+/// pixels, origin at the clip's top-left.
+pub(crate) struct OverviewFastPatch {
+    pub generation: u64,
+    pub panel: vello::FineDamageRect,
+    pub scrim: [u8; 4],
+    pub panel_scene: Scene,
+    pub panel_size: (u32, u32),
+    /// False on the frame that finishes a close: present the stashed desktop
+    /// inside `panel` and do not render the panel again.
+    pub draw_panel: bool,
+}
+
+fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return None;
+    }
+    let x0 = rect.x0.max(0.0);
+    let y0 = rect.y0.max(0.0);
+    let x1 = rect.x1.max(x0);
+    let y1 = rect.y1.max(y0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the clip is clamped to non-negative scene pixels and rounded outward first"
+    )]
+    let (x, y, width, height) = (
+        x0.floor() as u32,
+        y0.floor() as u32,
+        (x1.ceil() - x0.floor()).max(1.0) as u32,
+        (y1.ceil() - y0.floor()).max(1.0) as u32,
+    );
+    Some(vello::FineDamageRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
+    let strength = (MODAL_SCRIM_ALPHA * openness).clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "strength is clamped to 0..=1 before scaling into a byte"
+    )]
+    let alpha = (strength * 255.0).round() as u8;
+    let color = theme.tokens.colors.surfaces.scrim.to_rgba8();
+    [color.r, color.g, color.b, alpha]
+}
+
 impl ShellOverlayHost {
     /// Base desktop layer: window content, remote-peer presence, the
     /// sidebar wheel, the permission prompt bar, the toast stack and the
@@ -18841,6 +18966,160 @@ impl ShellOverlayHost {
         text_renderer.set_text_scale(renderer_scale);
     }
 
+    /// Shadow falloff plus the rise, so one dirty rectangle covers every
+    /// frame of the fade without leaving the previous position behind.
+    fn overview_shadow_outset(theme: &Theme) -> f64 {
+        let token = &theme.tokens.elevation.e4;
+        ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
+    }
+
+    fn overview_stable_clip(&self, theme: &Theme) -> Rect {
+        let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
+        self.overview_panel_rect().inflate(outset, outset)
+    }
+
+    fn overview_panel_cache_key(&self, reduce_motion: bool) -> OverviewPanelCacheKey {
+        let panel = self.overview_panel_rect();
+        let press = self.overview_press.as_ref().map(|press| {
+            (
+                press.tab.unwrap_or(0),
+                u8::from(press.is_dragging()),
+                press.at.x.to_bits(),
+                press.at.y.to_bits(),
+            )
+        });
+        OverviewPanelCacheKey {
+            scroll_bits: self.overview_scroll_y.to_bits(),
+            selection: self.overview_selection,
+            window_selection: self.overview_window_selection,
+            press,
+            panel: (
+                panel.x0.to_bits(),
+                panel.y0.to_bits(),
+                panel.x1.to_bits(),
+                panel.y1.to_bits(),
+            ),
+            chrome_revision: self
+                .chrome
+                .as_ref()
+                .map_or(0, |chrome| chrome.borrow().revision),
+            preview_fingerprint: self.window_previews.content_fingerprint(),
+            reduce_motion,
+        }
+    }
+
+    fn ensure_overview_panel_cache(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let key = self.overview_panel_cache_key(theme.reduce_motion);
+        if self
+            .overview_panel_cache
+            .as_ref()
+            .is_some_and(|cache| cache.key == key)
+        {
+            return;
+        }
+        let mut recorded = Scene::new();
+        self.draw_overview(&mut recorded, Affine::IDENTITY, text_renderer, theme);
+        self.overview_panel_cache = Some(OverviewPanelCache {
+            scene: recorded,
+            key,
+        });
+        self.overview_panel_cache_fills = self.overview_panel_cache_fills.saturating_add(1);
+    }
+
+    fn paint_cached_overview_panel(
+        &mut self,
+        scene: &mut Scene,
+        layer_transform: Affine,
+        panel_xform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        alpha: f32,
+    ) {
+        self.ensure_overview_panel_cache(text_renderer, theme);
+        let Some(cache) = self.overview_panel_cache.as_ref() else {
+            return;
+        };
+        if alpha >= 0.999 {
+            scene.append(&cache.scene, Some(panel_xform));
+            return;
+        }
+        let clip = self.overview_stable_clip(theme);
+        // The blend is the panel's rectangle, not the combined desktop.
+        // A full-viewport layer puts every bin of both outputs into a blend
+        // group, and the virtio readback of that frame is what stalls the
+        // transition.
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            layer_transform,
+            &clip,
+        );
+        scene.append(&cache.scene, Some(panel_xform));
+        scene.pop_layer();
+    }
+
+    fn store_overview_fast_patch(
+        &mut self,
+        theme: &Theme,
+        alpha: f32,
+        clip: Rect,
+        panel_xform: Affine,
+    ) {
+        let Some(panel) = scene_damage_rect(clip) else {
+            self.overview_fast_patch = None;
+            return;
+        };
+        let mut panel_scene = Scene::new();
+        let shift = Affine::translate((-clip.x0, -clip.y0));
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication is a panic-free float matrix product"
+        )]
+        let local = shift * panel_xform;
+        if alpha > 0.0
+            && let Some(cache) = &self.overview_panel_cache
+        {
+            if alpha < 0.999 {
+                let outset = Self::overview_shadow_outset(theme);
+                let local_clip = self.overview_panel_rect().inflate(outset, outset);
+                panel_scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    local,
+                    &local_clip,
+                );
+                panel_scene.append(&cache.scene, Some(local));
+                panel_scene.pop_layer();
+            } else {
+                panel_scene.append(&cache.scene, Some(local));
+            }
+        }
+        self.overview_fast_patch = Some(OverviewFastPatch {
+            generation: self.overview_generation,
+            panel,
+            scrim: scrim_rgba(theme, alpha),
+            panel_scene,
+            panel_size: (panel.width, panel.height),
+            draw_panel: alpha > 0.0,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_fast_patch(&self) -> Option<&OverviewFastPatch> {
+        self.overview_fast_patch.as_ref()
+    }
+
+    pub(crate) fn take_overview_fast_patch(&mut self) -> Option<OverviewFastPatch> {
+        self.overview_fast_patch.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_panel_cache_fills(&self) -> u32 {
+        self.overview_panel_cache_fills
+    }
+
     /// The room-overview panel: scrim, scale/translate curve, then the
     /// panel itself. First half of what was
     /// `draw_overview_and_ws_settings_overlays`, split out to keep that
@@ -18899,19 +19178,28 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            if overview_alpha >= 0.999 {
-                self.draw_overview(scene, panel_xform, text_renderer, theme);
-            } else {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    overview_alpha,
-                    transform,
-                    &self.rect,
-                );
-                self.draw_overview(scene, panel_xform, text_renderer, theme);
-                scene.pop_layer();
-            }
+            let clip = self.overview_stable_clip(theme);
+            self.paint_cached_overview_panel(
+                scene,
+                transform,
+                panel_xform,
+                text_renderer,
+                theme,
+                overview_alpha,
+            );
+            self.store_overview_fast_patch(theme, overview_alpha, clip, panel_xform);
+        } else if self
+            .overview_fast_patch
+            .as_ref()
+            .is_some_and(|patch| patch.draw_panel)
+        {
+            // The close has reached zero. Put the stashed desktop back inside
+            // the panel clip; a full readback here is the stall the fade just
+            // avoided. The following settled frame clears the patch.
+            let clip = self.overview_stable_clip(theme);
+            self.store_overview_fast_patch(theme, 0.0, clip, Affine::IDENTITY);
+        } else {
+            self.overview_fast_patch = None;
         }
     }
 

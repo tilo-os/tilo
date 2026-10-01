@@ -1293,6 +1293,7 @@ impl AsyncShmCapture {
                                 store().note_failure(job.surface, error.to_string());
                             }
                         }
+                        SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
                         if let Some(ping) = worker_completion_ping
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1327,6 +1328,19 @@ static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = Once
 
 #[cfg(target_os = "linux")]
 static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
+
+/// Set by the SHM worker after it publishes (or fails) a frame. Unlike a
+/// dmabuf, an SHM commit holds no transaction barrier, so nothing else tells
+/// the loop a client frame landed.
+#[cfg(target_os = "linux")]
+static SHM_FRAMES_PUBLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the SHM worker published a frame since the last call.
+#[cfg(target_os = "linux")]
+pub fn take_published_shm_frames() -> bool {
+    SHM_FRAMES_PUBLISHED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
 
 #[cfg(target_os = "linux")]
 pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
@@ -3240,16 +3254,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
     let mut signalled: usize = 0;
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
-        let id = crate::compositor::state::surface_id(surface);
-        let visible_tab = {
-            let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, store().sheet_root(id))
-        };
-        if !visible_tab
-            && state.osk_surface != Some(id)
-            && !state.is_floating_toplevel(id)
-            && !state.is_closing_toplevel(id)
-        {
+        if !frame_throttle_releases(state, surface) {
             continue;
         }
         if state.release_frame_callbacks(surface) {
@@ -3257,6 +3262,65 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
         }
     }
     signalled
+}
+
+/// Whether a surface [`release_frame_throttle`] serves is waiting for
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
+#[cfg(target_os = "linux")]
+pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
+    state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(ToplevelSurface::wl_surface)
+        .filter(|surface| frame_throttle_releases(state, surface))
+        .any(|surface| {
+            smithay::wayland::compositor::with_states(surface, |states| {
+                !states
+                    .cached_state
+                    .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                    .current()
+                    .frame_callbacks
+                    .is_empty()
+            })
+        })
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
+}
+
+/// Callbacks fire only for the visible tab of each group, the on-screen
+/// keyboard, floating windows and windows asked to close.
+#[cfg(target_os = "linux")]
+fn frame_throttle_releases(
+    state: &crate::compositor::state::State,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> bool {
+    let id = crate::compositor::state::surface_id(surface);
+    let visible_tab = {
+        let tree = state.workspace_tree.read();
+        is_visible_tab(&tree, store().sheet_root(id))
+    };
+    visible_tab
+        || state.osk_surface == Some(id)
+        || state.is_floating_toplevel(id)
+        || state.is_closing_toplevel(id)
 }
 
 #[cfg(test)]
@@ -4274,6 +4338,32 @@ mod tests {
             !w.needs_animation_frame(),
             "an idle hosted app must not keep requesting frames"
         );
+        store().forget(id);
+    }
+
+    /// An idle desktop paints only when the loop sees a change, and frame
+    /// callbacks are released only after a paint. An SHM frame the worker
+    /// published without reporting it left the client waiting for
+    /// `wl_surface.frame` forever: headless guests froze every app.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_published_shm_frame_is_reported_to_the_loop() {
+        let id = sid(72);
+        store().forget(id);
+        let _ = take_published_shm_frames();
+        assert!(
+            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !take_published_shm_frames() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop must learn a client frame landed, or it never paints nor releases frame callbacks"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_ne!(store().frame_seq(id), 0, "reported only once published");
+        assert!(!take_published_shm_frames(), "reported once");
         store().forget(id);
     }
 

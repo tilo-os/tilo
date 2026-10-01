@@ -665,8 +665,16 @@ pub struct ChromeState {
     session_action_requests: Vec<os_actions::SessionAction>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
-    /// frame via [`Self::set_fullscreen_group`].
+    /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
+    /// per-output overlay, so the native loop writes `None` here every
+    /// tick; do not park Super+F in this slot (W07).
     fullscreen_group: Option<u64>,
+    /// Super+F (and the action door) park the focused group here. Kept
+    /// separate from [`Self::fullscreen_group`], which the compositor
+    /// rewrites every frame — a value parked there is wiped before
+    /// state-dump can observe it. Unlike [`Self::maximized_group`], this
+    /// covers the output, including the wheel.
+    user_fullscreen_group: Option<u64>,
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there by Expand would be
@@ -720,6 +728,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Compositor-only remaining paints after overview / workspace switch
+    /// (W16). The host's crossfade demand still clears when the curve
+    /// settles — this count is not `needs_animation_frame`.
+    transition_paints_remaining: u32,
     /// Window-management operations an action asked for. The overlay host
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
@@ -846,6 +858,7 @@ impl ChromeState {
             session_lock_requested: false,
             session_action_requests: Vec::new(),
             fullscreen_group: None,
+            user_fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
             single_strip: false,
@@ -864,6 +877,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
@@ -1039,6 +1053,21 @@ impl ChromeState {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
+    /// Ask the compositor to paint at least `n` frames. Does not bump:
+    /// host animation demand stays the crossfade, not this count.
+    pub fn request_transition_paints(&mut self, n: u32) {
+        self.transition_paints_remaining = self.transition_paints_remaining.max(n);
+    }
+
+    #[must_use]
+    pub fn transition_paints_remaining(&self) -> u32 {
+        self.transition_paints_remaining
+    }
+
+    pub fn consume_transition_paint(&mut self) {
+        self.transition_paints_remaining = self.transition_paints_remaining.saturating_sub(1);
+    }
+
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
@@ -1062,7 +1091,7 @@ impl ChromeState {
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
-        self.fullscreen_group
+        self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
     /// Either a client-requested fullscreen or a group the user
@@ -1117,6 +1146,13 @@ impl ChromeState {
     pub fn set_fullscreen_group(&mut self, group: Option<u64>) {
         if self.fullscreen_group != group {
             self.fullscreen_group = group;
+            self.bump();
+        }
+    }
+
+    pub fn set_user_fullscreen_group(&mut self, group: Option<u64>) {
+        if self.user_fullscreen_group != group {
+            self.user_fullscreen_group = group;
             self.bump();
         }
     }

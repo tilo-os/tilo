@@ -626,7 +626,17 @@ async fn run_command() -> Result<()> {
             mounts_root,
             cache_root,
             fs_binary,
-        } => recipient_service(socket, mounts_root, cache_root, fs_binary).await,
+        } => match recipient_service(socket, mounts_root, cache_root, fs_binary).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Keep the activation socket. Restart=on-failure plus a
+                // missing identity, inbox bind, or cache root is a loop;
+                // P03 saw tilo-fs-recipient hit start-limit on a fresh boot.
+                eprintln!("recipient-service idle: {error}");
+                std::future::pending::<()>().await;
+                Ok(())
+            }
+        },
         #[cfg(target_os = "linux")]
         Command::CloudService {
             mounts_root,
@@ -638,7 +648,7 @@ async fn run_command() -> Result<()> {
                 Some(path) => path,
                 None => std::env::current_exe()?,
             };
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 fs::cloud::CloudService::new(
                     fs::cloud::ServiceConfig {
                         // Settings' credential helper, the only process that
@@ -658,7 +668,11 @@ async fn run_command() -> Result<()> {
                 )
                 .run()
             })
-            .await??;
+            .await?;
+            if let Err(error) = result {
+                eprintln!("cloud-service idle: {error}");
+                std::future::pending::<()>().await;
+            }
             Ok(())
         }
         #[cfg(target_os = "linux")]
@@ -1259,7 +1273,7 @@ fn export_home_peer(
             .map_or(true, |ticket| ticket.workspace != decoded_ticket.workspace)
     });
     bundle.workspaces.push(workspace);
-    atomic_file::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
+    tilo_files::native::atomic::write(output, toml::to_string_pretty(&bundle)?.as_bytes())?;
     println!("exported home-peer bundle to {}", output.display());
     Ok(())
 }
@@ -1895,7 +1909,7 @@ async fn serve(
     }
     if let Some(cache_dir) = &cache_dir {
         let encoded = ticket.encode()?;
-        atomic_file::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
+        tilo_files::native::atomic::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
     }
     // Owner operations require the certified human root. Secondary devices
     // never substitute their device key and recipient mounts never host this
@@ -2068,7 +2082,7 @@ async fn mount(
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
-        atomic_file::write(
+        tilo_files::native::atomic::write(
             &workspace_ticket_path(cache_dir),
             ticket.encode()?.as_bytes(),
         )?;
@@ -2666,10 +2680,14 @@ fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener>
     );
     // SAFETY: validated activation metadata transfers ownership of fd 3 once.
     let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    anyhow::ensure!(
-        listener.local_addr()?.as_pathname() == Some(socket),
-        "systemd recipient-service listener has an unexpected path"
-    );
+    // systemd may hand over an unnamed connected socket; a missing pathname
+    // is not a different listener. Refuse only an explicit other path.
+    if let Some(actual) = listener.local_addr()?.as_pathname() {
+        anyhow::ensure!(
+            actual == socket,
+            "systemd recipient-service listener has an unexpected path"
+        );
+    }
     listener.set_nonblocking(true)?;
     // Do not leak the service control endpoint into supervised FUSE children.
     anyhow::ensure!(
@@ -3130,7 +3148,7 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
 /// ready NAS can always reopen the same namespace after a power loss.
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped atomic-file temporary path."
+    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped native::atomic temporary path."
 )]
 fn persist_namespace_generation(
     namespace: &Arc<Mutex<Namespace>>,
@@ -3138,7 +3156,7 @@ fn persist_namespace_generation(
 ) -> Result<[u8; 32]> {
     // Keep the namespace lock through the durable replacement. Transactional
     // projections use the same lock, preventing two same-process writers from
-    // sharing atomic-file's process-scoped temporary pathname.
+    // sharing native::atomic's process-scoped temporary pathname.
     let mut namespace = namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4021,7 +4039,7 @@ mod tests {
                 ticket: Some(ticket),
                 relay_service_id: None,
             }];
-            atomic_file::write(
+            tilo_files::native::atomic::write(
                 &fs::workspace_authority::content_peers_path(temp.path()),
                 &serde_json::to_vec(&peers).unwrap(),
             )

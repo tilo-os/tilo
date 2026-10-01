@@ -2443,7 +2443,7 @@ impl WorkspaceTree {
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
-        if let Err(e) = atomic_file::write_creating_parent(path, &json) {
+        if let Err(e) = tilo_files::native::atomic::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
@@ -3600,6 +3600,37 @@ impl WorkspaceTree {
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Join a room copied from the machine that enrolled this device.
+    ///
+    /// This is membership, not a continuation offer, so turning app
+    /// continuations off does not remove it.
+    pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
+        if room.is_nil()
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "From another device");
+        workspace.room = room;
+        // The same person sits at this machine. Without their membership the
+        // room exists but every launch from either of their devices is denied.
+        let user = local_user_id();
+        workspace.set_owner(user.clone());
+        self.desktop.workspaces.push(workspace);
+        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.doc_set_owner(id, &user);
         self.flush_to_disk();
         true
     }

@@ -729,7 +729,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 fn persist_state(path: &Path, state: &ServiceState) -> Result<(), ServiceError> {
     let mut bytes = serde_json::to_vec_pretty(state)?;
     bytes.push(b'\n');
-    atomic_file::write_creating_parent(path, &bytes)?;
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
     Ok(())
 }
 
