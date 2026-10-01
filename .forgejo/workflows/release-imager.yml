@@ -920,8 +920,7 @@ jobs:
 
   macos:
     timeout-minutes: 180
-    # Disabled: no runner serves the imager-macos-* labels yet.
-    if: false && (github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'))
+    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -1185,8 +1184,7 @@ jobs:
 
   homebrew-macos-install-test:
     timeout-minutes: 90
-    # Disabled: no runner serves the imager-macos-* labels yet.
-    if: false && startsWith(github.ref, 'refs/tags/imager-v')
+    if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: homebrew
     strategy:
       matrix:
