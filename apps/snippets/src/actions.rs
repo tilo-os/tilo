@@ -408,26 +408,6 @@ fn folder_context_resource(ctx: &SnippetsResourceCtx) -> Resource {
     .with_action(new_snippet_in_folder_spec(folder))
 }
 
-/// Build the small contextual root shown immediately by Ctrl+K (standalone /
-/// `--shots` / unit tests). When the framework hosts the surface,
-/// [`tilo_resource::publish`] owns the library door; [`live_folder_resources`]
-/// keeps only the sidebar-folder create.
-pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
-    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
-    for spec in library_view_specs() {
-        lib = lib.with_action(spec);
-    }
-
-    // Library-level: create a new snippet at the current folder. The uuid is
-    // minted once when the title argument is committed, then baked into the
-    // envelope, so replay stays deterministic. Hosted publish uses the same
-    // action via [`crate::resource::Snippets::declarations`] (folder defaults
-    // to the All Snippets root there — presentation folder is a View concern).
-    lib = lib.with_action(new_snippet_in_folder_spec(ctx.current_folder.clone()));
-
-    vec![lib]
-}
-
 pub fn provide_tag_resource(tag: String) -> Resource {
     Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
         "reveal",
@@ -515,14 +495,17 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     ))
 }
 
-/// Build the complete resource tree for audits and non-interactive callers.
+/// The published library for audits and non-interactive callers. Sidebar folder
+/// creates stay live extras beside that root.
 pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut lib = provide_contextual_resources(ctx)
-        .pop()
-        .unwrap_or_else(|| Resource::new("snippets.library", "snippets.library", "Snippets"));
-    for child in publish_children(&SnippetsDoc::list(doc)) {
-        lib = lib.with_child(child);
-    }
+    let state =
+        <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut lib = ui::tilo_resource::publish::<crate::resource::Snippets>(
+        crate::resource::LIBRARY_RESOURCE_ID,
+        "Snippets",
+        &state,
+    );
+    lib.children.extend(live_folder_resources(ctx));
     vec![lib]
 }
 
