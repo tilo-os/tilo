@@ -143,8 +143,8 @@ The theme a person sees is resolved from layers, lowest to highest:
 
 | # | Layer | Who writes it | Typical contents |
 |---|---|---|---|
-| 1 | Built-in defaults | Tilo | the Dark/Light presets, stock shape, density, type and motion |
-| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, wallpaper, greeter and boot artwork, logo; optional pins |
+| 1 | Built-in defaults | the toolkit, in code | [`Theme::dark()`](../../crates/sdk/ui-core/src/theme.rs): the stock dark palette, shape, density, type and motion. This is the code default. It is not a file |
+| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, and optional pins (`palette`, `accent`). Wallpaper, greeter and boot artwork are not part of this layer yet |
 | 3 | User theme | the person, through Settings and Theme Studio | preset or custom theme, accent, shape, density, type, motion, materials, icons |
 | 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
@@ -153,25 +153,33 @@ The theme a person sees is resolved from layers, lowest to highest:
 shrink text, or re-enable motion that the person turned off, and distribution
 defaults cannot pin a value that layer 5 touches.
 
+**Built-in defaults are `Theme::dark()`.** `resolve_theme_layers` uses
+that constructor when no higher layer supplies a palette. There is no
+defaults file, and nothing about this layer is signed.
+
 **Distribution defaults** (identifiers: `distribution`,
 `distribution_defaults`) are the layer for whoever ships the Tilo OS image —
 an agent-sandbox provider, a hardware vendor, an organisation's managed
-fleet. The name is that layer's, not a brand pack or a reseller overlay. The
-layer is a Profile layer in the sense of `distribution.md` §6: a signed,
-content-addressed, versioned fragment of the appearance record, delivered
-with the image. It sets defaults and may **pin** a choice by policy (a fixed
-wallpaper on kiosk machines, an accent that matches a company colour). A pin
-is visible: Settings shows the pinned control as set by the distribution, the
-way an employer policy layer shows which of your values it overrode.
-Distribution defaults go through the same validator as everything else, so
-they can no more ship an illegible palette than a user can.
+fleet. The layer sets a palette and a default accent, and may **pin**
+`palette` or `accent`. A pin beats the user theme only for that field.
+Accessibility fields are not pinnable. Wallpaper, greeter and boot artwork
+are not stored here yet.
 
-Every layer is the same kind of thing — a signed, versioned data file that is
-validated before it is applied — and resolution is one deterministic function
-over the stack, in the style of the default-application resolver in
-`docs/settings-and-studios.md`. Layers contribute individual roles, not whole
-themes: distribution defaults that set only an accent leave the user's choice
-of light or dark alone.
+Distribution defaults, the user theme, the workspace tint and accessibility
+live in the settings document as **versioned JSON**. The settings store does
+not sign appearance records, and this design does not add a signature. Each
+of those layers carries a `schema_version`. `validate` runs before the layer
+is applied: a schema this build does not admit is left unused, and the theme
+stays as the layers below it resolved. A finite value inside an admitted
+schema that falls outside the usable band — a custom theme's `spacing_px`,
+an accessibility text or UI scale — is clamped when the layer is
+materialized, before it changes the theme. A non-finite accessibility scale
+rejects that payload the same way an unknown schema does.
+
+Resolution is one deterministic function over the stack, in the style of the
+default-application resolver in `docs/settings-and-studios.md`. Layers
+contribute individual roles, not whole themes: distribution defaults that
+set only an accent leave the user's choice of light or dark alone.
 
 ### What users get
 
@@ -256,14 +264,19 @@ Verified against the code at the time of writing:
   runtime anyway. Every shipped preset is swept against the same floors
   (`every_theme_that_materializes_keeps_the_contrast_floors`).
 - **Layer resolution has landed.** [`theme::resolve_theme_layers`](../../crates/sdk/ui-core/src/theme_layers.rs)
-  resolves built-in defaults, distribution defaults (`distribution` /
-  `distribution_defaults`), the user theme, an optional workspace tint, and
-  accessibility, lowest to highest. Policy pins live on
-  `DistributionPolicy.pins` and name only `palette` or `accent`. A pin beats
-  the user theme for that field; accessibility still replaces the colour
-  track and applies text scale, UI scale and reduced motion last.
-  `Theme::configured` reads the same function. Wallpaper, greeter and boot
-  artwork are not part of this layer.
+  resolves built-in defaults (`Theme::dark()` in code, not a file),
+  distribution defaults (`distribution` / `distribution_defaults`), the user
+  theme, an optional workspace tint, and accessibility, lowest to highest.
+  Distribution defaults, the workspace tint and accessibility are versioned
+  JSON in settings. Each has `schema_version` and `validate`, and a rejected
+  schema is not applied. Policy pins live on `DistributionPolicy.pins` and
+  name only `palette` or `accent`. A pin beats the user theme for that
+  field; an admitted accessibility layer still replaces the colour track and
+  applies text scale, UI scale and reduced motion last. Out-of-range
+  accessibility scales are clamped in `AccessibilityLayer::materialize`
+  before that apply. `Theme::configured` reads the same function. Wallpaper,
+  greeter and boot artwork are not part of this layer. Appearance records
+  are unsigned.
 - **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
   answer "am I forced?" with the theme's page, ink and accent tokens. A
   content palette keeps its own page when the flag is clear. Apps still have

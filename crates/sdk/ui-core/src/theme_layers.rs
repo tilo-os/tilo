@@ -41,11 +41,32 @@ pub const WORKSPACE_TINT_SCHEMA_MIN: u32 = 1;
 /// Schema this build writes for a workspace tint.
 pub const WORKSPACE_TINT_SCHEMA_VERSION: u32 = 1;
 
+/// Oldest accessibility schema this build still opens.
+pub const ACCESSIBILITY_SCHEMA_MIN: u32 = 1;
+
+/// Schema this build writes for the accessibility layer.
+pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
+
 const WORKSPACE_TINT_KEY: &str = "workspace_tint";
 const APP_ACCENTS_KEY: &str = "app_accents";
+/// Versioned accessibility object inside `appearance`. Absent on files that
+/// still store the same fields as flat flags; those open as schema 1.
+const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
 fn schema_one() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
+}
+
+fn workspace_tint_schema() -> u32 {
+    WORKSPACE_TINT_SCHEMA_VERSION
+}
+
+fn accessibility_schema() -> u32 {
+    ACCESSIBILITY_SCHEMA_VERSION
+}
+
+fn scale_one() -> f32 {
+    1.0
 }
 
 fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
@@ -172,7 +193,7 @@ impl DistributionDefaults {
 /// floor is skipped, and high contrast / forced colours drop it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceTint {
-    #[serde(default = "schema_one")]
+    #[serde(default = "workspace_tint_schema")]
     pub schema_version: u32,
     pub accent: [u8; 3],
 }
@@ -197,19 +218,93 @@ impl WorkspaceTint {
 
 /// Accessibility layer. Nothing below it can lower contrast, shrink text,
 /// or turn motion back on.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// `schema_version` is admitted by [`Self::validate`] before the layer
+/// changes a theme. Text and UI scales outside the usable band are clamped
+/// in [`Self::materialize`], which is what [`resolve_theme_layers`] applies.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccessibilityLayer {
+    #[serde(default = "accessibility_schema")]
+    pub schema_version: u32,
+    #[serde(default)]
     pub high_contrast: bool,
+    #[serde(default)]
     pub forced_colors: bool,
+    /// Multiplier for type only. Usable band is
+    /// [`Self::TEXT_SCALE_MIN`]..=[`Self::TEXT_SCALE_MAX`].
+    #[serde(default = "scale_one")]
     pub text_scale: f32,
+    /// Multiplier for spacing, radii, and type together.
+    #[serde(default = "scale_one")]
     pub ui_scale: f32,
+    #[serde(default)]
     pub reduce_motion: bool,
+    #[serde(default)]
     pub thick_caret: bool,
+}
+
+impl AccessibilityLayer {
+    /// Same lower bound as [`Theme::with_text_scale`].
+    pub const TEXT_SCALE_MIN: f32 = 0.5;
+    /// Same upper bound as [`Theme::with_text_scale`].
+    pub const TEXT_SCALE_MAX: f32 = 4.0;
+    /// Same lower bound as [`Theme::with_ui_scale`].
+    pub const UI_SCALE_MIN: f32 = 0.5;
+    /// Same upper bound as [`Theme::with_ui_scale`].
+    pub const UI_SCALE_MAX: f32 = 3.0;
+
+    /// Structural check. A failure means this layer is not applied.
+    ///
+    /// Schema versions outside
+    /// [`ACCESSIBILITY_SCHEMA_MIN`]..=[`ACCESSIBILITY_SCHEMA_VERSION`]
+    /// are rejected, as is a non-finite scale. A finite scale outside the
+    /// usable band is clamped by [`Self::materialize`], not rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns a static message when the schema is outside the admitted
+    /// range or a scale is not finite.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !schema_admitted(
+            self.schema_version,
+            ACCESSIBILITY_SCHEMA_MIN,
+            ACCESSIBILITY_SCHEMA_VERSION,
+        ) {
+            return Err("unsupported accessibility schema");
+        }
+        if !self.text_scale.is_finite() {
+            return Err("non-finite accessibility text scale");
+        }
+        if !self.ui_scale.is_finite() {
+            return Err("non-finite accessibility ui scale");
+        }
+        Ok(())
+    }
+
+    /// [`Self::validate`], then clamp scales into the usable band.
+    ///
+    /// The returned scales are what resolution applies. The raw payload is
+    /// not handed to [`Theme::with_text_scale`] or [`Theme::with_ui_scale`].
+    ///
+    /// # Errors
+    ///
+    /// The same static message as [`Self::validate`].
+    pub fn materialize(&self) -> Result<Self, &'static str> {
+        self.validate()?;
+        Ok(Self {
+            text_scale: self
+                .text_scale
+                .clamp(Self::TEXT_SCALE_MIN, Self::TEXT_SCALE_MAX),
+            ui_scale: self.ui_scale.clamp(Self::UI_SCALE_MIN, Self::UI_SCALE_MAX),
+            ..*self
+        })
+    }
 }
 
 impl Default for AccessibilityLayer {
     fn default() -> Self {
         Self {
+            schema_version: ACCESSIBILITY_SCHEMA_VERSION,
             high_contrast: false,
             forced_colors: false,
             text_scale: 1.0,
@@ -271,26 +366,42 @@ impl ThemeLayerStack {
             distribution_defaults,
             user_theme: Theme::from_settings_json_at(text, moment),
             workspace_tint,
-            accessibility: AccessibilityLayer {
-                high_contrast: bool_field(appearance, "high_contrast"),
-                forced_colors: bool_field(appearance, "forced_colors"),
-                text_scale: scale_field(appearance, "text_scale"),
-                ui_scale: scale_field(appearance, "ui_scale"),
-                reduce_motion: bool_field(appearance, "reduce_motion"),
-                thick_caret: document
-                    .as_ref()
-                    .and_then(|value| {
-                        value
-                            .get("accessibility")?
-                            .get("thick_text_caret")?
-                            .as_bool()
-                    })
-                    .unwrap_or(false),
-            },
+            accessibility: accessibility_layer(document.as_ref(), appearance),
             allow_app_accents: appearance
                 .and_then(|section| section.get(APP_ACCENTS_KEY)?.as_bool())
                 .unwrap_or(true),
         }
+    }
+}
+
+fn accessibility_layer(
+    document: Option<&serde_json::Value>,
+    appearance: Option<&serde_json::Value>,
+) -> AccessibilityLayer {
+    if let Some(value) = appearance.and_then(|section| section.get(ACCESSIBILITY_LAYER_KEY)) {
+        // A present object is the whole layer. A document that does not
+        // parse is not schema 1: validate rejects it and resolution leaves
+        // the theme unchanged by accessibility.
+        return serde_json::from_value(value.clone()).unwrap_or(AccessibilityLayer {
+            schema_version: 0,
+            ..AccessibilityLayer::default()
+        });
+    }
+    AccessibilityLayer {
+        schema_version: ACCESSIBILITY_SCHEMA_VERSION,
+        high_contrast: bool_field(appearance, "high_contrast"),
+        forced_colors: bool_field(appearance, "forced_colors"),
+        text_scale: scale_field(appearance, "text_scale"),
+        ui_scale: scale_field(appearance, "ui_scale"),
+        reduce_motion: bool_field(appearance, "reduce_motion"),
+        thick_caret: document
+            .and_then(|value| {
+                value
+                    .get("accessibility")?
+                    .get("thick_text_caret")?
+                    .as_bool()
+            })
+            .unwrap_or(false),
     }
 }
 
@@ -300,8 +411,9 @@ fn bool_field(section: Option<&serde_json::Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Admit any finite number; [`Theme::with_text_scale`] / [`Theme::with_ui_scale`]
-/// clamp to the usable band. Missing or non-finite stays at 1.
+/// Flat legacy flags. Missing or non-finite stays at 1 so an older file
+/// still opens. [`AccessibilityLayer::materialize`] clamps a finite value
+/// that sits outside the usable band before resolution applies it.
 fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
     section
         .and_then(|value| value.get(key)?.as_f64())
@@ -346,9 +458,12 @@ fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistr
 /// 1. built-in defaults ([`Theme::dark`])
 /// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
 /// 3. user theme, except fields named by [`DistributionPolicy::pins`]
-/// 4. workspace tint, when it clears the accent floor
-/// 5. accessibility (high contrast / forced colours, text scale, UI scale,
-///    reduced motion, thick caret)
+/// 4. workspace tint, when [`WorkspaceTint::validate`] accepts it and the
+///    colour clears the accent floor
+/// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it
+///    (high contrast / forced colours, clamped text and UI scale, reduced
+///    motion, thick caret). A rejected payload leaves the theme unchanged
+///    by this layer
 ///
 /// A distribution accent that misses a contrast floor is repaired. A brand
 /// accent is not: see [`Theme::brand_accent`].
@@ -392,20 +507,21 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     }
 
     theme.allow_app_accents = stack.allow_app_accents;
-    if stack.accessibility.high_contrast || stack.accessibility.forced_colors {
+    // A rejected accessibility payload — bad schema, or a non-finite scale —
+    // does not change contrast, caret, type size, or motion.
+    let Ok(access) = stack.accessibility.materialize() else {
+        return theme;
+    };
+    if access.high_contrast || access.forced_colors {
         let allow_app_accents = theme.allow_app_accents;
         theme = Theme::high_contrast();
         theme.allow_app_accents = allow_app_accents;
     }
-    theme.caret_width = if stack.accessibility.thick_caret {
-        4.0
-    } else {
-        2.0
-    };
+    theme.caret_width = if access.thick_caret { 4.0 } else { 2.0 };
     theme
-        .with_ui_scale(stack.accessibility.ui_scale)
-        .with_text_scale(stack.accessibility.text_scale)
-        .with_reduce_motion(stack.accessibility.reduce_motion)
+        .with_ui_scale(access.ui_scale)
+        .with_text_scale(access.text_scale)
+        .with_reduce_motion(access.reduce_motion)
 }
 
 fn apply_repaired_accent(theme: Theme, accent: [u8; 3]) -> Theme {
@@ -683,11 +799,11 @@ mod tests {
             }),
             accessibility: AccessibilityLayer {
                 high_contrast: true,
-                forced_colors: false,
                 text_scale: 1.5,
                 ui_scale: 1.25,
                 reduce_motion: true,
                 thick_caret: true,
+                ..AccessibilityLayer::default()
             },
             ..light_stack()
         });
@@ -705,6 +821,103 @@ mod tests {
         assert_eq!(surface.page, theme.bg_app);
         assert_eq!(surface.ink, theme.text_primary);
         assert!(audit(&theme.tokens.colors).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_accessibility_payload_does_not_apply() {
+        let rejected = AccessibilityLayer {
+            schema_version: 99,
+            high_contrast: true,
+            forced_colors: true,
+            text_scale: 2.0,
+            ui_scale: 1.5,
+            reduce_motion: true,
+            thick_caret: true,
+        };
+        assert!(rejected.validate().is_err());
+        assert!(rejected.materialize().is_err());
+        let theme = resolve_theme_layers(&ThemeLayerStack {
+            accessibility: rejected,
+            ..light_stack()
+        });
+        assert_eq!(theme.name, Theme::light().name);
+        assert_eq!(theme.bg_app, Theme::light().bg_app);
+        assert_eq!(rgb(&theme), rgb(&Theme::light()));
+        assert!(!theme.colors_are_forced());
+        assert_eq!(theme.text_scale, 1.0);
+        assert_eq!(theme.ui_scale, 1.0);
+        assert!(!theme.reduce_motion);
+        assert_eq!(theme.caret_width, 2.0);
+
+        let from_json = Theme::resolved_from_settings(
+            r#"{"appearance":{"theme":"Light","high_contrast":true,"text_scale":2.0,"accessibility":{"schema_version":99,"high_contrast":true,"forced_colors":true,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true,"thick_caret":true}}}"#,
+        );
+        assert_eq!(from_json.name, Theme::light().name);
+        assert!(!from_json.colors_are_forced());
+        assert_eq!(from_json.text_scale, 1.0);
+        assert_eq!(from_json.ui_scale, 1.0);
+        assert!(!from_json.reduce_motion);
+        assert_eq!(from_json.caret_width, 2.0);
+
+        let non_finite = AccessibilityLayer {
+            text_scale: f32::NAN,
+            high_contrast: true,
+            ..AccessibilityLayer::default()
+        };
+        assert!(non_finite.validate().is_err());
+        let untouched = resolve_theme_layers(&ThemeLayerStack {
+            accessibility: non_finite,
+            ..light_stack()
+        });
+        assert_eq!(untouched.name, Theme::light().name);
+        assert!(!untouched.colors_are_forced());
+        assert_eq!(untouched.text_scale, 1.0);
+    }
+
+    #[test]
+    fn out_of_range_accessibility_scales_are_clamped_before_apply() {
+        let raw = AccessibilityLayer {
+            text_scale: 100.0,
+            ui_scale: 0.1,
+            ..AccessibilityLayer::default()
+        };
+        let ready = raw.materialize().expect("schema 1 is admitted");
+        assert_eq!(ready.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
+        assert_eq!(ready.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
+        let theme = resolve_theme_layers(&ThemeLayerStack {
+            accessibility: raw,
+            ..light_stack()
+        });
+        assert_eq!(theme.name, Theme::light().name);
+        assert_eq!(theme.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
+        assert_eq!(theme.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
+        assert_ne!(theme.text_scale, raw.text_scale);
+    }
+
+    #[test]
+    fn a_rejected_workspace_tint_schema_leaves_the_theme() {
+        let tint = WorkspaceTint {
+            schema_version: 99,
+            accent: [0x0B, 0x3A, 0x82],
+        };
+        assert!(tint.validate().is_err());
+        let theme = resolve_theme_layers(&ThemeLayerStack {
+            workspace_tint: Some(tint),
+            ..light_stack()
+        });
+        assert_eq!(theme.name, Theme::light().name);
+        assert_eq!(theme.bg_app, Theme::light().bg_app);
+        assert_eq!(
+            rgb(&theme),
+            rgb(&Theme::light()),
+            "a schema the resolver does not accept must not recolour the accent"
+        );
+
+        let from_json = Theme::resolved_from_settings(
+            r#"{"appearance":{"theme":"Light","workspace_tint":{"schema_version":99,"accent":[11,58,130]}}}"#,
+        );
+        assert_eq!(from_json.name, Theme::light().name);
+        assert_eq!(rgb(&from_json), rgb(&Theme::light()));
     }
 
     #[test]

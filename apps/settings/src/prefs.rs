@@ -460,6 +460,10 @@ impl Default for UpdatePrefs {
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
 /// same way it reads the display/input comfort sections.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent appearance switch, not one combined state"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppearancePrefs {
     /// Named theme preset — one of [`AppearancePrefs::THEMES`].
@@ -507,19 +511,11 @@ pub struct AppearancePrefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_tint: Option<ui::theme::WorkspaceTint>,
     /// When false, [`ui::Theme::brand_accent`] refuses every app colour.
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    #[serde(default = "default_true")]
     pub app_accents: bool,
     /// Force theme tokens onto content surfaces, with high contrast.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub forced_colors: bool,
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 fn default_schedule() -> String {
@@ -612,6 +608,7 @@ impl AppearancePrefs {
                 ui_scale: self.ui_scale as f32,
                 reduce_motion: self.reduce_motion,
                 thick_caret: false,
+                ..ui::theme::AccessibilityLayer::default()
             },
             allow_app_accents: self.app_accents,
         })
