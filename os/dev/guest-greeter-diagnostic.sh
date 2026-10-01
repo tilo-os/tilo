@@ -22,8 +22,7 @@ esac
 
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
-TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" \
-  /tmp/tilo-greeter-ptrace-probe /usr/bin/tilo-greeter
+TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
 status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
@@ -35,8 +34,6 @@ chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
-ls -l /usr/bin/tilo-greeter /tmp/tilo-greeter-ptrace-probe || true
-getcap /usr/bin/tilo-greeter 2>&1 || true
 lscpu | grep -E 'Architecture:|Model name:|Features:' || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
@@ -71,7 +68,7 @@ systemctl restart greetd.service
 sleep 6
 echo '::group::guest greeter diagnostic'
 if [[ -s $log ]]; then
-  grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|renderer|started|exited|TILO_GREETER_EXIT|TILO_SIGILL|TILO_PTRACE|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
+  grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|renderer|started|exited|TILO_GREETER_EXIT|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
   echo 'last 20 lines:'
   tail -n 20 "$log" | cut -c 1-320
 else

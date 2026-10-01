@@ -1175,14 +1175,46 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-encoder-done");
     }
-    surface.blitter.copy(
-        &device_handle.device,
-        &mut encoder,
-        &surface.target_view,
-        &surface_texture
-            .texture
-            .create_view(&vello::wgpu::TextureViewDescriptor::default()),
-    );
+    if surface
+        .config
+        .usage
+        .contains(vello::wgpu::TextureUsages::COPY_DST)
+    {
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-start");
+        }
+        encoder.copy_texture_to_texture(
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface.target_texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-done");
+        }
+    } else {
+        surface.blitter.copy(
+            &device_handle.device,
+            &mut encoder,
+            &surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&vello::wgpu::TextureViewDescriptor::default()),
+        );
+    }
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-blit-copy-done");
     }
