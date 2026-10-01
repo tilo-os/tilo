@@ -150,7 +150,7 @@ impl ShellBackgroundService {
 
     pub fn at_path(dialogs: PortalDialogQueue, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = atomic_file::json::load_or_default(&path);
+        let state = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             dialogs,
             state: Arc::new(Mutex::new(state)),
@@ -204,7 +204,7 @@ impl ShellBackgroundService {
     }
 
     fn commit(&self, state: &AutostartFile) -> PortalResult<()> {
-        match atomic_file::json::write_private(&self.path, state) {
+        match tilo_files::native::atomic::json::write_private(&self.path, state) {
             Ok(()) => PortalResult::Success(()),
             Err(error) => PortalResult::Failed(format!("cannot commit background state: {error}")),
         }
@@ -262,7 +262,7 @@ impl BackgroundService for ShellBackgroundService {
             PortalResult::Cancelled => PortalResult::Cancelled,
             PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
             PortalResult::Failed(error) => {
-                *state = atomic_file::json::load_or_default(&self.path);
+                *state = tilo_files::native::atomic::json::load_or_default(&self.path);
                 PortalResult::Failed(error)
             }
         }

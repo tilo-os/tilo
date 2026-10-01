@@ -52,18 +52,18 @@ impl Capability {
         }
     }
 
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Clipboard => "Clipboard",
-            Self::Notifications => "Notifications",
-            Self::WifiSettings => "Wi-Fi & settings",
-            Self::Media => "Media",
-            Self::DisplayInput => "Display & input",
-            Self::FileTransfer => "File transfer",
-            Self::RealtimeSessions => "Realtime sessions",
-            Self::TypedGamepad => "Typed gamepad forwarding",
-            Self::AppContinuations => "App continuations",
-        }
+    pub(crate) fn label(self) -> String {
+        crate::i18n::t(match self {
+            Self::Clipboard => "continuity-clipboard",
+            Self::Notifications => "continuity-notifications",
+            Self::WifiSettings => "continuity-wifi-settings",
+            Self::Media => "continuity-media",
+            Self::DisplayInput => "continuity-display-input",
+            Self::FileTransfer => "continuity-file-transfer",
+            Self::RealtimeSessions => "continuity-realtime-sessions",
+            Self::TypedGamepad => "continuity-typed-gamepad",
+            Self::AppContinuations => "continuity-app-continuations",
+        })
     }
 
     pub(crate) fn description(self) -> String {
@@ -92,9 +92,23 @@ pub(crate) struct AuditEntry {
 
 impl AuditEntry {
     pub(crate) fn summary(&self) -> String {
-        let subject = self.capability.map_or("All Continuity", Capability::label);
-        let verb = if self.enabled { "allowed" } else { "stopped" };
-        format!("{subject} {verb} · local record {}", self.recorded_at_secs)
+        let subject = self
+            .capability
+            .map_or_else(|| crate::i18n::t("continuity-all"), Capability::label);
+        crate::i18n::t_args(
+            if self.enabled {
+                "continuity-audit-allowed"
+            } else {
+                "continuity-audit-stopped"
+            },
+            &[
+                ("subject", subject.into()),
+                (
+                    "at",
+                    i64::try_from(self.recorded_at_secs).unwrap_or(0).into(),
+                ),
+            ],
+        )
     }
 }
 

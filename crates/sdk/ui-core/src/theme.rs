@@ -1,4 +1,5 @@
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
+pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{PaletteSpec, Tokens};
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
@@ -73,6 +74,54 @@ impl CustomThemeSpec {
             return Err("invalid custom theme spacing");
         }
         Ok(())
+    }
+
+    /// The legibility half of validation: every contrast floor in
+    /// [`crate::tokens::contrast::FLOORS`] this theme misses as authored.
+    /// [`Self::validate`] stays the structural contract, so a file written
+    /// by an older build still opens; Theme Studio refuses to save a theme
+    /// with findings, and [`Theme::from_custom_spec`] repairs one that
+    /// arrives anyway.
+    #[must_use]
+    pub fn contrast_findings(&self) -> Vec<ContrastFinding> {
+        crate::tokens::contrast::audit(&self.palette())
+    }
+
+    fn palette(&self) -> PaletteSpec {
+        let popover = if self.dark_base {
+            mix_rgb(self.surface_base, [0, 0, 0], 0.40)
+        } else {
+            [255, 255, 255]
+        };
+        // Quieter than `text_dim` by mixing toward the ground, but only as
+        // far as the tier's own 3:1 floor allows: a fixed 40 % lands at
+        // 2.5:1 on a light ground even when `text_dim` is comfortably legible.
+        let text_tertiary = [0.40_f32, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10, 0.05]
+            .into_iter()
+            .map(|t| mix_rgb(self.text_dim, self.surface_base, t))
+            .find(|c| {
+                crate::color::contrast_ratio(rgb(*c), rgb(self.surface_base))
+                    >= crate::tokens::NON_TEXT_MIN_CONTRAST
+            })
+            .unwrap_or(self.text_dim);
+        PaletteSpec {
+            dark: self.dark_base,
+            base: rgb(self.surface_base),
+            raised: rgb(self.surface_raised),
+            popover: rgb(popover),
+            text: rgb(self.text_primary),
+            text_dim: rgb(self.text_dim),
+            text_tertiary: rgb(text_tertiary),
+            border: rgb(self.border),
+            focus: rgb(self.accent),
+            accent: rgb(self.accent),
+            accent_hover: rgb(self.accent_hover),
+            success: rgb(self.success),
+            warning: rgb(self.warning),
+            danger: rgb(self.danger),
+            info: rgb(self.info),
+            window_card: None,
+        }
     }
 }
 
@@ -303,35 +352,16 @@ impl Theme {
         Self::from_tokens(name, t)
     }
 
+    /// `None` only for a structurally invalid spec. A spec that misses a
+    /// contrast floor ([`CustomThemeSpec::contrast_findings`]) is repaired
+    /// rather than rejected — its failing foregrounds step out just far
+    /// enough to clear — so a legacy file still opens, and a theme that
+    /// materializes always renders apps legibly.
     pub fn from_custom_spec(spec: &CustomThemeSpec) -> Option<Self> {
         spec.validate().ok()?;
-        let popover = if spec.dark_base {
-            mix_rgb(spec.surface_base, [0, 0, 0], 0.40)
-        } else {
-            [255, 255, 255]
-        };
-        let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
-        let mut theme = Self::from_palette(
-            &spec.name,
-            &PaletteSpec {
-                dark: spec.dark_base,
-                base: rgb(spec.surface_base),
-                raised: rgb(spec.surface_raised),
-                popover: rgb(popover),
-                text: rgb(spec.text_primary),
-                text_dim: rgb(spec.text_dim),
-                text_tertiary: rgb(text_tertiary),
-                border: rgb(spec.border),
-                focus: rgb(spec.accent),
-                accent: rgb(spec.accent),
-                accent_hover: rgb(spec.accent_hover),
-                success: rgb(spec.success),
-                warning: rgb(spec.warning),
-                danger: rgb(spec.danger),
-                info: rgb(spec.info),
-                window_card: None,
-            },
-        );
+        let mut palette = spec.palette();
+        crate::tokens::contrast::repair(&mut palette);
+        let mut theme = Self::from_palette(&spec.name, &palette);
         // `radius_px` is the `md` step and `spacing_px` the `s3` step; the
         // rest of each scale follows in the stock proportions (radii
         // 1:2:3:6, spacing 1:2:3:4:6:8:12:16) so a custom theme at the
@@ -460,10 +490,13 @@ impl Theme {
                 text_tertiary: Color::from_rgb8(0x7C, 0x6F, 0x64), // fg4
                 border: Color::from_rgb8(0xD5, 0xC4, 0xA1), // bg2
                 focus: Color::from_rgb8(0xAF, 0x3A, 0x03), // orange (dark)
-                accent: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
-                accent_hover: Color::from_rgb8(0xB5, 0x76, 0x14),
-                success: Color::from_rgb8(0x98, 0x97, 0x1A), // green (dark)
-                warning: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
+                // Gruvbox's faded yellow and green: the neutral yellow and
+                // green measure 2.2:1 and 2.7:1 on bg0, under the 3:1 an
+                // active toggle or a status dot needs.
+                accent: Color::from_rgb8(0xB5, 0x76, 0x14), // yellow (faded)
+                accent_hover: Color::from_rgb8(0x9D, 0x64, 0x10),
+                success: Color::from_rgb8(0x79, 0x74, 0x0E), // green (faded)
+                warning: Color::from_rgb8(0xB5, 0x76, 0x14), // yellow (faded)
                 danger: Color::from_rgb8(0xCC, 0x24, 0x1D),  // red (dark)
                 info: Color::from_rgb8(0x45, 0x85, 0x88),    // blue (dark)
                 window_card: None,
@@ -510,16 +543,18 @@ impl Theme {
                 raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 text: Color::from_rgb8(0x4C, 0x4F, 0x69), // text
-                text_dim: Color::from_rgb8(0x6C, 0x6F, 0x85), // subtext0
-                text_tertiary: Color::from_rgb8(0x8C, 0x8F, 0xA1), // overlay1
+                text_dim: Color::from_rgb8(0x5C, 0x5F, 0x77), // subtext1 (subtext0 is 4.4:1)
+                text_tertiary: Color::from_rgb8(0x7C, 0x7F, 0x93), // overlay2
                 border: Color::from_rgb8(0xCC, 0xD0, 0xDA), // surface0
                 focus: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
                 accent: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
                 accent_hover: Color::from_rgb8(0x15, 0x52, 0xCC),
-                success: Color::from_rgb8(0x40, 0xA0, 0x2B), // green
-                warning: Color::from_rgb8(0xDF, 0x8E, 0x1D), // yellow
+                // Latte's green, yellow and sky, deepened just enough to
+                // clear 3:1 on its base (they measure 2.96, 2.31 and 2.47).
+                success: Color::from_rgb8(0x3F, 0x9E, 0x2B), // green
+                warning: Color::from_rgb8(0xC0, 0x7A, 0x19), // yellow
                 danger: Color::from_rgb8(0xD2, 0x0F, 0x39),  // red
-                info: Color::from_rgb8(0x04, 0xA5, 0xE5),    // sky
+                info: Color::from_rgb8(0x04, 0x94, 0xCE),    // sky
                 window_card: None,
             },
         )
@@ -534,8 +569,10 @@ impl Theme {
                 raised: Color::from_rgb8(0x07, 0x36, 0x42), // base02
                 popover: Color::from_rgb8(0x00, 0x21, 0x2B),
                 text: Color::from_rgb8(0x93, 0xA1, 0xA1), // base1
-                text_dim: Color::from_rgb8(0x83, 0x94, 0x96), // base0
-                text_tertiary: Color::from_rgb8(0x58, 0x6E, 0x75), // base01
+                // base0 lifted a step toward base1: base0 itself is 4.1:1 on
+                // base02, where secondary text lands on a raised card.
+                text_dim: Color::from_rgb8(0x8C, 0x9C, 0x9E),
+                text_tertiary: Color::from_rgb8(0x65, 0x7B, 0x83), // base00 (base01 is 2.8:1)
                 border: Color::from_rgb8(0x0F, 0x4A, 0x59),
                 focus: Color::from_rgb8(0x26, 0x8B, 0xD2), // blue
                 accent: Color::from_rgb8(0x2A, 0xA1, 0x98), // cyan
@@ -591,13 +628,13 @@ impl Theme {
                 popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 text: Color::from_rgb8(0x33, 0x30, 0x2A), // warm near-black
                 text_dim: Color::from_rgb8(0x6B, 0x65, 0x5A),
-                text_tertiary: Color::from_rgb8(0x97, 0x90, 0x7F),
+                text_tertiary: Color::from_rgb8(0x8A, 0x83, 0x71),
                 border: Color::from_rgb8(0xDD, 0xD3, 0xC2),
                 focus: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
                 accent: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
                 accent_hover: Color::from_rgb8(0xA1, 0x5A, 0x2E),
                 success: Color::from_rgb8(0x5B, 0x8C, 0x4E), // olive
-                warning: Color::from_rgb8(0xC0, 0x8A, 0x2E),
+                warning: Color::from_rgb8(0xA8, 0x78, 0x22),
                 danger: Color::from_rgb8(0xB4, 0x46, 0x2F), // brick
                 info: Color::from_rgb8(0x3E, 0x7C, 0xA8),
                 window_card: None,
@@ -1047,7 +1084,7 @@ mod tests {
                 (
                     Theme::gruvbox_light(),
                     [0xFB, 0xF1, 0xC7],
-                    [0xD7, 0x99, 0x21],
+                    [0xB5, 0x76, 0x14], // faded yellow; see the preset
                 ),
                 (
                     Theme::catppuccin_mocha(),
@@ -1193,10 +1230,9 @@ mod tests {
                 let rd = contrast_ratio(on.ink_dim, card);
                 assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
                 // How quiet the tertiary tier is is a property of the palette's
-                // authorship, not this derivation — Solarized runs at 2.8:1 on
-                // its own ground on purpose, against a large-text-AA target of
-                // 3:1. So the bar is: clear 3:1, or be no worse than the
-                // palette already manages on its own ground.
+                // authorship, not this derivation (the contrast floors hold it
+                // to 3:1 on the palette's own ground). So the bar is: clear
+                // 3:1, or be no worse than the palette manages on its ground.
                 let rt = contrast_ratio(on.ink_tertiary, card);
                 let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
                 assert!(
@@ -1719,6 +1755,129 @@ mod tests {
         {
             let json = r#"{"appearance":{"theme":"custom:wanted","custom_theme":{"schema_version":1,"id":"other","name":"Other","dark_base":true,"accent":[1,2,3],"accent_hover":[1,2,3],"surface_base":[1,2,3],"surface_raised":[1,2,3],"text_primary":[1,2,3],"text_dim":[1,2,3],"border":[1,2,3],"success":[1,2,3],"warning":[1,2,3],"danger":[1,2,3],"info":[1,2,3],"radius_px":8.0,"spacing_px":8.0,"font":"Inter"}}}"#;
             assert!(Theme::from_settings_json(json).is_none());
+        }
+    }
+
+    #[test]
+    fn every_theme_that_materializes_keeps_the_contrast_floors() {
+        use crate::tokens::contrast::audit;
+
+        // Case `every_shipped_preset_keeps_every_floor`: by constructor and by
+        // the name the settings file stores, so neither list can drift.
+        {
+            let by_name = Theme::ALL
+                .iter()
+                .map(|n| Theme::named(n).unwrap_or_else(|| panic!("{n} resolves")));
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()).chain(by_name) {
+                let findings = audit(&t.tokens.colors);
+                assert!(
+                    findings.is_empty(),
+                    "{} misses {} contrast floor(s):\n  {}",
+                    t.name,
+                    findings.len(),
+                    findings
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n  "),
+                );
+            }
+        }
+
+        // Case `a_legible_custom_theme_has_no_findings_and_is_not_touched`.
+        {
+            let spec = quiet_ocean(8.0, 12.0);
+            assert_eq!(spec.contrast_findings(), Vec::new());
+            let theme = Theme::from_custom_spec(&spec).unwrap();
+            assert_eq!(rgb(theme.text_primary), spec.text_primary);
+            assert_eq!(rgb(theme.text_dim), spec.text_dim);
+            assert_eq!(rgb(theme.accent_primary), spec.accent);
+            assert_eq!(rgb(theme.tokens.colors.semantic.danger), spec.danger);
+        }
+
+        // Case `an_illegible_legacy_file_still_opens_and_renders_legibly`:
+        // grey on grey, as an older build (which checked only ranges) would
+        // have saved it. Dropping it would silently swap the person's theme
+        // for the default; it is repaired instead.
+        {
+            let mut murky = quiet_ocean(8.0, 12.0);
+            murky.surface_base = [0x30, 0x30, 0x30];
+            murky.surface_raised = [0x3A, 0x3A, 0x3A];
+            murky.text_primary = [0x70, 0x70, 0x70];
+            murky.text_dim = [0x55, 0x55, 0x55];
+            murky.accent = [0x40, 0x48, 0x58];
+            murky.warning = [0x55, 0x4A, 0x20];
+            assert!(murky.validate().is_ok(), "structurally it is a theme");
+            let findings = murky.contrast_findings();
+            for role in [
+                ContrastRole::TextPrimary,
+                ContrastRole::TextDim,
+                ContrastRole::Accent,
+                ContrastRole::Warning,
+            ] {
+                assert!(
+                    findings.iter().any(|f| f.foreground == role),
+                    "{} should be reported: {findings:?}",
+                    role.name()
+                );
+            }
+            let json = serde_json::json!({
+                "appearance": { "theme": "custom:quiet-ocean", "custom_theme": murky }
+            });
+            let theme = Theme::from_settings_json(&json.to_string())
+                .expect("a legacy file with poor contrast still opens");
+            assert_eq!(theme.name, "Quiet Ocean");
+            assert_eq!(audit(&theme.tokens.colors), Vec::new());
+            assert_eq!(
+                rgb(theme.bg_app),
+                murky.surface_base,
+                "repair moves foregrounds, never the ground"
+            );
+            assert_eq!(rgb(theme.bg_primary), murky.surface_raised);
+            assert_eq!(
+                rgb(theme.tokens.colors.semantic.danger),
+                murky.danger,
+                "a role that already passed is left as authored"
+            );
+        }
+
+        // Case `a_pale_accent_on_a_light_ground_is_deepened_not_inverted`:
+        // the repaired accent stays in the authored hue family.
+        {
+            let mut pale = quiet_ocean(8.0, 12.0);
+            pale.dark_base = false;
+            pale.surface_base = [0xF6, 0xF6, 0xF4];
+            pale.surface_raised = [0xFF, 0xFF, 0xFF];
+            pale.text_primary = [0x1B, 0x1C, 0x1E];
+            pale.text_dim = [0x55, 0x57, 0x5D];
+            pale.accent = [0xFF, 0xD0, 0x40];
+            pale.success = [0x20, 0x80, 0x40];
+            pale.warning = [0x90, 0x60, 0x00];
+            pale.danger = [0xC0, 0x30, 0x30];
+            pale.info = [0x20, 0x60, 0xB0];
+            assert_eq!(
+                pale.contrast_findings()
+                    .iter()
+                    .map(|f| f.foreground)
+                    .collect::<Vec<_>>(),
+                vec![
+                    ContrastRole::Accent,
+                    ContrastRole::Accent,
+                    ContrastRole::Focus,
+                ],
+                "only the pale accent misses: on base, on raised, and as the \
+                 focus ring a custom theme draws in its accent. The derived \
+                 tertiary tier stops short of its floor rather than mixing a \
+                 fixed 40 % toward the light ground (2.7:1)"
+            );
+            let theme = Theme::from_custom_spec(&pale).unwrap();
+            assert_eq!(audit(&theme.tokens.colors), Vec::new());
+            let [r, g, b] = rgb(theme.accent_primary);
+            assert!(
+                r > g && g > b,
+                "still a yellow-orange after deepening: {:?}",
+                [r, g, b]
+            );
         }
     }
 

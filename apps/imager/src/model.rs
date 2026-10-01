@@ -674,6 +674,17 @@ pub struct InstallProfile {
     pub encryption_passphrase: String,
     /// Persistence overlay size in MB, for `InstallMode::Persistent`.
     pub persist_mb: u64,
+    /// Wi-Fi network the new machine should join. The passphrase stays in the
+    /// write request, never in this collaborative profile.
+    #[serde(default)]
+    pub wifi_ssid: String,
+    /// Name of the device identity created for the target.
+    #[serde(default)]
+    pub device_label: String,
+    /// Certify a new device under the setup machine's person and place it on
+    /// the target. The human root secret stays on the setup machine.
+    #[serde(default)]
+    pub enroll_local_identity: bool,
 }
 
 impl Default for InstallProfile {
@@ -689,6 +700,9 @@ impl Default for InstallProfile {
             encrypt: false,
             encryption_passphrase: String::new(),
             persist_mb: 4096,
+            wifi_ssid: String::new(),
+            device_label: String::new(),
+            enroll_local_identity: false,
         }
     }
 }
@@ -871,6 +885,9 @@ impl InstallProfile {
             encrypt: true,
             encryption_passphrase: "•••••••••".into(),
             persist_mb: 0,
+            wifi_ssid: String::new(),
+            device_label: String::new(),
+            enroll_local_identity: false,
         }
     }
 

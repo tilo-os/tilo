@@ -3,8 +3,7 @@
 //! analysed instead of being played (no `PipeWire` device on this host). Real
 //! libopus encode/decode through the shell's `GStreamer` codec, and the real
 //! native `moq-lite` client over real loopback WebTransport through the
-//! host relay implementation; the relay authority here is a test identity map
-//! (product grants are covered by tilo-device-host `media_service` tests).
+//! host relay implementation; the relay authority here is a test identity map.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
