@@ -331,6 +331,13 @@ pub struct TypstApp {
     /// Framework-hosted surfaces leave the palette tree to
     /// `tilo_resource::publish`; standalone keeps the contextual builder.
     framework_hosted: bool,
+    /// Present once [`ResourceSurface::attach`] has run. Source setup and
+    /// whole-source replacement go through it so history records the action.
+    document_actions: Option<ui::framework::Dispatcher<crate::resource::TypstEditor>>,
+    /// Test-only host used when the surface is marked hosted without a
+    /// framework dispatcher.
+    #[cfg(test)]
+    local_actions: ui::ActionHost,
 }
 
 impl TypstApp {
@@ -435,6 +442,9 @@ impl TypstApp {
             status_hover: (false, false),
             shots_status: false,
             framework_hosted: false,
+            document_actions: None,
+            #[cfg(test)]
+            local_actions: ui::ActionHost::new(),
         }
     }
 
@@ -449,6 +459,47 @@ impl TypstApp {
     /// framework door.
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted
+    }
+
+    pub(crate) fn attach_document_actions(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::TypstEditor>,
+    ) {
+        self.document_actions = Some(dispatcher);
+    }
+
+    /// Hosted source setup and replacement go through the framework dispatcher.
+    /// A hosted test without one uses the local action host. Standalone keeps
+    /// the action on the open transaction.
+    fn apply_source_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::TypstDocAction,
+    ) {
+        if let Some(dispatcher) = &self.document_actions {
+            let _ = dispatcher.apply_now(doc, action);
+            return;
+        }
+        #[cfg(test)]
+        if self.framework_hosted {
+            let _ = self.local_actions.try_dispatch_with_context(
+                doc,
+                "typst.action",
+                action,
+                ui::tilo_actions::ActionContext::for_action(
+                    "so.tilo.typst-editor",
+                    "Typst",
+                    action,
+                ),
+            );
+            return;
+        }
+        let _ = ui::tilo_actions::Action::apply(action, doc);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_source_action_for_test(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local_actions.take_committed()
     }
 
     /// Live presentation inputs for the resource tree.
@@ -558,16 +609,13 @@ impl TypstApp {
 
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
-    fn ensure_source_obj(&self, doc: &mut AutoCommit) -> ObjId {
+    pub(crate) fn ensure_source_obj(&mut self, doc: &mut AutoCommit) -> ObjId {
         let seed = self
             .documents
             .get(self.current)
             .map(|d| d.source.clone())
             .unwrap_or_default();
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TypstDocAction::EnsureSource { seed },
-            doc,
-        );
+        self.apply_source_action(doc, &crate::resource::TypstDocAction::EnsureSource { seed });
         match doc.get(&ROOT, "source") {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
             _ => ROOT,
@@ -597,9 +645,9 @@ impl TypstApp {
         let src = entry.source.clone();
         let name = entry.name.clone();
         if self.source_id.is_some() {
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TypstDocAction::ReplaceSource { text: src },
+            self.apply_source_action(
                 doc,
+                &crate::resource::TypstDocAction::ReplaceSource { text: src },
             );
         }
         self.editor.reset_cursor();
@@ -2386,11 +2434,11 @@ impl Widget for TypstApp {
                 true
             }
             ui::a11y::Action::SetValue(source) => {
-                let _ = ui::tilo_actions::Action::apply(
+                self.apply_source_action(
+                    doc,
                     &crate::resource::TypstDocAction::ReplaceSource {
                         text: source.clone(),
                     },
-                    doc,
                 );
                 let source_id = self.ensure_source_obj(doc);
                 self.source_id = Some(source_id);
@@ -2479,6 +2527,31 @@ impl ui::resources::PublishesResources for TypstApp {
             return crate::actions::live_extras(&ctx);
         }
         crate::actions::resources(&ctx)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.framework_hosted && id == "typst.workspace" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let ctx = self.resource_ctx();
+        find(&crate::actions::resources(&ctx), id).or_else(|| {
+            self.framework_hosted.then(|| {
+                crate::actions::live_extras(&ctx)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
