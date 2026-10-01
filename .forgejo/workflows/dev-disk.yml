@@ -434,15 +434,22 @@ jobs:
           }
           config=$(skopeo inspect "docker://$DEV_CHECKPOINT_REF")
           case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+          # The standalone disk builder labels the dev image with the index,
+          # while the OS integration lane labels it with its exact native child.
+          # Both identify the verified source above; require the name and digest
+          # to use the same form, and always bind the native child separately.
           jq -e --arg arch "$platform" --arg source "$SOURCE_REVISION" \
-            --arg base "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_index "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_child "$BASE_REPOSITORY@$BASE_CHILD_DIGEST" \
             --arg index "$BASE_INDEX_DIGEST" --arg child "$BASE_CHILD_DIGEST" \
             --arg trust "$BASE_TRUST" '
             .Architecture == $arch
             and .Labels["sh.tilo.image.flavour"] == "dev"
             and .Labels["org.opencontainers.image.revision"] == $source
-            and .Labels["org.opencontainers.image.base.name"] == $base
-            and .Labels["org.opencontainers.image.base.digest"] == $index
+            and ((.Labels["org.opencontainers.image.base.name"] == $base_index
+                  and .Labels["org.opencontainers.image.base.digest"] == $index)
+                 or (.Labels["org.opencontainers.image.base.name"] == $base_child
+                     and .Labels["org.opencontainers.image.base.digest"] == $child))
             and .Labels["org.opencontainers.image.base.child.digest"] == $child
             and .Labels["sh.tilo.dev.base-trust"] == $trust
           ' <<< "$config" >/dev/null || {
