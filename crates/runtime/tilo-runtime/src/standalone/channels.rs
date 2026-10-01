@@ -73,7 +73,7 @@ pub(super) fn open(
         broker,
     )?;
     let access = ChannelKeyAccess::new(service);
-    let keys = ChannelKeyProvider::default();
+    let keys = joined.channel_keys();
     keys.set(Some(access.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);

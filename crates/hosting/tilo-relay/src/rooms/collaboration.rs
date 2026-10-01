@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
 use tilo_peer_state::join::{
     InviteGrant, JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinChallengeResponse,
-    JoinCompleteRequest, JoinInspection, JoinTransportRequest, JoinTransportResponse, MemberRole,
-    MembershipChallenge, MembershipChallengeRequest, MembershipChallengeResponse,
-    MembershipCompleteRequest, VerifiedJoin, decode_and_verify_invitation, issue_invitation,
-    verify_join_proof, verify_membership_proof,
+    JoinCompleteRequest, JoinInspection, JoinProof, JoinTransportRequest, JoinTransportResponse,
+    MemberRole, MembershipChallenge, MembershipChallengeRequest, MembershipChallengeResponse,
+    MembershipCompleteRequest, VerifiedJoin, VerifiedRedemption, decode_and_verify_invitation,
+    issue_invitation, verify_join_proof, verify_membership_proof,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -612,7 +612,7 @@ impl Rooms {
         result
     }
 
-    fn inspect(
+    pub(super) fn inspect(
         room: &GovernedRoom,
         signed_invitation: &[u8],
         now: u64,
@@ -644,7 +644,7 @@ impl Rooms {
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
-    async fn challenge(
+    pub(super) async fn challenge(
         &self,
         remote_endpoint: [u8; 32],
         request: JoinChallengeRequest,
@@ -717,7 +717,6 @@ impl Rooms {
 
     #[expect(
         clippy::significant_drop_tightening,
-        clippy::too_many_lines,
         reason = "one locked admission: verify the proof, admit the device, record its receipt and publish, in order"
     )]
     async fn complete(
@@ -747,12 +746,31 @@ impl Rooms {
             )?;
             return prior.replay(&room);
         }
+        let redemption = Self::redeem(&room, remote_endpoint, &request.proof, now)?;
+        self.admit_redemption(
+            &mut room,
+            remote_endpoint,
+            request_id,
+            proof_digest,
+            &redemption,
+            now,
+        )
+        .await
+    }
+
+    /// Verify `proof` against the challenge `room` issued to the device at
+    /// `remote_endpoint`, for an invitation still redeemable.
+    pub(super) fn redeem(
+        room: &GovernedRoom,
+        remote_endpoint: [u8; 32],
+        proof: &JoinProof,
+        now: u64,
+    ) -> Result<VerifiedRedemption, CollaborationError> {
         let challenge = room
             .collaboration()
             .join_challenges
             .iter()
-            .find(|prior| prior.challenge == request.proof.challenge)
-            .cloned()
+            .find(|prior| prior.challenge == proof.challenge)
             .ok_or_else(|| CollaborationError::new("join challenge was not issued by this host"))?;
         if challenge.remote_endpoint != remote_endpoint
             || challenge.device_cert.device_public_key != remote_endpoint
@@ -762,24 +780,44 @@ impl Rooms {
             ));
         }
         let redemption = verify_join_proof(
-            &request.proof,
+            proof,
             &challenge.challenge,
             &challenge.device_cert,
-            &revocations(&room)?,
+            &revocations(room)?,
             now,
         )?;
+        Self::redeemable(room, redemption.join().invite_id())?;
+        Ok(redemption)
+    }
+
+    fn redeemable(room: &GovernedRoom, invite_id: [u8; 32]) -> Result<(), CollaborationError> {
         let issued = room
             .collaboration()
             .invitations
             .iter()
-            .find(|record| record.issued.invite_id == redemption.join().invite_id())
+            .find(|record| record.issued.invite_id == invite_id)
             .ok_or_else(|| CollaborationError::new("invitation was not issued by this host"))?;
         if issued.cancellation.is_some() {
             return Err(CollaborationError::new("invitation was cancelled"));
         }
+        Ok(())
+    }
+
+    /// Admit the verified `redemption` to `room`: commit its governance,
+    /// record its receipt and publish, in order.
+    pub(super) async fn admit_redemption(
+        &self,
+        room: &mut GovernedRoom,
+        remote_endpoint: [u8; 32],
+        request_id: [u8; 32],
+        proof_digest: [u8; 32],
+        redemption: &VerifiedRedemption,
+        now: u64,
+    ) -> Result<JoinBootstrap, CollaborationError> {
+        Self::redeemable(room, redemption.join().invite_id())?;
         let mut candidate = room.peer().clone();
         if let Err(error) =
-            candidate.admit_invited_member(&redemption, &self.inner.host.key, system_time(now))
+            candidate.admit_invited_member(redemption, &self.inner.host.key, system_time(now))
         {
             tracing::warn!(
                 room = %room.room(),
@@ -820,7 +858,7 @@ impl Rooms {
         )?;
         let bootstrap =
             delivered.ok_or_else(|| CollaborationError::new("join bootstrap was not built"))?;
-        self.settle(&mut room).await?;
+        self.settle(room).await?;
         tracing::info!(
             room = %bootstrap.room,
             invite_id = %hex::encode(bootstrap.invite_id),
@@ -987,6 +1025,25 @@ impl Rooms {
     }
 }
 
+impl GovernedRoom {
+    /// Whether a device redeemed the invitation `invite_id`.
+    pub(super) fn redeemed(&self, invite_id: [u8; 32]) -> bool {
+        self.collaboration()
+            .join_completions
+            .iter()
+            .any(|completion| completion.bootstrap.invite_id == invite_id)
+    }
+
+    /// The certified device admitted by the committed request receipt.
+    pub(super) fn admitted_device(&self, request_id: [u8; 32]) -> Option<[u8; 32]> {
+        self.collaboration()
+            .join_completions
+            .iter()
+            .find(|completion| completion.request_id == request_id)
+            .map(|completion| completion.bootstrap.device_cert.device_public_key)
+    }
+}
+
 /// The workspace-join service of the rooms this relay governs.
 #[derive(Clone, Debug)]
 pub struct RoomJoinService {
@@ -1017,7 +1074,7 @@ impl WorkspaceJoinService for RoomJoinService {
 
 /// The room an invitation names, read without trusting it: the room it
 /// names is then verified against what that room issued.
-fn invitation_room(signed_invitation: &[u8]) -> Result<String, CollaborationError> {
+pub(super) fn invitation_room(signed_invitation: &[u8]) -> Result<String, CollaborationError> {
     let join =
         decode_and_verify_invitation(signed_invitation, None, &RevocationList::new(), now_ns())?;
     Ok(join.grant().room.clone())
@@ -1045,7 +1102,7 @@ fn validate_issue_request(
     Ok(())
 }
 
-fn request_digest(value: &impl Serialize) -> Result<[u8; 32], CollaborationError> {
+pub(super) fn request_digest(value: &impl Serialize) -> Result<[u8; 32], CollaborationError> {
     postcard::to_stdvec(value)
         .map(|bytes| *blake3::hash(&bytes).as_bytes())
         .map_err(|error| CollaborationError::new(error.to_string()))

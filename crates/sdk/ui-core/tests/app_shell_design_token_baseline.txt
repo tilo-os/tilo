@@ -1,7 +1,7 @@
 # Theme escape hatches in app and shell production code.
 # Format: <path relative to repository root> <pattern> <count>
 # This is a ratchet, not approval: counts may only move down.
-apps/camera/src/app.rs literal_color 6
+apps/camera/src/app.rs literal_color 5
 apps/chat/src/paint.rs white_or_black 4
 apps/chat/src/render_call.rs literal_color 3
 apps/chat/src/render_call.rs white_or_black 3
@@ -12,17 +12,17 @@ apps/containers/src/app.rs literal_color 1
 apps/containers/src/panels.rs white_or_black 6
 apps/db-client/src/app.rs white_or_black 3
 apps/db-client/src/theme_ext.rs white_or_black 2
-apps/ebook/src/app.rs literal_color 4
-apps/ebook/src/reader_theme.rs literal_color 25
-apps/feeds/src/app.rs literal_color 1
-apps/feeds/src/app.rs white_or_black 1
-apps/feeds/src/reader_theme.rs literal_color 14
+apps/ebook/src/app.rs literal_color 2
+apps/ebook/src/reader_theme.rs literal_color 12
+apps/feeds/src/app.rs literal_color 0
+apps/feeds/src/app.rs white_or_black 0
+apps/feeds/src/reader_theme.rs literal_color 12
 apps/git-client/src/app.rs literal_color 1
 apps/git-client/src/app.rs white_or_black 5
 apps/git-client/src/history.rs white_or_black 2
 apps/imager/src/app.rs white_or_black 2
 apps/mail/src/app.rs literal_color 1
-apps/mail/src/draw.rs literal_color 2
+apps/mail/src/draw.rs literal_color 0
 apps/mail/src/pane.rs white_or_black 6
 apps/maps/src/app.rs white_or_black 3
 apps/maps/src/canvas.rs literal_color 1
@@ -37,8 +37,8 @@ apps/pdf-viewer/src/render.rs literal_color 11
 apps/pdf-viewer/src/render.rs white_or_black 3
 apps/remote/src/app.rs literal_color 1
 apps/remote/src/app.rs white_or_black 1
-apps/sheets/src/app.rs literal_color 1
-apps/sheets/src/grid.rs literal_color 7
+apps/sheets/src/app.rs literal_color 0
+apps/sheets/src/grid.rs literal_color 0
 apps/slides/src/app.rs literal_color 1
 apps/slides/src/app.rs white_or_black 4
 apps/slides/src/model.rs literal_color 1
@@ -63,9 +63,9 @@ apps/video-editor/src/app/preview_paint.rs white_or_black 7
 apps/video-editor/src/app/timeline_paint.rs white_or_black 3
 apps/weather/src/core.rs literal_color 2
 apps/weather/src/core.rs white_or_black 3
-apps/word-processor/src/review_overlay.rs literal_color 13
-apps/word-processor/src/widget.rs literal_color 18
-apps/word-processor/src/widget.rs white_or_black 2
+apps/word-processor/src/review_overlay.rs literal_color 0
+apps/word-processor/src/widget.rs literal_color 8
+apps/word-processor/src/widget.rs white_or_black 0
 crates/session/shell/src/compositor/backend/headless.rs literal_color 1
 crates/session/shell/src/compositor/backend/winit.rs literal_color 1
 crates/session/shell/src/compositor/projection_capture.rs literal_color 1

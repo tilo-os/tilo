@@ -36,13 +36,18 @@ impl HistoryEntryId {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryAuthor {
     pub name: String,
-    /// Degrees `[0, 360)`. The widget converts hue → RGB via a fixed
-    /// saturation/value so authors stay visually distinguishable even
-    /// when names collide.
+    /// Degrees `[0, 360)`. Kept for fixtures and any surface that still
+    /// reads hue; paint uses [`HistoryAuthor::rgb`].
     pub avatar_hue: f32,
     /// Short hex fragment of the identity pubkey; the producer decides
     /// the length, the widget treats it as an opaque label.
     pub identity_short: String,
+    /// The colour presence paints this identity in. Defaults to
+    /// [`hue_to_rgb`] of [`Self::avatar_hue`] so existing constructors
+    /// keep their look; [`Self::with_rgb`] and identity resolution set
+    /// the person's colour or the shared [`crate::presence::PEER_PALETTE`]
+    /// slot.
+    avatar_rgb: (u8, u8, u8),
 }
 
 impl HistoryAuthor {
@@ -51,11 +56,24 @@ impl HistoryAuthor {
         avatar_hue: f32,
         identity_short: impl Into<String>,
     ) -> Self {
+        let avatar_hue = avatar_hue.rem_euclid(360.0);
         Self {
             name: name.into(),
-            avatar_hue: avatar_hue.rem_euclid(360.0),
+            avatar_hue,
             identity_short: identity_short.into(),
+            avatar_rgb: hue_to_rgb(avatar_hue),
         }
+    }
+
+    /// Use this exact RGB for the avatar, cursor and history row.
+    #[must_use]
+    pub fn with_rgb(mut self, rgb: (u8, u8, u8)) -> Self {
+        self.avatar_rgb = rgb;
+        self
+    }
+
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        self.avatar_rgb
     }
 }
 
