@@ -156,7 +156,7 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 
 #[test]
 fn an_uncertain_write_fences_every_room_until_reopened() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let joined = enrolled();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);

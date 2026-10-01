@@ -381,7 +381,7 @@ fn write_egress_summary(purpose: EgressPurpose, expires: u64) -> Result<(), Stri
         "{{\"schema_version\":1,\"purpose\":\"{}\",\"expires_at_unix\":{expires}}}\n",
         purpose.as_str()
     );
-    atomic_file::write_with_mode(Path::new(EGRESS_SUMMARY), bytes.as_bytes(), 0o640)
+    tilo_files::native::atomic::write_with_mode(Path::new(EGRESS_SUMMARY), bytes.as_bytes(), 0o640)
         .map_err(|error| format!("cannot publish egress summary: {error}"))
 }
 
@@ -433,8 +433,12 @@ fn write_status_summary<R: VmBackend>(backend: &R, config: &ApplianceConfig) -> 
         .unwrap_or_default();
     let summary =
         format!("{{\"schema_version\":1,\"power_state\":\"{power_state}\"{temporary_egress}}}\n");
-    atomic_file::write_with_mode(Path::new(STATUS_SUMMARY), summary.as_bytes(), 0o640)
-        .map_err(|error| format!("cannot publish Windows status summary: {error}"))
+    tilo_files::native::atomic::write_with_mode(
+        Path::new(STATUS_SUMMARY),
+        summary.as_bytes(),
+        0o640,
+    )
+    .map_err(|error| format!("cannot publish Windows status summary: {error}"))
 }
 
 fn remove_egress_summary() {

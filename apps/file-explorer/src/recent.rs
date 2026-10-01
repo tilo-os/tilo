@@ -105,7 +105,7 @@ impl RecentFiles {
     /// Returns the I/O error if the list cannot be written.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         let body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        atomic_file::write_creating_parent(&dir.join(FILE_NAME), &body)
+        tilo_files::native::atomic::write_creating_parent(&dir.join(FILE_NAME), &body)
     }
 }
 

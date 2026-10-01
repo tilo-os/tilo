@@ -153,5 +153,6 @@ fn save_stored(path: &std::path::Path, identity: &Identity) -> Result<(), String
         sha256: identity.pinned_sha256.clone().unwrap_or_default(),
     };
     let bytes = postcard::to_allocvec(&stored).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())
 }
