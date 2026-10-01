@@ -863,8 +863,20 @@ fn state_from_ctx(ctx: &CameraResourceCtx) -> crate::resource::CameraState {
 /// Document mode, lens, settings, and the recent handoff come from
 /// [`tilo_resource::publish`]. Capture, code-scanner, and document-scanner
 /// Effects stay beside that root because they are device I/O, not shared state.
-pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let state = state_from_ctx(ctx);
+pub fn provide_resources(ctx: &CameraResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // Mode, lens, and settings are the document once `mode` has been written.
+    // A caller that has not written them yet still publishes its context.
+    // Shutter and scanner Effects stay live extras.
+    let has_document = automerge::ReadDoc::get(doc, &automerge::ROOT, "mode")
+        .ok()
+        .flatten()
+        .is_some();
+    let state = if has_document {
+        <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_else(|_| state_from_ctx(ctx))
+    } else {
+        state_from_ctx(ctx)
+    };
     let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
         crate::resource::CAMERA_RESOURCE_ID,
         "Camera",
