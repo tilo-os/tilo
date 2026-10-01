@@ -403,6 +403,17 @@ pub enum ChatAction {
         color_idx: usize,
         status: String,
     },
+    /// Create the shared rich draft for a composer when it is missing or split.
+    EnsureRichDraft {
+        key: String,
+    },
+    /// The first workspace in a new chat record: one person, two channels.
+    SeedStarter {
+        id: String,
+        name: String,
+        initials: String,
+        color_idx: usize,
+    },
 }
 
 /// Longest agent display name recorded beside an agent-authored message.
@@ -514,6 +525,8 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             ("Update call connection", channel, channel, "chat.call")
         }
         ChatAction::EnsureUser { id, .. } => ("Join chat", id, id, "chat.user"),
+        ChatAction::EnsureRichDraft { key } => ("Open draft", key, key, "chat.draft"),
+        ChatAction::SeedStarter { id, .. } => ("Open workspace", id, id, "chat.workspace"),
         // A well-formed one delegated above; a nested wrapper applies nothing.
         ChatAction::AgentAuthored { .. } => return context,
     };
@@ -528,6 +541,37 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         },
     });
     context
+}
+
+fn apply_seed_starter(
+    doc: &mut Doc,
+    id: &str,
+    name: &str,
+    initials: &str,
+    color_idx: usize,
+) -> Result<(), ActionError> {
+    if id.is_empty() || id.len() > 128 || name.len() > 128 || initials.len() > 8 {
+        return Err(ActionError::Refused("workspace identity is invalid".into()));
+    }
+    ChatDoc::seed_starter(doc, id, name, initials);
+    let _ = ChatDoc::ensure_user(
+        doc,
+        id,
+        name,
+        initials,
+        color_idx,
+        crate::model::Presence::Online,
+    );
+    Ok(())
+}
+
+fn apply_ensure_rich_draft(doc: &mut Doc, key: &str) -> Result<(), ActionError> {
+    if key.is_empty() || key.len() > 256 {
+        return Err(ActionError::Refused("draft key is invalid".into()));
+    }
+    ChatDoc::ensure_rich_draft(doc, key)
+        .ok_or_else(|| ActionError::Refused("draft could not be created".into()))?;
+    Ok(())
 }
 
 impl Action for ChatAction {
@@ -559,6 +603,18 @@ impl Action for ChatAction {
         // call — split out of this trait method because a helper that isn't
         // itself a trait method can't live in this `impl Action for ..`
         // block (E0407).
+        if let ChatAction::EnsureRichDraft { key } = self {
+            return apply_ensure_rich_draft(doc, key);
+        }
+        if let ChatAction::SeedStarter {
+            id,
+            name,
+            initials,
+            color_idx,
+        } = self
+        {
+            return apply_seed_starter(doc, id, name, initials, *color_idx);
+        }
         self.apply_message(doc);
         self.apply_channel(doc);
         self.apply_call(doc);
@@ -1491,7 +1547,57 @@ pub(crate) fn publish_document_children(state: &crate::resource::ChatState) -> V
         }
         children.push(workspace);
     }
+    children.push(people_resource(
+        state
+            .participants
+            .iter()
+            .map(|person| (person.id.as_str(), person.name.as_str())),
+    ));
     children
+}
+
+fn people_resource<'a>(people: impl IntoIterator<Item = (&'a str, &'a str)>) -> Resource {
+    let mut people_node = Resource::new("chat.people", "chat.people", "People");
+    for (id, name) in people.into_iter().take(EAGER_PEOPLE_LIMIT) {
+        people_node = people_node.with_child(
+            Resource::new(format!("chat.person:{id}"), "chat.person", name).with_action(
+                view_operation(
+                    "open",
+                    "Open person",
+                    &ChatOperation::OpenPerson {
+                        user: id.to_string(),
+                    },
+                ),
+            ),
+        );
+    }
+    people_node
+}
+
+fn index_resources(resource: &Resource, index: &mut std::collections::HashMap<String, Resource>) {
+    index.insert(resource.id.as_str().to_string(), resource.clone());
+    for child in &resource.children {
+        index_resources(child, index);
+    }
+}
+
+/// Views and Effects from the contextual page, without a second copy of a
+/// document action the published resource already carries. Messages stay off
+/// the eager page.
+fn overlay_missing(base: &mut Resource, extra: Resource) {
+    for action in extra.actions {
+        if !base.actions.iter().any(|have| have.id == action.id) {
+            base.actions.push(action);
+        }
+    }
+    for child in extra.children {
+        if child.kind == "chat.message" {
+            continue;
+        }
+        if !base.children.iter().any(|have| have.id == child.id) {
+            base.children.push(child);
+        }
+    }
 }
 
 /// Build the resource tree Chat currently has open: the active workspace (root),
@@ -1521,9 +1627,13 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     }
     let all_channels = ChatDoc::list_channels(doc);
     let mut root = published;
-    // Prefer the contextual View/Effect-enriched eager page over publish's
-    // Document-only workspace children. Keep rich-text drafts from publish.
-    // Hosted ResourceRoot keeps those Document children as the palette door.
+    // The eager page is the published workspace tree, plus Views and Effects
+    // the document children do not carry (open, attach, call). Messages stay
+    // lazy. Hosted ResourceRoot keeps the document children as published.
+    let mut published_nodes = std::collections::HashMap::new();
+    for child in &root.children {
+        index_resources(child, &mut published_nodes);
+    }
     root.children
         .retain(|child| child.id.as_str().starts_with("chat.draft:"));
     // The publish root, its rich-text draft children, and the people page are
@@ -1540,7 +1650,12 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         if remaining == 0 {
             break;
         }
-        let mut workspace = workspace_resource(&ws.id, &ws.name);
+        let workspace_id = format!("chat.workspace:{}", ws.id);
+        let mut workspace = published_nodes
+            .remove(&workspace_id)
+            .unwrap_or_else(|| workspace_resource(&ws.id, &ws.name));
+        workspace.children.clear();
+        overlay_missing(&mut workspace, workspace_resource(&ws.id, &ws.name));
         remaining = remaining.saturating_sub(1);
 
         let mut channels = all_channels
@@ -1556,8 +1671,16 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 kind: channel.kind,
                 archived: channel.archived,
             };
-            workspace =
-                workspace.with_child(build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]));
+            let contextual = build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]);
+            let channel_id = format!("chat.channel:{}", ch.id);
+            let mut channel_node = published_nodes
+                .remove(&channel_id)
+                .unwrap_or_else(|| contextual.clone());
+            channel_node
+                .children
+                .retain(|child| child.kind != "chat.message");
+            overlay_missing(&mut channel_node, contextual);
+            workspace = workspace.with_child(channel_node);
             remaining = remaining.saturating_sub(1);
         }
         let mut categories = ChatDoc::list_categories(doc)
@@ -1571,22 +1694,39 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 name: category.name,
                 collapsed: category.collapsed,
             };
-            workspace = workspace.with_child(build_category_resource(&ws.id, &category));
+            let contextual = build_category_resource(&ws.id, &category);
+            let category_id = format!("chat.category:{}", category.id);
+            let mut category_node = published_nodes
+                .remove(&category_id)
+                .unwrap_or_else(|| contextual.clone());
+            overlay_missing(&mut category_node, contextual);
+            workspace = workspace.with_child(category_node);
             remaining = remaining.saturating_sub(1);
         }
         annotate_contracts(&mut workspace);
         root = root.with_child(workspace);
     }
 
-    let mut people = Resource::new("chat.people", "chat.people", "People");
-    for user in users.into_iter().take(EAGER_PEOPLE_LIMIT) {
+    let mut people = published_nodes
+        .remove("chat.people")
+        .unwrap_or_else(|| Resource::new("chat.people", "chat.people", "People"));
+    for user in users.iter().take(EAGER_PEOPLE_LIMIT) {
+        let person_id = format!("chat.person:{}", user.id);
+        if people
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == person_id)
+        {
+            continue;
+        }
         people = people.with_child(
-            Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
-                .with_action(view_operation(
-                    "open",
-                    "Open person",
-                    &ChatOperation::OpenPerson { user: user.id },
-                )),
+            Resource::new(person_id, "chat.person", user.name.clone()).with_action(view_operation(
+                "open",
+                "Open person",
+                &ChatOperation::OpenPerson {
+                    user: user.id.clone(),
+                },
+            )),
         );
     }
     root = root.with_child(people);
@@ -1622,13 +1762,24 @@ fn workspace_resource(id: &str, name: &str) -> Resource {
 )]
 pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
     if id == "chat.people" {
-        return Some(Resource::new("chat.people", "chat.people", "People"));
+        let users = ChatDoc::list_users(doc);
+        return Some(people_resource(
+            users
+                .iter()
+                .map(|user| (user.id.as_str(), user.name.as_str())),
+        ));
     }
     if let Some(workspace_id) = id.strip_prefix("chat.workspace:") {
         let workspace = ChatDoc::list_workspaces(doc)
             .into_iter()
             .find(|workspace| workspace.id == workspace_id)?;
-        let mut resource = workspace_resource(&workspace.id, &workspace.name);
+        // Document creates stay the published specs. Open is the view the
+        // published workspace does not carry.
+        let mut resource = publish_workspace_document(&workspace.id, &workspace.name);
+        overlay_missing(
+            &mut resource,
+            workspace_resource(&workspace.id, &workspace.name),
+        );
         annotate_contracts(&mut resource);
         return Some(resource);
     }
@@ -1649,12 +1800,37 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         let users = ChatDoc::list_users(doc);
         let agents = ChatDoc::agent_authors(doc);
         let mut messages = ChatDoc::list_messages(doc, &model.id);
+        let top_level_count = i64::try_from(messages.len()).unwrap_or(i64::MAX);
         let recent = messages.split_off(messages.len().saturating_sub(RESOLVED_CHANNEL_MESSAGES));
         let recent = recent
             .into_iter()
             .map(|message| message_resource(ctx, message, &users, &agents))
             .collect::<Vec<_>>();
-        let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &recent);
+        let mut resource =
+            publish_channel_document(&ctx.me, &ctx.participants, &model, top_level_count, &recent);
+        let contextual = build_channel_resource(ctx, doc, &workspace_id, &model, &recent);
+        let mut views = contextual.clone();
+        views.children.retain(|child| child.kind != "chat.message");
+        overlay_missing(&mut resource, views);
+        for message in contextual
+            .children
+            .into_iter()
+            .filter(|child| child.kind == "chat.message")
+        {
+            if let Some(existing) = resource
+                .children
+                .iter_mut()
+                .find(|child| child.id == message.id)
+            {
+                for action in message.actions {
+                    if !existing.actions.iter().any(|have| have.id == action.id) {
+                        existing.actions.push(action);
+                    }
+                }
+            } else {
+                resource.children.push(message);
+            }
+        }
         annotate_contracts(&mut resource);
         return Some(resource);
     }
@@ -1668,7 +1844,11 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
             name: category.name,
             collapsed: category.collapsed,
         };
-        let mut resource = build_category_resource(&workspace_id, &model);
+        let mut resource = publish_category_document(&model);
+        overlay_missing(
+            &mut resource,
+            build_category_resource(&workspace_id, &model),
+        );
         annotate_contracts(&mut resource);
         return Some(resource);
     }
@@ -1767,7 +1947,12 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
     let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
     let message_model = message_resource(ctx, message, &users, &ChatDoc::agent_authors(doc));
-    let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
+    let mut resource =
+        publish_message_document(&ctx.me, &ctx.participants, &channel_model, &message_model);
+    overlay_missing(
+        &mut resource,
+        build_message_resource(ctx, &workspace.id, &channel_model, &message_model),
+    );
     annotate_contracts(&mut resource);
     Some(resource)
 }

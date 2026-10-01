@@ -54,11 +54,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod resource;
-pub mod semantic_read;
-// Native device-free diagnostics reuse the privileged service codec.
-#[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
-pub mod audio;
 pub mod body;
 pub mod call;
 pub mod composer;
@@ -78,6 +73,7 @@ pub mod permissions;
 pub mod picker;
 pub mod render_call;
 pub mod render_chat;
+pub mod resource;
 pub mod responsive;
 pub mod search_provider;
 pub mod semantic_read;

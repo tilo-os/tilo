@@ -1037,6 +1037,18 @@ impl ChatApp {
         );
     }
 
+    pub(crate) fn ensure_composer_draft(&mut self, doc: &mut AutoCommit, key: &str) {
+        if key.is_empty() || ChatDoc::rich_draft_is_settled(doc, key) {
+            return;
+        }
+        self.perform_action(
+            doc,
+            &ChatAction::EnsureRichDraft {
+                key: key.to_string(),
+            },
+        );
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
     /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical action.
@@ -3811,7 +3823,8 @@ impl Widget for ChatApp {
                 Action::SetValue(_) | Action::SetSelection { .. } => match hit {
                     Hit::FocusMain => {
                         self.focus = Focus::Main;
-                        ChatDoc::ensure_rich_draft(state, &self.active_channel);
+                        let channel = self.active_channel.clone();
+                        self.ensure_composer_draft(state, &channel);
                         self.composer_main.sync(state);
                         if !self.composer_main.perform_action(action, state, path) {
                             return false;
@@ -3823,7 +3836,7 @@ impl Widget for ChatApp {
                             return false;
                         };
                         self.focus = Focus::Thread;
-                        ChatDoc::ensure_rich_draft(state, &key);
+                        self.ensure_composer_draft(state, &key);
                         self.composer_thread.sync(state);
                         if !self.composer_thread.perform_action(action, state, path) {
                             return false;
@@ -3981,6 +3994,10 @@ impl ui::resources::PublishesResources for ChatApp {
         self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the workspace door.
+        if self.is_hosted() && id == "chat.workspace" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
     /// The tree a delivered invocation resolves against for an agent task
@@ -4006,6 +4023,9 @@ impl ui::resources::PublishesResources for ChatApp {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "chat.workspace" {
+            return None;
+        }
         match participant.and_then(|p| self.participant_ctx(p)) {
             Some(ctx) => crate::actions::resolve_resource(&ctx, doc, id),
             None => ui::resources::resource(self, doc, id),

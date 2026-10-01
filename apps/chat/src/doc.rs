@@ -1579,6 +1579,10 @@ impl ChatDoc {
     /// The rich text the composer for `key` edits, created when missing.
     /// Drafts two peers created at once are joined into one, winner first,
     /// so no one's keystrokes are hidden.
+    pub fn rich_draft_is_settled(doc: &AutoCommit, key: &str) -> bool {
+        Self::rich_draft_candidates(doc, key).len() == 1
+    }
+
     pub fn ensure_rich_draft(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
         let candidates = Self::rich_draft_candidates(doc, key);
         if let [only] = candidates.as_slice() {
@@ -3742,5 +3746,68 @@ mod tests {
                 "merge must choose one complete authored transition, not a hybrid: {merged:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_composer_draft_is_created_by_the_action() {
+        use tilo_actions::Action as _;
+        let mut doc = ui::automerge::AutoCommit::new();
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::rich_draft_is_settled(&doc, "channel-1"));
+        let first = ChatDoc::ensure_rich_draft(&mut doc, "channel-1");
+        crate::actions::ChatAction::EnsureRichDraft {
+            key: "channel-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::ensure_rich_draft(&mut doc, "channel-1"),
+            first,
+            "a second ensure keeps the same draft"
+        );
+        assert!(
+            crate::actions::ChatAction::EnsureRichDraft { key: String::new() }
+                .apply(&mut doc)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_new_chat_record_starts_from_the_seed_action() {
+        use tilo_actions::Action as _;
+        let mut doc = automerge::AutoCommit::new();
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(ChatDoc::is_seeded(&doc));
+        assert!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .any(|channel| channel.name == "general")
+        );
+        crate::actions::ChatAction::SeedStarter {
+            id: "person-1".into(),
+            name: "Ada".into(),
+            initials: "Ad".into(),
+            color_idx: 3,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ChatDoc::list_channels(&doc)
+                .iter()
+                .filter(|channel| channel.name == "general")
+                .count(),
+            1
+        );
     }
 }
