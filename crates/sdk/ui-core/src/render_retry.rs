@@ -164,7 +164,10 @@ pub(crate) fn next_wake(
             .map_or(fallback, |deadline| deadline.min(fallback));
         Some(animation.map_or(wake, |deadline| wake.min(deadline.max(now))))
     } else {
-        scheduled
+        // A deadline that is already due was the poll this callback just
+        // ran. Parking on it would return immediately and keep the process
+        // scheduled after the tree, layout, and animations stayed put.
+        scheduled.filter(|deadline| *deadline > now)
     }
 }
 
@@ -401,6 +404,24 @@ mod tests {
             );
             assert_eq!(widget_deadline(Some(now), None), Some(now));
         }
+    }
+
+    #[test]
+    fn an_overdue_poll_does_not_schedule_another_wake() {
+        let now = crate::time::now();
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand::default(),
+                Some(now - Duration::from_millis(1)),
+                None,
+                None,
+            ),
+            None,
+            "a poll that already ran must not wake again when nothing changed"
+        );
     }
 
     #[test]

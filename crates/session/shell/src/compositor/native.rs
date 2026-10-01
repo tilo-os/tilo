@@ -373,6 +373,14 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// A widget poll already ran in this tick's pump. Its deadline waking the
+/// loop is not a present: the tree, the layout, and any animation are the
+/// pump's result and the animation bit. Painting because the deadline
+/// merely came due kept idle apps submitting frames.
+fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
+    pump_changed
+}
+
 /// A `wl_surface.frame` on a commit that did not change the tree, the
 /// layout, or an animation is not a present. Release it on its own.
 /// While locked the desktop is not shown, and the callback stays until a
@@ -9670,7 +9678,7 @@ pub fn run() {
             // it kept the shell busy while apps sat still. The callback is
             // fired after dispatch when this tick will not build a frame,
             // and that answer does not schedule another pump.
-            apps: apps_changed || widget_deadline_due,
+            apps: present_for_app_poll(apps_changed, widget_deadline_due),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -10801,14 +10809,22 @@ fn spawn_auto_brightness_worker() {
         .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
+            let mut seen = false;
+            let mut cached_stamp = None;
+            let mut enabled = false;
             loop {
-                let settings = settings_store::load();
-                let enabled = settings_store::bool_at(
-                    &settings,
-                    "display",
-                    "auto_brightness",
-                )
-                .unwrap_or(false);
+                let current = settings_store::stamp();
+                if settings_store::document_changed(seen, cached_stamp, current) {
+                    let settings = settings_store::load();
+                    enabled = settings_store::bool_at(
+                        &settings,
+                        "display",
+                        "auto_brightness",
+                    )
+                    .unwrap_or(false);
+                    seen = true;
+                    cached_stamp = current;
+                }
                 if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
@@ -10884,6 +10900,12 @@ mod tests {
             release_idle_client_callback(false, false),
             "an unchanged desktop releases a waiting callback without presenting"
         );
+        assert!(
+            !present_for_app_poll(false, true),
+            "a poll whose tree, layout, and animations did not change must not present"
+        );
+        assert!(present_for_app_poll(true, true));
+        assert!(!present_for_app_poll(false, false));
         assert_eq!(
             client_followup_deadline(client_followup_needed(true, false), now),
             None,

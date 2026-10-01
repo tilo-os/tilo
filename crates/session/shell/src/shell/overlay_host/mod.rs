@@ -18378,8 +18378,10 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
-        let next_frame = now.checked_add(Duration::from_millis(1));
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+        // Overview and workspace-switch motion is animation demand, so the
+        // frame clock paces it. A 1 ms deadline here woke the loop on every
+        // millisecond and still painted nothing until cadence was due.
         [
             (
                 "onboarding",
@@ -18410,11 +18412,6 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
-            ("root-transition", self.transition_started.and(next_frame)),
-            (
-                "workspace-switch",
-                next_frame.filter(|_| self.workspace_switch_holding_at(now)),
-            ),
         ]
     }
 
