@@ -26,6 +26,10 @@ pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 /// used in this crate but exposed for federation clients snapshotting registry state.
 pub const INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v1\0";
 
+/// Most versions one entry lists. Publishers keep the newest; an older
+/// version leaves the entry once a newer one for its target supersedes it.
+pub const MAX_ENTRY_VERSIONS: usize = 128;
+
 /// Localized text whose signed representation is a canonical, ordered map.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -273,7 +277,7 @@ impl RegistryEntry {
             return Err(EntryValidationError::InvalidSupportedLanguages);
         }
         if self.versions.is_empty()
-            || self.versions.len() > 128
+            || self.versions.len() > MAX_ENTRY_VERSIONS
             || self.versions.iter().any(|v| {
                 v.tapp_url.is_empty()
                     || v.tapp_url.len() > 4_096
