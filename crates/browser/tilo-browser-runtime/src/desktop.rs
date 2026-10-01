@@ -83,6 +83,22 @@ pub(crate) struct Shared {
     /// Tabs bound to a record that could not open yet: a peer's desktop
     /// named it before the record itself arrived.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// The windows showing another member's legacy windows, by tab.
+    peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
+    /// Legacy windows asked for and not opened yet, by key.
+    pending_peer_windows: Rc<RefCell<HashMap<String, PeerWindow>>>,
+}
+
+/// Launch name of the window showing the legacy window `key`.
+pub(crate) const PEER_WINDOW_LAUNCH: &str = "tilo.peer-window:";
+
+/// Another member's legacy window, as the page streams it: its key (the
+/// page's name for the stream), app id and title.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct PeerWindow {
+    pub key: String,
+    pub app: String,
+    pub title: String,
 }
 
 impl Shared {
@@ -118,6 +134,66 @@ impl Shared {
         )
     }
 
+    /// The legacy window `tab` shows, if it shows one.
+    pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
+        self.peer_windows
+            .borrow()
+            .get(&tab)
+            .map(|window| window.key.clone())
+    }
+
+    /// Reconcile the windows showing legacy windows with `wanted`: the
+    /// launch names of the ones to open, and the tabs to close (no longer
+    /// wanted, or restored from a saved desktop that streamed them before).
+    pub fn reconcile_peer_windows(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+        wanted: Vec<PeerWindow>,
+    ) -> (Vec<String>, Vec<TabId>) {
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        let mut open = self.peer_windows.borrow_mut();
+        open.retain(|tab, _| live.contains(tab));
+        let mut close = Vec::new();
+        for tab in tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter(|tab| matches!(tab.tile, TileContent::PeerWindow { .. }))
+        {
+            if open
+                .get(&tab.id)
+                .is_none_or(|window| !wanted.iter().any(|wanted| wanted.key == window.key))
+            {
+                close.push(tab.id);
+            }
+        }
+        let mut pending = self.pending_peer_windows.borrow_mut();
+        pending.clear();
+        let mut launch = Vec::new();
+        for window in wanted {
+            if open.values().any(|open| open.key == window.key) {
+                continue;
+            }
+            launch.push(format!("{PEER_WINDOW_LAUNCH}{}", window.key));
+            pending.insert(window.key.clone(), window);
+        }
+        (launch, close)
+    }
+
+    /// Forget the legacy window `tab` showed.
+    pub fn closed_peer_window(&self, tab: TabId) {
+        self.peer_windows.borrow_mut().remove(&tab);
+    }
+
     /// The record `tab` shows, once its component bound one.
     pub fn record_of(&self, tab: TabId) -> Option<String> {
         self.records
@@ -150,6 +226,14 @@ impl Tiles {
     }
 
     fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+        if let TileContent::PeerWindow { label, .. } = &tab.tile {
+            // The page draws the stream over this window's content.
+            return Err(if self.shared.peer_windows.borrow().contains_key(&tab.id) {
+                format!("Connecting to {label}…")
+            } else {
+                format!("{label} is no longer shared")
+            });
+        }
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
             return Err("This window has no application in the browser".into());
         };
@@ -293,6 +377,20 @@ impl TileSource for Tiles {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        if let Some(key) = app.strip_prefix(PEER_WINDOW_LAUNCH) {
+            let window = self.shared.pending_peer_windows.borrow_mut().remove(key)?;
+            let tab = Tab {
+                id,
+                title: window.title.clone(),
+                tile: TileContent::PeerWindow {
+                    app_id: window.app.clone(),
+                    label: window.title.clone(),
+                    note: String::new(),
+                },
+            };
+            self.shared.peer_windows.borrow_mut().insert(id, window);
+            return Some(tab);
+        }
         Some(app_tab(id, application(app)?))
     }
 

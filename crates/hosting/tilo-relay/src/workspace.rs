@@ -918,6 +918,15 @@ impl WorkspaceRuntime {
         self.subscribers.remove(target);
         false
     }
+
+    /// Deliver a directed live envelope to the subscriber `target` only, or
+    /// drop it when that subscriber's queue is full: like presence, a busy
+    /// reader loses the envelope, never its connection.
+    pub fn route_lossy(&self, target: &[u8; 32], envelope: Envelope) -> bool {
+        self.subscribers
+            .get(target)
+            .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
+    }
 }
 
 /// Shorthand: a workspace runtime held under an async mutex.

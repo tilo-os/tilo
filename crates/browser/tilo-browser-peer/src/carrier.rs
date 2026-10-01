@@ -155,6 +155,40 @@ pub async fn agent_live_grant(
     .await
 }
 
+/// Send a member's input for a legacy window
+/// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
+/// this device may drive it. `Ok(false)`: it may not.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached, the window is gone
+/// or its session is not reachable.
+pub async fn legacy_input(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::legacy_window::InputRequest,
+) -> Result<bool, LinkError> {
+    let (status, bytes) = client
+        .post(
+            &path(tilo_relay_protocol::legacy_window::INPUT_ROUTE),
+            Some(session),
+            encode(request)?,
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        204 => Ok(true),
+        403 => Ok(false),
+        401 => Err(LinkError::Refused(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        _ => Err(LinkError::Unavailable(format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))),
+    }
+}
+
 /// An authenticated HTTPS session with the host.
 pub struct HttpsLink {
     outbound: mpsc::UnboundedSender<Envelope>,

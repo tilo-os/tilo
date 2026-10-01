@@ -74,3 +74,84 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     );
     assert_eq!(room.record.generation, 2);
 }
+
+#[tokio::test]
+async fn legacy_window_write_respects_current_owner_capability_restrictions() {
+    use collab_types::Role;
+    use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = crate::daemon::Relay::start_with_relay_mode(
+        crate::RelayConfig {
+            state_root: dir.path().to_owned(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Legacy write restriction").await.unwrap();
+    assert_eq!(
+        rooms
+            .legacy_writer_role(&created.room, cert.device_public_key)
+            .await,
+        Some(Role::Owner)
+    );
+    let mut restriction = CapOverride::new(
+        Subject::Role(Role::Owner),
+        Scope::Room(created.room.clone()),
+        Effect::Restrict,
+        Verb::Read,
+    );
+    restriction.id = "legacy-window-read-only-owner".into();
+    restriction = restriction.with_expiry(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .checked_add(5)
+            .unwrap(),
+    );
+    let state = rooms.room(&created.room).await.unwrap();
+    {
+        let mut room = state.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        candidate
+            .put_governed_capabilities(&[restriction], &key, now)
+            .unwrap();
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &key, now, |_, _| Ok(collaboration))
+            .unwrap();
+    }
+    assert_eq!(
+        rooms
+            .legacy_writer_role(&created.room, cert.device_public_key)
+            .await,
+        None,
+        "room ownership must not bypass a current read-only capability restriction"
+    );
+    // The restricted owner cannot rewrite governance to remove its own cap.
+    // Expiration is an authorized transition and must be observed without restart.
+    tilo_test_env::within("the current read-only restriction expires", async {
+        loop {
+            if rooms
+                .legacy_writer_role(&created.room, cert.device_public_key)
+                .await
+                == Some(Role::Owner)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    relay.shutdown().await;
+}

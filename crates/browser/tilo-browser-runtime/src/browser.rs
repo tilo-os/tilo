@@ -1650,6 +1650,107 @@ pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
+/// Where the desktop shows each member's legacy window right now: `[{key,
+/// rect: [x0, y0, x1, y1]}]` for windows whose active tab shows one in the
+/// shown strip, in the surface's CSS pixels; empty while search covers the
+/// desktop. `None` for a single application.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| {
+                let windows: Vec<serde_json::Value> = if d.handle.search_open() {
+                    Vec::new()
+                } else {
+                    d.handle
+                        .shown_tabs()
+                        .into_iter()
+                        .filter_map(|(tab, rect)| {
+                            Some(serde_json::json!({
+                                "key": d.shared.peer_window_of(tab)?,
+                                "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                            }))
+                        })
+                        .collect()
+                };
+                serde_json::to_string(&windows).map_err(error)
+            })
+            .transpose()
+    })
+}
+
+/// Show exactly `windows` (`[{key, app, title}]` JSON), the legacy windows
+/// other members stream, as desktop windows: a new key opens a window
+/// beside the focused one, a key no longer listed closes its window. The
+/// page draws each stream over its window's content
+/// ([`desktop_peer_windows`]).
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
+    let wanted: Vec<crate::desktop::PeerWindow> = serde_json::from_str(windows).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let (launch, close) = desktop
+            .handle
+            .read(|tree| desktop.shared.reconcile_peer_windows(tree, wanted));
+        if launch.is_empty() && close.is_empty() {
+            return Ok(());
+        }
+        for tab in close {
+            let route = desktop.handle.read(|tree| {
+                tree.workspaces.iter().find_map(|workspace| {
+                    workspace.strips.iter().find_map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .find(|group| group.tabs.iter().any(|t| t.id == tab))
+                            .map(|group| tilo_desktop_surface::navigation::Route {
+                                workspace: workspace.id.0.to_string(),
+                                strip: strip.id.0.to_string(),
+                                group: group.id.to_string(),
+                                tab: tab.to_string(),
+                            })
+                    })
+                })
+            });
+            if let Some(route) = route {
+                let command = tilo_desktop_surface::navigation::Command::Close {
+                    generation: desktop.generation.clone(),
+                    route,
+                };
+                // A window the person already closed is gone either way.
+                let _ = desktop.handle.dispatch(&command, &desktop.generation);
+            }
+            desktop.shared.closed_peer_window(tab);
+        }
+        for app in launch {
+            let command = tilo_desktop_surface::navigation::Command::Launch {
+                generation: desktop.generation.clone(),
+                app,
+            };
+            desktop
+                .handle
+                .dispatch(&command, &desktop.generation)
+                .map_err(error)?;
+        }
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// Changes whenever the desktop tree or what the desktop presents beside it
 /// (pan, scroll, history, activity) does, so the page republishes
 /// navigation only when something moved. `0` for a single application.
