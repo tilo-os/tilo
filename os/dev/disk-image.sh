@@ -492,7 +492,7 @@ start_registry() {
   fi
   # Someone else's registry already listening (the composefs spike leaves one on
   # :5000) is fine to push to — one local registry is as good as another.
-  if curl -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
+  if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
     msg "reusing the registry already listening on :$want" >&2
     echo "localhost:$want"; return
   fi
@@ -503,10 +503,10 @@ start_registry() {
         continue
       }
     for _ in $(seq 1 30); do
-      curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
+      curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
       sleep 1
     done
-    if curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
+    if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
       msg "started a registry on :$port for the install source" >&2
       echo "localhost:$port"; return
     fi
