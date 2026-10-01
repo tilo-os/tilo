@@ -526,9 +526,9 @@ impl ResourceApp for TerminalShell {
         reason = "a framework surface without an emulator cannot present a terminal"
     )]
     fn view(cx: &mut ViewCx<Terminal>) -> Element {
-        // History / read-only captures never own a login shell. The live app
-        // prefers a real PTY and falls back to a headless emulator.
-        let widget = if cx.read_only() {
+        // History mode and library tests present a headless emulator. The live
+        // window prefers a real PTY and falls back to that emulator.
+        let widget = if cx.read_only() || cfg!(test) {
             TerminalWidget::spawn_headless()
         } else {
             TerminalWidget::spawn_default().or_else(|_| TerminalWidget::spawn_headless())
@@ -552,12 +552,24 @@ impl ResourceApp for TerminalShell {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static ATTACH_RETAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn note_attach_retained(retained: bool) {
+    ATTACH_RETAINED.with(|cell| cell.set(retained));
+}
+
 impl ResourceSurface<Terminal> for TerminalWidget {
     /// The grid is this PTY's. An empty session projection must not clear it.
     fn present(&mut self, _state: &std::rc::Rc<SessionState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<Terminal>) {
-        self.mark_framework_hosted();
+    fn attach(&mut self, cx: SurfaceCx<Terminal>) {
+        self.attach_framework(cx.dispatcher());
+        #[cfg(test)]
+        note_attach_retained(self.retains_framework_dispatcher());
     }
 }
 
@@ -620,6 +632,58 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("hello")),
             "empty present must not wipe the local grid"
+        );
+    }
+
+    #[test]
+    fn attach_retains_the_dispatcher_and_hosted_lookup_does_not_rebuild_the_document_root() {
+        let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
+        assert!(!widget.retains_framework_dispatcher());
+        let mut doc = ui::automerge::AutoCommit::new();
+        let standalone = widget.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, Terminal::KIND);
+        let root_id = standalone[0].id.as_str().to_owned();
+        assert!(ui::resources::resource(&widget, &doc, &root_id).is_some());
+
+        widget.apply_session_action(
+            &mut doc,
+            &TerminalAction::SetTitle {
+                title: "Session".into(),
+            },
+        );
+        let title = doc
+            .get(automerge::ROOT, "terminal_title")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        assert_eq!(title.as_deref(), Some("Session"));
+        assert!(
+            widget.last_session_action().is_some(),
+            "a standalone session action uses the local action host"
+        );
+
+        widget.mark_hosted_for_test();
+        assert!(
+            ui::resources::resource(&widget, &doc, &root_id).is_none(),
+            "hosted lookup does not rebuild the document root"
+        );
+        let hosted = widget.resources(&doc);
+        assert!(
+            hosted
+                .iter()
+                .all(|resource| resource.kind != Terminal::KIND && resource.id.as_str() != root_id),
+            "hosted resources must not publish a second terminal root"
+        );
+        let transcript_id = hosted[0].id.as_str().to_owned();
+        let transcript = ui::resources::resource(&widget, &doc, &transcript_id)
+            .expect("hosted transcript stays addressable");
+        assert_ne!(transcript.kind, Terminal::KIND);
+
+        super::ATTACH_RETAINED.with(|cell| cell.set(false));
+        let _app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal shell");
+        assert!(
+            super::ATTACH_RETAINED.with(|cell| cell.get()),
+            "attach retains the dispatcher"
         );
     }
 

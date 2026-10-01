@@ -767,6 +767,11 @@ pub struct TerminalWidget {
     /// Set by [`ResourceSurface::attach`]. The framework root already publishes
     /// the session door; this widget then returns only the live transcript.
     framework_hosted: bool,
+    /// Dispatcher stored by [`ResourceSurface::attach`]. Document-level session
+    /// actions submit through it while this widget is hosted.
+    framework_dispatch: Option<ui::framework::Dispatcher<crate::resource::Terminal>>,
+    /// Standalone session actions submit through this host.
+    session_actions: ui::ActionHost,
     /// Identifies the local PTY whose presentation is mirrored into this
     /// record. A terminal tab is durable, but its process is not: after a
     /// logout the next login spawns a new shell. Without an incarnation
@@ -908,6 +913,8 @@ impl TerminalWidget {
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             framework_hosted: false,
+            framework_dispatch: None,
+            session_actions: ui::ActionHost::new(),
             local_session_id: None,
             local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
@@ -953,7 +960,7 @@ impl TerminalWidget {
         let action = crate::resource::TerminalAction::BindLocalSession {
             session_id: session_id.to_string(),
         };
-        let _ = ui::tilo_actions::Action::apply(&action, state);
+        self.apply_session_action(state, &action);
 
         self.grid_id = None;
         self.alt_grid_id = None;
@@ -2000,7 +2007,7 @@ impl TerminalWidget {
             && t != self.title
         {
             let action = crate::resource::TerminalAction::SetTitle { title: t.clone() };
-            let _ = ui::tilo_actions::Action::apply(&action, state);
+            self.apply_session_action(state, &action);
             self.title = t;
         }
 
@@ -2149,10 +2156,7 @@ impl TerminalWidget {
                 Ok(Some((_, id))) if &id == root
             );
         if actions_cover {
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::EnsureStructure,
-                state,
-            );
+            self.apply_session_action(state, &crate::resource::TerminalAction::EnsureStructure);
         }
         if self.grid_id.is_none() {
             self.grid_id =
@@ -2214,7 +2218,7 @@ impl TerminalWidget {
             let action = crate::resource::TerminalAction::ClaimPane {
                 pane_id: self.pane_id.clone(),
             };
-            let _ = ui::tilo_actions::Action::apply(&action, state);
+            self.apply_session_action(state, &action);
             if let Some(id) = Self::shared_pane_id(state, root) {
                 self.pane_id = id;
             }
@@ -3290,6 +3294,45 @@ impl TerminalWidget {
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.framework_hosted = true;
     }
+
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>,
+    ) {
+        self.framework_dispatch = Some(dispatcher);
+        self.mark_framework_hosted();
+    }
+
+    /// Document-level session action: the stored dispatcher when hosted, the
+    /// local action host otherwise.
+    pub(crate) fn apply_session_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::TerminalAction,
+    ) {
+        let context =
+            ui::tilo_actions::ActionContext::for_action("so.tilo.terminal", "Terminal", action);
+        if let Some(dispatcher) = self.framework_dispatch.clone() {
+            let _ = dispatcher.apply_now_with(doc, action, context);
+        } else {
+            self.session_actions.dispatch_with_context(
+                doc,
+                <crate::resource::Terminal as ui::tilo_resource::Resource>::ACTION_TYPE,
+                action,
+                context,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retains_framework_dispatcher(&self) -> bool {
+        self.framework_dispatch.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_session_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.session_actions.last_dispatched()
+    }
 }
 
 impl ui::resources::PublishesResources for TerminalWidget {
@@ -3338,7 +3381,6 @@ impl ui::resources::PublishesResources for TerminalWidget {
         Some(format!("{:016x}", revision.finish()))
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let session = self.session_resource_with(Some(doc));
         fn find(resource: &Resource, id: &str) -> Option<Resource> {
             if resource.id.as_str() == id {
                 return Some(resource.clone());
@@ -3350,15 +3392,29 @@ impl ui::resources::PublishesResources for TerminalWidget {
             }
             None
         }
-        if id == self.terminal_resource_id() || id == session.id.as_str() {
-            if self.framework_hosted {
+        if self.framework_hosted {
+            if id == self.terminal_resource_id() {
                 return None;
             }
+            let transcript = self.transcript_resource();
+            if let Some(found) = find(&transcript, id) {
+                return Some(found);
+            }
+            return self.linked_resource(id);
+        }
+        let session = self.session_resource_with(Some(doc));
+        if id == self.terminal_resource_id() || id == session.id.as_str() {
             return Some(session);
         }
         if let Some(found) = session.children.iter().find_map(|child| find(child, id)) {
             return Some(found);
         }
+        self.linked_resource(id)
+    }
+}
+
+impl TerminalWidget {
+    fn linked_resource(&self, id: &str) -> Option<ui::tilo_actions::Resource> {
         let prefix = format!("terminal.link:{}:", self.pane_id);
         let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
         self.links
