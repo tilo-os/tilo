@@ -18,7 +18,10 @@ if [[ $(findmnt -n -o FSTYPE --target /dev) != devtmpfs ]]; then
     sudo -n mount -t devtmpfs devtmpfs /dev
 fi
 sudo -n mkdir -p /dev/pts /dev/shm
-mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+# Not `mountpoint`: over a fresh devtmpfs it still sees the devpts hidden
+# underneath, so no pty could be opened (sshpass: "Failed to get a pseudo
+# terminal: No such device") and every VM SSH command failed.
+[ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
 mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 sudo -n chmod 0666 /dev/fuse
 [[ -c /dev/fuse && -c /dev/loop-control && -b /dev/loop0 ]] || {

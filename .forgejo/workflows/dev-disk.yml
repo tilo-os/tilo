@@ -290,7 +290,7 @@ jobs:
           if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
             sudo -n mount -t devtmpfs devtmpfs /dev
             sudo -n mkdir -p /dev/pts /dev/shm
-            mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
           test -c /dev/fuse && test -c /dev/loop-control || {
