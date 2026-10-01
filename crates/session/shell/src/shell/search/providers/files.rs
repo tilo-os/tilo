@@ -161,9 +161,42 @@ pub struct FilesProvider {
     watch: OnceLock<RecommendedWatcher>,
 }
 
+/// Home the files search walks.
+///
+/// A scratch or headless session points the XDG dirs at its profile and used
+/// to leave `$HOME` as the login home, so the walker indexed the operator's
+/// real files. When `XDG_CONFIG_HOME` is set and does not live under `$HOME`,
+/// walk the profile's `home` (or the profile root if that directory does not
+/// exist). A control-socket session (`TILO_TEST_CONTROL`) that still has the
+/// login layout gets a directory under the session cache instead.
+fn indexable_home() -> PathBuf {
+    let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+    if let Some(config) = xdg_paths::config_dir()
+        && !config.starts_with(&home)
+    {
+        let profile = config.parent().unwrap_or(config.as_path());
+        let profile_home = profile.join("home");
+        return if profile_home.is_dir() {
+            profile_home
+        } else {
+            profile.to_path_buf()
+        };
+    }
+    if std::env::var_os("TILO_TEST_CONTROL").is_some()
+        || std::env::var_os("TILO_IDENTITY_ROOT").is_some()
+    {
+        let scratch = xdg_paths::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tilo-headless-home");
+        let _ = std::fs::create_dir_all(&scratch);
+        return scratch;
+    }
+    home
+}
+
 impl FilesProvider {
     pub fn new() -> Self {
-        Self::with_home(xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp")))
+        Self::with_home(indexable_home())
     }
 
     fn with_home(home: PathBuf) -> Self {
@@ -1500,6 +1533,59 @@ mod tests {
             ready,
             watch: OnceLock::new(),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn scratch_xdg_tree_indexes_the_profile_home_not_the_login_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let profile = tempfile::tempdir().expect("scratch profile");
+        let profile_home = profile.path().join("home");
+        std::fs::create_dir_all(&profile_home).expect("profile home");
+        std::fs::write(login.path().join("secret.md"), b"operator").unwrap();
+        std::fs::write(profile_home.join("note.md"), b"scratch").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", profile.path().join("config"))
+            .set("XDG_CACHE_HOME", profile.path().join("cache"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            profile_home,
+            "a scratch XDG tree must not walk the login home"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_normal_xdg_tree_under_home_indexes_home() {
+        let home = tempfile::tempdir().expect("home");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(indexable_home(), home.path());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_control_socket_session_with_the_login_layout_gets_a_scratch_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let cache = tempfile::tempdir().expect("cache");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", login.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("TILO_TEST_CONTROL", "/tmp/tilo-test-control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        let got = indexable_home();
+        assert_eq!(got, cache.path().join("tilo-headless-home"));
+        assert!(
+            !got.starts_with(login.path()),
+            "the control-socket session must not walk the login home"
+        );
     }
 
     #[test]
