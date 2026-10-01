@@ -270,6 +270,20 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "imager.sources").is_none());
+        let source_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.source")
+            .map(|child| child.id.as_str().to_owned())
+            .expect("reviewed source");
+        assert!(
+            ui::resources::resource(&app, &seeded, &source_id).is_some_and(|source| source
+                .actions
+                .iter()
+                .any(|action| action.id == "clear-source")),
+            "a hosted image source stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras.is_empty(),

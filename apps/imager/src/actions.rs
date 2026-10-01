@@ -295,6 +295,8 @@ pub enum ImagerAction {
     SetKeyboard { value: String },
     /// Set the installed system's filesystem.
     SetFilesystem { filesystem: Filesystem },
+    /// Create the empty source, history, and install profile on a new record.
+    EnsureRecords,
 }
 
 impl Action for ImagerAction {
@@ -339,6 +341,7 @@ impl Action for ImagerAction {
             ImagerAction::SetFilesystem { filesystem } => {
                 ImagerDoc::set_profile_filesystem(doc, *filesystem);
             }
+            ImagerAction::EnsureRecords => ImagerDoc::seed(doc, &[]),
         }
         Ok(())
     }
@@ -658,24 +661,6 @@ pub(crate) fn machine_local_resources(
             },
         ));
     }
-    resources
-}
-
-/// The complete resource topology, including local device/job observations.
-/// Source/profile records are collaborative; device and job resources are
-/// explicitly local capability projections and expose only safe status/write
-/// operations with their contracts.
-pub fn plan_resources(
-    source: Option<&Source>,
-    targets: &[TargetDrive],
-    progress: &crate::model::Progress,
-    profile: &InstallProfile,
-) -> Vec<Resource> {
-    let mut resources = Vec::new();
-    let mut source_root = Resource::new("imager.sources", "imager.sources", "Image sources");
-    source_root.children = document_children(source, profile);
-    resources.push(source_root);
-    resources.extend(machine_local_resources(targets, progress));
     resources
 }
 
@@ -1174,5 +1159,15 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn an_empty_imager_record_is_created_by_the_action() {
+        let mut doc = automerge::AutoCommit::new();
+        assert!(ImagerDoc::is_empty(&doc));
+        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
+        assert!(!ImagerDoc::is_empty(&doc));
+        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
+        assert!(ImagerDoc::source(&doc).is_none());
     }
 }
