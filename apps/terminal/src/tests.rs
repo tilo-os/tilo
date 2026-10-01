@@ -593,6 +593,92 @@ fn send_key_with_modifiers(
     );
 }
 
+/// Same as [`send_key_with_modifiers`], but leave `KeyEvent::text` empty.
+/// Hardware Space and control-socket keys often arrive that way; the PTY
+/// must still see the glyphs or App/Frame steal Space/Enter as Activate.
+fn send_key_without_text(
+    widget: &mut TerminalWidget,
+    doc: &mut AutoCommit,
+    key: winit::keyboard::Key,
+) -> bool {
+    use ui::widget::Widget;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    let modifiers = Modifiers::default();
+    let mut handled = false;
+    let mut focus = None;
+    let taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy::NodeId::new(0);
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = key;
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = None;
+    widget.handle_event(
+        &WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        },
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
+    );
+    handled
+}
+
+/// Typed letters, Space and Enter must reach the PTY even when winit omits
+/// `KeyEvent::text` — the production hardware and control-socket shapes.
+#[test]
+fn typed_text_reaches_the_pty_without_keyevent_text() {
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    assert!(
+        send_key_without_text(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static("e")),
+        ),
+        "a character key without text must be consumed"
+    );
+    assert!(
+        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Space)),
+        "Named Space without text must be consumed, not left for Activate"
+    );
+    assert!(
+        send_key_without_text(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static(" ")),
+        ),
+        "Character Space without text must be consumed"
+    );
+    assert!(
+        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Enter)),
+        "Enter must be consumed as a carriage return"
+    );
+
+    assert_eq!(
+        drain_writes(&writes),
+        b"e  \r",
+        "letters, both Space spellings, and Enter reach the PTY",
+    );
+}
+
 /// Grid initialisation, printing through the performer, and the crate's widget surface.
 #[test]
 #[expect(

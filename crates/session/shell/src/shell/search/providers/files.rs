@@ -5,16 +5,21 @@
 //! contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
 //! background. Neither starts at session construction — the first palette
 //! query (or an explicit [`FilesProvider::rescan`]) opens the index and
-//! kicks the walk, so `OverlayHost` boot does not pay for file search. Enter
-//! routes a hit through [`crate::shell::doc_open`], which resolves the
+//! kicks the walk, so `OverlayHost` boot does not pay for file search.
+//! After that first walk an inotify watch keeps the name index current so a
+//! file written into `~/Documents` is findable without a manual rescan.
+//! Enter routes a hit through [`crate::shell::doc_open`], which resolves the
 //! extension to the installed package that opens it.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
+
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::{
@@ -56,13 +61,29 @@ const SKIP_DIRS: &[&str] = &[
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
 const MAX_RESULTS: usize = 40;
+/// Folders a person actually writes into. Watched recursively after the
+/// first walk so a new file is searchable without waiting for `rescan`.
+const WATCH_TREES: &[&str] = &[
+    "Documents",
+    "Dokumente",
+    "Documentos",
+    "Desktop",
+    "Schreibtisch",
+    "Downloads",
+    "Pictures",
+    "Bilder",
+    "Music",
+    "Musik",
+    "Videos",
+];
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 /// A publication gets a never-reused revision, so a cursor from before a
 /// rescan is stale rather than read against a different corpus.
 static NEXT_NAME_INDEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// The walked names, searchable. Built by the background walker and
-/// refreshed only via manual `rescan` (no inotify yet); readers clone the
-/// outer `Arc`.
+/// The walked names, searchable. Built by the background walker and kept
+/// current by an inotify watch on well-known user folders; readers clone
+/// the outer `Arc`.
 #[derive(Default)]
 struct NameIndex {
     /// Keyed by position in [`SearchIndex`]. Sorted shallow paths first,
@@ -136,16 +157,66 @@ pub struct FilesProvider {
     /// Set once the home walk has been kicked and the content index opened.
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
+    /// Lives as long as the provider so dropping it closes the watch.
+    watch: OnceLock<RecommendedWatcher>,
+}
+
+/// Home the files search walks.
+///
+/// A scratch or headless session points the XDG dirs at its profile and used
+/// to leave `$HOME` as the login home, so the walker indexed the operator's
+/// real files. When `XDG_CONFIG_HOME` is set and does not live under `$HOME`,
+/// walk the profile's `home` (or the profile root if that directory does not
+/// exist). A control-socket or identity-root process that still has the login
+/// layout, and is not a Tilo desktop, gets a directory under the session cache
+/// instead. A desktop session (`XDG_SESSION_DESKTOP=tilo`, including a dev VM
+/// slot driven through `TILO_TEST_CONTROL`) indexes `$HOME`: that is where
+/// `~/Documents` is written.
+fn indexable_home() -> PathBuf {
+    let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+    if let Some(config) = xdg_paths::config_dir()
+        && !config.starts_with(&home)
+    {
+        let profile = config.parent().unwrap_or(config.as_path());
+        let profile_home = profile.join("home");
+        return if profile_home.is_dir() {
+            profile_home
+        } else {
+            profile.to_path_buf()
+        };
+    }
+    if !is_tilo_desktop_session()
+        && (std::env::var_os("TILO_TEST_CONTROL").is_some()
+            || std::env::var_os("TILO_IDENTITY_ROOT").is_some())
+    {
+        let scratch = xdg_paths::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tilo-headless-home");
+        let _ = std::fs::create_dir_all(&scratch);
+        return scratch;
+    }
+    home
+}
+
+/// Greetd's `tilo-session` and a dev VM slot both export this. The slot also
+/// sets `TILO_TEST_CONTROL` so a harness can drive it; that socket must not
+/// send file search to a scratch directory.
+fn is_tilo_desktop_session() -> bool {
+    std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
 }
 
 impl FilesProvider {
     pub fn new() -> Self {
-        let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+        Self::with_home(indexable_home())
+    }
+
+    fn with_home(home: PathBuf) -> Self {
         Self {
             home,
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::default()))),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
+            watch: OnceLock::new(),
         }
     }
 
@@ -155,16 +226,23 @@ impl FilesProvider {
         self.ready.get_or_init(|| {
             #[cfg(test)]
             crate::shell::test_support::ambient_start("Files search constructor");
-            let name_index = Arc::clone(&self.name_index);
-            let home = self.home.clone();
-            thread::Builder::new()
-                .name("tilo-search-files-walk".into())
-                .spawn(move || walk_home(&home, &name_index))
-                .ok();
+            self.start_name_index();
             let _ = self.tantivy.set(
                 crate::shell::search::files_index::FilesIndex::open_or_create(&self.home).ok(),
             );
         });
+    }
+
+    /// Kick the home walk and the inotify watch. Safe to call once; a
+    /// second call walks again but does not arm another watcher.
+    fn start_name_index(&self) {
+        let name_index = Arc::clone(&self.name_index);
+        let home = self.home.clone();
+        thread::Builder::new()
+            .name("tilo-search-files-walk".into())
+            .spawn(move || walk_home(&home, &name_index))
+            .ok();
+        start_name_watch(&self.home, &self.name_index, &self.watch);
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
@@ -738,6 +816,151 @@ fn spawn_open(path: &Path, _is_dir: bool) {
             let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         })
         .ok();
+}
+
+/// Arm inotify on `home` and the well-known user folders, then fold
+/// create/remove events into the published name index after the first walk.
+fn start_name_watch(
+    home: &Path,
+    index: &Arc<Mutex<Arc<NameIndex>>>,
+    slot: &OnceLock<RecommendedWatcher>,
+) {
+    if slot.get().is_some() {
+        return;
+    }
+    let (tx, rx) = mpsc::channel();
+    let Ok(mut watcher) = notify::recommended_watcher(move |event| {
+        let _ = tx.send(event);
+    }) else {
+        return;
+    };
+    arm_name_watches(&mut watcher, home);
+    if slot.set(watcher).is_err() {
+        return;
+    }
+    let home = home.to_owned();
+    let index = Arc::clone(index);
+    thread::Builder::new()
+        .name("tilo-search-files-watch".into())
+        .spawn(move || watch_name_index(&home, &index, &rx))
+        .ok();
+}
+
+fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
+    let _ = watcher.watch(home, RecursiveMode::NonRecursive);
+    for name in WATCH_TREES {
+        let dir = home.join(name);
+        if dir.is_dir() {
+            let _ = watcher.watch(&dir, RecursiveMode::Recursive);
+        }
+    }
+}
+
+fn watch_name_index(
+    home: &Path,
+    index: &Arc<Mutex<Arc<NameIndex>>>,
+    rx: &mpsc::Receiver<notify::Result<notify::Event>>,
+) {
+    let mut pending = Vec::new();
+    let mut walked = false;
+    loop {
+        if !walked {
+            if published_generation(index) > 0 {
+                walked = true;
+                apply_watched_paths(home, index, &pending);
+                pending.clear();
+                continue;
+            }
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(event) => pending.extend(event_paths(&event)),
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            continue;
+        }
+        let Ok(first) = rx.recv() else {
+            return;
+        };
+        let mut paths = event_paths(&first);
+        loop {
+            match rx.recv_timeout(WATCH_DEBOUNCE) {
+                Ok(event) => paths.extend(event_paths(&event)),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    apply_watched_paths(home, index, &paths);
+                    return;
+                }
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        apply_watched_paths(home, index, &paths);
+    }
+}
+
+fn published_generation(index: &Arc<Mutex<Arc<NameIndex>>>) -> u64 {
+    index.lock().ok().map_or(0, |guard| guard.generation)
+}
+
+fn event_paths(event: &notify::Result<notify::Event>) -> Vec<PathBuf> {
+    match event {
+        Ok(event) if matches!(event.kind, EventKind::Access(_)) => Vec::new(),
+        Ok(event) => event.paths.clone(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn apply_watched_paths(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>, paths: &[PathBuf]) {
+    if paths.is_empty() {
+        return;
+    }
+    let Some(published) = index.lock().ok().map(|guard| Arc::clone(&guard)) else {
+        return;
+    };
+    let mut entries = published.entries.clone();
+    let mut changed = false;
+    for path in paths {
+        if should_skip(path, home) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(home) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        if let Ok(meta) = path.symlink_metadata() {
+            let is_dir = meta.file_type().is_dir();
+            let modified = meta.modified().ok();
+            let display = display_path(home, path);
+            let facts = NameFacts::new(&display, modified);
+            if let Some(existing) = entries.iter_mut().find(|entry| entry.path == *path) {
+                existing.display = display;
+                existing.facts = facts;
+                existing.is_dir = is_dir;
+            } else {
+                entries.push(NameEntry {
+                    path: path.clone(),
+                    display,
+                    facts,
+                    is_dir,
+                });
+            }
+            changed = true;
+        } else {
+            let before = entries.len();
+            entries.retain(|entry| entry.path != *path && !entry.path.starts_with(path));
+            changed |= entries.len() != before;
+        }
+    }
+    if !changed {
+        return;
+    }
+    let generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let next = Arc::new(NameIndex::from_entries(entries, generation));
+    if let Ok(mut guard) = index.lock() {
+        *guard = next;
+    }
 }
 
 /// Build the name index. Breadth-first, because a single unpacked game is
@@ -1319,7 +1542,141 @@ mod tests {
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
             tantivy,
             ready,
+            watch: OnceLock::new(),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn scratch_xdg_tree_indexes_the_profile_home_not_the_login_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let profile = tempfile::tempdir().expect("scratch profile");
+        let profile_home = profile.path().join("home");
+        std::fs::create_dir_all(&profile_home).expect("profile home");
+        std::fs::write(login.path().join("secret.md"), b"operator").unwrap();
+        std::fs::write(profile_home.join("note.md"), b"scratch").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", profile.path().join("config"))
+            .set("XDG_CACHE_HOME", profile.path().join("cache"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            profile_home,
+            "a scratch XDG tree must not walk the login home"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_normal_xdg_tree_under_home_indexes_home() {
+        let home = tempfile::tempdir().expect("home");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(indexable_home(), home.path());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_control_socket_session_with_the_login_layout_gets_a_scratch_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let cache = tempfile::tempdir().expect("cache");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", login.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("TILO_TEST_CONTROL", "/tmp/tilo-test-control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        let got = indexable_home();
+        assert_eq!(got, cache.path().join("tilo-headless-home"));
+        assert!(
+            !got.starts_with(login.path()),
+            "the control-socket session must not walk the login home"
+        );
+    }
+
+    /// The dev VM session is a real desktop (`XDG_SESSION_DESKTOP=tilo`) that
+    /// also sets `TILO_TEST_CONTROL` so the harness can drive it. The slot
+    /// user writes `~/Documents`; search has to query that home.
+    #[test]
+    #[serial_test::serial]
+    fn a_driven_desktop_session_finds_a_file_just_written_in_documents() {
+        let home = tempfile::tempdir().expect("session home");
+        let cache = tempfile::tempdir().expect("cache");
+        let documents = home.path().join("Documents");
+        std::fs::create_dir_all(&documents).expect("Documents");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("XDG_SESSION_DESKTOP", "tilo")
+            .set("TILO_TEST_CONTROL", "/run/tilo-vm/slot/control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            home.path(),
+            "a driven desktop session must search $HOME, not the headless cache"
+        );
+
+        let provider = FilesProvider::new();
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let hits = |needle: &str| {
+            provider.query(ctx_for(
+                needle,
+                &[ResourceKind::File, ResourceKind::Folder],
+                &state,
+                &doc,
+            ))
+        };
+        // The first palette query arms the walk and the Documents watch.
+        drop(hits(" "));
+        tilo_test_env::wait_until("the name walk to publish", || {
+            provider
+                .published()
+                .is_some_and(|index| index.generation > 0)
+        });
+
+        let needle = "accneedleff3e9f";
+        let dest = documents.join(format!("{needle}.txt"));
+        let tmp = documents.join(format!("{needle}.txt.acc-tmp"));
+        std::fs::write(&tmp, b"acceptance search probe\n").expect("probe temp");
+        std::fs::rename(&tmp, &dest).expect("probe rename");
+
+        tilo_test_env::wait_until("the Documents probe to be searchable", || {
+            hits(needle)
+                .iter()
+                .any(|row| action_text_contains(row, needle))
+        });
+        let hit = hits(needle)
+            .into_iter()
+            .find(|row| action_text_contains(row, needle))
+            .expect("probe");
+        assert!(
+            Path::new(&hit.id).starts_with(home.path()),
+            "search indexed {} instead of the session home {}",
+            hit.id,
+            home.path().display()
+        );
+        assert!(
+            !Path::new(&hit.id).starts_with(cache.path()),
+            "search indexed the headless cache {} for a desktop session",
+            hit.id
+        );
+    }
+
+    fn action_text_contains(row: &SearchResult, needle: &str) -> bool {
+        row.title.contains(needle)
+            || row.id.contains(needle)
+            || row
+                .subtitle
+                .as_deref()
+                .is_some_and(|text| text.contains(needle))
     }
 
     #[test]
@@ -1333,6 +1690,52 @@ mod tests {
         assert_eq!(guard.attempts(), 0);
         drop(guard);
         drop(provider);
+    }
+
+    #[test]
+    fn a_new_file_in_documents_is_searchable_without_rescan() {
+        crate::shell::test_support::ambient_start("Files search name index");
+        let root = tempfile::tempdir().expect("isolated home");
+        let home = root.path();
+        std::fs::create_dir(home.join("Documents")).expect("Documents");
+        let provider = FilesProvider::with_home(home.to_path_buf());
+        provider.start_name_index();
+        tilo_test_env::wait_until("the name walk to publish", || {
+            provider
+                .published()
+                .is_some_and(|index| index.generation > 0)
+        });
+
+        let needle = "accwatchprobe";
+        std::fs::write(
+            home.join("Documents").join(format!("{needle}.txt")),
+            b"acceptance search probe\n",
+        )
+        .expect("write probe");
+
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        tilo_test_env::wait_until("the watched Documents file to be indexed", || {
+            provider
+                .page_name_hits(
+                    &ctx_for(
+                        needle,
+                        &[ResourceKind::File, ResourceKind::Folder],
+                        &st,
+                        &doc,
+                    ),
+                    None,
+                    SearchBudget {
+                        max_results: MAX_RESULTS,
+                        max_bytes: 64 * 1024,
+                        max_work: SearchBudget::PALETTE.max_work,
+                    },
+                )
+                .results
+                .iter()
+                .any(|row| row.title.contains(needle))
+        });
     }
 
     fn ctx_for<'a>(

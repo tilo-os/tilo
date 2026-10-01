@@ -321,8 +321,8 @@ pub(crate) fn snapshot_json(
     })
 }
 
-/// Labels hosts put on certificates they issue for the owner's own devices
-/// (`tilo-device-host` identity/enrollment). They name a machine, never the
+/// Labels hosts put on certificates they issue for the owner's own devices.
+/// They name a machine, never the
 /// person, so they are not shown as the owner's name.
 const MACHINE_LABELS: &[&str] = &[
     "Browser viewer",

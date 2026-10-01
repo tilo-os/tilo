@@ -171,17 +171,19 @@ struct DispatchedSave {
     invocation: Option<tilo_actions::InvocationId>,
 }
 
+/// Each job carries a wake for the app that queued it: an idle host syncs,
+/// and so drains the result, only when woken.
 struct DocumentWorker {
-    tx: SyncSender<DocumentJob>,
+    tx: SyncSender<(DocumentJob, ui::wake::WakeHandle)>,
     rx: Receiver<DocumentJobResult>,
 }
 
 impl DocumentWorker {
     fn new(content: ContentStore) -> Result<Self, String> {
-        let (tx, jobs) = std::sync::mpsc::sync_channel(1);
+        let (tx, jobs) = std::sync::mpsc::sync_channel::<(DocumentJob, ui::wake::WakeHandle)>(1);
         let (results, rx) = std::sync::mpsc::sync_channel(1);
         ui::rt::spawn_thread("slides-document-io", move || {
-            while let Ok(job) = jobs.recv() {
+            while let Ok((job, wake)) = jobs.recv() {
                 let result = match job {
                     DocumentJob::Open { generation, path } => DocumentJobResult::Open {
                         generation,
@@ -196,7 +198,9 @@ impl DocumentWorker {
                         result: save_presentation_to_path(&deck, &path, &content),
                     },
                 };
-                if results.send(result).is_err() {
+                let sent = results.send(result);
+                wake.wake();
+                if sent.is_err() {
                     break;
                 }
             }
@@ -3461,7 +3465,10 @@ impl SlidesApp {
             ));
             return false;
         };
-        let queued = worker.tx.try_send(DocumentJob::Open { generation, path });
+        let queued = worker.tx.try_send((
+            DocumentJob::Open { generation, path },
+            ui::wake::WakeHandle::new(),
+        ));
         match queued {
             Ok(()) => {
                 self.active_document_generation = Some(generation);
@@ -3497,11 +3504,14 @@ impl SlidesApp {
             ));
             return false;
         };
-        let queued = worker.tx.try_send(DocumentJob::Save {
-            generation,
-            path,
-            deck: self.deck.clone(),
-        });
+        let queued = worker.tx.try_send((
+            DocumentJob::Save {
+                generation,
+                path,
+                deck: self.deck.clone(),
+            },
+            ui::wake::WakeHandle::new(),
+        ));
         match queued {
             Ok(()) => {
                 self.active_document_generation = Some(generation);
@@ -4146,12 +4156,7 @@ impl SlidesApp {
         if chrome.scrim.width() > 0.0 {
             let reveal = chrome.reveal.max(chrome.inspector_reveal);
             let alpha = (reveal * 0.5) as f32;
-            chrome::fill_rect(
-                scene,
-                t,
-                chrome.scrim,
-                render::with_alpha(Color::BLACK, (alpha * 255.0) as u8),
-            );
+            ui::chrome::fill_scrim(scene, t, chrome.scrim, alpha, theme);
         }
 
         {
@@ -4247,14 +4252,13 @@ impl SlidesApp {
     ) {
         let Some(slide) = self.slide() else { return };
         let c = &theme.tokens.colors;
-        // Soft drop shadow.
-        let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_round(
+        // Drop shadow from the theme elevation ladder.
+        ui::surface::shadow(
             scene,
             t,
-            sh.inflate(2.0, 2.0),
+            chrome.slide_dest,
             14.0,
-            render::with_alpha(Color::BLACK, 70),
+            &theme.tokens.elevation.e3,
         );
         // The text box being edited draws its words through its editor.
         let editing = self
@@ -10221,6 +10225,37 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Failed { .. })
             ));
             assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
+        }
+
+        // Case `a_finished_save_wakes_its_idle_host`: an idle host syncs only
+        // when woken, so a save nobody wakes for stays Accepted forever.
+        {
+            let mut scope = ui::wake::WakeScope::new();
+            let _entry = scope.enter();
+            let (sender, wakes) = std::sync::mpsc::channel();
+            scope
+                .bind(move |event| {
+                    let _ = sender.send(event);
+                })
+                .unwrap();
+            let path = std::env::temp_dir()
+                .join(format!("slides-idle-save-{}.pptx", uuid::Uuid::new_v4()));
+            let mut app = SlidesApp::new();
+            let mut doc = AutoCommit::new();
+            crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+            app.resource_invocation = Some(tilo_actions::InvocationId::new());
+            assert!(app.queue_document_save(path.clone()));
+            tilo_test_env::recv("the finished save's wake", &wakes);
+            app.drain_document_worker(&mut doc);
+            assert!(
+                app.dispatched_save.is_none(),
+                "the woken sync settles the save"
+            );
+            assert!(matches!(
+                app.io_toast.as_ref(),
+                Some((_, ToastKind::Success))
+            ));
+            let _ = std::fs::remove_file(path);
         }
 
         // Case `ensure_odp_ext_appends_when_missing`.

@@ -170,6 +170,38 @@ live boot on the laptop are still needed to establish bootability. Other
 firmware dependencies, including Wi-Fi and Bluetooth, must be checked against
 the chosen kernel and image packages.
 
+## Orange Pi 3B v2.1
+
+`orangepi-3b-v2-1` is the Xunlong Orange Pi 3B hardware revision v2.1
+(RK3566). The profile embeds `rockchip/rk3566-orangepi-3b-v2.1.dtb` and names
+the SD-card drivers the UKI needs before the root is mounted. It has no
+private firmware blob: Ethernet and the SD controller come from the device
+tree, and Wi-Fi firmware is the distro `linux-firmware` package when that
+package carries the AP6256 NVRAM for this board.
+
+The disk puts a 15 MiB unformatted hole at the 1 MiB alignment so the ESP starts at LBA 32768. `idbloader.img` sits in the unpartitioned sectors before that hole, and `u-boot.itb` sits inside the hole. `os/dev/build-orangepi-uboot.sh`
+builds mainline U-Boot for `orangepi-3b-rk3566` and
+`os/dev/install-rockchip-loader.py` writes `idbloader.img` at LBA 64 and
+`u-boot.itb` at LBA 16384. The mask ROM loads that U-Boot, which EFI-boots the
+UKI. The first partition must start at or after LBA 32768; a closer partition
+is refused before any loader byte is written.
+
+CI builds this profile from an explicit `workflow_dispatch` with
+`hardware_profile=orangepi-3b-v2-1` on the native ARM64 runner. The image is
+one aarch64 disk at generation 1. It does not enter the generic `latest` /
+`genN` series. Dispatch it with publication left off; a signed board channel
+is separate from that disk build.
+
+```sh
+TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
+  TILO_TARGET_IMGREF=registry.tilo.so/tilo/tilo:orangepi-3b-v2-1-<commit> \
+  ./os/build.sh --local
+```
+
+`TILO_BUILD_ARCH` is only for an x86 builder that emulates aarch64. A native
+ARM builder leaves it unset. CI dispatches `hardware_profile=orangepi-3b-v2-1`
+with publication left off.
+
 The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the
 profile. A check of staged updates against the installed hardware profile and

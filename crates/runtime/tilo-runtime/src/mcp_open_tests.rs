@@ -25,6 +25,12 @@ struct Writer {
     opener: Option<&'static str>,
     running: Arc<Mutex<bool>>,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+    /// For each of the app's next top-level listings, whether it is empty,
+    /// as while the app publishes again during its start.
+    blank_listings: Arc<Mutex<std::collections::VecDeque<bool>>>,
+    /// The text `read-text` answers; set, `read-text` declares itself the
+    /// document's read.
+    document: Option<String>,
 }
 
 impl Writer {
@@ -33,7 +39,14 @@ impl Writer {
             opener,
             running: Arc::default(),
             invoked: Arc::default(),
+            blank_listings: Arc::default(),
+            document: None,
         }
+    }
+
+    fn reading(mut self, document: impl Into<String>) -> Self {
+        self.document = Some(document.into());
+        self
     }
 
     fn invoked(&self) -> Vec<(String, String, String, Value)> {
@@ -117,6 +130,7 @@ impl Writer {
                     "select-block",
                     vec![ActionParam::required("block", ParamType::Text, "Paragraph")],
                 ),
+                apply_style_row(),
                 row(
                     DOC,
                     DOC,
@@ -155,6 +169,17 @@ impl Writer {
         }
         rows
     }
+}
+
+/// An action taking another resource: a handle there stands for it.
+fn apply_style_row() -> CatalogueRow {
+    row(
+        DOC,
+        DOC,
+        "word_processor.document",
+        "apply-style",
+        vec![ActionParam::required("style", ParamType::Resource, "Style")],
+    )
 }
 
 fn row(
@@ -238,9 +263,31 @@ impl ActionHost for Writer {
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
+        let listing =
+            query.target.is_none() && query.needle.is_empty() && query.parent_resource.is_none();
+        if provider != WORKSPACE
+            && listing
+            && self.blank_listings.lock().unwrap().pop_front() == Some(true)
+        {
+            return Pending::ready(Ok(CataloguePage {
+                revision: "v5".into(),
+                exhausted: true,
+                ..CataloguePage::default()
+            }));
+        }
         let mut rows = self.rows(&provider);
         for row in &mut rows {
             row.provider.clone_from(&provider);
+            if let Some(action) = row
+                .action
+                .as_mut()
+                .filter(|action| action.address.action == "read-text" && self.document.is_some())
+            {
+                action
+                    .contract
+                    .tags
+                    .push(tilo_actions::DOCUMENT_READ_TAG.into());
+            }
         }
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
@@ -287,31 +334,52 @@ impl ActionHost for Writer {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        let page_size = self
+        let (action, arguments) = self
             .invoked
             .lock()
             .unwrap()
             .iter()
             .find(|request| request.invocation == *id)
-            .map(|request| match &request.argument {
-                InvokeArgument::Json(map) => map.get("pageSize").and_then(Value::as_u64),
-                _ => None,
+            .map(|request| {
+                let arguments = match &request.argument {
+                    InvokeArgument::Json(map) => map.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                (request.target.address.action.clone(), arguments)
             })?;
+        let page_size = arguments.get("pageSize").and_then(Value::as_u64);
         // As the broker validates arguments against the published schema.
-        let update = if page_size.is_some_and(|size| size > 64) {
+        let refusal = if page_size.is_some_and(|size| size > 64) {
+            Some("argument `pageSize` must be at most 64")
+        } else if arguments
+            .get("block")
+            .and_then(Value::as_str)
+            .is_some_and(|block| block.starts_with('r'))
+        {
+            Some("no block has that id")
+        } else {
+            None
+        };
+        let update = if let Some(message) = refusal {
             InvocationUpdate::Failed {
                 invocation: *id,
                 error: tilo_actions::ActionFailure {
                     code: "invalid_arguments".into(),
-                    message: "argument `pageSize` must be at most 64".into(),
+                    message: message.into(),
                     details: None,
                     retryable: false,
                 },
             }
         } else {
+            let value = self.document.as_ref().filter(|_| action == "read-text").map(
+                |markdown| json!({"version": 1, "content": {"markdown": markdown}, "nextCursor": "c2"}),
+            );
             InvocationUpdate::Succeeded {
                 invocation: *id,
-                output: tilo_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput {
+                    value,
+                    ..tilo_actions::ActionOutput::default()
+                },
             }
         };
         Some(InvocationState::new(*id, update))
@@ -419,6 +487,87 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
     );
 }
 
+/// computer (run 20260930-105710): every task that opened a file spent its
+/// next turn reading it.
+#[test]
+fn opening_a_file_answers_its_first_page_through_the_apps_declared_read() {
+    let text = "# Quarterly Report {#b0}\nOur comittee met. {#b1}\n";
+    let host = Writer::new(Some("open")).reading(text);
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/report.docx"}}),
+    ))
+    .unwrap();
+    let content = &reply["content"];
+    let document = resource(&reply["directory"], "word_processor.document");
+    assert_eq!(content["resource"], document["resource"], "{reply}");
+    assert_eq!(content["action"], "read-text", "{reply}");
+    assert_eq!(content["value"]["content"]["markdown"], text, "{reply}");
+    assert_eq!(
+        content["value"]["nextCursor"], "c2",
+        "a whole page keeps its cursor"
+    );
+    assert!(content.get("truncated").is_none(), "{reply}");
+    let calls = host.invoked();
+    assert_eq!(
+        calls.last().unwrap(),
+        &("1".into(), DOC.into(), "read-text".into(), json!({})),
+        "the read runs with no arguments: {calls:?}"
+    );
+
+    let empty = Writer::new(Some("open")).reading(text);
+    let mut server = McpServer::new(empty.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+    ))
+    .unwrap();
+    assert!(reply.get("content").is_none(), "no file, no read: {reply}");
+    assert!(empty.invoked().iter().all(|call| call.2 != "read-text"));
+}
+
+#[test]
+fn a_long_first_page_is_cut_and_drops_its_cursor() {
+    let text = (0..500)
+        .map(|n| format!("Paragraph {n} of a long report. {{#b{n}}}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let host = Writer::new(Some("open")).reading(text);
+    let mut server = McpServer::new(host, "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/long.docx"}}),
+    ))
+    .unwrap();
+    let content = &reply["content"];
+    assert_eq!(content["truncated"], true, "{content}");
+    assert!(content["value"].to_string().len() <= content::CONTENT_BYTES);
+    let markdown = content["value"]["content"]["markdown"].as_str().unwrap();
+    assert!(markdown.starts_with("Paragraph 0 of a long report. {#b0}\n"));
+    assert!(content["value"].get("nextCursor").is_none(), "{content}");
+}
+
+/// Only a file opened is read: an app that could not open it answers no
+/// page of a document it does not hold.
+#[test]
+fn a_file_the_app_could_not_open_is_not_read() {
+    let host = Writer::new(None).reading("stale");
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+    ))
+    .unwrap();
+    assert!(reply["opened"]["error"].is_string(), "{reply}");
+    assert!(reply.get("content").is_none(), "{reply}");
+    assert!(host.invoked().iter().all(|call| call.2 != "read-text"));
+}
+
 #[test]
 fn an_app_without_open_imports_the_file_by_its_extension() {
     let host = Writer::new(Some("import-csv"));
@@ -431,6 +580,83 @@ fn an_app_without_open_imports_the_file_by_its_extension() {
     .unwrap();
     assert_eq!(reply["opened"]["action"], "import-csv", "{reply}");
     assert_eq!(host.invoked()[1].3, json!({"path": "/data/in/Sales.CSV"}));
+}
+
+/// workflows (guest run 20260929-200306): opening a workbook Sheets already
+/// held started a second window that imported it again.
+#[test]
+fn opening_a_file_an_instance_holds_returns_that_instance() {
+    let host = Writer::new(Some("import-csv"));
+    let open_files = Arc::new(OpenFiles::default());
+    let session = || {
+        McpServer::new(host.clone(), "room".into(), "owner".into())
+            .with_open_files(Arc::clone(&open_files))
+    };
+    let (mut first, mut second) = (session(), session());
+    let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
+    run(async {
+        // Case `a_workspace_open_is_answered_by_the_instance_it_opened_in`.
+        {
+            call(&mut first, "tilo_invoke", open("/data/in/Sales.csv"))
+                .await
+                .unwrap();
+            let again = call(&mut second, "tilo_invoke", open("/data/in/Sales.csv"))
+                .await
+                .unwrap();
+            assert_eq!(again["peer_id"], 1, "{again}");
+            assert_eq!(again["update"]["state"], "succeeded", "{again}");
+            assert_eq!(again["opened"]["already_open"], true, "{again}");
+            assert!(again["directory"]["resources"].is_array(), "{again}");
+        }
+
+        // Case `a_file_imported_directly_is_found_too`.
+        {
+            call(&mut first, "tilo_invoke", json!({"peer_id": 1, "resource": DOC, "action": "import-csv", "arguments": {"path": "/data/in/Costs.csv"}}))
+                .await
+                .unwrap();
+            let again = call(&mut second, "tilo_invoke", open("/data/in/Costs.csv"))
+                .await
+                .unwrap();
+            assert_eq!(again["opened"]["already_open"], true, "{again}");
+        }
+    });
+    let calls = host.invoked();
+    let launches = calls.iter().filter(|call| call.0 == WORKSPACE).count();
+    assert_eq!(launches, 1, "nothing started a second instance: {calls:?}");
+    let imports = calls
+        .iter()
+        .filter(|call| call.2 == "import-csv")
+        .map(|call| call.3["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        imports,
+        ["/data/in/Sales.csv", "/data/in/Costs.csv"],
+        "each file was read once"
+    );
+}
+
+/// computer (run 20260930-071012, doc-create-memo): opened without a file,
+/// the Word Processor's `open` answered `"resources": []`, and the agent
+/// spent two query turns on its directory.
+#[test]
+fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
+    let host = Writer::new(None);
+    host.blank_listings
+        .lock()
+        .unwrap()
+        .extend([false, true, true]);
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+    ))
+    .unwrap();
+    assert!(
+        resource(&reply["directory"], "word_processor.document")["children"] == true,
+        "{reply}"
+    );
+    assert!(host.blank_listings.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -500,6 +726,67 @@ fn workspace_pages_name_their_resources_in_full() {
     ))
     .unwrap();
     assert_eq!(found["resources"][0]["resource"], PERMISSIONS, "{found}");
+}
+
+/// computer (run 20260930-071012, deck-launch): `set-slide-text` was refused
+/// `slide: "r1"`, the directory's handle for the slide.
+#[test]
+fn a_handle_in_a_resource_argument_is_expanded_and_elsewhere_named_in_full() {
+    let host = Writer::new(Some("open"));
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        call(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+        )
+        .await
+        .unwrap();
+        let page = call(&mut server, "tilo_query", json!({"peer_id": 1}))
+            .await
+            .unwrap();
+        let doc = resource(&page, "word_processor.document")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let style = resource(&page, "qdoc.rich-text")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let styled = call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "apply-style", "arguments": {"style": style}}))
+            .await
+            .unwrap();
+        assert_eq!(styled["update"]["state"], "succeeded", "{styled}");
+        assert!(styled.get("hint").is_none(), "{styled}");
+
+        let selected = call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": style}}))
+            .await
+            .unwrap();
+        assert_eq!(selected["update"]["state"], "succeeded", "{selected}");
+        let adjusted = selected["adjusted"].as_str().unwrap_or_default();
+        assert!(
+            adjusted.contains(&format!("block {style} was refused; used its id {RICH}")),
+            "{selected}"
+        );
+    });
+    let calls = host.invoked();
+    let arguments = |action: &str| {
+        calls
+            .iter()
+            .filter(|call| call.2 == action)
+            .map(|call| call.3.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(arguments("apply-style"), [json!({"style": RICH})]);
+    let selects = arguments("select-block");
+    assert_eq!(selects.len(), 2, "{selects:?}");
+    assert!(
+        selects[0]["block"]
+            .as_str()
+            .is_some_and(|handle| handle.starts_with('r')),
+        "a text argument goes as given first: {selects:?}"
+    );
+    assert_eq!(selects[1], json!({"block": RICH}));
 }
 
 #[test]

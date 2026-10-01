@@ -96,7 +96,9 @@ function Boot([bool]$installer, [string[]]$flags) {
     $qemu = Resolve-Tool 'qemu-system-aarch64'
     $img = Resolve-Tool 'qemu-img'
     if ($installer) {
-        if (Test-Path -LiteralPath $proof) { throw "stale installer proof file already exists: $proof" }
+        if ((Test-Path -LiteralPath $proof) -and (Get-Item -LiteralPath $proof).Length -ne 0) {
+            throw "stale installer proof file already contains evidence: $proof"
+        }
         if (!(Test-Path -LiteralPath $work)) { & $img create -f qcow2 -F qcow2 -b $medium $work | Out-Null; if ($LASTEXITCODE) { throw 'creating installer overlay failed' } }
         if (!(Test-Path -LiteralPath $target)) { & $img create -f qcow2 $target 40G | Out-Null; if ($LASTEXITCODE) { throw 'creating sparse target failed' } }
         $disks = @('-drive', "if=none,id=medium,format=qcow2,file=$work,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=medium,serial=tilo-installer-medium,bootindex=1', '-drive', "if=none,id=target,format=$targetFormat,file=$target,cache=writeback,aio=threads", '-device', 'virtio-blk-pci,drive=target,serial=tilo-install-target')
@@ -114,8 +116,11 @@ function Boot([bool]$installer, [string[]]$flags) {
     $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '8192', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
     $start = [Diagnostics.ProcessStartInfo]::new($qemu)
     foreach ($arg in $argv) { $start.ArgumentList.Add([string]$arg) }
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
+    # Command::output in tilo-vm captures this PowerShell process's stdout and
+    # stderr. Detach QEMU from those pipes so boot-installer returns while the
+    # VM is running, rather than waiting for QEMU to exit before driving it.
+    $start.UseShellExecute = $true
+    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
     $proc = [Diagnostics.Process]::Start($start)
     @{ id = $proc.Id; started = $proc.StartTime.ToUniversalTime().Ticks.ToString(); cycle = $cycle } |
         ConvertTo-Json -Compress | Set-Content -LiteralPath $pidFile
@@ -150,6 +155,17 @@ switch ($Action) {
         }
     }
     'keys' { foreach ($key in $Args) { Send-Key $key } }
+    'shot' {
+        if ($Args.Count -ne 1 -or $Args[0] -notmatch '^[a-z0-9-]+$') { throw 'shot requires one safe name' }
+        if (!(Get-VmProcess)) { throw 'scenario VM is not running' }
+        $ppm = Join-Path $run "$($Args[0]).ppm"
+        $png = Join-Path $run "$($Args[0]).png"
+        $null = Invoke-Qmp 'screendump' @{ filename = $ppm }
+        if (!(Test-Path -LiteralPath $ppm)) { throw 'QEMU screendump did not write a frame' }
+        & (Resolve-Tool 'magick') $ppm $png
+        if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $png)) { throw 'screendump conversion failed' }
+        $png
+    }
     'type' {
         if ($Args.Count -ne 1 -or $Args[0] -ne '-') { throw 'type accepts stdin only' }
         $value = [Console]::In.ReadToEnd().TrimEnd("`r", "`n")

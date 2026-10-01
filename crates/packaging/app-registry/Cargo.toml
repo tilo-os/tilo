@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem

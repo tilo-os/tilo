@@ -229,6 +229,20 @@ pub struct OwnedShmFrame {
     format: wl_shm::Format,
 }
 
+#[cfg(test)]
+impl OwnedShmFrame {
+    /// A tightly packed `Argb8888` frame, as a client's pool would hold it.
+    pub(crate) fn argb8888(bytes: Vec<u8>, width: usize, height: usize) -> Self {
+        Self {
+            bytes,
+            width,
+            height,
+            stride: width.saturating_mul(4),
+            format: wl_shm::Format::Argb8888,
+        }
+    }
+}
+
 /// Copy the committed contents of an SHM `buffer` out of the client's pool.
 ///
 /// # Errors
