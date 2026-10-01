@@ -960,6 +960,32 @@ impl ui::resources::PublishesResources for DiskUsageApp {
         root.children.extend(self.live_analyze_extras());
         vec![root]
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.hosted && id == "disk-usage:root" {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
+            "disk-usage:root",
+            "Disk Usage Analyzer",
+            &state,
+        );
+        root.children.extend(self.live_analyze_extras());
+        find(&[root], id)
+    }
 }
 
 #[cfg(test)]
@@ -1070,5 +1096,26 @@ mod tests {
                 Some("Choose folder")
             );
         }
+    }
+
+    #[test]
+    fn hosted_recent_folder_is_the_published_row() {
+        let mut doc = AutoCommit::new();
+        let path = PathBuf::from("/tmp/notes");
+        DiskUsageDoc::remember(&mut doc, &path);
+        doc.commit();
+        let mut app = DiskUsageApp::new();
+        app.mark_hosted_for_test();
+        assert!(ui::resources::resource(&app, &doc, "disk-usage:root").is_none());
+        let row =
+            ui::resources::resource(&app, &doc, &format!("disk-usage.recent:{}", path.display()))
+                .expect("hosted recent folder");
+        assert_eq!(row.kind, "disk-usage.recent");
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id.starts_with("analyze:")),
+            "a hosted recent folder stays the published row"
+        );
     }
 }
