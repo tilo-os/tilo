@@ -316,4 +316,12 @@ mod tests {
         let door = provide_resources(&seeded);
         assert_eq!(door[0].kind, "maps.workspace");
     }
+
+    #[test]
+    fn a_live_map_stays_empty_until_a_map_action() {
+        let mut app = MapsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(MapsDoc::load(&doc).is_none());
+    }
 }

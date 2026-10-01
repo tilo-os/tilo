@@ -1264,11 +1264,19 @@ impl MapsApp {
     ///
     /// The host applies the same canonical binding used by resources and
     /// on-screen controls. Local presentation state is never pre-flushed.
+    fn has_durable_map(&self) -> bool {
+        !self.model.places.is_empty()
+            || !self.model.regions.is_empty()
+            || !self.model.recents.is_empty()
+            || !self.model.transit.is_empty()
+            || self.model.route.is_some()
+    }
+
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         // Test/standalone callers may invoke an action before the widget's
         // first sync. Seed once only; ordinary interactions never mirror local
         // presentation back into an existing document.
-        if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() {
+        if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() && self.has_durable_map() {
             MapsDoc::save(doc, &self.model);
         }
         self.actions.dispatch_with_context(
@@ -5185,9 +5193,11 @@ impl Widget for MapsApp {
             // panel, selection and ranked results never mirror back into it.
             MapsDoc::apply_durable(state, &mut self.model);
         } else {
-            if MapsDoc::load(state).is_some() || self.actions.is_hosted() {
-                // The hosted record is the library. An empty record stays
-                // empty until a map action writes it.
+            if MapsDoc::load(state).is_some() || self.actions.is_hosted() || !self.has_durable_map()
+            {
+                // The hosted record is the library. An empty live map stays
+                // empty until a map action writes it. Sample places still
+                // publish on the offline path.
                 MapsDoc::apply_durable(state, &mut self.model);
             } else {
                 MapsDoc::save(state, &self.model);
@@ -5835,10 +5845,9 @@ impl ui::resources::PublishesResources for MapsApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         use ui::tilo_resource::Resource as _;
-        if self.is_hosted() {
-            return crate::resource::live_extras(self)
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
+        // The framework root already owns the workspace door.
+        if self.is_hosted() && id == "maps.workspace" {
+            return None;
         }
         let mut resource = self
             .publish_resource(doc, id)
