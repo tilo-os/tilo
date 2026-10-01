@@ -12,6 +12,10 @@ on:
       source_revision:
         description: "Exact 40-character source revision the candidate must name."
         required: true
+      renderer_variant:
+        description: "Greeter render probe: gpu (default) or vello-cpu."
+        required: false
+        default: gpu
 
 jobs:
   boot:
@@ -26,6 +30,7 @@ jobs:
       TILO_RUN: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}
       CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}
       SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+      RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -78,6 +83,10 @@ jobs:
       - name: Boot, capture cage stderr, and check greeter
         run: |
           set -euo pipefail
+          [[ $RENDERER_VARIANT == gpu || $RENDERER_VARIANT == vello-cpu ]] || {
+            echo '::error::renderer_variant must be gpu or vello-cpu'
+            exit 1
+          }
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
           finish() {
@@ -102,7 +111,7 @@ jobs:
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
             os/dev/guest-greeter-diagnostic.sh "$TILO_USER@127.0.0.1:/tmp/guest-greeter-diagnostic.sh"
-          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-greeter-diagnostic.sh"
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' env GREETER_RENDER_VARIANT=$RENDERER_VARIANT bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-diagnostic.log' > "$TILO_RUN/cage-diagnostic.log" || true
           sleep 3
           ./os/dev/vm.sh ssh 'test -c /dev/dri/card0 && systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter' || {
