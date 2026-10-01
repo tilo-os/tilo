@@ -231,6 +231,13 @@ impl<T> BufferPool<T> {
         }
     }
 
+    /// Put a reserved buffer back when this redraw will not present.
+    /// Dropping it would shrink the pool until the worker had nothing to return.
+    #[cfg(feature = "native")]
+    pub(crate) fn unprepare(&mut self, buffers: T) {
+        self.prepared = Some(buffers);
+    }
+
     #[cfg(feature = "native")]
     pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Some(buffers) = self.prepared.take() {

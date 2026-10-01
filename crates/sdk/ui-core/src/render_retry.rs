@@ -94,6 +94,14 @@ impl RenderRetryState {
         self.occlusions > 0 && !self.allows(now)
     }
 }
+/// An idle redraw whose tree, layout, and damage did not change must not
+/// present. Presenting it asks the compositor for another frame callback,
+/// and answering that callback is what kept apps-open idle painting.
+#[cfg(feature = "native")]
+pub(crate) fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {
+    full_redraw || has_damage
+}
+
 /// Whether paint-only work warrants the fast pump for this surface.
 #[cfg(feature = "native")]
 pub(crate) fn presentation_demand(blocked: bool, demand: bool) -> bool {
@@ -163,6 +171,17 @@ pub(crate) fn next_wake(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unchanged_redraw_does_not_present() {
+        assert!(
+            !submit_redraw_frame(false, false),
+            "no tree, layout, or damage change must not present"
+        );
+        assert!(submit_redraw_frame(true, false));
+        assert!(submit_redraw_frame(false, true));
+    }
+
     #[test]
     fn occlusion_backoff_caps_probes_and_survives_unrelated_outcomes() {
         // Case `occlusion_backoff_caps_and_eventually_probes_without_exposure`.
