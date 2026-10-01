@@ -18,15 +18,18 @@ ls -l /dev/dri 2>&1 || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-for variant in stock pixman legacy-drm pixman-legacy-drm; do
+for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman; do
   log="/tmp/tilo-cage-${variant}.log"
+  child='/usr/bin/tilo-greeter'
   case "$variant" in
     stock) extra='';;
     pixman) extra='WLR_RENDERER=pixman ';;
     legacy-drm) extra='WLR_DRM_NO_ATOMIC=1 ';;
     pixman-legacy-drm) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 ';;
+    sleep-client) extra=''; child='/usr/bin/sleep 15';;
+    sleep-client-pixman) extra='WLR_RENDERER=pixman '; child='/usr/bin/sleep 15';;
   esac
-  python3 - "$config" "$original" "$log" "$extra" <<'PY'
+  python3 - "$config" "$original" "$log" "$extra" "$child" <<'PY'
 from pathlib import Path
 import sys
 
@@ -34,11 +37,13 @@ path = Path(sys.argv[1])
 original_path = Path(sys.argv[2])
 log = sys.argv[3]
 extra = sys.argv[4]
+child = sys.argv[5]
 original = 'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"'
 instrumented = (
     'command = "/usr/bin/bash -c '
-    "'WLR_NO_HARDWARE_CURSORS=1 WLR_LOG=debug " + extra +
-    'exec cage -s -- /usr/bin/tilo-greeter >>' + log + ' 2>&1\'"'
+    "'WLR_NO_HARDWARE_CURSORS=1 WLR_LOG=debug RUST_BACKTRACE=1 " + extra +
+    'cage -s -- ' + child + ' >>' + log + ' 2>&1; '
+    'echo cage-exit=$? >>' + log + '\'"'
 )
 text = original_path.read_text()
 if text.count(original) != 1:
@@ -59,7 +64,12 @@ PY
   else
     echo 'cage wrote no diagnostic log'
   fi
-  if systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter; then
+  if [[ $variant == sleep-client* ]]; then
+    client_alive=$(pgrep -x sleep || true)
+  else
+    client_alive=$(pgrep -x tilo-greeter || true)
+  fi
+  if systemctl is-active --quiet greetd && pgrep -x cage && [[ -n $client_alive ]]; then
     echo "variant $variant: GREETER_ALIVE"
   else
     echo "variant $variant: GREETER_EXITED"
