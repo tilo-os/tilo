@@ -509,6 +509,18 @@ pub struct ShellOverlayHost {
     /// window preview goes to that window, a drag carries it to another
     /// room.
     overview_press: Option<tilo_desktop::overview::OverviewPress>,
+    /// Settled overview panel recording. Animation frames reuse it and only
+    /// change the transform, instead of re-encoding every room row.
+    overview_panel_cache: Option<OverviewPanelCache>,
+    /// How many times the panel recording was built. Tests use this to prove
+    /// a transition does not rebuild it per frame.
+    overview_panel_cache_fills: u32,
+    /// Bumped when a transition latches, so the presenter can keep the
+    /// pre-transition desktop pixels for the whole fade.
+    overview_generation: u64,
+    /// Set while the overview is fading. The multi-output presenter uploads
+    /// only this panel instead of both full scanouts.
+    overview_fast_patch: Option<OverviewFastPatch>,
     /// Overview panel density for the current theme, refreshed each
     /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
     /// helpers hit-testing calls (no theme in hand) read the same numbers
@@ -517,6 +529,15 @@ pub struct ShellOverlayHost {
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
+    /// One-shot driver so a workspace switch requests a run of frames
+    /// instead of painting once and idling (W16). Settles with the curve.
+    workspace_switch: ui::Transition,
+    /// Wall-clock end of that frame run. Draw must not clear it: snapping
+    /// the curve let the close flush both scanouts on every remaining paint.
+    workspace_switch_until: Option<Instant>,
+    /// The workspace root was just rebuilt and has not been encoded yet.
+    /// A clip would replay the previous workspace, so that one frame is dense.
+    content_rebuild_owes_scene: bool,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -1062,6 +1083,11 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
+const WORKSPACE_SWITCH_MS: u64 = 400;
+/// W16 wants ≥ 8 painted frames per open/close. Host demand still
+/// clears when the crossfade settles; the compositor consumes this
+/// many paints on its own.
+const TRANSITION_PAINT_RUN: u32 = 8;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
 /// starts, and the top of the band the room-activity sheet, the
@@ -1446,6 +1472,7 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
+                workspace_switch: self.workspace_switch_holding_at(now),
                 quick_settings: self.qs_transition.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
@@ -1983,10 +2010,17 @@ impl ShellOverlayHost {
             overview_selection: None,
             overview_window_selection: None,
             overview_press: None,
+            overview_panel_cache: None,
+            overview_panel_cache_fills: 0,
+            overview_generation: 0,
+            overview_fast_patch: None,
             overview_metrics: OverviewMetrics::default(),
             transition_started: None,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
+            workspace_switch: ui::Transition::closed(),
+            workspace_switch_until: None,
+            content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_px: (
@@ -2989,13 +3023,21 @@ impl ShellOverlayHost {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
+            self.overview_generation = self.overview_generation.wrapping_add(1);
+            self.request_compositor_transition_paints();
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
             self.reseed_overview_selection(target > 0.5);
             self.overview_scroll_y = 0.0;
         }
         if let Some(started) = self.transition_started {
-            let elapsed = millis_to_f32_lossy(started.elapsed().as_millis());
+            // A start that was deferred past `now` has not begun. `elapsed`
+            // would panic there; the wait is not progress.
+            let elapsed = millis_to_f32_lossy(
+                Instant::now()
+                    .saturating_duration_since(started)
+                    .as_millis(),
+            );
             let duration = millis_to_f32_lossy(u128::from(OVERVIEW_TRANSITION_MS));
             if elapsed >= duration {
                 self.overview_t = self.overview_target;
@@ -3011,11 +3053,137 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
+    /// Latch overview progress on the chord itself, before the compositor
+    /// samples animation demand. Starting only in `update` left Super+Tab
+    /// as a timer the loop parks past (W16).
+    pub(crate) fn latch_overview_transition(&mut self) {
+        let open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.overview);
+        // Do not read `ui::host::environment()` here: that is a process
+        // input, and fixture pumps forbid ambient starts. Draw snaps
+        // with `theme.reduce_motion`.
+        let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
+    }
+
+    /// Whether the workspace-switch frame run is still in flight.
+    /// Intermediate frames must not upload the desktop again.
+    pub(crate) fn workspace_switch_holding(&self) -> bool {
+        self.workspace_switch_holding_at(Instant::now())
+    }
+
+    fn workspace_switch_holding_at(&self, now: Instant) -> bool {
+        self.workspace_switch_until.is_some_and(|until| now < until)
+            || self.workspace_switch.is_animating(now)
+    }
+
+    /// Content column of the first display. The close paints its frame run
+    /// here; the rect stops at the next display so the other scanout is not
+    /// part of the upload.
+    pub(crate) fn workspace_switch_clip(&self) -> Option<vello::FineDamageRect> {
+        if !self.workspace_switch_holding() {
+            return None;
+        }
+        let primary = self.outputs.first()?;
+        let clearance = workspace_rail_clearance_for_viewport(primary.height.max(1.0));
+        let next_left = self.outputs.get(1).map(|output| output.scene.x0);
+        let x0 = primary.scene.x0 + clearance;
+        let x1 = next_left.unwrap_or(primary.scene.x1).min(primary.scene.x1);
+        scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
+    }
+
+    /// Keep the compositor painting for the switch's duration. The
+    /// desktop content is already swapped; this is the frame run, not a
+    /// second slide implementation. Reduced motion still runs the frames:
+    /// snapping the curve made the close flush both scanouts.
+    /// Call on the chord, not only from `update`: demand is sampled first.
+    pub(crate) fn start_workspace_switch_frames(&mut self) {
+        let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
+        self.workspace_switch = ui::Transition::closed();
+        self.workspace_switch
+            .set_open(true, duration, ui::Curve::EaseOut);
+        self.workspace_switch_until = Instant::now().checked_add(duration);
+        self.request_compositor_transition_paints();
+    }
+
+    /// Whether this frame is one display's content clip. The combined
+    /// desktop is what makes a two-output fade a readback of both scanouts.
+    pub(crate) fn presents_on_content_clip(&self) -> bool {
+        !self.content_rebuild_owes_scene
+            && (self.transition_started.is_some() || self.workspace_switch_holding())
+    }
+
+    /// The dense frame just encoded the rebuilt workspace. Later paints in
+    /// this switch may stay on the clip.
+    pub(crate) fn dense_scene_covers_content_rebuild(&mut self) {
+        self.content_rebuild_owes_scene = false;
+    }
+
+    /// Whether a transition still owes a present. The clock may have been
+    /// deferred; this is the signal that keeps the frame run alive.
+    pub(crate) fn transition_present_pending(&self) -> bool {
+        self.transition_started.is_some() || self.workspace_switch_holding()
+    }
+
+    /// Give `by` back to a running overview or workspace switch. Call with
+    /// the park spent on a full presenter, before the next sample of the clock.
+    pub(crate) fn defer_running_transitions(&mut self, by: Duration) {
+        if by.is_zero() {
+            return;
+        }
+        if let Some(started) = self.transition_started.as_mut() {
+            *started = started.checked_add(by).unwrap_or(*started);
+        }
+        if let Some(until) = self.workspace_switch_until.as_mut() {
+            *until = until.checked_add(by).unwrap_or(*until);
+        }
+        self.workspace_switch.defer(by);
+    }
+
+    /// Tick the overlay and store its clip. The desktop underneath is the
+    /// frame already presented; drawing it again encodes both outputs.
+    pub(crate) fn prepare_content_clip(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let overview_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.overview);
+        if self.transition_started.is_none() && !overview_open {
+            return;
+        }
+        let mut scratch = Scene::new();
+        self.draw_overview_overlay(
+            &mut scratch,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            overview_open,
+        );
+    }
+
+    fn request_compositor_transition_paints(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome
+                .borrow_mut()
+                .request_transition_paints(TRANSITION_PAINT_RUN);
+        }
+    }
+
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
         self.chrome = Some(chrome);
         self
+    }
+
+    /// Fixture hosts start with explicit desktop controls, which skip launch
+    /// notifications. Tests of that drain switch to the persisted source the
+    /// session uses.
+    #[cfg(test)]
+    pub(crate) fn enable_persisted_launch_drain_for_test(&mut self) {
+        self.desktop_controls = DesktopControlsSource::Persisted(
+            settings_store::hardware::DesktopControlsConfig::default(),
+        );
     }
 
     /// Configure peer-sync palette commands during host construction.
@@ -3621,10 +3789,6 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
-        // Both update and structure-dirty enter here before canonical
-        // reconciliation. Commit pending widget gestures first, before a
-        // rebuild drops the rows holding them.
-        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -3656,7 +3820,12 @@ impl ShellOverlayHost {
             }
             tree.clone()
         };
-        self.rebuild_workspace_content(&chrome, &snapshot)
+        let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
+        if swapped {
+            self.content_rebuild_owes_scene = true;
+            self.start_workspace_switch_frames();
+        }
+        swapped
     }
 
     /// Rebuilds the desktop surface for `snapshot` and replaces the row
@@ -4253,10 +4422,15 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let (fs_group, maximize) = {
+        let (fs_group, maximize, single) = {
             let st = chrome.borrow();
             let client = st.fullscreen_group();
-            (client.or_else(|| st.maximized_group()), client.is_none())
+            let single = st.single_strip().then(|| st.active_strip_id()).flatten();
+            (
+                client.or_else(|| st.maximized_group()),
+                client.is_none(),
+                single,
+            )
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4273,7 +4447,7 @@ impl ShellOverlayHost {
         // rebuilding while this still says `true` leaves the sidebar node at
         // `display:none`, with no later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
-        for &row_ptr in self.group_row_ptrs.values() {
+        for (&strip, &row_ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
             // tree, the host outlives the content, and `&mut self` gives us
@@ -4287,7 +4461,7 @@ impl ShellOverlayHost {
                     row.set_fullscreen(Some(gid), false);
                 }
                 Some(_) if owned => row.set_fullscreen(None, true),
-                _ => row.set_fullscreen(None, false),
+                _ => row.set_fullscreen(None, single.is_some_and(|single| single != strip)),
             }
         }
     }
@@ -4445,8 +4619,9 @@ impl ShellOverlayHost {
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
     /// tree's `group.active_tab`/`active_group`/`active_strip` — without
     /// it, a tab click flips visible content but leaves search-scope
-    /// helpers pointing at the group's initial tab. Runs every frame; the
-    /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
+    /// helpers pointing at the group's initial tab. Runs after input
+    /// (`flush_active_tab_writeback`) and before a search or palette
+    /// scope is resolved, not every frame.
     fn harvest_active_tab_writeback(&self) {
         // Widgets and chrome can't be borrowed at once, so collect the
         // tuples first and apply under one chrome borrow.
@@ -5313,6 +5488,20 @@ impl ShellOverlayHost {
                     );
                     continue;
                 }
+                // Geoclue and nm-applet are autostart helpers. They are not the
+                // app the person opened, so their exit must not toast
+                // "crashed before opening" for that launch.
+                LaunchEventKind::Failed { .. }
+                    if crate::shell::launcher::unasked_session_helper(&event.package_id) =>
+                {
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        "session helper exited without a window the user asked to open"
+                    );
+                    continue;
+                }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
             }
             match &event.kind {
@@ -5591,6 +5780,49 @@ impl ShellOverlayHost {
         self.pump_permission_prompt();
     }
 
+    /// Geometry `draw_desktop_extras` gives the live permission prompt.
+    fn permission_prompt_surface(&self) -> Rect {
+        let area = self.overlay_area();
+        let inset = f64::from(self.sidebar_top_y);
+        let bar_top = area.y0 + inset;
+        Rect::new(
+            area.x0 + inset,
+            bar_top,
+            area.x1 - inset,
+            bar_top + PROMPT_HEIGHT,
+        )
+    }
+
+    /// Seal bands for trusted surfaces that are on screen. Empty when none
+    /// are up. Only [`crate::shell::frame::FrameBuilder::widget_registry`]
+    /// publishes these names; the widget walk cannot.
+    pub(crate) fn trusted_frame_targets(
+        &self,
+        theme: &ui::theme::Theme,
+    ) -> Vec<(&'static str, Rect)> {
+        let mut targets = Vec::new();
+        let thickness = f64::from(theme.tokens.spacing.s1);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            targets.push((
+                crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.md),
+                ),
+            ));
+        }
+        if let Some(layout) = self.portal_dialogs.layout(self.rect) {
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            targets.push((
+                crate::shell::trusted_ui::PORTAL_DIALOG_TARGET,
+                crate::shell::trusted_ui::seal_band(layout.sheet, thickness, radius),
+            ));
+        }
+        targets
+    }
+
     /// Test-only accessor for the held [`PermissionPrompt`].
     #[cfg(any(test, debug_assertions))]
     pub fn permission_prompt_mut_for_tests(&mut self) -> Option<&mut PermissionPrompt> {
@@ -5729,8 +5961,8 @@ impl ShellOverlayHost {
     }
 
     /// Selects `tab` inside `group` on the live widget tree (the
-    /// authoritative side — `harvest_active_tab_writeback` mirrors it into
-    /// the persisted tree each frame). Used by the compositor's Alt+Shift
+    /// authoritative side — `flush_active_tab_writeback` mirrors it into
+    /// the persisted tree after input). Used by the compositor's Alt+Shift
     /// wheel jump.
     pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
         let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
@@ -5919,6 +6151,11 @@ impl ShellOverlayHost {
 
     /// The switcher as `state-dump` reports it: its windows, which is
     /// selected, and whether each card shows a live preview.
+    /// Whether the power menu is open, for `state_dump`.
+    pub fn power_menu_open(&self) -> bool {
+        self.layers.power_menu.is_open()
+    }
+
     pub fn window_switcher_state_json(&self) -> serde_json::Value {
         self.layers
             .window_switcher
@@ -6342,6 +6579,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Super+F on a Tilo window: cover the output, including the wheel.
+    /// A client `xdg_toplevel` fullscreen still goes through the compositor.
+    pub(crate) fn toggle_focused_group_fullscreen(&self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let focused = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+            let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+            drop(tree);
+            drop(state);
+            group
+        };
+        let Some(group) = focused else {
+            return false;
+        };
+        let current = chrome.borrow().fullscreen_group();
+        chrome
+            .borrow_mut()
+            .set_user_fullscreen_group(if current == Some(group) {
+                None
+            } else {
+                Some(group)
+            });
+        true
+    }
+
     fn detach_focused_tab(&mut self) -> bool {
         self.mutate_focused_group_widget(GroupRow::detach_active_tab)
     }
@@ -6612,7 +6878,20 @@ impl ShellOverlayHost {
     /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
     /// is hidden. Lets tests assert it's on screen and click its centre.
     pub fn add_workspace_rect_for_tests(&self) -> Rect {
-        self.add_workspace_rect
+        self.add_workspace_hit_rect()
+    }
+
+    /// The new-workspace row while the overview is open.
+    ///
+    /// The fade's first sample is still alpha 0, and that sample clears the
+    /// painted hit cache so a closing overview cannot create a room. The
+    /// row's geometry is the control: `list-targets` and a click both use
+    /// it as soon as the overlay flag is up, including that first sample.
+    fn add_workspace_hit_rect(&self) -> Rect {
+        if !self.overlay_flags().overview {
+            return Rect::ZERO;
+        }
+        self.overview_add_workspace_rect_for(self.overview_cards().len())
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -6832,6 +7111,10 @@ impl ShellOverlayHost {
     fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
+        if tilo_desktop::launchpad::take_open_app(doc, root) {
+            self.open_app_launcher(doc, root);
+            return true;
+        }
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
@@ -6852,6 +7135,22 @@ impl ShellOverlayHost {
             | LaunchpadAction::Meet => {}
         }
         true
+    }
+
+    /// The app launcher Super+N and the empty workspace's "Open an app"
+    /// open: the palette over everything, opening beside the focus.
+    fn open_app_launcher(&mut self, doc: &AutoCommit, root: &ObjId) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
     }
 
     fn open_launchpad_app(
@@ -6977,11 +7276,26 @@ impl ShellOverlayHost {
                     .group_total(group.total)
                     .icon(icon_for_kind(&r.kind));
                 // The unconfined-host glyph stays the fallback; the app's own
-                // artwork is what a person recognises it by.
+                // artwork is what a person recognises it by. Window rows wear
+                // the same tile face as the tab strip, not the magnifier.
                 if r.kind == crate::shell::search::ResourceKind::HostApplication
                     && let Some(image) = crate::app_icons::for_desktop_id(&r.id)
                 {
                     e = e.image(image);
+                }
+                if matches!(
+                    r.kind,
+                    crate::shell::search::ResourceKind::Tab
+                        | crate::shell::search::ResourceKind::WindowGroup
+                ) && let Some(chrome) = &self.chrome
+                {
+                    let state = chrome.borrow();
+                    let tree = state.tree();
+                    if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
+                        && let Some(image) = crate::app_icons::for_tile(tile)
+                    {
+                        e = e.image(image);
+                    }
                 }
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
@@ -8413,6 +8727,9 @@ impl ShellOverlayHost {
         } else {
             false
         };
+        if matched && id == "overview.toggle" {
+            self.latch_overview_transition();
+        }
         self.palette_visible = false;
         self.palette.close();
         matched
@@ -11064,6 +11381,8 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
+                drop(st);
+                self.latch_overview_transition();
             }
             *handled = true;
             return true;
@@ -11133,8 +11452,13 @@ impl ShellOverlayHost {
             } else {
                 1
             };
-            if let Some(chrome) = self.chrome.clone() {
-                let _ = chrome.borrow_mut().switch_workspace(direction);
+            if let Some(chrome) = self.chrome.clone()
+                && chrome.borrow_mut().switch_workspace(direction)
+            {
+                // Both directions. Page Down's following frames were already
+                // cheap; Page Up fell through to a full upload of the desktop
+                // just restored.
+                self.start_workspace_switch_frames();
             }
             *handled = true;
             return true;
@@ -11368,8 +11692,10 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                if let Some(chrome) = self.chrome.clone()
+                    && chrome.borrow_mut().switch_workspace(direction)
+                {
+                    self.start_workspace_switch_frames();
                 }
             }
             _ => return false,
@@ -11467,7 +11793,15 @@ impl ShellOverlayHost {
             A::Notifications => chrome
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
-            A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::ToggleFullscreen => {
+                // Super+M applies on the host. Super+F must too: the
+                // compositor loop then writes `set_fullscreen(None)` every
+                // tick (client xdg is overlay-only), so a later request
+                // parked in `fullscreen_group` is gone before W07 dumps.
+                if !self.toggle_focused_group_fullscreen() {
+                    chrome.borrow_mut().request_fullscreen_toggle();
+                }
+            }
             A::NextInputSource => {
                 if let Some((index, name)) =
                     select_next_input_source(settings_store::settings_path().as_deref())
@@ -11841,21 +12175,9 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
-                if repeat {
-                    *handled = true;
-                    return true;
+                if !repeat {
+                    self.open_app_launcher(state, path);
                 }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
-                    st.bump();
-                }
-                self.palette_visible = true;
-                self.palette.set_focus(true);
-                self.palette.set_query("");
-                self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-                self.refresh_search_results(state, path);
                 *handled = true;
                 true
             }
@@ -11906,7 +12228,12 @@ impl ShellOverlayHost {
                     let mut st = chrome.borrow_mut();
                     let next = match st.wheel_summon() {
                         Some(_) => None,
-                        None => self.last_cursor,
+                        // A session with no pointer yet (headless, first
+                        // frame, a VM that has not moved the cursor) still
+                        // has to put the wheel somewhere a shot and
+                        // state-dump can see. The host rect is the
+                        // display; its centre is on screen.
+                        None => Some(self.last_cursor.unwrap_or_else(|| self.rect.center())),
                     };
                     st.set_wheel_summon(next);
                     *handled = true;
@@ -11963,6 +12290,8 @@ impl ShellOverlayHost {
         if st.overlays.overview {
             st.overlays.overview = false;
             st.bump();
+            drop(st);
+            self.latch_overview_transition();
             *handled = true;
             return true;
         }
@@ -14838,8 +15167,11 @@ impl ShellOverlayHost {
     /// either way the overview closes.
     fn overview_click_at(&self, p: Point) {
         // Wins the hit-test before the row-card scan so a
-        // click on it doesn't fall through to "missed".
-        if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
+        // click on it doesn't fall through to "missed". Geometry, not the
+        // painted cache: the open's first sample is still alpha 0 and
+        // clears that cache.
+        let add = self.add_workspace_hit_rect();
+        if add.area() > 0.0 && add.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
                 // Creation switches to the new workspace. Release the
@@ -15719,6 +16051,7 @@ impl Widget for ShellOverlayHost {
         }
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
+        self.latch_overview_transition();
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -15777,13 +16110,12 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
-        self.harvest_active_tab_writeback();
         let presence_dirty = self.pump_presence_requests();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
-        // Both edge-triggered on `active_group`, so they run after the
-        // writeback above reflects this frame's focus change.
+        // Edge-triggered on `active_group`. Input already flushed the
+        // widget-side tab into the tree before this update.
         self.scroll_active_group_into_view();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
@@ -18112,6 +18444,9 @@ impl Widget for ShellOverlayHost {
 
 impl ShellOverlayHost {
     fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+        // Overview and workspace-switch motion is animation demand, so the
+        // frame clock paces it. A 1 ms deadline here woke the loop on every
+        // millisecond and still painted nothing until cadence was due.
         [
             (
                 "onboarding",
@@ -18235,6 +18570,7 @@ impl ShellOverlayHost {
             .and_then(|chrome| chrome.borrow().osd)
             .is_some_and(|osd| osd.needs_animation_frame_at(now));
         self.transition_started.is_some()
+            || self.workspace_switch_holding_at(now)
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
@@ -18589,6 +18925,76 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     themed
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverviewPanelCacheKey {
+    scroll_bits: u64,
+    selection: Option<usize>,
+    window_selection: Option<usize>,
+    press: Option<(u64, u8, u64, u64)>,
+    panel: (u64, u64, u64, u64),
+    chrome_revision: u64,
+    preview_fingerprint: u64,
+    reduce_motion: bool,
+}
+
+struct OverviewPanelCache {
+    scene: Scene,
+    key: OverviewPanelCacheKey,
+}
+
+/// What the multi-output presenter needs to fade the overview without
+/// uploading both full scanouts. The panel scene is in the clip's local
+/// pixels, origin at the clip's top-left.
+pub(crate) struct OverviewFastPatch {
+    pub generation: u64,
+    pub panel: vello::FineDamageRect,
+    pub scrim: [u8; 4],
+    pub panel_scene: Scene,
+    pub panel_size: (u32, u32),
+    /// False on the frame that finishes a close: present the stashed desktop
+    /// inside `panel` and do not render the panel again.
+    pub draw_panel: bool,
+}
+
+fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return None;
+    }
+    let x0 = rect.x0.max(0.0);
+    let y0 = rect.y0.max(0.0);
+    let x1 = rect.x1.max(x0);
+    let y1 = rect.y1.max(y0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the clip is clamped to non-negative scene pixels and rounded outward first"
+    )]
+    let (x, y, width, height) = (
+        x0.floor() as u32,
+        y0.floor() as u32,
+        (x1.ceil() - x0.floor()).max(1.0) as u32,
+        (y1.ceil() - y0.floor()).max(1.0) as u32,
+    );
+    Some(vello::FineDamageRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
+    let strength = (MODAL_SCRIM_ALPHA * openness).clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "strength is clamped to 0..=1 before scaling into a byte"
+    )]
+    let alpha = (strength * 255.0).round() as u8;
+    let color = theme.tokens.colors.surfaces.scrim.to_rgba8();
+    [color.r, color.g, color.b, alpha]
+}
+
 impl ShellOverlayHost {
     /// Base desktop layer: window content, remote-peer presence, the
     /// sidebar wheel, the permission prompt bar, the toast stack and the
@@ -18636,17 +19042,21 @@ impl ShellOverlayHost {
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
-        if let Some(prompt) = self.permission_prompt.as_mut() {
-            let bar_top = area.y0 + f64::from(self.sidebar_top_y);
-            let bar_left = area.x0 + f64::from(self.sidebar_top_y);
-            let bar_right = area.x1 - f64::from(self.sidebar_top_y);
-            prompt.set_rect(Rect::new(
-                bar_left,
-                bar_top,
-                bar_right,
-                bar_top + PROMPT_HEIGHT,
-            ));
-            prompt.draw(scene, transform, text_renderer, theme, presence);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            if let Some(prompt) = self.permission_prompt.as_mut() {
+                prompt.set_rect(surface);
+                prompt.draw(scene, transform, text_renderer, theme, presence);
+            }
+            // The seal is shell chrome. `PermissionPrompt` itself cannot
+            // paint it, so an app that builds that widget does not get the frame.
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                surface,
+                theme,
+                f64::from(theme.tokens.radii.md),
+            );
         }
 
         // Above desktop content, below modal overlays and the permission
@@ -18751,6 +19161,178 @@ impl ShellOverlayHost {
         text_renderer.set_text_scale(renderer_scale);
     }
 
+    /// Shadow falloff plus the rise, so one dirty rectangle covers every
+    /// frame of the fade without leaving the previous position behind.
+    fn overview_shadow_outset(theme: &Theme) -> f64 {
+        let token = &theme.tokens.elevation.e4;
+        ui::surface::std_dev_for(token.blur) * 2.5 + f64::from(token.offset_y) + 2.0
+    }
+
+    fn overview_stable_clip(&self, theme: &Theme) -> Rect {
+        let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
+        let clip = self.overview_panel_rect().inflate(outset, outset);
+        let output = self.overview_output_rect();
+        let x0 = clip.x0.max(output.x0);
+        let y0 = clip.y0.max(output.y0);
+        let x1 = clip.x1.min(output.x1);
+        let y1 = clip.y1.min(output.y1);
+        if x1 <= x0 || y1 <= y0 {
+            clip
+        } else {
+            Rect::new(x0, y0, x1, y1)
+        }
+    }
+
+    /// The display the overview dims. The combined desktop rect covers every
+    /// scanout, and a scrim that wide is the two-output readback.
+    fn overview_output_rect(&self) -> Rect {
+        self.focused_output()
+            .or_else(|| self.primary_output())
+            .map_or(self.rect, |output| output.rect())
+    }
+
+    fn overview_panel_cache_key(&self, reduce_motion: bool) -> OverviewPanelCacheKey {
+        let panel = self.overview_panel_rect();
+        let press = self.overview_press.as_ref().map(|press| {
+            (
+                press.tab.unwrap_or(0),
+                u8::from(press.is_dragging()),
+                press.at.x.to_bits(),
+                press.at.y.to_bits(),
+            )
+        });
+        OverviewPanelCacheKey {
+            scroll_bits: self.overview_scroll_y.to_bits(),
+            selection: self.overview_selection,
+            window_selection: self.overview_window_selection,
+            press,
+            panel: (
+                panel.x0.to_bits(),
+                panel.y0.to_bits(),
+                panel.x1.to_bits(),
+                panel.y1.to_bits(),
+            ),
+            chrome_revision: self
+                .chrome
+                .as_ref()
+                .map_or(0, |chrome| chrome.borrow().revision),
+            preview_fingerprint: self.window_previews.content_fingerprint(),
+            reduce_motion,
+        }
+    }
+
+    fn ensure_overview_panel_cache(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let key = self.overview_panel_cache_key(theme.reduce_motion);
+        if self
+            .overview_panel_cache
+            .as_ref()
+            .is_some_and(|cache| cache.key == key)
+        {
+            return;
+        }
+        let mut recorded = Scene::new();
+        self.draw_overview(&mut recorded, Affine::IDENTITY, text_renderer, theme);
+        self.overview_panel_cache = Some(OverviewPanelCache {
+            scene: recorded,
+            key,
+        });
+        self.overview_panel_cache_fills = self.overview_panel_cache_fills.saturating_add(1);
+    }
+
+    fn paint_cached_overview_panel(
+        &mut self,
+        scene: &mut Scene,
+        layer_transform: Affine,
+        panel_xform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        alpha: f32,
+    ) {
+        self.ensure_overview_panel_cache(text_renderer, theme);
+        let Some(cache) = self.overview_panel_cache.as_ref() else {
+            return;
+        };
+        if alpha >= 0.999 {
+            scene.append(&cache.scene, Some(panel_xform));
+            return;
+        }
+        let clip = self.overview_stable_clip(theme);
+        // The blend is the panel's rectangle, not the combined desktop.
+        // A full-viewport layer puts every bin of both outputs into a blend
+        // group, and the virtio readback of that frame is what stalls the
+        // transition.
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            layer_transform,
+            &clip,
+        );
+        scene.append(&cache.scene, Some(panel_xform));
+        scene.pop_layer();
+    }
+
+    fn store_overview_fast_patch(
+        &mut self,
+        theme: &Theme,
+        alpha: f32,
+        clip: Rect,
+        panel_xform: Affine,
+    ) {
+        let Some(panel) = scene_damage_rect(clip) else {
+            self.overview_fast_patch = None;
+            return;
+        };
+        let mut panel_scene = Scene::new();
+        let shift = Affine::translate((-clip.x0, -clip.y0));
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication is a panic-free float matrix product"
+        )]
+        let local = shift * panel_xform;
+        if alpha > 0.0
+            && let Some(cache) = &self.overview_panel_cache
+        {
+            if alpha < 0.999 {
+                let outset = Self::overview_shadow_outset(theme);
+                let local_clip = self.overview_panel_rect().inflate(outset, outset);
+                panel_scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    local,
+                    &local_clip,
+                );
+                panel_scene.append(&cache.scene, Some(local));
+                panel_scene.pop_layer();
+            } else {
+                panel_scene.append(&cache.scene, Some(local));
+            }
+        }
+        self.overview_fast_patch = Some(OverviewFastPatch {
+            generation: self.overview_generation,
+            panel,
+            scrim: scrim_rgba(theme, alpha),
+            panel_scene,
+            panel_size: (panel.width, panel.height),
+            draw_panel: alpha > 0.0,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_fast_patch(&self) -> Option<&OverviewFastPatch> {
+        self.overview_fast_patch.as_ref()
+    }
+
+    pub(crate) fn take_overview_fast_patch(&mut self) -> Option<OverviewFastPatch> {
+        self.overview_fast_patch.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_panel_cache_fills(&self) -> u32 {
+        self.overview_panel_cache_fills
+    }
+
     /// The room-overview panel: scrim, scale/translate curve, then the
     /// panel itself. First half of what was
     /// `draw_overview_and_ws_settings_overlays`, split out to keep that
@@ -18781,13 +19363,24 @@ impl ShellOverlayHost {
                 .pre_translate((-cx, -pivot_y).into())
         };
 
-        if overview_alpha <= 0.0 {
+        if !overview_open {
             // Clear the cached hit rect so a stray click during an
-            // in-flight close can't create a workspace.
+            // in-flight close can't create a workspace. The open's first
+            // sample is still alpha 0; that sample must not drop the
+            // new-workspace control, which is addressable from geometry
+            // for the whole time the overlay flag is up.
             self.add_workspace_rect = Rect::ZERO;
+        } else if overview_alpha <= 0.0 {
+            self.add_workspace_rect = self.add_workspace_hit_rect();
         }
         if overview_alpha > 0.0 {
-            draw_modal_scrim_at(scene, transform, self.rect, overview_alpha, theme);
+            draw_modal_scrim_at(
+                scene,
+                transform,
+                self.overview_output_rect(),
+                overview_alpha,
+                theme,
+            );
             let panel_xform = if (overview_scale - 1.0).abs() > f64::EPSILON
                 || overview_dy.abs() > f64::EPSILON
             {
@@ -18809,19 +19402,32 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            if overview_alpha >= 0.999 {
-                self.draw_overview(scene, panel_xform, text_renderer, theme);
-            } else {
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    BlendMode::default(),
-                    overview_alpha,
-                    transform,
-                    &self.rect,
-                );
-                self.draw_overview(scene, panel_xform, text_renderer, theme);
-                scene.pop_layer();
-            }
+            let clip = self.overview_stable_clip(theme);
+            self.paint_cached_overview_panel(
+                scene,
+                transform,
+                panel_xform,
+                text_renderer,
+                theme,
+                overview_alpha,
+            );
+            self.store_overview_fast_patch(theme, overview_alpha, clip, panel_xform);
+        } else if self.transition_started.is_some()
+            || self
+                .overview_fast_patch
+                .as_ref()
+                .is_some_and(|patch| patch.draw_panel)
+        {
+            // Progress is integer milliseconds, so the open's first sample is
+            // still alpha 0. That frame used to clear the patch and GPU-read
+            // both outputs; the close never did, because it starts at alpha 1.
+            // Keep the panel clip for the whole fade, including that sample
+            // and the frame that finishes a close. The next settled frame
+            // clears the patch.
+            let clip = self.overview_stable_clip(theme);
+            self.store_overview_fast_patch(theme, 0.0, clip, Affine::IDENTITY);
+        } else {
+            self.overview_fast_patch = None;
         }
     }
 
@@ -20385,6 +20991,7 @@ impl ShellOverlayHost {
             None,
             &sheet,
         );
+        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
         text_renderer.draw_text(
             scene,
             &view.title(),
@@ -20693,7 +21300,14 @@ impl ShellOverlayHost {
                 let state = c.borrow();
                 let tree = state.tree();
                 match tree.desktop.workspaces.get(idx) {
-                    Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
+                    // Chrome already holds the session identity. Do not
+                    // call `local_user_id()` here: latching the overview
+                    // during update means the first paint can draw the
+                    // panel, and fixtures forbid that ambient start.
+                    Some(ws) => tilo_desktop::collaborators::roster_colors_with_local_user(
+                        &ws.collaborators,
+                        &state.local_user_id,
+                    ),
                     None => std::collections::HashMap::default(),
                 }
             }

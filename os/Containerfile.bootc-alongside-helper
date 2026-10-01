@@ -1,0 +1,23 @@
+# Installer-only bootc with the upstream multi-ESP to-filesystem fix.
+# The selected binary is bind-mounted into the target OCI container; it is not
+# part of the installed OS. Its source tarball and build image are pinned.
+ARG BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+FROM ${BUILD_IMAGE} AS build
+ARG BOOTC_VERSION=1.16.13
+ARG BOOTC_SHA256=99c03054ded60c043a41f73b076b0dc137bc3518579c6cf98cf460556f86f641
+COPY os/external-assets/bootc/0001-probe-missing-partition-metadata.patch /patches/
+COPY os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch /patches/
+RUN dnf install -y ostree-devel patch \
+    && dnf clean all \
+    && curl -fsSL "https://github.com/bootc-dev/bootc/archive/refs/tags/v${BOOTC_VERSION}.tar.gz" -o /bootc.tar.gz \
+    && echo "${BOOTC_SHA256}  /bootc.tar.gz" | sha256sum -c - \
+    && tar -xzf /bootc.tar.gz -C / \
+    && cd "/bootc-${BOOTC_VERSION}" \
+    && patch -p1 < /patches/0001-probe-missing-partition-metadata.patch \
+    && patch -p1 < /patches/0002-select-mounted-esp.patch \
+    && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release -p bootc \
+    && install -D -m 0755 target/release/bootc /out/bootc \
+    && test "$(/out/bootc --version)" = "bootc ${BOOTC_VERSION}"
+
+FROM scratch
+COPY --from=build /out/bootc /bootc

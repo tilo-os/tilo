@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
@@ -874,16 +874,18 @@ impl Pane {
             pill(scene, t, *rect, col, None, Some(10.0));
             let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            // Icon + label centred as a unit.
+            // Icon + label centred as a unit. Ink is the accent's own, so a
+            // bright accent does not leave white type on a light fill.
+            let ink = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
             let group_w = 18.0 + 8.0 + f64::from(w);
             let gx = f64::midpoint(rect.x0, rect.x1) - group_w / 2.0;
             let icon_box = Rect::new(gx, rect.y0 + 11.0, gx + 18.0, rect.y0 + 29.0);
-            Icon::Pencil.draw(scene, t, icon_box, Color::WHITE);
+            Icon::Pencil.draw(scene, t, icon_box, ink);
             tr.draw_text_weighted(
                 scene,
                 label,
                 14.0,
-                Color::WHITE,
+                ink,
                 t * Affine::translate((icon_box.x1 + 8.0, rect.y0 + 11.0)),
                 None,
                 TextWeight::Semibold,
@@ -1159,7 +1161,7 @@ impl Pane {
             scene,
             &txt,
             11.0,
-            Color::WHITE,
+            c.on_surface(bg).ink,
             t * Affine::translate((badge.center().x - twd / 2.0, badge.center().y - th / 2.0)),
             None,
             TextWeight::Semibold,
@@ -1505,17 +1507,18 @@ impl Pane {
             } else {
                 rect.x1 - 90.0
             };
+            let ink = c.on_surface(col).ink;
             icon.draw(
                 scene,
                 t,
                 Rect::new(gx, rect.y0 + 20.0, gx + 18.0, rect.y0 + 38.0),
-                Color::WHITE,
+                ink,
             );
             tr.draw_text_weighted(
                 scene,
                 label,
                 12.0,
-                Color::WHITE,
+                ink,
                 t * Affine::translate((gx + 26.0, rect.y0 + 22.0)),
                 None,
                 TextWeight::Semibold,
@@ -1613,7 +1616,7 @@ impl Pane {
                     row.x0 + 20.0 * self.scale(),
                     row.y0 + self.list_row_h() / 2.0 + 6.0 * self.scale(),
                 ),
-                Color::WHITE,
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             );
         } else if unread {
             scene.fill(

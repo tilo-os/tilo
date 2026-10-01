@@ -9,14 +9,18 @@ use qdoc::snapshot::{ChangeKind, ChangeView, CommentView};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
+use ui::paint::with_alpha;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::tokens::AccentChip;
+use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 
 use crate::i18n::t;
 use crate::num;
 
-/// Pale-yellow band drawn behind a comment-marked body range.
-pub(super) const COMMENT_HIGHLIGHT: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
+/// Revision ink painted into the document text for tracked insertions /
+/// deletions — paper markup the user authored, not OS chrome.
 pub(super) const INSERTION_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
 pub(super) const DELETION_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
 /// Review colour for tracked insertions.
@@ -26,20 +30,8 @@ pub(super) const INSERTION_INK: Color =
 pub(super) const DELETION_INK: Color =
     Color::from_rgb8(DELETION_RGB[0], DELETION_RGB[1], DELETION_RGB[2]);
 
-const COMMENT_TAB: Color = Color::from_rgb8(0xe0, 0xa8, 0x10);
-const COMMENT_CARD_BG: Color = Color::from_rgb8(0xff, 0xf8, 0xdc);
-const COMMENT_CARD_EDGE: Color = Color::from_rgb8(0xe6, 0xcf, 0x7a);
-const COMMENT_AUTHOR_INK: Color = Color::from_rgb8(0x6a, 0x52, 0x00);
-const COMMENT_BODY_INK: Color = Color::from_rgb8(0x3a, 0x32, 0x14);
 const COMMENT_TAB_W: f64 = 4.0;
 const COMMENT_CARD_W: f64 = 150.0;
-const CHANGE_CARD_BG: Color = Color::from_rgb8(0xf3, 0xf4, 0xf7);
-const CHANGE_CARD_EDGE: Color = Color::from_rgb8(0xcf, 0xd2, 0xda);
-const CHANGE_LABEL_INK: Color = Color::from_rgb8(0x44, 0x46, 0x50);
-const REVIEW_ACCEPT_BG: Color = Color::from_rgb8(0xe2, 0xf3, 0xe6);
-const REVIEW_ACCEPT_INK: Color = Color::from_rgb8(0x18, 0x6a, 0x32);
-const REVIEW_REJECT_BG: Color = Color::from_rgb8(0xf7, 0xe4, 0xe4);
-const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
 const REVIEW_BTN: f64 = 18.0;
 const CHANGE_CARD_W: f64 = 132.0;
 /// The comment column ends `s3` short of the canvas edge — past the 8 px
@@ -76,6 +68,63 @@ impl CardButtonLabels {
             resolve,
             resolve_font,
             resolve_size: (f64::from(sw), f64::from(sh)),
+        }
+    }
+}
+
+/// How strongly a comment card is washed with the theme's `warning` hue:
+/// enough to read as "a note" beside a change card, not a second panel.
+const COMMENT_WASH: f32 = 0.14;
+/// Wash of the accept / reject / resolve button faces.
+const BUTTON_WASH: f32 = 0.20;
+/// Alpha of the comment-range band on the paper (text must read through it).
+const COMMENT_HIGHLIGHT_ALPHA: u8 = 0x66;
+
+/// The review cards' colours, derived from the OS theme. The cards sit on the
+/// desk beside the page, so they are chrome: comments take the `warning` hue,
+/// accepting and resolving `success`, rejecting `danger`, and every ink is
+/// measured against the face it lands on.
+#[derive(Clone, Copy)]
+pub(super) struct ReviewColors {
+    comment: AccentChip,
+    comment_body_ink: Color,
+    /// The comment's tab beside the range and stripe down the card.
+    /// The comment's tab beside the commented range, on the paper.
+    comment_tab: Color,
+    /// The stripe down the comment card's leading edge.
+    comment_stripe: Color,
+    change_card: Color,
+    change_edge: Color,
+    change_label_ink: Color,
+    insertion_mark: Color,
+    deletion_mark: Color,
+    accept: AccentChip,
+    reject: AccentChip,
+    /// Warning wash behind a comment-marked body range. Chrome on the paper.
+    pub(super) comment_highlight: Color,
+}
+
+impl ReviewColors {
+    /// `paper` is the sheet a comment's tab lands on beside its range.
+    pub(super) fn for_theme(theme: &Theme, paper: Color) -> Self {
+        let c = &theme.tokens.colors;
+        let card = c.surfaces.raised;
+        let comment =
+            c.tinted_chip_on(card, c.semantic.warning, COMMENT_WASH, ON_FILL_MIN_CONTRAST);
+        let comment_tab = c.ink_on(paper, c.semantic.warning, NON_TEXT_MIN_CONTRAST);
+        Self {
+            comment,
+            comment_body_ink: theme.on_surface(comment.fill).ink,
+            comment_tab,
+            comment_highlight: with_alpha(comment_tab, COMMENT_HIGHLIGHT_ALPHA),
+            comment_stripe: c.ink_on(comment.fill, c.semantic.warning, NON_TEXT_MIN_CONTRAST),
+            change_card: card,
+            change_edge: ui::surface::edge_on(card),
+            change_label_ink: theme.on_surface(card).ink_dim,
+            insertion_mark: c.ink_on(card, c.semantic.success, NON_TEXT_MIN_CONTRAST),
+            deletion_mark: c.ink_on(card, c.semantic.danger, NON_TEXT_MIN_CONTRAST),
+            accept: c.tinted_chip_on(card, c.semantic.success, BUTTON_WASH, ON_FILL_MIN_CONTRAST),
+            reject: c.tinted_chip_on(card, c.semantic.danger, BUTTON_WASH, ON_FILL_MIN_CONTRAST),
         }
     }
 }
@@ -153,6 +202,7 @@ impl ReviewOverlay {
         canvas: Rect,
         mut comment_markers: Vec<(String, f64, f64)>,
         mut change_markers: Vec<(String, f64, f64)>,
+        colors: &ReviewColors,
     ) {
         self.clear_hits();
         if !self.visible {
@@ -171,6 +221,7 @@ impl ReviewOverlay {
                 Point::new(comment_x, next_comment_y),
                 marker,
                 &labels,
+                colors,
             );
         }
 
@@ -178,7 +229,8 @@ impl ReviewOverlay {
         let change_x = comment_x - CARD_GAP - CHANGE_CARD_W;
         let mut next_change_y = f64::MIN;
         for marker in &change_markers {
-            next_change_y = self.draw_change(context, Point::new(change_x, next_change_y), marker);
+            next_change_y =
+                self.draw_change(context, Point::new(change_x, next_change_y), marker, colors);
         }
     }
 
@@ -195,6 +247,7 @@ impl ReviewOverlay {
         slot: Point,
         marker: &(String, f64, f64),
         labels: &CardButtonLabels,
+        colors: &ReviewColors,
     ) -> f64 {
         let (id, anchor_y, range_right) = (marker.0.as_str(), marker.1, marker.2);
         let Point {
@@ -217,7 +270,7 @@ impl ReviewOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            COMMENT_TAB,
+            colors.comment_tab,
             None,
             &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
         );
@@ -277,18 +330,24 @@ impl ReviewOverlay {
         let card_h = 22.0 + f64::from(body_layout.height()) + reply_h + 8.0 + REVIEW_BTN + 6.0;
         let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
         let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
-        scene.fill(Fill::NonZero, transform, COMMENT_CARD_BG, None, &rounded);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.comment.fill,
+            None,
+            &rounded,
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            COMMENT_CARD_EDGE,
+            colors.comment.border,
             None,
             &rounded,
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            COMMENT_TAB,
+            colors.comment_stripe,
             None,
             &Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h),
         );
@@ -296,7 +355,7 @@ impl ReviewOverlay {
             scene,
             author,
             11.5,
-            COMMENT_AUTHOR_INK,
+            colors.comment.ink,
             transform * Affine::translate((card_x + 9.0, card_top + 5.0)),
             None,
         );
@@ -304,7 +363,7 @@ impl ReviewOverlay {
             scene,
             &body_layout,
             transform * Affine::translate((card_x + 9.0, card_top + 20.0)),
-            COMMENT_BODY_INK,
+            colors.comment_body_ink,
         );
 
         if !replies.is_empty() {
@@ -316,16 +375,16 @@ impl ReviewOverlay {
                         card_x + 9.0,
                         card_top + 22.0 + f64::from(body_layout.height()) + 3.0,
                     )),
-                COMMENT_BODY_INK,
+                colors.comment_body_ink,
             );
         }
 
         // Resolve is trailing-aligned and sized first; Reply takes what is
         // left of the row (less the card gap) so the two faces — and their
         // hit rects — can never overlap, whatever the locale or text scale.
-        let resolve = self.draw_comment_resolve_button(context, card, id, labels);
+        let resolve = self.draw_comment_resolve_button(context, card, id, labels, colors);
         let reply_room = Rect::new(card.x0, card.y0, resolve.x0 - CARD_GAP, card.y1);
-        self.draw_comment_reply_button(context, reply_room, id, labels);
+        self.draw_comment_reply_button(context, reply_room, id, labels, colors);
         card_top + card_h + CARD_GAP
     }
 
@@ -337,6 +396,7 @@ impl ReviewOverlay {
         room: Rect,
         id: &str,
         labels: &CardButtonLabels,
+        colors: &ReviewColors,
     ) {
         let scene = &mut *context.scene;
         let transform = context.transform;
@@ -362,14 +422,14 @@ impl ReviewOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            COMMENT_CARD_BG,
+            colors.comment.fill,
             None,
             &vello::kurbo::RoundedRect::from_rect(button, 4.0),
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            COMMENT_CARD_EDGE,
+            colors.comment.border,
             None,
             &vello::kurbo::RoundedRect::from_rect(button, 4.0),
         );
@@ -377,7 +437,7 @@ impl ReviewOverlay {
             scene,
             &label,
             labels.reply_font,
-            COMMENT_AUTHOR_INK,
+            colors.comment.ink,
             transform
                 * Affine::translate((
                     button.x0 + (width - label_w) / 2.0,
@@ -398,6 +458,7 @@ impl ReviewOverlay {
         card: Rect,
         id: &str,
         labels: &CardButtonLabels,
+        colors: &ReviewColors,
     ) -> Rect {
         let scene = &mut *context.scene;
         let transform = context.transform;
@@ -413,14 +474,14 @@ impl ReviewOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            REVIEW_ACCEPT_BG,
+            colors.accept.fill,
             None,
             &rounded_button,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            COMMENT_CARD_EDGE,
+            colors.accept.border,
             None,
             &rounded_button,
         );
@@ -428,7 +489,7 @@ impl ReviewOverlay {
             scene,
             &labels.resolve,
             labels.resolve_font,
-            REVIEW_ACCEPT_INK,
+            colors.accept.ink,
             transform
                 * Affine::translate((
                     button.x0 + (width - label_w) / 2.0,
@@ -448,6 +509,7 @@ impl ReviewOverlay {
         context: &mut PaintContext<'_>,
         slot: Point,
         marker: &(String, f64, f64),
+        colors: &ReviewColors,
     ) -> f64 {
         let (id, anchor_y) = (marker.0.as_str(), marker.1);
         let Point {
@@ -461,8 +523,8 @@ impl ReviewOverlay {
             return next_card_y;
         };
         let (label, kind_color) = match change.kind {
-            ChangeKind::Ins => (t("review-insertion"), INSERTION_INK),
-            ChangeKind::Del => (t("review-deletion"), DELETION_INK),
+            ChangeKind::Ins => (t("review-insertion"), colors.insertion_mark),
+            ChangeKind::Del => (t("review-deletion"), colors.deletion_mark),
         };
         let author = if change.author.is_empty() {
             String::new()
@@ -473,11 +535,11 @@ impl ReviewOverlay {
         let card_h = 22.0 + REVIEW_BTN + 6.0;
         let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
         let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
-        scene.fill(Fill::NonZero, transform, CHANGE_CARD_BG, None, &rounded);
+        scene.fill(Fill::NonZero, transform, colors.change_card, None, &rounded);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            CHANGE_CARD_EDGE,
+            colors.change_edge,
             None,
             &rounded,
         );
@@ -492,7 +554,7 @@ impl ReviewOverlay {
             scene,
             &format!("{label}{author}"),
             10.5,
-            CHANGE_LABEL_INK,
+            colors.change_label_ink,
             transform * Affine::translate((card_x + 9.0, card_top + 5.0)),
             None,
         );
@@ -513,14 +575,14 @@ impl ReviewOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            REVIEW_ACCEPT_BG,
+            colors.accept.fill,
             None,
             &vello::kurbo::RoundedRect::from_rect(accept, 4.0),
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            REVIEW_REJECT_BG,
+            colors.reject.fill,
             None,
             &vello::kurbo::RoundedRect::from_rect(reject, 4.0),
         );
@@ -528,7 +590,7 @@ impl ReviewOverlay {
             scene,
             "✓",
             12.0,
-            REVIEW_ACCEPT_INK,
+            colors.accept.ink,
             transform * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)),
             None,
         );
@@ -536,7 +598,7 @@ impl ReviewOverlay {
             scene,
             "✗",
             12.0,
-            REVIEW_REJECT_INK,
+            colors.reject.ink,
             transform * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)),
             None,
         );
@@ -555,6 +617,99 @@ fn marker_order(a: &(String, f64, f64), b: &(String, f64, f64)) -> std::cmp::Ord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::ColorCompat;
+
+    /// The review cards are chrome: under every shipped theme each label
+    /// clears body-text contrast on the face it is drawn on, and each mark
+    /// clears the non-text floor on its ground.
+    #[test]
+    fn review_cards_take_the_theme_and_stay_legible_in_every_preset() {
+        use ui::a11y::contrast_ratio;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let c = &theme.tokens.colors;
+            // Canonical light paper the editor falls back to (`PAPER_DEFAULT`).
+            let paper = Color::from_rgb8(0xfc, 0xfc, 0xfa);
+            let rc = ReviewColors::for_theme(&theme, paper);
+            for (what, ink, face, floor) in [
+                (
+                    "comment author",
+                    rc.comment.ink,
+                    rc.comment.fill,
+                    ON_FILL_MIN_CONTRAST,
+                ),
+                (
+                    "comment body",
+                    rc.comment_body_ink,
+                    rc.comment.fill,
+                    ON_FILL_MIN_CONTRAST,
+                ),
+                (
+                    "change label",
+                    rc.change_label_ink,
+                    rc.change_card,
+                    ON_FILL_MIN_CONTRAST,
+                ),
+                (
+                    "accept",
+                    rc.accept.ink,
+                    rc.accept.fill,
+                    ON_FILL_MIN_CONTRAST,
+                ),
+                (
+                    "reject",
+                    rc.reject.ink,
+                    rc.reject.fill,
+                    ON_FILL_MIN_CONTRAST,
+                ),
+                ("comment tab", rc.comment_tab, paper, NON_TEXT_MIN_CONTRAST),
+                (
+                    "comment stripe",
+                    rc.comment_stripe,
+                    rc.comment.fill,
+                    NON_TEXT_MIN_CONTRAST,
+                ),
+                (
+                    "insertion stripe",
+                    rc.insertion_mark,
+                    rc.change_card,
+                    NON_TEXT_MIN_CONTRAST,
+                ),
+                (
+                    "deletion stripe",
+                    rc.deletion_mark,
+                    rc.change_card,
+                    NON_TEXT_MIN_CONTRAST,
+                ),
+            ] {
+                let r = contrast_ratio(ink, face);
+                assert!(
+                    r >= floor,
+                    "{name}: {what} measures {r:.2}:1 (needs {floor})"
+                );
+            }
+            assert_eq!(rc.change_card, c.surfaces.raised, "{name}: change card");
+            assert_eq!(
+                rc.comment_highlight.a(),
+                COMMENT_HIGHLIGHT_ALPHA,
+                "{name}: comment highlight stays a wash"
+            );
+            assert_eq!(
+                (
+                    rc.comment_highlight.r(),
+                    rc.comment_highlight.g(),
+                    rc.comment_highlight.b()
+                ),
+                (rc.comment_tab.r(), rc.comment_tab.g(), rc.comment_tab.b()),
+                "{name}: comment highlight is the tab warning"
+            );
+            assert_eq!(
+                rc.comment_tab,
+                c.ink_on(paper, c.semantic.warning, NON_TEXT_MIN_CONTRAST),
+                "{name}: comment tab is warning on paper"
+            );
+        }
+    }
 
     /// A hidden overlay never routes stale hits and the topmost review hit wins.
     #[test]

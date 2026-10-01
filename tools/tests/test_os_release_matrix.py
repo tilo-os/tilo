@@ -215,6 +215,11 @@ class OsDevLaneTests(unittest.TestCase):
                 "tilo-os-dev-refs/pull/12/head",
             )
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
+        with self.subTest(phase='each main commit builds on its own'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_call", ""),
+                "tilo-os-dev-" + SHA,
+            )
         with self.subTest(phase='main pushes and image pull requests call it'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
@@ -479,7 +484,8 @@ def concurrency_group(
         ("startsWith(github.ref, 'refs/tags/v')", "ref.startswith('refs/tags/v')"),
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
-        ("format('tilo-os-dev-{0}', github.ref)", "('tilo-os-dev-' + ref)"),
+        ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref)",
+         "('tilo-os-dev-' + (sha if ref == 'refs/heads/main' else ref))"),
         ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),

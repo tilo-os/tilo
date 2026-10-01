@@ -59,6 +59,7 @@ use crate::model::{
     TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
 use crate::write::{JobControl, WriteRequest, spawn_job};
+use crate::write_setup::WriteSetupPanel;
 
 // ---- layout constants (logical px) -------------------------------------
 // The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
@@ -504,6 +505,8 @@ pub struct ImagerApp {
     source: Option<Source>,
     recent: Vec<Source>,
     profile: InstallProfile,
+    /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
+    wifi_psk: String,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -568,6 +571,8 @@ pub struct ImagerApp {
     /// protected) and dispatches each edit through [`Self::actions`]. See
     /// [`crate::customize`].
     customize: CustomizePanel,
+    /// Wi-Fi and identity applied onto the written root by this machine.
+    write_setup: WriteSetupPanel,
     /// Framework-owned action dispatch (the only action-dispatch state the app
     /// holds). Every guided-customization profile edit dispatches its
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
@@ -592,6 +597,7 @@ impl ImagerApp {
             selected: None,
             action: Action::Flash,
             profile: InstallProfile::default(),
+            wifi_psk: String::new(),
             progress: Progress::default(),
             confirm_input: TextInput::local()
                 .with_id("imager_device_confirmation")
@@ -624,6 +630,7 @@ impl ImagerApp {
             scroll_y: 0.0,
             keyboard_hit: None,
             customize: CustomizePanel::new(),
+            write_setup: WriteSetupPanel::new(),
             actions: ui::ActionHost::new(),
         };
         app.estimate_bands();
@@ -740,6 +747,14 @@ impl ImagerApp {
         self.source
             .as_ref()
             .is_some_and(|source| self.source_is_official(source))
+    }
+
+    /// Confirm can collect Wi-Fi and enrollment for any selected image. Official
+    /// installable media still uses Customize for the secret-free embedded
+    /// profile; on-write handoff is staged separately and applied after the
+    /// verified write onto the installed root.
+    fn offers_write_setup(&self) -> bool {
+        self.source.is_some()
     }
 
     fn source_is_official(&self, source: &Source) -> bool {
@@ -1366,6 +1381,19 @@ impl ImagerApp {
                                     .with_name("Warning")
                                     .with_value("This permanently erases the selected drive and cannot be undone."),
                             ]),
+                    );
+                }
+                if self.offers_write_setup() {
+                    children.push(
+                        Self::a11y_group(
+                            "Setup on write",
+                            self.write_setup.accessibility(
+                                lay.content,
+                                self.write_setup_top(lay.content),
+                                self.profile.enroll_local_identity,
+                            ),
+                        )
+                        .with_hashed_key("write-setup"),
                     );
                 }
                 if let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == Hit::ConfirmField)
@@ -2209,13 +2237,27 @@ impl ImagerApp {
         )
     }
 
+    /// Origin of the optional on-write setup form (Wi-Fi / enrollment).
+    fn write_setup_top(&self, content: Rect) -> f64 {
+        self.confirm_banner_rect(content).y1 + GROUP
+    }
+
     /// The typed device-name confirmation field. It follows the danger banner
-    /// in reading order — review, warning, type the name, then the footer's
-    /// primary action — a `GROUP` below the banner, under its caption line.
+    /// (and optional write-setup form) in reading order — review, warning,
+    /// optional network/identity, type the name, then the footer's primary
+    /// action — a `GROUP` below the previous block, under its caption line.
     /// One rect for the hit layout and the painter.
     fn confirm_field_rect(&self, content: Rect) -> Rect {
         let m = &self.bands.confirm;
-        let top = self.confirm_banner_rect(content).y1 + GROUP + m.label_h + LABEL;
+        let after = if self.offers_write_setup() {
+            self.write_setup_top(content)
+                + self
+                    .write_setup
+                    .extent(content, self.write_setup_top(content))
+        } else {
+            self.confirm_banner_rect(content).y1 + GROUP
+        };
+        let top = after + m.label_h + LABEL;
         Rect::new(content.x0, top, content.x1, top + CONTROL_H)
     }
 
@@ -2284,11 +2326,28 @@ impl ImagerApp {
                 "Install Tilo with your settings (host {}, user {})",
                 self.profile.hostname, self.profile.user.username
             ),
-            Action::Flash if self.customizable() => format!(
-                "Write Tilo, pre-configured (host {}, user {})",
-                self.profile.hostname, self.profile.user.username
-            ),
-            Action::Flash => "Write the image, then read-back verify".to_string(),
+            Action::Flash => {
+                let mut parts = if self.customizable() {
+                    vec![format!(
+                        "Write Tilo, pre-configured (host {}, user {})",
+                        self.profile.hostname, self.profile.user.username
+                    )]
+                } else {
+                    vec!["Write the image, then read-back verify".to_string()]
+                };
+                if !self.profile.wifi_ssid.trim().is_empty() {
+                    parts.push(format!("Wi-Fi {}", self.profile.wifi_ssid.trim()));
+                }
+                if self.profile.enroll_local_identity {
+                    let label = self.profile.device_label.trim();
+                    if label.is_empty() {
+                        parts.push("enroll identity".into());
+                    } else {
+                        parts.push(format!("enroll as {label}"));
+                    }
+                }
+                parts.join(" · ")
+            }
         };
         rows.push(ConfirmRow {
             key: "Action",
@@ -3556,12 +3615,23 @@ impl ImagerApp {
         theme: &Theme,
         t: Affine,
         lay: &Layout,
+        presence: &PresenceCtx,
     ) {
         let content = lay.content;
         let (title, sub) = self.confirm_heading();
         Self::draw_step_title(scene, tr, theme, content, title, sub);
         self.draw_confirm_review_card(scene, tr, theme, t, content);
         self.draw_confirm_danger_banner(scene, tr, theme, t, content);
+        if self.offers_write_setup() {
+            let top = self.write_setup_top(content);
+            self.write_setup.draw(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                presence,
+                content,
+                top,
+                &self.profile,
+            );
+        }
         self.draw_confirm_field(scene, tr, theme, t, content);
     }
 
@@ -4327,6 +4397,7 @@ impl ImagerApp {
         self.keyboard_hit = None;
         self.confirm_input.set_focus(false);
         self.customize.clear_focus();
+        self.write_setup.clear_focus();
         self.dirty = true;
     }
 
@@ -4422,6 +4493,10 @@ impl ImagerApp {
                         Ok(())
                     }
                 }
+                crate::actions::ImagerOperation::SetWifiPsk { value } => {
+                    self.wifi_psk.clone_from(value);
+                    Ok(())
+                }
                 crate::actions::ImagerOperation::Write { .. } => {
                     Err("Invalid image-write operation dispatch".into())
                 }
@@ -4443,13 +4518,32 @@ impl ImagerApp {
         if *device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
+        // Stage Wi-Fi / enrollment for any image the operator configured on
+        // Confirm. Official media still embeds only the secret-free profile
+        // block; the passphrase and new device key stay in the staged tree
+        // and are copied onto the installed root after verification.
+        let handoff_stage =
+            if !self.profile.wifi_ssid.trim().is_empty() || self.profile.enroll_local_identity {
+                let local = crate::handoff::local_identity_from_env()?;
+                crate::handoff::stage_setup_handoff(&self.profile, &self.wifi_psk, &local)?
+                    .map(|stage| stage.root)
+            } else {
+                None
+            };
         let req = WriteRequest {
             source: src,
             target: tgt.clone(),
             action: self.action,
             profile: self.profile.clone(),
+            handoff_stage: handoff_stage.clone(),
         };
         let (start, rx, control) = spawn_job(req, confirmation);
+        let refuse = |message: String| -> Result<(), String> {
+            if let Some(stage) = handoff_stage.as_ref() {
+                let _ = std::fs::remove_dir_all(stage);
+            }
+            Err(message)
+        };
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
@@ -4476,23 +4570,23 @@ impl ImagerApp {
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                return Err("Confirmation does not match — write refused.".into());
+                return refuse("Confirmation does not match — write refused.".into());
             }
             crate::write::JobStart::TooSmall => {
-                return Err("Image is larger than the drive — write refused.".into());
+                return refuse("Image is larger than the drive — write refused.".into());
             }
             crate::write::JobStart::UnsafeTarget => {
-                return Err(
+                return refuse(
                     "Internal and system disks can only be installed from the booted Tilo medium."
                         .into(),
                 );
             }
             crate::write::JobStart::Incomplete => {
-                return Err("Select a source and drive before writing.".into());
+                return refuse("Select a source and drive before writing.".into());
             }
-            crate::write::JobStart::InvalidProfile(message) => return Err(message),
+            crate::write::JobStart::InvalidProfile(message) => return refuse(message),
             crate::write::JobStart::WriteDisabled => {
-                return Err(
+                return refuse(
                     "Raw-device writing is disabled; enable the privileged Imager backend first."
                         .into(),
                 );
@@ -4796,6 +4890,7 @@ impl Widget for ImagerApp {
         // (each unfocused field mirrors the stored value; a focused one stays
         // the source of truth).
         self.customize.sync(&self.profile);
+        self.write_setup.sync(&self.profile, &self.wifi_psk);
         if self.export_after_sync {
             self.export_after_sync = false;
             self.export_config(state);
@@ -4845,6 +4940,7 @@ impl Widget for ImagerApp {
         let probe = Rect::new(0.0, 0.0, content_w, 0.0);
         let head = self.step_header_h(probe);
         changed |= self.customize.measure(tr, head);
+        changed |= self.write_setup.measure(tr);
         changed
     }
 
@@ -4923,7 +5019,7 @@ impl Widget for ImagerApp {
             Step::Customize => {
                 self.draw_customize_step(scene, tr, theme, transform, &lay, presence);
             }
-            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
+            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay, presence),
             Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
             Step::Done => self.draw_write_done(
                 scene,
@@ -4987,8 +5083,14 @@ impl Widget for ImagerApp {
         }
 
         // Destructive consent is peer-local and goes through the toolkit's
-        // real editor before any wizard shortcut sees the event.
+        // real editor before any wizard shortcut sees the event. On-write
+        // Wi-Fi / enrollment fields sit above it and take events first.
         if self.step == Step::Confirm && !self.export_dialog.is_open() {
+            if self.handle_write_setup_event(event, ctx, &lay) {
+                *ctx.handled = true;
+                self.dirty = true;
+                return;
+            }
             let mut input_handled = false;
             let mut focus_target = None;
             self.confirm_input.handle_event(
@@ -5001,6 +5103,7 @@ impl Widget for ImagerApp {
             );
             if focus_target.is_some() {
                 self.confirm_input.set_focus(true);
+                self.write_setup.clear_focus();
             }
             if self.confirm_input.take_dirty().is_some() {
                 self.dirty = true;
@@ -5126,6 +5229,68 @@ impl Widget for ImagerApp {
 
         if self.export_dialog.is_open() {
             return false;
+        }
+        if let Some(field_key) = target.strip_prefix("imager:write-setup:") {
+            if self.step != Step::Confirm || !self.offers_write_setup() {
+                return false;
+            }
+            return match (field_key, action) {
+                ("enroll-identity", AccessAction::Activate | AccessAction::Focus) => {
+                    let on = !self.profile.enroll_local_identity;
+                    let field_action = crate::actions::ImagerAction::SetEnrollLocalIdentity { on };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("wifi-ssid", AccessAction::SetValue(value)) => {
+                    let field_action = crate::actions::ImagerAction::SetWifiSsid {
+                        value: value.clone(),
+                    };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("device-label", AccessAction::SetValue(value)) => {
+                    let field_action = crate::actions::ImagerAction::SetDeviceLabel {
+                        value: value.clone(),
+                    };
+                    self.actions.dispatch_with_context(
+                        state,
+                        crate::actions::IMAGER_ACTION_TYPE,
+                        &field_action,
+                        tilo_actions::ActionContext::for_action(
+                            "so.tilo.imager",
+                            "Imager",
+                            &field_action,
+                        ),
+                    );
+                    self.profile = ImagerDoc::profile(state);
+                    true
+                }
+                ("wifi-psk", AccessAction::SetValue(value)) => {
+                    self.wifi_psk.clone_from(value);
+                    true
+                }
+                _ => false,
+            };
         }
         if let Some(field_key) = target.strip_prefix("imager:profile:") {
             if self.step != Step::Customize || !self.customizable() {
@@ -5346,6 +5511,9 @@ impl ImagerApp {
         let expected_kind = match operation {
             crate::actions::ImagerOperation::Status
             | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            crate::actions::ImagerOperation::SetWifiPsk { .. } => {
+                tilo_actions::OperationKind::Effect
+            }
             _ => tilo_actions::OperationKind::Effect,
         };
         if kind != expected_kind {
@@ -5427,6 +5595,36 @@ impl ImagerApp {
         );
         if resp.export_requested {
             self.export_config(ctx.state);
+        }
+        resp.handled
+    }
+
+    /// Confirm-step Wi-Fi / enrollment form for the selected image.
+    fn handle_write_setup_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        lay: &Layout,
+    ) -> bool {
+        if !self.offers_write_setup() {
+            return false;
+        }
+        let profile = self.profile.clone();
+        let top = self.write_setup_top(lay.content);
+        let resp = self.write_setup.handle_event(
+            event,
+            ctx,
+            &mut self.actions,
+            &profile,
+            lay.content,
+            top,
+        );
+        if let Some(psk) = resp.wifi_psk {
+            self.wifi_psk = psk;
+        }
+        if resp.handled {
+            self.confirm_input.set_focus(false);
+            self.profile = ImagerDoc::profile(ctx.state);
         }
         resp.handled
     }
@@ -6477,9 +6675,15 @@ mod tests {
                     (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
                     "banner is the card's sibling at width {width}"
                 );
+                let setup = if app.offers_write_setup() {
+                    app.write_setup
+                        .extent(lay.content, app.write_setup_top(lay.content))
+                } else {
+                    0.0
+                };
                 assert!(
-                    (field.y0 - (banner.y1 + GROUP + m.label_h + LABEL)).abs() < 1e-6,
-                    "field follows the banner under its caption at width {width}"
+                    (field.y0 - (banner.y1 + GROUP + setup + m.label_h + LABEL)).abs() < 1e-6,
+                    "field follows the banner and write-setup form under its caption at width {width}"
                 );
                 assert!((field.height() - CONTROL_H).abs() < 1e-6);
                 assert_eq!(field, app.confirm_field_rect(lay.content));
@@ -6689,6 +6893,44 @@ mod tests {
 
             app.source = Some(official);
             assert!(app.customizable());
+        }
+
+        // Phase `official_installable_write_stages_handoff_instead_of_refusing`.
+        // Catalog-authenticated images used to refuse Wi-Fi / enrollment on
+        // Confirm. They must stage the same handoff local images do; tests
+        // then stop at the disabled write backend, never at an installer-stick
+        // refusal.
+        {
+            let (mut app, mut doc) = seeded_app();
+            assert!(app.customizable(), "seeded source is official");
+            assert!(
+                app.offers_write_setup(),
+                "official Confirm must collect Wi-Fi and enrollment"
+            );
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            app.confirm_input.set_text("sdb");
+            app.profile.wifi_ssid = "studio".into();
+            app.wifi_psk = "correct-horse".into();
+            let err = app
+                .perform_operation(
+                    &crate::actions::ImagerOperation::Write {
+                        device: "/dev/sdb".into(),
+                        confirmation: "sdb".into(),
+                    },
+                    &mut doc,
+                )
+                .expect_err("privileged writer is off in unit tests");
+            assert!(
+                !err.to_lowercase().contains("installer stick"),
+                "official installable write must not refuse handoff: {err}"
+            );
+            assert!(
+                err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
+                "expected write-disabled after staging handoff, got: {err}"
+            );
+            assert!(app.job_rx.is_none());
+            assert_eq!(app.step, Step::Confirm);
         }
 
         // Phase `write_refused_without_matching_confirmation`.
