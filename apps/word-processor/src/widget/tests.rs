@@ -385,6 +385,47 @@ fn populated() -> (ui::State, WordProcessorWidget) {
     (state, wp)
 }
 
+/// The caret, selection, active-band edge and spelling squiggle are UI drawn
+/// on the paper: they take the OS accent and `danger`, stepped only as far as
+/// they must to clear the non-text floor on the light sheet, under every
+/// shipped theme.
+#[test]
+fn paper_affordances_follow_the_accent_and_read_on_paper() {
+    use ui::a11y::contrast_ratio;
+    use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+    for name in Theme::ALL {
+        let theme = Theme::named(name).expect("shipped theme resolves");
+        let cc = ChromeColors::for_theme(&theme);
+        for (role, mark) in [("accent", cc.paper_accent), ("danger", cc.paper_danger)] {
+            let r = contrast_ratio(mark, cc.paper);
+            assert!(
+                r >= NON_TEXT_MIN_CONTRAST,
+                "{name}: paper {role} measures {r:.2}:1 on the sheet"
+            );
+        }
+        let label = contrast_ratio(cc.on_paper_accent, cc.paper_accent);
+        assert!(
+            label >= ON_FILL_MIN_CONTRAST,
+            "{name}: band tab label measures {label:.2}:1 on its tab"
+        );
+    }
+    let dark = ChromeColors::for_theme(&Theme::dark());
+    let nord = ChromeColors::for_theme(&Theme::nord());
+    assert_ne!(
+        (
+            dark.paper_accent.r(),
+            dark.paper_accent.g(),
+            dark.paper_accent.b()
+        ),
+        (
+            nord.paper_accent.r(),
+            nord.paper_accent.g(),
+            nord.paper_accent.b()
+        ),
+        "the caret follows the OS accent rather than a fixed blue"
+    );
+}
+
 /// Chrome colours are sourced from theme tokens and change with the theme, paper stays light for
 /// readable ink in every theme, and the draw path reads the theme without panicking in any mode.
 #[test]
