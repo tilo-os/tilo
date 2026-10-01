@@ -52,28 +52,43 @@ pub trait ClipboardBroker: Send + Sync {
     }
 }
 #[derive(Clone)]
-pub struct ClipboardBrokerHandle(Arc<dyn ClipboardBroker>);
+pub struct ClipboardBrokerHandle {
+    inner: Arc<dyn ClipboardBroker>,
+    selection_wake: Option<crate::idle_wake::IdleWake>,
+}
 impl ClipboardBrokerHandle {
     pub fn new(broker: Arc<dyn ClipboardBroker>) -> Self {
-        Self(broker)
+        Self {
+            inner: broker,
+            selection_wake: None,
+        }
     }
+
+    pub(crate) fn with_selection_wake(mut self, wake: crate::idle_wake::IdleWake) -> Self {
+        self.selection_wake = Some(wake);
+        self
+    }
+
     fn begin_offer(&self, mimes: &[String]) -> Result<(), String> {
-        self.0.begin_offer(mimes)
+        self.inner.begin_offer(mimes)
     }
     fn read(&self, mime: &str) -> Result<Vec<u8>, String> {
-        self.0.read(mime)
+        self.inner.read(mime)
     }
     fn write(&self, mime: &str, bytes: Vec<u8>) -> Result<(), String> {
-        self.0.write(mime, bytes)
+        self.inner.write(mime, bytes)
     }
     fn clear(&self) -> Result<(), String> {
-        self.0.clear()
+        self.inner.clear()
     }
     fn selection_change(&self) -> Option<Vec<String>> {
-        self.0.selection_change()
+        self.inner.selection_change()
+    }
+    fn selection_wake(&self) -> Option<crate::idle_wake::IdleWake> {
+        self.selection_wake.clone()
     }
     pub fn available(&self) -> bool {
-        self.0.available()
+        self.inner.available()
     }
     pub fn unavailable() -> Self {
         Self::new(Arc::new(NullBroker))
@@ -91,14 +106,18 @@ pub struct MemoryClipboardBroker {
 pub struct CompositorClipboardBroker {
     selection: crate::compositor::selection::SharedSelection,
     seen_revision: Mutex<u64>,
+    pub(crate) wake: crate::idle_wake::IdleWake,
 }
 
 #[cfg(target_os = "linux")]
 impl CompositorClipboardBroker {
     pub fn new(selection: crate::compositor::selection::SharedSelection) -> Self {
+        let wake = crate::idle_wake::IdleWake::default();
+        crate::compositor::selection::watch_clipboard_revision(&selection, wake.clone());
         Self {
             selection,
             seen_revision: Mutex::new(0),
+            wake,
         }
     }
 }
@@ -242,6 +261,10 @@ pub struct ClipboardBackend {
     providers: Vec<ClipboardSessionProviderHandle>,
     broker: ClipboardBrokerHandle,
     state: Arc<Mutex<ClipboardState>>,
+    /// Transfers queued for emission.
+    wake: crate::idle_wake::IdleWake,
+    /// Session close, so a revoked remote clipboard is cleared without polling.
+    session_wake: crate::idle_wake::IdleWake,
 }
 
 /// Emit deferred transfer requests without blocking the compositor or D-Bus
@@ -289,7 +312,7 @@ pub fn spawn_signal_emitter(connection: zbus::Connection, backend: ClipboardBack
                     return;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            backend.parked().await;
         }
     });
 }
@@ -308,6 +331,8 @@ impl ClipboardBackend {
                 next_serial: 1,
                 ..Default::default()
             })),
+            wake: crate::idle_wake::IdleWake::default(),
+            session_wake: crate::idle_wake::IdleWake::default(),
         }
     }
     pub fn with_session_providers(
@@ -321,6 +346,30 @@ impl ClipboardBackend {
                 next_serial: 1,
                 ..Default::default()
             })),
+            wake: crate::idle_wake::IdleWake::default(),
+            session_wake: crate::idle_wake::IdleWake::default(),
+        }
+    }
+
+    /// Share the portal lifecycle wake so session close prunes without a timer.
+    #[must_use]
+    pub(crate) fn with_session_wake(mut self, wake: crate::idle_wake::IdleWake) -> Self {
+        self.session_wake = wake;
+        self
+    }
+
+    async fn parked(&self) {
+        if let Some(selection) = self.broker.selection_wake() {
+            tokio::select! {
+                () = self.wake.wait() => {}
+                () = self.session_wake.wait() => {}
+                () = selection.wait() => {}
+            }
+        } else {
+            tokio::select! {
+                () = self.wake.wait() => {}
+                () = self.session_wake.wait() => {}
+            }
         }
     }
     #[cfg(target_os = "linux")]
@@ -445,6 +494,8 @@ impl ClipboardBackend {
             serial,
         };
         state.transfers.push(transfer.clone());
+        drop(state);
+        self.wake.poke();
         Some(transfer)
     }
     pub fn take_transfers(&self) -> Vec<ClipboardTransfer> {

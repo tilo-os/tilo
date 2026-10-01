@@ -169,8 +169,8 @@ def mounted(container):
 
 def omitted_drivers(profile):
     # Match the production image dracut policy and the initramfs completion
-    # verifier: Ext4/XFS stay on the rootfs for rescue, never in the initramfs.
-    return sorted({'ext4', 'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
+    # verifier: Ext4 is a supported root; XFS remains rescue-only.
+    return sorted({'xfs'} | BOARD_OMITTED_DRIVERS.get(profile, set()))
 
 
 def create_arguments(image_id, kver, epoch, hooks, profile=None):
@@ -189,6 +189,7 @@ def create_arguments(image_id, kver, epoch, hooks, profile=None):
         '--kver', kver, '--add', ' '.join(sorted(REQUIRED_MODULES)),
         '--omit', ' '.join(sorted(OMITTED_MODULES)),
         '--omit-drivers', ' '.join(omitted_drivers(profile)),
+        '--add-drivers', 'ext4',
         '--compress', 'zstd',
         f'/usr/lib/modules/{kver}/initramfs.img']
 

@@ -47,7 +47,9 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
-use crate::cert::DeviceCert;
+use crate::cert::{
+    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert_at,
+};
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
 
@@ -422,7 +424,7 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    atomic_file::write(path, pubkey)
+    tilo_files::native::atomic::write(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -562,7 +564,7 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), 0o600)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
 /// Mode the device key is stored with: owner read/write, group read,
@@ -628,7 +630,7 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     #[cfg(windows)]
     return private_fs::write_atomic(path, seed.as_ref());
     #[cfg(not(windows))]
-    atomic_file::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
+    tilo_files::native::atomic::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -732,7 +734,7 @@ fn link_claim(source: &CString, destination: &CString) -> libc::c_long {
 
 /// Publish a complete device key exactly once.
 ///
-/// `atomic_file::write_with_mode` is intentionally not used here: its final
+/// `tilo_files::native::atomic::write_with_mode` is intentionally not used here: its final
 /// rename correctly replaces a file for ordinary updates, but device-key
 /// creation must never replace a key another first-login process just made.
 /// The candidate is fully written and synced under a unique same-directory
@@ -833,7 +835,7 @@ fn publish_identity_bytes_no_clobber(
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
             // survives a power loss after the no-clobber rename.
-            atomic_file::sync_directory(parent)?;
+            tilo_files::native::atomic::sync_directory(parent)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
@@ -965,8 +967,144 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     fs::create_dir_all(parent)?;
-    atomic_file::write(path, &bytes)?;
+    tilo_files::native::atomic::write(path, &bytes)?;
     Ok(())
+}
+
+/// Certify a new device for a person whose root key stays on the setup machine.
+///
+/// `sign` is the person's existing root capability. It receives the device
+/// certificate digest and returns the signature. This function never receives
+/// or writes the root secret. It writes the person's public key, a freshly
+/// generated device key, and the signed certificate under `paths`. An existing
+/// device key is left untouched.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Io`] when the label is empty or longer than 64
+/// bytes, the device key is already present, or signing or writing fails.
+pub fn provision_joined_device(
+    paths: &IdentityPaths,
+    user_public_key: [u8; 32],
+    sign: impl FnOnce(&[u8]) -> Result<[u8; 64], String>,
+    label: &str,
+    now_ns: u64,
+) -> Result<DeviceCert, PersistError> {
+    if label.is_empty() || label.len() > 64 {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device label must be 1 to 64 bytes",
+        )));
+    }
+    if paths.device_privkey.exists() || paths.device_cert.exists() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target already has a device identity",
+        )));
+    }
+    paths.ensure_directories()?;
+    let device = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let mut cert = DeviceCert {
+        user_public_key,
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: label.to_string(),
+        capabilities: DeviceCapabilities {
+            can_own_workspaces: true,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: true,
+            foreign: false,
+        },
+        issued_at_ns: now_ns,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    let digest = device_cert_signing_digest(&cert).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("device certificate digest failed: {error}"),
+        ))
+    })?;
+    cert.signature = sign(&digest).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("device certificate was not signed: {error}"),
+        ))
+    })?;
+    verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("device certificate did not verify: {error}"),
+        ))
+    })?;
+    write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
+    if !publish_device_key_no_clobber(&paths.device_privkey, &device)? {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target already has a device identity",
+        )));
+    }
+    write_device_cert(&paths.device_cert, &cert)?;
+    if paths.user_privkey.exists() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "setup must not place the human root secret on the target",
+        )));
+    }
+    Ok(cert)
+}
+
+/// Whether `paths` already holds a setup-machine enrollment and no human root.
+///
+/// Missing files are `Ok(false)`, so ordinary first boot still creates an
+/// identity. Present but inconsistent files are an error: first boot must not
+/// replace them with a new person.
+///
+/// # Errors
+///
+/// Returns [`PersistError`] when a present identity file cannot be read or the
+/// certificate does not match its keys.
+pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool, PersistError> {
+    if paths.user_privkey.exists() {
+        return Ok(false);
+    }
+    let present = paths.user_pubkey.is_file()
+        && paths.device_privkey.is_file()
+        && paths.device_cert.is_file();
+    if !present {
+        return Ok(false);
+    }
+    let pubkey = read_public_key(&paths.user_pubkey)?;
+    let device = read_device_key(&paths.device_privkey)?;
+    let cert = read_device_cert(&paths.device_cert)?;
+    verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("enrolled device certificate did not verify: {error}"),
+        ))
+    })?;
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not an imager enrollment, even when its root secret lives in
+    // the identity record rather than user-identity/privkey.bin.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
+    // A primary device can admit further devices. That is an ordinary
+    // machine, not one the imager already enrolled, so first-boot
+    // provisioning must still run for each OS user.
+    if cert.capabilities.can_admit_devices {
+        return Ok(false);
+    }
+    if cert.user_public_key != pubkey
+        || cert.device_public_key != device.verifying_key().to_bytes()
+        || !cert.capabilities.can_read_all_workspaces
+    {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "enrolled device certificate does not match its keys",
+        )));
+    }
+    Ok(true)
 }
 
 #[cfg(unix)]
@@ -997,6 +1135,48 @@ mod tests {
     }
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn joined_device_is_certified_without_copying_the_human_root() {
+        let root = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let cert = provision_joined_device(
+            &paths,
+            root.verifying_key().to_bytes(),
+            |digest| Ok(root.sign(digest).to_bytes()),
+            "orange-pi",
+            1_000,
+        )
+        .unwrap();
+
+        assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
+        assert_ne!(cert.device_public_key, cert.user_public_key);
+        assert!(cert.capabilities.can_read_all_workspaces);
+        assert!(!cert.capabilities.can_admit_devices);
+        verify_device_cert_at(&cert, 1_000).unwrap();
+        assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+        assert_eq!(
+            read_device_key(&paths.device_privkey)
+                .unwrap()
+                .verifying_key()
+                .to_bytes(),
+            cert.device_public_key
+        );
+        assert!(!paths.user_privkey.exists());
+        assert!(
+            provision_joined_device(
+                &paths,
+                root.verifying_key().to_bytes(),
+                |digest| Ok(root.sign(digest).to_bytes()),
+                "orange-pi",
+                2_000,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("already has a device identity")
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

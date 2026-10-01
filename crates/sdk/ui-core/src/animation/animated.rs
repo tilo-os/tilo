@@ -231,6 +231,12 @@ impl<T: Lerp + Copy> Animated<T> {
     pub fn started(&self) -> Instant {
         self.started
     }
+
+    /// Move the start later by `by` so time already elapsed does not count.
+    /// A presenter that cannot take the frame holds the curve this way.
+    fn defer(&mut self, by: Duration) {
+        self.started = self.started.checked_add(by).unwrap_or(self.started);
+    }
 }
 
 /// An interruptible open/close transition tracking a `0.0..=1.0` "openness"
@@ -337,6 +343,12 @@ impl Transition {
         let scaled = duration.mul_f32(remaining.clamp(0.05, 1.0));
         self.anim = Animated::starting_at(current, target, now, scaled, curve);
         self.open = open;
+    }
+
+    /// Hold the curve for `by`. Wall time spent waiting on a full presenter
+    /// is not progress.
+    pub fn defer(&mut self, by: Duration) {
+        self.anim.defer(by);
     }
 }
 

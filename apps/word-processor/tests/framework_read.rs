@@ -151,3 +151,96 @@ fn an_edit_answers_with_the_blocks_it_changed() {
         "{styled:?}"
     );
 }
+
+/// `text` with every `{#id}` and `{#table id}` emptied, so a test can state
+/// the layout it expects without the generated ids.
+fn without_ids(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some((before, tag)) = rest.split_once("{#") {
+        out.push_str(before);
+        let (id, after) = tag.split_once('}').expect("a closed tag");
+        out.push_str(if id.starts_with("table ") {
+            "{#table}"
+        } else {
+            "{#}"
+        });
+        rest = after;
+    }
+    out + rest
+}
+
+/// The id closing the line of `markdown` holding `text`, cell or block.
+fn id_of(markdown: &str, text: &str) -> String {
+    let (_, tagged) = markdown
+        .split_once(&format!("{text} {{#"))
+        .expect("the text is read");
+    tagged.split_once('}').unwrap().0.to_owned()
+}
+
+#[test]
+fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<WordProcessorApp>::new().unwrap();
+    app.harness().type_text("x");
+    invoke(&mut app, "select-all", &serde_json::json!({}));
+    let pasted = invoke(
+        &mut app,
+        "paste",
+        &serde_json::json!({"markdown": "## Standup\n\n- review\n  1. screen reader\n- ship\n\n\
+            | Person | Blocked | Next |\n| --- | --- | --- |\n| Maya | no | docs |\n| Ravi | yes | CI |\n"}),
+    );
+    let layout = "## Standup {#}\n\
+        - review {#}\n  1. screen reader {#}\n- ship {#}\n\
+        | Person {#} | Blocked {#} | Next {#} | {#table}\n| --- | --- | --- |\n\
+        | Maya {#} | no {#} | docs {#} |\n| Ravi {#} | yes {#} | CI {#} |\n\
+        {#}\n";
+    let pasted = pasted
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        without_ids(pasted),
+        format!("14 changed:\n{layout}"),
+        "{pasted}"
+    );
+
+    let read_back = read(&mut app, &serde_json::json!({})).unwrap();
+    let markdown = read_back["content"]["markdown"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(without_ids(&markdown), layout, "{markdown}");
+
+    let cell = id_of(&markdown, "yes");
+    invoke(
+        &mut app,
+        "select-block",
+        &serde_json::json!({"block": cell}),
+    );
+    invoke(&mut app, "type-text", &serde_json::json!({"text": "no"}));
+    let markdown = read(&mut app, &serde_json::json!({})).unwrap()["content"]["markdown"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        markdown.contains(&format!(
+            "| Ravi {{#{}}} | no {{#{cell}}} |",
+            id_of(&markdown, "Ravi")
+        )),
+        "the cell's id selects it: {markdown}"
+    );
+
+    // The table's own resource is listed from the state a frame keeps.
+    app.harness().relayout();
+    let appended = invoke(&mut app, "append-row", &serde_json::json!({}));
+    let appended = appended
+        .as_ref()
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        without_ids(appended),
+        "3 changed:\n| {#} | {#} | {#} | {#table}\n| --- | --- | --- |\n",
+        "the new row answers with the ids that fill it"
+    );
+}

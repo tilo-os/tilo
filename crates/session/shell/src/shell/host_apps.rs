@@ -532,6 +532,7 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
             x11.as_ref(),
             portal_workspace_id.map(str::to_string),
         );
+        launcher::note_session_helper(&entry.id);
         launcher::remember_launch_named(&entry.id, &entry.window_identities(), &entry.name);
         let _ = launcher::spawn_launch(entry.id.clone(), entry.name.clone(), command);
     }

@@ -143,7 +143,10 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         }
         peers.push(peer);
     }
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(())
 }
 
@@ -163,7 +166,10 @@ fn remove_persisted_content_peers(
         }
         !matches
     });
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(removed)
 }
 
@@ -361,7 +367,7 @@ impl WorkspaceAuthority {
             }
         }
         let bytes = postcard::to_allocvec(&next)?;
-        atomic_file::write(&self.path, &bytes)?;
+        tilo_files::native::atomic::write(&self.path, &bytes)?;
         self.handle
             .replace(project(self.subject, &self.principals, Some(&next)));
         *current = Some(next);
