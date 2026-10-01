@@ -5276,7 +5276,7 @@ mod tests {
             groups.push(WindowGroup {
                 id: i,
                 tabs: vec![Tab {
-                    id: 1_000 + i,
+                    id: 1_000_u64.saturating_add(i),
                     title: format!("Notes {i}"),
                     tile: TileContent::LocalApp {
                         app_id: "so.tilo.notes".into(),
@@ -5284,7 +5284,7 @@ mod tests {
                         note: String::new(),
                     },
                 }],
-                active_tab: 1_000 + i,
+                active_tab: 1_000_u64.saturating_add(i),
                 width: WindowWidth::Normal,
                 maximized: false,
             });
