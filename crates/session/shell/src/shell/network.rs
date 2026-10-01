@@ -1329,6 +1329,8 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Wakes the broker's drain thread. An empty queue parks there.
+    pub(crate) drain_wake: std::sync::Arc<crate::idle_wake::DrainPark>,
     /// Inbound channel governance pushed by [`Self::tick`], drained by the
     /// channel encryption service.
     inbound_channel_governance: Arc<Mutex<Vec<InboundChannelGovernance>>>,
@@ -1742,6 +1744,7 @@ impl ShellNetwork {
             relay_rooms: relay_rooms::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -2398,6 +2401,7 @@ impl ShellNetwork {
         if let Ok(mut inbound) = self.inbound_channel_governance.lock() {
             inbound.push(entry);
         }
+        self.drain_wake.poke();
     }
 
     /// Publish one validated signed document mutation. A record id that
@@ -2505,6 +2509,7 @@ impl ShellNetwork {
                 envelope: Box::new(envelope),
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Publish an app's presence frame to the peers in its room —
@@ -2678,6 +2683,7 @@ impl ShellNetwork {
                 presence,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Shared handle to the cooperative-scrollback request buffer,
@@ -2843,6 +2849,7 @@ impl ShellNetwork {
                     message: frame.message,
                 });
             }
+            self.drain_wake.poke();
         } else if !self.remote_action_replies.deliver(peer, &frame.message) {
             tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
         }
@@ -2903,6 +2910,7 @@ impl ShellNetwork {
                 max,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Queue a received `ScrollbackResponse` for the broker's drainer.
@@ -2919,6 +2927,7 @@ impl ShellNetwork {
                 ops,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Subscribe the actor to every durable room currently in the tree, plus
@@ -6690,6 +6699,7 @@ pub(crate) fn shell_network_for_test(
         relay_rooms: relay_rooms::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
