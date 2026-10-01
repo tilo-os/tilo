@@ -5483,15 +5483,19 @@ impl ui::resources::PublishesResources for MailApp {
             });
         }
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
-                .into_iter()
-                .collect(),
+            resources: if cursor.is_empty() && max_results > 0 {
+                self.publish_resources(doc)
+            } else {
+                Vec::new()
+            },
             next_cursor: Vec::new(),
             exhausted: true,
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "mail.mailbox" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
