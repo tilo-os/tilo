@@ -211,7 +211,10 @@ mod tests {
         assert!(band.y0 > surface.y0);
         assert!(band.y1 < surface.y1);
         assert!((band.height() - thickness).abs() < 0.01);
-        assert_eq!(seal_band(Rect::new(0.0, 0.0, 2.0, 2.0), thickness, 8.0).area(), 0.0);
+        assert_eq!(
+            seal_band(Rect::new(0.0, 0.0, 2.0, 2.0), thickness, 8.0).area(),
+            0.0
+        );
     }
 
     #[test]
