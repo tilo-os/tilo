@@ -317,8 +317,9 @@ impl MailState {
         );
     }
 
-    /// Record server baselines. Hosted, this is one document action; otherwise
-    /// the same write the standalone launcher has always used.
+    /// Record server baselines as one document action. Existing flags win, so a
+    /// later fetch cannot overwrite a `MailAction`. Standalone and hosted both
+    /// submit [`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines).
     pub(crate) fn ingest_messages(
         &mut self,
         doc: &mut AutoCommit,
@@ -327,34 +328,24 @@ impl MailState {
         if messages.is_empty() {
             return;
         }
-        if self.actions.is_hosted() {
-            self.dispatch_action(
-                doc,
-                &crate::actions::MailAction::IngestBaselines {
-                    messages: messages
-                        .iter()
-                        .map(crate::actions::IngestBaseline::from_message)
-                        .collect(),
-                },
-            );
-        } else {
-            for message in messages {
-                MailDoc::ingest_message_flags(doc, message);
-            }
-        }
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: messages
+                    .iter()
+                    .map(crate::actions::IngestBaseline::from_message)
+                    .collect(),
+            },
+        );
     }
 
     pub(crate) fn register_message_target(&mut self, doc: &mut AutoCommit, id: &str) {
-        if self.actions.is_hosted() {
-            self.dispatch_action(
-                doc,
-                &crate::actions::MailAction::IngestBaselines {
-                    messages: vec![crate::actions::IngestBaseline::register_only(id)],
-                },
-            );
-        } else {
-            MailDoc::register_message(doc, id);
-        }
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: vec![crate::actions::IngestBaseline::register_only(id)],
+            },
+        );
     }
 
     /// Ensure an action target discovered in the already-loaded external
@@ -953,6 +944,31 @@ mod tests {
 
     fn first_inbox_id(st: &MailState) -> Option<MessageId> {
         st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
+    }
+
+    /// A standalone ingest is the same baseline action a hosted mailbox submits.
+    #[test]
+    fn a_standalone_ingest_is_a_mail_action() {
+        let mut st = state();
+        let message = st
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .next()
+            .map(Message::clone)
+            .expect("sample inbox");
+        let mut doc = automerge::AutoCommit::new();
+        assert!(!st.actions.is_hosted());
+        st.ingest_messages(&mut doc, std::slice::from_ref(&message));
+        let recorded = st
+            .actions
+            .last_dispatched()
+            .expect("ingest is submitted through the action sink");
+        assert_eq!(recorded.type_id.as_str(), crate::actions::MAIL_ACTION_TYPE);
+        assert_eq!(
+            crate::doc::MailDoc::get_read(&doc, &message.id.to_string()),
+            Some(message.read)
+        );
     }
 
     #[test]
