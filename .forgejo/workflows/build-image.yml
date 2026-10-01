@@ -3107,12 +3107,9 @@ jobs:
           path: tilo-os-release-index.json
           if-no-files-found: error
 
-  # A board's dev image, the board layer on this commit's aarch64 dev image,
-  # and the flashable disk installed from it: a job of its own, so a broken
-  # board layer is visible without holding back the generic dev images, which
-  # the build-and-push lanes publish first. A board image is sealed
-  # (os/Containerfile.board), and installing it is what closes the seal
-  # (bootc#2334), so the job installs the disk before it publishes the image.
+  # A board's flashable disk, installed from the sealed board image the
+  # aarch64 lane published (os/dev/build-board-image.sh): a job of its own,
+  # off the path to the board's -ci tag, which the lane already moved.
   # Waits on a small runner until the aarch64 lane has published every
   # board's image, or has ended, so the board jobs take a large ARM slot only
   # for their own work and never one the lane itself is queued for. Not
