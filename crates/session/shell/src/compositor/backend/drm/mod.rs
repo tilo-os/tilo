@@ -1586,6 +1586,39 @@ fn render_combined_readback(
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
+    upload_combined_scene(
+        scanouts,
+        outputs,
+        bridge,
+        pointer,
+        &CombinedUpload {
+            scene,
+            hdr_layers,
+            workspace_id,
+            note_workspace: overview.is_none(),
+        },
+    )
+}
+
+struct CombinedUpload<'a> {
+    scene: &'a Scene,
+    hdr_layers: &'a [HdrLayer],
+    workspace_id: Option<u64>,
+    note_workspace: bool,
+}
+
+/// Paint the combined scene and copy it onto every powered scanout.
+fn upload_combined_scene(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    upload: &CombinedUpload<'_>,
+) -> PaintScanoutSample {
+    let scene = upload.scene;
+    let hdr_layers = upload.hdr_layers;
+    let workspace_id = upload.workspace_id;
+    let note_workspace = upload.note_workspace;
     let bridge_started = Instant::now();
     let composite = !hdr_layers.is_empty()
         && scanouts
@@ -1623,12 +1656,10 @@ fn render_combined_readback(
         scene_width: cw,
         layers: hdr_layers,
     });
-    for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr, None);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, hdr, None);
     }
-    if overview.is_none()
-        && let Some(id) = workspace_id
-    {
+    if note_workspace && let Some(id) = workspace_id {
         bridge.note_shown_workspace(id);
     }
     PaintScanoutSample {
