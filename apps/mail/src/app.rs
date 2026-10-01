@@ -35,7 +35,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -2941,7 +2941,7 @@ impl MailApp {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 100),
+            theme.tokens.elevation.e4.color,
             None,
             &RoundedRect::from_rect(
                 Rect::new(panel.x0, panel.y0 + 6.0, panel.x1, panel.y1 + 10.0),
