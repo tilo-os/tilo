@@ -259,7 +259,7 @@ pub fn publish(path: &Path, list: &MimeAppsList) -> std::io::Result<bool> {
     if std::fs::read_to_string(path).is_ok_and(|current| current == body) {
         return Ok(false);
     }
-    atomic_file::write_creating_parent(path, body.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(path, body.as_bytes())?;
     Ok(true)
 }
 

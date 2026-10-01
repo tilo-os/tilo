@@ -7,6 +7,9 @@ PartOf=tilo-graphical-session.target
 
 [Service]
 Type=simple
+# The manager writes under ~/.local/share; a missing path plus ProtectHome
+# is a hard failure and Restart=on-failure crash-loops an unconfigured user.
+ExecStartPre=-/usr/bin/mkdir -p %h/.local/share/tilo %h/.local/share/containers
 ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo/services/models.sock
 Restart=on-failure
 RestartSec=2

@@ -40,8 +40,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: app-sdk-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run. Pushes keep one
+  # run per commit.
+  group: app-sdk-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_INCREMENTAL: "0"
@@ -174,6 +176,8 @@ jobs:
   # without them `package` signs ad hoc) that becomes a signed registry
   # entry for the macOS artifact format.
   macos:
+    # Disabled: no runner serves the imager-macos-* labels yet.
+    if: false
     runs-on: imager-macos-aarch64
     timeout-minutes: 180
     steps:

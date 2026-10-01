@@ -24,6 +24,10 @@ use std::time::{Duration, Instant};
 use ush::store::Store;
 use ush::supervisor::{ServeRequest, ServeResponse, decide_serve, recv_with_fd};
 
+/// Tests that spawn a guest inherit this process's `HOME`. The terminal
+/// home test points that at a scratch directory, so they must not overlap.
+static GUEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Read from a descriptor until `needle` shows up or the deadline passes.
 fn read_until(fd: i32, needle: &str, timeout: Duration) -> String {
     let mut seen = String::new();
@@ -136,6 +140,7 @@ fn the_service_protocol_refuses_dsh_answers_garbage_and_never_hangs() {
 /// a container with no `bwrap`, or unprivileged user namespaces disabled.
 #[test]
 fn a_terminal_gets_a_working_shell_over_the_service_socket() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
     let Some(reason) = guest_unavailable() else {
         run_handoff();
         return;
@@ -151,6 +156,7 @@ fn a_terminal_gets_a_working_shell_over_the_service_socket() {
 /// Both halves assert: which one runs depends on the machine, as probed.
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
     if which_bwrap().is_none() {
         eprintln!("serve_handoff: bwrap is not installed; no sandbox to fail");
         return;
@@ -249,6 +255,10 @@ fn run_handoff() {
     // which would treat `run` as a name filter and exit — point it at the real one.
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    // The guest hosts `$SHELL`. Pin bash so the prompt and `~/` expansion are
+    // the same ones the terminal's seeded session uses, not whatever this
+    // machine's login shell is.
+    env.set("SHELL", "/usr/bin/bash");
 
     // On ordinary disk, not `/tmp`: a layer is an overlayfs upper and tmpfs
     // can't be one — putting the store there would test the refusal, not the handoff.
@@ -351,4 +361,138 @@ fn run_handoff() {
         "the test left its store behind at {}",
         path.display()
     );
+}
+
+/// Enter in the terminal is a carriage return on the hosted shell. That shell
+/// must create `~/probe` in the caller's home — the directory this process's
+/// `HOME` names — not in the runtime's private copy.
+#[test]
+fn enter_creates_a_file_in_the_callers_home() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    // The harness gives the process a tmpfs data dir, which cannot be an
+    // overlay upper. Probe on `/var/tmp`, the disk this test actually uses.
+    let reason = {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", "/var/tmp");
+        guest_unavailable()
+    };
+    let Some(reason) = reason else {
+        run_enter_creates_file();
+        return;
+    };
+    eprintln!(
+        "serve_handoff: not exercising the guest on this machine — {reason}. \
+         `session_directories` still covers which home a terminal session binds."
+    );
+}
+
+fn run_enter_creates_file() {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    // `$SHELL` on this machine may be fish, which does not print `bash-`.
+    // The terminal session hosts `$SHELL`; pin bash so Enter's carriage
+    // return is what bash reads.
+    env.set("SHELL", "/usr/bin/bash");
+
+    // A short path on ordinary disk. The broker socket lives under the store,
+    // and nesting that under `~/.local/share/<long-prefix>` exceeds `SUN_LEN`.
+    // `/tmp` is tmpfs, which overlayfs refuses as an upper directory.
+    let home_dir = tempfile::TempDir::with_prefix_in("h", "/var/tmp").expect("home");
+    let home = home_dir.path().canonicalize().expect("canonical home");
+    env.set("HOME", &home);
+
+    let store = Store::at(home.join(".local/share/ush"));
+    store.ensure().expect("store");
+    let marker = "secret-policy-marker";
+    std::fs::write(store.policy_path(), marker).expect("policy marker");
+    let probe = format!("enter-probe-{}", std::process::id());
+    let probe_path = home.join(&probe);
+
+    let socket = home.join("ush.sock");
+    let serve_socket = socket.clone();
+    let serve_store = store.clone();
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "the supervisor never bound its socket");
+
+    let stream = UnixStream::connect(&socket).expect("connect");
+    let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
+        profile: "ush".into(),
+        cols: 80,
+        rows: 24,
+        term: Some("xterm-256color".into()),
+        command: Vec::new(),
+    })
+    .unwrap();
+    request.push(b'\n');
+    (&stream).write_all(&request).expect("write request");
+    (&stream).flush().expect("flush");
+
+    let (payload, fd) = recv_with_fd(stream.as_raw_fd()).expect("recvmsg");
+    let text = String::from_utf8_lossy(&payload);
+    let response: ServeResponse =
+        serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
+    match &response {
+        ServeResponse::Session { profile, .. } => assert_eq!(profile, "ush"),
+        ServeResponse::Denied { reason } => panic!("the service refused a ush session: {reason}"),
+    }
+    let fd = fd.expect("no pty descriptor arrived with the reply");
+
+    let mut prompt = String::new();
+    let prompt_deadline = Instant::now()
+        .checked_add(Duration::from_secs(240))
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < prompt_deadline && !prompt.contains("bash-") {
+        let chunk = read_until(fd, "bash-", Duration::from_secs(2));
+        prompt.push_str(&chunk);
+        if prompt.contains("SUN_LEN") || prompt.contains("sandbox could not") {
+            break;
+        }
+        if chunk.is_empty() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    assert!(
+        prompt.contains("bash-"),
+        "no shell prompt appeared. What came back:\n{prompt}"
+    );
+
+    // `\r` is the byte `TerminalWidget` maps Enter to. The marker is the
+    // policy file's contents, not something this line types, so a shell that
+    // merely echoes the command cannot satisfy the store check.
+    let script = format!(
+        "echo ok > ~/{probe}\rcat \"$HOME/.local/share/ush/policy.json\"\rprintf 'RAN_%s\\n' DONE\r"
+    );
+    // SAFETY: `fd` is the pty master just received, and `script` is a live buffer.
+    let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
+    assert!(written > 0, "could not write the command to the pty");
+
+    let seen = read_until(fd, "RAN_DONE", Duration::from_secs(30));
+    let body = std::fs::read_to_string(&probe_path).unwrap_or_default();
+    assert_eq!(
+        body,
+        "ok\n",
+        "Enter must run the command in the caller's home {}\npty:\n{seen}\nisolated copy exists: {}",
+        probe_path.display(),
+        store.guest_home().join(&probe).exists()
+    );
+    assert!(
+        !seen.contains(marker),
+        "the guest read the store's policy through its home: {seen}"
+    );
+
+    // SAFETY: this test owns the descriptor.
+    unsafe { libc::close(fd) };
+    let host_policy = std::fs::read_to_string(store.policy_path()).unwrap_or_default();
+    assert!(
+        host_policy.contains(marker),
+        "the host policy file was rewritten: {host_policy}"
+    );
+    let path = home_dir.keep();
+    ush::guest::remove_dir_all_forced(&path);
 }

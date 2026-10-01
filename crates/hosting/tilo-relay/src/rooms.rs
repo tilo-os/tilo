@@ -173,7 +173,7 @@ impl GovernedRoom {
 
     fn persist(&self) -> Result<(), String> {
         let bytes = postcard::to_stdvec(&self.record).map_err(|error| error.to_string())?;
-        atomic_file::write(&self.path, &bytes).map_err(|error| error.to_string())
+        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
     fn peer(&self) -> &StatePeer {

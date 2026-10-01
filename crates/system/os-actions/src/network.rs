@@ -357,10 +357,17 @@ pub fn set_wifi(enabled: bool) -> Result<(), String> {
 /// Returns an error message if `nmcli` is not installed, the command fails, or its output is
 /// neither `enabled` nor `disabled`.
 pub fn get_wifi() -> Result<bool, String> {
-    let out = run_capture("nmcli", &["radio", "wifi"])?;
-    parse_nmcli_radio(&out)
+    wifi_from_radios(&get_radio_state()?)
 }
 
+fn wifi_from_radios(radios: &RadioState) -> Result<bool, String> {
+    if !radios.wifi_available {
+        return Err("no Wi-Fi adapter on this machine".into());
+    }
+    Ok(radios.wifi_enabled)
+}
+
+#[cfg(test)]
 fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
     let line = stdout
         .lines()
@@ -1846,6 +1853,26 @@ mod tests {
             assert_eq!(signal_pct_to_bucket(35), 2);
             assert_eq!(signal_pct_to_bucket(60), 3);
             assert_eq!(signal_pct_to_bucket(95), 4);
+        }
+        // Phase `wifi_read_is_unavailable_without_an_adapter`.
+        {
+            let radios = RadioState::default();
+            assert_eq!(
+                wifi_from_radios(&radios).unwrap_err(),
+                "no Wi-Fi adapter on this machine"
+            );
+            let on = RadioState {
+                wifi_available: true,
+                wifi_enabled: true,
+                ..RadioState::default()
+            };
+            assert!(wifi_from_radios(&on).unwrap());
+            let off = RadioState {
+                wifi_available: true,
+                wifi_enabled: false,
+                ..RadioState::default()
+            };
+            assert!(!wifi_from_radios(&off).unwrap());
         }
     }
 

@@ -212,7 +212,8 @@ pub fn save_status(path: &Path, status: &FullReplicaStatus) -> Result<()> {
     let mut status = status.clone();
     status.updated_at_ms = tilo_clock::unix_now_ms();
     let bytes = serde_json::to_vec_pretty(&status)?;
-    atomic_file::write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
+    tilo_files::native::atomic::write(path, &bytes)
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 

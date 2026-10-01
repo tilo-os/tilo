@@ -89,6 +89,10 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
     assert_eq!(wire["permission"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
     assert_eq!(wire["result"]["type"], "json");
+    assert_eq!(
+        wire["tags"],
+        serde_json::json!([tilo_actions::DOCUMENT_READ_TAG])
+    );
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();
     let value = serde_json::json!({"version":1,"record":{"roomId":"77777777-7777-4777-8777-777777777777","appId":"word-processor","recordId":""},"basis":{"heads":[]},"content":{"segments":[{"block":"p1","kind":"paragraph","text":"hello","complete":true}]},"nextCursor":null});
     decoded
@@ -140,6 +144,31 @@ fn the_registered_projection_pages_body_text_at_the_given_heads() {
         project(&doc, &later, &serde_json::to_vec(&request).unwrap()).err(),
         Some(SemanticReadError::StaleCursor),
         "a cursor from an earlier basis is refused"
+    );
+}
+
+#[test]
+fn read_text_shows_bold_italic_code_and_links_as_markdown() {
+    let mut source = qdoc::Document::new();
+    let memo = source.insert_block(None, "paragraph");
+    source.splice_text(&memo, 0, 0, "Deadline: October 15, run make, see docs");
+    source.add_mark(&memo, 0, 20, "strong", true);
+    source.add_mark(&memo, 10, 20, "em", true);
+    source.add_mark(&memo, 26, 30, "fontFamily", "mono");
+    source.add_mark(&memo, 36, 40, "link", "https://tilo.so");
+    source.add_mark(&memo, 36, 40, "underline", true);
+    let plain = source.insert_block(Some(&memo), "paragraph");
+    source.splice_text(&plain, 0, 0, "unmarked");
+    source.add_mark(&plain, 0, 8, "strong", true);
+    source.add_mark(&plain, 0, 8, "strong", automerge::ScalarValue::Null);
+    let mut doc = automerge::AutoCommit::load(&source.save()).unwrap();
+    let heads = doc.get_heads();
+    let page = project(&doc, &heads, br#"{"pageSize":64,"cursor":null}"#).unwrap();
+    assert_eq!(
+        page.content["markdown"],
+        format!(
+            "**Deadline: *October 15***, run `make`, see [docs](https://tilo.so) {{#{memo}}}\nunmarked {{#{plain}}}\n"
+        )
     );
 }
 
