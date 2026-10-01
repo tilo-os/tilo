@@ -24,6 +24,16 @@
 # Environment: TILO_INSTALLER_ROOTFS=btrfs|ext4 selects the full-size live root.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+# WSL may allow registry access on the host while Podman's private build
+# namespace cannot reach Fedora's package mirrors. Keep the normal isolated
+# network by default and allow an explicit host-network build in that case.
+build_network_args=()
+case "${TILO_PODMAN_BUILD_NETWORK:-default}" in
+  default) ;;
+  host) build_network_args=(--network=host) ;;
+  *) die "TILO_PODMAN_BUILD_NETWORK must be default or host" ;;
+esac
+
 # Several native build tools ignore Cargo's target directory and create
 # assembly/object scratch files through libc's TMPDIR.  Keep those files with
 # the installer output as well: shared /tmp commonly has a tight per-user quota
@@ -128,7 +138,7 @@ alongside_bootc_key="$(cat \
   | sha256sum | cut -c1-16)"
 alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
 if ! podman image exists "$alongside_bootc_ref"; then
-  podman build -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+  podman build "${build_network_args[@]}" -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
     -t "$alongside_bootc_ref" "$TILO_REPO"
 fi
 (
@@ -172,7 +182,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   install -Dm0755 "$cosign_asset" \
     "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-cosign"
 fi
-podman build \
+podman build "${build_network_args[@]}" \
   --build-arg "TILO_BASE_IMAGE=$TILO_IMAGE" \
   --build-arg "TILO_INSTALLER_DEV_SSH=$DEV_LOGIN" \
   -t "$TILO_INSTALLER_IMAGE" -f "$TILO_OS_DIR/Containerfile.installer" "$INSTALLER_CONTEXT"
