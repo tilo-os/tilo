@@ -40,16 +40,15 @@ common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerf
 push="push=true,compression=zstd,compression-level=1"
 placeholder="$(printf '0%.0s' $(seq 128))"
 
-# The BuildKit steps of one build that took 10 s or more, for the lane log.
+# The BuildKit steps of one build that took 2 s or more, for the lane log.
 slow_steps() {
   awk -v board="$board" '
-    $1 ~ /^#[0-9]+$/ && $2 ~ /^\[/ { name[$1] = substr($0, length($1) + 2, 70); next }
-    $1 ~ /^#[0-9]+$/ && $2 == "DONE" && $3 ~ /^[0-9.]+s$/ {
-      secs = $3; sub(/s$/, "", secs)
-      if (secs + 0 >= 10) printf "%s:   %6.1fs %s\n", board, secs, name[$1]; next }
-    $1 ~ /^#[0-9]+$/ && $NF == "done" && $(NF - 1) ~ /^[0-9.]+s$/ {
-      secs = $(NF - 1); sub(/s$/, "", secs)
-      if (secs + 0 >= 10) { $1 = ""; $NF = ""; $(NF - 1) = ""; printf "%s:   %6.1fs %s\n", board, secs, $0 } }
+    $1 !~ /^#[0-9]+$/ { next }
+    $2 == "DONE" && $3 ~ /^[0-9.]+s$/ { secs = $3; sub(/s$/, "", secs); if (secs + 0 >= 2) printf "%s:   %6.1fs %s\n", board, secs, name[$1]; next }
+    $NF == "done" && $(NF - 1) ~ /^[0-9.]+s$/ {
+      secs = $(NF - 1); sub(/s$/, "", secs); line = $0; sub(/^#[0-9]+ /, "", line); sub(/ [0-9.]+s done$/, "", line)
+      if (secs + 0 >= 2) printf "%s:   %6.1fs   %s (%s)\n", board, secs, line, name[$1]; next }
+    $2 !~ /^[0-9.]+$/ && !($1 in name) { line = $0; sub(/^#[0-9]+ /, "", line); name[$1] = substr(line, 1, 70) }
   ' "$1" >&2
 }
 
