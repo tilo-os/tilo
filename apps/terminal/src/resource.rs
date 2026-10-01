@@ -86,13 +86,15 @@ impl Action for TerminalAction {
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
             Self::SetTitle { title } => {
-                doc.put(ROOT, "terminal_title", title.as_str())?;
+                let parent = session_parent(doc)?;
+                doc.put(&parent, "terminal_title", title.as_str())?;
             }
             Self::AppendScrollback { line } => {
-                let list = match doc.get(ROOT, "terminal_scrollback")? {
+                let parent = session_parent(doc)?;
+                let list = match doc.get(&parent, "terminal_scrollback")? {
                     Some((_, id)) => id,
                     None => {
-                        doc.put_object(ROOT, "terminal_scrollback", automerge::ObjType::List)?
+                        doc.put_object(&parent, "terminal_scrollback", automerge::ObjType::List)?
                     }
                 };
                 let index = doc.length(&list);
@@ -102,6 +104,7 @@ impl Action for TerminalAction {
                 if session_id.is_empty() || session_id.len() > 128 {
                     return Err(ActionError::Refused("local session id is invalid".into()));
                 }
+                let parent = session_parent(doc)?;
                 for key in [
                     "terminal_grid",
                     "terminal_grid_alt",
@@ -111,17 +114,18 @@ impl Action for TerminalAction {
                     "terminal_title",
                     "terminal_pane_id",
                 ] {
-                    let _ = doc.delete(ROOT, key);
+                    let _ = doc.delete(&parent, key);
                 }
-                doc.put(ROOT, "terminal_local_session", session_id.as_str())?;
+                doc.put(&parent, "terminal_local_session", session_id.as_str())?;
             }
             Self::RegisterLink { id, url } => {
                 if *id == 0 || url.is_empty() || url.len() > 2 * 1024 {
                     return Err(ActionError::Refused("hyperlink is invalid".into()));
                 }
-                let links = match doc.get(ROOT, "terminal_links")? {
+                let parent = session_parent(doc)?;
+                let links = match doc.get(&parent, "terminal_links")? {
                     Some((_, existing)) => existing,
-                    None => doc.put_object(ROOT, "terminal_links", automerge::ObjType::Map)?,
+                    None => doc.put_object(&parent, "terminal_links", automerge::ObjType::Map)?,
                 };
                 let key = id.to_string();
                 if doc.get(&links, &key)?.is_none() && doc.length(&links) >= 4096 {
@@ -133,10 +137,11 @@ impl Action for TerminalAction {
                 if pane_id.is_empty() || pane_id.len() > 128 {
                     return Err(ActionError::Refused("pane id is invalid".into()));
                 }
-                if doc.get(ROOT, "terminal_pane_id")?.is_some() {
+                let parent = session_parent(doc)?;
+                if doc.get(&parent, "terminal_pane_id")?.is_some() {
                     return Ok(());
                 }
-                doc.put(ROOT, "terminal_pane_id", pane_id.as_str())?;
+                doc.put(&parent, "terminal_pane_id", pane_id.as_str())?;
             }
             Self::PlaceImage {
                 hash,
@@ -162,9 +167,10 @@ impl Action for TerminalAction {
                 {
                     return Err(ActionError::Refused("image placement is invalid".into()));
                 }
-                let images = match doc.get(ROOT, "terminal_images")? {
+                let parent = session_parent(doc)?;
+                let images = match doc.get(&parent, "terminal_images")? {
                     Some((_, existing)) => existing,
-                    None => doc.put_object(ROOT, "terminal_images", automerge::ObjType::List)?,
+                    None => doc.put_object(&parent, "terminal_images", automerge::ObjType::List)?,
                 };
                 let index = doc.length(&images);
                 let placement = doc.insert_object(&images, index, automerge::ObjType::Map)?;
@@ -209,14 +215,23 @@ impl Action for TerminalAction {
     }
 }
 
+fn session_parent(doc: &Doc) -> Result<automerge::ObjId, ActionError> {
+    match doc.get(ROOT, "terminal_panel")? {
+        Some((Value::Object(automerge::ObjType::Map), id)) => Ok(id),
+        Some(_) => Err(ActionError::Refused("terminal panel is not a map".into())),
+        None => Ok(ROOT),
+    }
+}
+
 fn object_at(
     doc: &mut Doc,
     key: &str,
     kind: automerge::ObjType,
 ) -> Result<automerge::ObjId, ActionError> {
-    match doc.get(ROOT, key)? {
+    let parent = session_parent(doc)?;
+    match doc.get(&parent, key)? {
         Some((_, existing)) => Ok(existing),
-        None => Ok(doc.put_object(ROOT, key, kind)?),
+        None => Ok(doc.put_object(&parent, key, kind)?),
     }
 }
 
@@ -225,7 +240,8 @@ fn ensure_structure(doc: &mut Doc) -> Result<(), ActionError> {
     object_at(doc, "terminal_grid_alt", automerge::ObjType::List)?;
     object_at(doc, "terminal_links", automerge::ObjType::Map)?;
     object_at(doc, "terminal_images", automerge::ObjType::List)?;
-    if doc.get(ROOT, "cursor")?.is_none() {
+    let parent = session_parent(doc)?;
+    if doc.get(&parent, "cursor")?.is_none() {
         set_cursor(doc, 0, 0)?;
     }
     Ok(())
@@ -324,10 +340,7 @@ fn delete_grid_line(doc: &mut Doc, alternate: bool, index: u32) -> Result<(), Ac
     } else {
         "terminal_grid"
     };
-    let grid = match doc.get(ROOT, key)? {
-        Some((_, id)) => id,
-        None => return Err(ActionError::Refused("grid line is missing".into())),
-    };
+    let grid = object_at(doc, key, automerge::ObjType::List)?;
     let at = index as usize;
     if at >= doc.length(&grid) {
         return Err(ActionError::Refused("grid line is missing".into()));
@@ -340,7 +353,8 @@ fn trim_grid_prefix(doc: &mut Doc, count: u32) -> Result<(), ActionError> {
     if count > 100_000 {
         return Err(ActionError::Refused("scrollback trim is too large".into()));
     }
-    let Some((_, grid)) = doc.get(ROOT, "terminal_grid")? else {
+    let parent = session_parent(doc)?;
+    let Some((_, grid)) = doc.get(&parent, "terminal_grid")? else {
         return Ok(());
     };
     let count = (count as usize).min(doc.length(&grid));
@@ -351,7 +365,8 @@ fn trim_grid_prefix(doc: &mut Doc, count: u32) -> Result<(), ActionError> {
 }
 
 fn shift_image_rows(doc: &mut Doc, removed_rows: u32) -> Result<(), ActionError> {
-    let Some((_, images)) = doc.get(ROOT, "terminal_images")? else {
+    let parent = session_parent(doc)?;
+    let Some((_, images)) = doc.get(&parent, "terminal_images")? else {
         return Ok(());
     };
     let removed = removed_rows as usize;
@@ -791,6 +806,127 @@ mod tests {
                 _ => None,
             });
         assert_eq!(row, Some(0));
+    }
+
+    #[test]
+    fn a_nested_panel_keeps_grid_actions_inside_the_panel() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        let panel = doc
+            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+            .unwrap();
+        TerminalAction::InsertBlankLine {
+            alternate: false,
+            index: 0,
+            text: "hi".into(),
+            attrs: vec![0, 0],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(
+            doc.get(automerge::ROOT, "terminal_grid").unwrap().is_none(),
+            "a nested session does not create a second grid at the document root"
+        );
+        let grid = doc
+            .get(&panel, "terminal_grid")
+            .unwrap()
+            .map(|(_, id)| id)
+            .expect("the blank line is inside the panel");
+        assert_eq!(doc.length(&grid), 1);
+    }
+
+    #[test]
+    fn a_nested_panel_claims_its_pane_inside_the_panel() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        let panel = doc
+            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+            .unwrap();
+        TerminalAction::ClaimPane {
+            pane_id: "pane-1".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(
+            doc.get(automerge::ROOT, "terminal_pane_id")
+                .unwrap()
+                .is_none()
+        );
+        let id = doc
+            .get(&panel, "terminal_pane_id")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        assert_eq!(id.as_deref(), Some("pane-1"));
+    }
+
+    #[test]
+    fn a_nested_panel_binds_its_local_session_inside_the_panel() {
+        use automerge::transaction::Transactable;
+        let mut doc = ui::automerge::AutoCommit::new();
+        let panel = doc
+            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&panel, "terminal_title", "old session").unwrap();
+        TerminalAction::BindLocalSession {
+            session_id: "process-2".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(doc.get(&panel, "terminal_title").unwrap().is_none());
+        assert!(
+            doc.get(automerge::ROOT, "terminal_local_session")
+                .unwrap()
+                .is_none()
+        );
+        let id = doc
+            .get(&panel, "terminal_local_session")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        assert_eq!(id.as_deref(), Some("process-2"));
+    }
+
+    #[test]
+    fn a_nested_panel_keeps_its_cursor_and_deletes_its_own_line() {
+        use automerge::transaction::Transactable;
+        let mut doc = ui::automerge::AutoCommit::new();
+        let panel = doc
+            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+            .unwrap();
+        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
+        TerminalAction::SetCursor { x: 4, y: 5 }
+            .apply(&mut doc)
+            .unwrap();
+        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
+        assert!(doc.get(automerge::ROOT, "cursor").unwrap().is_none());
+        let cursor = doc
+            .get(&panel, "cursor")
+            .unwrap()
+            .map(|(_, id)| id)
+            .expect("cursor stays in the panel");
+        let x = doc
+            .get(&cursor, "x")
+            .unwrap()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(value) => value.as_i64(),
+                _ => None,
+            });
+        assert_eq!(x, Some(4));
+        TerminalAction::EnsureLines {
+            alternate: false,
+            min_len: 2,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        TerminalAction::DeleteGridLine {
+            alternate: false,
+            index: 0,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let grid = doc
+            .get(&panel, "terminal_grid")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        assert_eq!(doc.length(&grid), 1);
     }
 }
 

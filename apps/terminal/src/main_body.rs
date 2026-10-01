@@ -1184,23 +1184,29 @@ impl TerminalWidget {
     }
 
     fn session_resource(&self) -> Resource {
+        self.session_resource_with(None)
+    }
+
+    /// Title and pane come from the document once it stores them. Paste and
+    /// the context menu, which have no document, keep the widget session.
+    fn session_resource_with(&self, doc: Option<&AutoCommit>) -> Resource {
+        let (title, pane_id) = self.published_session(doc);
         let disconnected = self.is_disconnected();
         let unavailable_reason =
             "The terminal process has ended or its PTY failed; input cannot be sent.";
-        let label = if self.title == "Terminal" {
+        let label = if title == "Terminal" {
             "Terminal session".to_string()
         } else {
-            format!("Terminal — {}", self.title)
+            format!("Terminal — {title}")
         };
-        let state = crate::resource::SessionState {
-            title: self.title.clone(),
-            pane_id: self.pane_id.clone(),
+        let resource_id = if pane_id.is_empty() {
+            self.terminal_resource_id()
+        } else {
+            format!("terminal:{pane_id}")
         };
-        let mut terminal = ui::tilo_resource::publish::<crate::resource::Terminal>(
-            &self.terminal_resource_id(),
-            &label,
-            &state,
-        );
+        let state = crate::resource::SessionState { title, pane_id };
+        let mut terminal =
+            ui::tilo_resource::publish::<crate::resource::Terminal>(&resource_id, &label, &state);
         if disconnected {
             for action in &mut terminal.actions {
                 if matches!(
@@ -1214,6 +1220,28 @@ impl TerminalWidget {
         }
         terminal.children.push(self.transcript_resource());
         terminal
+    }
+
+    fn published_session(&self, doc: Option<&AutoCommit>) -> (String, String) {
+        let widget = (self.title.clone(), self.pane_id.clone());
+        let Some(doc) = doc else {
+            return widget;
+        };
+        let recorded = automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_title")
+            .ok()
+            .flatten()
+            .is_some()
+            || automerge::ReadDoc::get(doc, &automerge::ROOT, "terminal_pane_id")
+                .ok()
+                .flatten()
+                .is_some();
+        if !recorded {
+            return widget;
+        }
+        match <crate::resource::Terminal as ui::tilo_resource::Resource>::read(doc) {
+            Ok(state) => (state.title, state.pane_id),
+            Err(_) => widget,
+        }
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -2113,24 +2141,22 @@ impl TerminalWidget {
     }
 
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // The terminal app's session record is the document root, so its grids
-        // are created by EnsureStructure. A terminal embedded in another app
-        // lives under that app's object and keeps its grid there.
-        let at_document_root = root == &automerge::ROOT;
-        if at_document_root {
+        // Session actions cover the document root and a code-editor terminal
+        // panel. Any other embedding still keeps its grid on that object.
+        let actions_cover = root == &automerge::ROOT
+            || matches!(
+                state.get(&automerge::ROOT, "terminal_panel"),
+                Ok(Some((_, id))) if &id == root
+            );
+        if actions_cover {
             let _ = ui::tilo_actions::Action::apply(
                 &crate::resource::TerminalAction::EnsureStructure,
                 state,
             );
         }
         if self.grid_id.is_none() {
-            self.grid_id = adopt_or_create(
-                state,
-                root,
-                "terminal_grid",
-                ObjType::List,
-                at_document_root,
-            );
+            self.grid_id =
+                adopt_or_create(state, root, "terminal_grid", ObjType::List, actions_cover);
             if self.grid_id.is_none() {
                 return;
             }
@@ -2146,7 +2172,7 @@ impl TerminalWidget {
                 root,
                 "terminal_grid_alt",
                 ObjType::List,
-                at_document_root,
+                actions_cover,
             );
             if self.alt_grid_id.is_none() {
                 return;
@@ -2164,25 +2190,15 @@ impl TerminalWidget {
         );
 
         if self.links_id.is_none() {
-            self.links_id = adopt_or_create(
-                state,
-                root,
-                "terminal_links",
-                ObjType::Map,
-                at_document_root,
-            );
+            self.links_id =
+                adopt_or_create(state, root, "terminal_links", ObjType::Map, actions_cover);
             if self.links_id.is_none() {
                 return;
             }
         }
         if self.images_id.is_none() {
-            self.images_id = adopt_or_create(
-                state,
-                root,
-                "terminal_images",
-                ObjType::List,
-                at_document_root,
-            );
+            self.images_id =
+                adopt_or_create(state, root, "terminal_images", ObjType::List, actions_cover);
             if self.images_id.is_none() {
                 return;
             }
@@ -2194,7 +2210,7 @@ impl TerminalWidget {
         // to touch the doc writes its id; late joiners read it back.
         if let Some(id) = Self::shared_pane_id(state, root) {
             self.pane_id = id;
-        } else if at_document_root {
+        } else if actions_cover {
             let action = crate::resource::TerminalAction::ClaimPane {
                 pane_id: self.pane_id.clone(),
             };
@@ -2218,7 +2234,7 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if at_document_root
+            } else if actions_cover
                 && ui::tilo_actions::Action::apply(
                     &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
                     state,
@@ -2228,7 +2244,7 @@ impl TerminalWidget {
                     state.get(root, "cursor")
             {
                 self.cursor_id = Some(cursor_id);
-            } else if !at_document_root
+            } else if !actions_cover
                 && let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
                 && state.put(&cursor_id, "x", 0u64).is_ok()
                 && state.put(&cursor_id, "y", 0u64).is_ok()
@@ -2290,9 +2306,18 @@ impl TerminalWidget {
 }
 
 fn grid_is_document_root(state: &AutoCommit, key: &str, grid_id: &ObjId) -> bool {
+    let at = |parent: &ObjId| {
+        matches!(
+            state.get(parent, key),
+            Ok(Some((_, id))) if &id == grid_id
+        )
+    };
+    if at(&automerge::ROOT) {
+        return true;
+    }
     matches!(
-        state.get(&automerge::ROOT, key),
-        Ok(Some((_, id))) if &id == grid_id
+        state.get(&automerge::ROOT, "terminal_panel"),
+        Ok(Some((Value::Object(ObjType::Map), panel))) if at(&panel)
     )
 }
 
@@ -3268,15 +3293,15 @@ impl TerminalWidget {
 }
 
 impl ui::resources::PublishesResources for TerminalWidget {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if self.framework_hosted {
             return vec![self.transcript_resource()];
         }
-        vec![self.session_resource()]
+        vec![self.session_resource_with(Some(doc))]
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
@@ -3285,7 +3310,7 @@ impl ui::resources::PublishesResources for TerminalWidget {
                 if self.framework_hosted {
                     self.transcript_resource()
                 } else {
-                    self.session_resource()
+                    self.session_resource_with(Some(doc))
                 }
             })
             .into_iter()
@@ -3312,15 +3337,27 @@ impl ui::resources::PublishesResources for TerminalWidget {
         }
         Some(format!("{:016x}", revision.finish()))
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == self.terminal_resource_id() {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let session = self.session_resource_with(Some(doc));
+        fn find(resource: &Resource, id: &str) -> Option<Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            for child in &resource.children {
+                if let Some(found) = find(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if id == self.terminal_resource_id() || id == session.id.as_str() {
             if self.framework_hosted {
                 return None;
             }
-            return Some(self.session_resource());
+            return Some(session);
         }
-        if id == self.terminal_transcript_target() {
-            return Some(self.transcript_resource());
+        if let Some(found) = session.children.iter().find_map(|child| find(child, id)) {
+            return Some(found);
         }
         let prefix = format!("terminal.link:{}:", self.pane_id);
         let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
