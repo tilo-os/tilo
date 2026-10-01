@@ -16,6 +16,10 @@ on:
         description: "Greeter render probe: gpu (default) or vello-cpu."
         required: false
         default: gpu
+      cpu_variant:
+        description: "Native KVM CPU: host (default) or host-no-sve to diagnose CPU feature selection."
+        required: false
+        default: host
 
 jobs:
   boot:
@@ -31,6 +35,7 @@ jobs:
       CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}
       SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
+      CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -87,6 +92,11 @@ jobs:
             echo '::error::renderer_variant must be gpu or vello-cpu'
             exit 1
           }
+          [[ $CPU_VARIANT == host || $CPU_VARIANT == host-no-sve ]] || {
+            echo '::error::cpu_variant must be host or host-no-sve'
+            exit 1
+          }
+          export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
           finish() {

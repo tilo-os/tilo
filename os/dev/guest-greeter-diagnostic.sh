@@ -34,7 +34,7 @@ chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
-lscpu | grep -E 'Architecture:|Model name:|Features:' || true
+lscpu | grep -E 'Architecture:|Model name:|Features:|Flags:' || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
