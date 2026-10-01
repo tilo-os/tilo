@@ -4507,6 +4507,9 @@ impl XdgShellHandler for State {
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
+        if let Some(app_id) = app_id_log.as_deref() {
+            crate::shell::launcher::record_host_window_open(surface_id, app_id);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -4653,9 +4656,7 @@ impl XdgShellHandler for State {
                     host_launch_title,
                 )
             };
-            crate::shell::launcher::note_launch_presented(&crate::shell::persist::durable_app_id(
-                surface_id, &app_id,
-            ));
+            crate::shell::launcher::record_host_window_open(surface_id, &app_id);
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
