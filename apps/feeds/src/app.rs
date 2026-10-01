@@ -4511,15 +4511,13 @@ impl Widget for FeedsApp {
             // (and possibly collaborator-updated) preferences.
             if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
-            } else if self.actions.is_hosted() {
+            } else {
                 self.perform_action(
                     state,
                     &FeedsAction::SetReadSettings {
                         settings: self.settings,
                     },
                 );
-            } else {
-                FeedsDoc::write_settings(state, &self.settings);
             }
             self.synced = true;
             self.store_heads = state.get_heads();
@@ -5393,13 +5391,16 @@ impl ui::resources::PublishesResources for FeedsApp {
     /// action palette scopes to them. When the framework hosts the surface,
     /// [`tilo_resource::publish`] already owns the reader door; hosted returns
     /// nothing rather than a second hand-built tree.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
             return Vec::new();
         }
-        self.published_reader()
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::resource::READER_RESOURCE_ID {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
@@ -5720,6 +5721,12 @@ mod tests {
                 app.empty_onboarding_prompt().is_some(),
                 "the empty store still shows onboarding after a live sync",
             );
+            assert!(FeedsDoc::has_settings(&doc));
+            let recorded = app
+                .actions
+                .last_dispatched()
+                .expect("reading settings are an action");
+            assert!(String::from_utf8_lossy(&recorded.payload).contains("SetReadSettings"));
         }
 
         // --- phase: demo_build_is_populated_and_hides_onboarding ---
