@@ -124,6 +124,17 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
         let mut h = host();
         h.tick_overview_transition(1.0, false);
         assert!(h.transition_started.is_some(), "should latch transition");
+        assert!(
+            h.needs_animation_frame(),
+            "the transition still asks for frames on the animation clock"
+        );
+        let now = std::time::Instant::now();
+        if let Some(deadline) = h.next_wake_deadline() {
+            assert!(
+                deadline.saturating_duration_since(now) > std::time::Duration::from_millis(2),
+                "a running overview transition must not wake the shell every millisecond"
+            );
+        }
         assert_eq!(h.overview_target, 1.0);
         // Past the full duration, value settles exactly at the target.
         // Backdate the latched start instead of sleeping through the

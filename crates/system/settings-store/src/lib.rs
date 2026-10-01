@@ -127,6 +127,19 @@ pub enum SettingsStamp {
     Revision(u64),
 }
 
+/// Whether a poller that last observed `cached` must parse the document again.
+///
+/// The first observation (`seen == false`) loads even when both stamps are
+/// `None` (no file yet). Later polls skip the parse while the stamp holds,
+/// so an idle shell does not re-read an unchanged settings document.
+pub fn document_changed(
+    seen: bool,
+    cached: Option<SettingsStamp>,
+    current: Option<SettingsStamp>,
+) -> bool {
+    !seen || cached != current
+}
+
 /// The current [`SettingsStamp`]: the installed source's revision, else the file's
 /// modification time. `None` when there is no readable file.
 pub fn stamp() -> Option<SettingsStamp> {
@@ -298,6 +311,19 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn an_unchanged_settings_stamp_does_not_parse_again() {
+        let stamp = SettingsStamp::Revision(1);
+        assert!(document_changed(false, None, None));
+        assert!(!document_changed(true, None, None));
+        assert!(!document_changed(true, Some(stamp), Some(stamp)));
+        assert!(document_changed(
+            true,
+            Some(stamp),
+            Some(SettingsStamp::Revision(2))
+        ));
+    }
 
     #[test]
     fn a_hand_started_test_harness_never_writes_the_callers_settings() {
