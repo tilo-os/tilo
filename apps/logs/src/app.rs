@@ -2972,6 +2972,24 @@ impl ui::resources::PublishesResources for LogsApp {
         }
         self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.is_hosted() && id == crate::actions::JOURNAL_RESOURCE_ID {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
+    }
 }
 
 impl ui::widget::controls::ActionControls for LogsApp {
