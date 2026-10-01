@@ -139,11 +139,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
-# A tilo-ui lib-test link has repeatedly exceeded 5 GiB RSS by itself. Its
-# affected shard also links shell and other test targets, so the general 10 GiB
-# envelope can OOM even when the source is valid. ARM has no large label and is
-# already serialized by the workflow.
-LARGE_X86_TEST_PACKAGES = {"tilo-ui"}
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -751,7 +746,7 @@ def make_plan(
     check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
+            check_rows.append({**shard, "arch": arch, "runner": runner})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
     # shards, which start first; the rest balance around them.
@@ -772,15 +767,9 @@ def make_plan(
         shard_names = set(shard["packages"].split()[1::2])
         test_names = sorted(tested & shard_names)
         scoped_names = sorted(scoped_tests.keys() & shard_names)
-        selected_runner = (
-            "runner-large"
-            if arch == "x86_64"
-            and LARGE_X86_TEST_PACKAGES.intersection(test_names + scoped_names)
-            else runner
-        )
         scoped = [{"package": name, "test": scoped_tests[name].test,
                    "filter": scoped_tests[name].filter} for name in scoped_names]
-        return {**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
+        return {**shard, "arch": arch, "runner": runner,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 
