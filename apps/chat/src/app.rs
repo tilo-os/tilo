@@ -3259,27 +3259,7 @@ impl Widget for ChatApp {
         self.establish_realtime_target();
         if !self.canonical && self.is_live {
             let status = model::Presence::Online;
-            if self.actions.is_hosted() {
-                if !ChatDoc::user_is_current(
-                    doc,
-                    &self.me.id,
-                    &self.me.name,
-                    &self.me.initials,
-                    self.me.color_idx,
-                    status,
-                ) {
-                    self.perform_action(
-                        doc,
-                        &actions::ChatAction::EnsureUser {
-                            id: self.me.id.clone(),
-                            name: self.me.name.clone(),
-                            initials: self.me.initials.clone(),
-                            color_idx: self.me.color_idx,
-                            status: status.as_str().to_string(),
-                        },
-                    );
-                }
-            } else if ChatDoc::ensure_user(
+            if !ChatDoc::user_is_current(
                 doc,
                 &self.me.id,
                 &self.me.name,
@@ -3287,6 +3267,16 @@ impl Widget for ChatApp {
                 self.me.color_idx,
                 status,
             ) {
+                self.perform_action(
+                    doc,
+                    &actions::ChatAction::EnsureUser {
+                        id: self.me.id.clone(),
+                        name: self.me.name.clone(),
+                        initials: self.me.initials.clone(),
+                        color_idx: self.me.color_idx,
+                        status: status.as_str().to_string(),
+                    },
+                );
             }
         } else if !self.canonical && self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
@@ -4111,6 +4101,29 @@ impl ChatApp {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+    use ui::widget::Widget;
+
+    /// A live peer joins the roster through EnsureUser, hosted or standalone.
+    #[test]
+    fn a_live_peer_joins_through_the_user_action() {
+        let mut app = ChatApp::new_ephemeral();
+        app.is_live = true;
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let recorded = app
+            .last_dispatched()
+            .expect("the live peer is submitted as EnsureUser");
+        assert_eq!(recorded.type_id.as_str(), actions::CHAT_ACTION_TYPE);
+        assert!(crate::doc::ChatDoc::user_is_current(
+            &state.doc,
+            &app.me.id,
+            &app.me.name,
+            &app.me.initials,
+            app.me.color_idx,
+            crate::model::Presence::Online,
+        ));
+    }
+
     #[test]
     fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
         use ui::widget::PrimaryScrollAction;
