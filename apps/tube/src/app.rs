@@ -3025,7 +3025,7 @@ impl ui::resources::PublishesResources for TubeApp {
     /// framework hosts the surface, [`tilo_resource::publish`] already owns
     /// navigation, queue, subscriptions and settings — keep only live catalogue,
     /// watch context, history/search and device-sync extras.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         #[cfg(feature = "grayjay-sync")]
         let device = self.device_sync_view();
         #[cfg(not(feature = "grayjay-sync"))]
@@ -3036,7 +3036,7 @@ impl ui::resources::PublishesResources for TubeApp {
         if self.actions.is_hosted() {
             return crate::actions::live_presentation_resources(model, device);
         }
-        let shared = crate::resource::TubeShared::from_model(model);
+        let shared = crate::resource::shared_for_publish(model, doc);
         let mut root =
             ui::tilo_resource::publish::<crate::resource::Tube>("tube.app", "Tube", &shared);
         // The watch page is what the person is looking at, so it stays ahead of
@@ -3045,6 +3045,14 @@ impl ui::resources::PublishesResources for TubeApp {
         children.append(&mut root.children);
         root.children = children;
         vec![root]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the application door.
+        if self.actions.is_hosted() && id == "tube.app" {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
