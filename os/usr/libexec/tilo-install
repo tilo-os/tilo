@@ -375,7 +375,21 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
   die "expected disk identity contains control characters"
 fi
 
+ALONGSIDE_BOOTC_PODMAN_ARGS=()
+ALONGSIDE_BOOTC_COMMAND=(bootc)
 if [ "$ALONGSIDE" -eq 1 ]; then
+  # Upstream bootc may choose the first ESP on the disk rather than the one
+  # mounted at target /boot/efi. Check the corrected installer binary before
+  # guided partition creation, formatting, or any other disk mutation.
+  ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside
+  [ -f "$ALONGSIDE_BOOTC" ] && [ ! -L "$ALONGSIDE_BOOTC" ] \
+    && [ -x "$ALONGSIDE_BOOTC" ] \
+    && [ "$(stat -c '%u:%g' "$ALONGSIDE_BOOTC")" = 0:0 ] \
+    && [ "$("$ALONGSIDE_BOOTC" --version)" = 'bootc 1.16.13' ] \
+    || die "alongside install requires the pinned mounted-ESP bootc helper"
+  ALONGSIDE_BOOTC_PODMAN_ARGS=(-v "$ALONGSIDE_BOOTC:/run/tilo-bootc-alongside:ro" \
+    --entrypoint /run/tilo-bootc-alongside)
+  ALONGSIDE_BOOTC_COMMAND=()
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     [ -z "$ROOT_PARTITION$BOOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
@@ -1187,8 +1201,9 @@ if [ "$ENCRYPT" -eq 1 ]; then
     -v /dev:/dev \
     -v "$ENC_MNT:/target" \
     --security-opt label=type:unconfined_t \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
     "$LOCAL_IMG" \
-    bootc install to-filesystem \
+    "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --composefs-backend \
       --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
@@ -1223,7 +1238,8 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
     -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
-    "$LOCAL_IMG" bootc install to-filesystem \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
+    "$LOCAL_IMG" "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete tilo.install --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize /target
