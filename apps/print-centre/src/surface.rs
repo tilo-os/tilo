@@ -67,6 +67,7 @@ pub struct PrintCentre {
     scan: ScanState,
     scan_save_picker: Option<ui::portal::PortalChannel>,
     scan_save_document: bool,
+    pub(crate) actions: crate::resource::ActionSink,
     hosted: bool,
 }
 
@@ -2465,6 +2466,7 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            actions: crate::resource::ActionSink::default(),
             hosted: false,
         }
     }
@@ -2489,6 +2491,7 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            actions: crate::resource::ActionSink::default(),
             hosted: false,
         }
     }
@@ -2501,8 +2504,15 @@ impl PrintCentre {
         self.hosted
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
     }
 
     /// Printers, jobs, and scanners from the live CUPS/SANE snapshot. Not a
@@ -3338,8 +3348,22 @@ impl PrintCentre {
     }
 }
 
+impl ui::undo::CommittedActions for PrintCentre {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for PrintCentre {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {

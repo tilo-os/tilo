@@ -2,7 +2,7 @@
 //! and View navigation; there is no collaborative document vocabulary.
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -134,12 +134,44 @@ impl ResourceApp for PrintCentreShell {
     }
 }
 
+/// Framework dispatcher when hosted; the local action host for standalone
+/// tests and the screenshot launcher. Queues and scanners stay on this machine.
+#[derive(Default)]
+pub(crate) struct ActionSink {
+    local: ui::ActionHost,
+    framework: Option<Dispatcher<PrintCentreResource>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<PrintCentreResource>) {
+        self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted || self.framework.is_some()
+    }
+
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local.take_committed()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+}
+
 impl ResourceSurface<PrintCentreResource> for PrintCentre {
     /// Queues and scanners are this machine's. An empty projection must not
     /// clear a snapshot the surface already loaded.
     fn present(&mut self, _state: &std::rc::Rc<PrintCentreState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<PrintCentreResource>) {
+    fn attach(&mut self, cx: SurfaceCx<PrintCentreResource>) {
+        self.actions.attach(cx.dispatcher());
         self.mark_framework_hosted();
     }
 }
@@ -166,5 +198,24 @@ mod tests {
                 "palette `{expected}` must ride publish: {ids:?}"
             );
         }
+    }
+
+    #[test]
+    fn attach_hosted_surface_does_not_republish_the_dashboard_root() {
+        let mut centre = PrintCentre::demo(crate::surface::DemoScenario::Empty);
+        let doc = automerge::AutoCommit::new();
+        assert!(!centre.is_framework_hosted());
+        assert!(!centre.sink_is_hosted());
+        let standalone = ui::resources::resources(&centre, &doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, PrintCentreResource::KIND);
+
+        centre.mark_hosted_for_test();
+        assert!(centre.is_framework_hosted());
+        assert!(centre.sink_is_hosted());
+        assert!(
+            ui::resources::resources(&centre, &doc).is_empty(),
+            "hosted attach must not republish print-centre.dashboard"
+        );
     }
 }
