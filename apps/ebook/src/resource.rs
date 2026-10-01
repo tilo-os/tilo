@@ -330,6 +330,16 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "ebook.library").is_none());
+        let hosted_settings = ui::resources::resource(&app, &seeded, "ebook.settings")
+            .expect("hosted settings stay the published row");
+        assert!(
+            hosted_settings
+                .actions
+                .iter()
+                .any(|action| action.id.starts_with("theme-")),
+            "hosted settings keep the published theme actions"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras

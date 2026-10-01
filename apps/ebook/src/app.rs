@@ -6000,6 +6000,10 @@ impl ui::resources::PublishesResources for BooksApp {
         Some(format!("ebook-search:{}", self.search_revision))
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the library door.
+        if self.is_hosted() && id == "ebook.library" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }

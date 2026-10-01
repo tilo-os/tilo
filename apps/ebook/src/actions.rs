@@ -1823,7 +1823,20 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
     }
     resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
     resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
-    resource.children = annotation_resources(&ctx.annotations);
+    // A published book already nests its annotation children. Add only the
+    // live annotations that are not already there. An empty resource (the
+    // reading-selection extra) still receives them, and that extra clears
+    // them before it is published.
+    let live_annotations = annotation_resources(&ctx.annotations);
+    if resource.children.is_empty() {
+        resource.children = live_annotations;
+    } else {
+        for child in live_annotations {
+            if !resource.children.iter().any(|have| have.id == child.id) {
+                resource.children.push(child);
+            }
+        }
+    }
     let book_id = ctx.book_id.clone();
     let chapter = ctx.chapter;
     let block = ctx.bookmark_block;
@@ -2071,13 +2084,6 @@ fn settings_resource(doc: &AutoCommit) -> Resource {
     )
 }
 
-fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resource {
-    for spec in bound_library_document_actions(BooksDoc::read_library_prefs(doc)) {
-        library = library.with_action(spec);
-    }
-    library
-}
-
 /// One shelf book with membership Document ops and its annotation Document
 /// children. Share / hydrate Effects stay for the palette; remove is Document.
 pub(crate) fn library_book_document_resource(
@@ -2171,18 +2177,16 @@ pub(crate) fn publish_document_children(
     children
 }
 
-/// Build the bounded canonical directory root. Exact book, chapter, and
-/// annotation resources are deliberately lazy through [`ResourceProvider`].
-/// Standalone / `--shots` / unit tests use this door; when hosted,
-/// [`tilo_resource::publish`] owns the library Document ops instead.
+/// The published library. Settings and library entries are children of that
+/// root; chapter and annotation rows stay lazy through exact lookup.
 pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
-    let mut library = Resource::new("ebook.library", "ebook.library", "Books library");
-    for spec in library_effect_specs() {
-        library = library.with_action(spec);
-    }
-    let mut settings = settings_resource(doc);
-    settings.children.clear();
-    vec![library_preference_actions(library, doc), settings]
+    let state =
+        <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    vec![ui::tilo_resource::publish::<crate::resource::Ebook>(
+        crate::resource::LIBRARY_RESOURCE_ID,
+        "Books library",
+        &state,
+    )]
 }
 
 // Inherent resource publication (was ResourceProvider)
@@ -2239,6 +2243,32 @@ impl crate::app::BooksApp {
         .iter()
         .any(|prefix| id.starts_with(prefix))
         {
+            fn find(resource: &Resource, id: &str) -> Option<Resource> {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                for child in &resource.children {
+                    if let Some(found) = find(child, id) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            let state = <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let library = ui::tilo_resource::publish::<crate::resource::Ebook>(
+                crate::resource::LIBRARY_RESOURCE_ID,
+                "Books library",
+                &state,
+            );
+            if let Some(found) = find(&library, id) {
+                if let Some(ctx) = self.current_book_resource_context()
+                    && id == format!("ebook.book:{}", ctx.book_id)
+                {
+                    return Some(current_book_actions(found, &ctx));
+                }
+                return Some(found);
+            }
             let address = tilo_actions::ActionAddress::new(id, "open");
             let resource = self.resolve_search_resource(&address)?;
             if let Some(ctx) = self.current_book_resource_context()
@@ -2602,7 +2632,8 @@ mod tests {
         {
             let doc = AutoCommit::new();
             let resources = provide_resources(&[], &doc);
-            assert_eq!(resources.len(), 2);
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].id.as_str(), "ebook.library");
             let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("library action resolves through the canonical tree");
@@ -2654,7 +2685,14 @@ mod tests {
                 })
             );
             let roots = provide_resources(&[], &doc);
-            assert!(roots[0].children.is_empty());
+            assert_eq!(roots.len(), 1);
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "ebook.book:book:remote-only"),
+                "the shared book is a child of the published library"
+            );
             let resource = ui::search::SearchProvider::search(&provider, "Waiting")
                 .pop()
                 .expect("remote metadata row");
