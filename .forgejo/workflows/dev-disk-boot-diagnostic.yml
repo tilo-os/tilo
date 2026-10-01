@@ -112,6 +112,7 @@ jobs:
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
             "$TILO_RUN/tilo-sigill-probe.so" "$TILO_USER@127.0.0.1:/tmp/tilo-sigill-probe.so"
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' dnf install --transient -y gdb"
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-child-status.log' > "$TILO_RUN/cage-child-status.log" || true
           sleep 3
