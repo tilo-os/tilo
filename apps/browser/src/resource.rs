@@ -12,7 +12,7 @@ use ui::widget::Element;
 use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
 };
-use crate::browser_widget::{BrowserWidget, window_navigation_operations};
+use crate::browser_widget::{BrowserWidget, settings_resource, window_navigation_operations};
 use crate::library::{Bookmark, Bookmarks};
 
 /// Document projection: collaborative bookmarks.
@@ -86,10 +86,13 @@ impl Resource for Browser {
     fn children(state: &BrowserState) -> Vec<tilo_actions::Resource> {
         let mut bookmarks =
             tilo_actions::Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
+        if let Some(spec) = crate::browser_widget::bookmark_library_show() {
+            bookmarks = bookmarks.with_action(spec);
+        }
         for entry in state.bookmarks.entries() {
             bookmarks = bookmarks.with_child(bookmark_child(entry));
         }
-        vec![bookmarks]
+        vec![bookmarks, settings_resource()]
     }
 
     fn search(state: &BrowserState) -> Vec<SearchEntry> {
@@ -116,9 +119,22 @@ fn bookmark_child(entry: &Bookmark) -> tilo_actions::Resource {
     } else {
         entry.title.clone()
     };
-    // Remove/open stay on the surface tree (need observed tags / navigation
-    // context). The child is still addressable for search and APPLY.
-    tilo_actions::Resource::new(bookmark_resource_id(&entry.url), "browser.bookmark", title)
+    // Open stays on the surface: it navigates this window. Remove is the
+    // document action, addressed from the tags the document still holds.
+    let mut child =
+        tilo_actions::Resource::new(bookmark_resource_id(&entry.url), "browser.bookmark", title);
+    if let Ok(spec) = ActionSpec::immediate(
+        "remove",
+        "Remove bookmark",
+        BROWSER_ACTION_TYPE,
+        &BrowserAction::RemoveBookmark {
+            url: entry.url.clone(),
+            observed_tags: entry.tags.clone(),
+        },
+    ) {
+        child = child.with_action(spec);
+    }
+    child
 }
 
 /// Framework app: the browser chrome is the surface over [`Browser`].
@@ -211,6 +227,13 @@ mod tests {
 
         widget.set_framework_hosted(true);
         assert!(widget.is_framework_hosted());
+        assert!(ui::resources::resource(&widget, &doc, "browser").is_none());
+        assert!(
+            ui::resources::resource(&widget, &doc, "browser.bookmarks").is_some_and(|bookmarks| {
+                bookmarks.actions.iter().any(|action| action.id == "show")
+            }),
+            "hosted bookmarks stay the published row"
+        );
         let extras = widget.resources(&doc);
         assert!(
             extras.is_empty(),

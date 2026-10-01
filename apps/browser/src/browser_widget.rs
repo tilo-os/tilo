@@ -588,6 +588,131 @@ fn local_effect_contract(tags: &[&str]) -> ActionContract {
     }
 }
 
+/// Open the bookmarks library. Published on the bookmarks child so the
+/// palette and a hosted browser share one view action.
+pub(crate) fn bookmark_library_show() -> Option<ActionSpec> {
+    ActionSpec::operation(
+        "show",
+        "Show bookmarks",
+        OperationKind::View,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::ShowLibrary {
+            section: LibrarySection::Bookmarks,
+        }),
+    )
+    .ok()
+}
+
+/// Settings door published with the browser document. Homepage, search
+/// engine, ad blocking, and clear-on-exit are document actions; show and
+/// site-data clear stay effects on the same resource.
+pub(crate) fn settings_resource() -> Resource {
+    let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+    if let Ok(spec) = ActionSpec::operation(
+        "show",
+        "Show browser settings",
+        OperationKind::View,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::ShowSettings),
+    ) {
+        settings.actions.push(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "request-site-data-clear",
+        "Request local site-data clear",
+        OperationKind::Effect,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear),
+    ) {
+        settings.actions.push(
+            spec.with_contract(local_effect_contract(&[
+                "device-local",
+                "site-data",
+                "sensitive-data",
+            ]))
+            .destructive(),
+        );
+    }
+    for (id, label, adblock) in [
+        ("set-adblock", "Set ad and tracker blocking", true),
+        ("set-clear-on-exit", "Set clear data on exit", false),
+    ] {
+        settings.actions.push(
+            ActionSpec::typed(
+                id,
+                label,
+                "enabled",
+                ui::tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Whether the setting is enabled",
+                )],
+                move |args: &ActionArgs| {
+                    let action = if adblock {
+                        BrowserAction::SetAdblock {
+                            enabled: args.boolean("enabled").unwrap_or(false),
+                        }
+                    } else {
+                        BrowserAction::SetClearOnExit {
+                            enabled: args.boolean("enabled").unwrap_or(false),
+                        }
+                    };
+                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                        EncodedAction {
+                            type_id: BROWSER_ACTION_TYPE.into(),
+                            payload: Vec::new(),
+                        }
+                    })
+                },
+            )
+            .reversible(),
+        );
+    }
+    for (id, label, parameter, homepage) in [
+        ("set-homepage", "Set homepage", "url", true),
+        (
+            "set-search-engine",
+            "Set search engine template",
+            "template",
+            false,
+        ),
+    ] {
+        settings.actions.push(
+            ActionSpec::typed(
+                id,
+                label,
+                parameter,
+                ui::tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    parameter,
+                    ParamType::Text,
+                    parameter,
+                )],
+                move |args: &ActionArgs| {
+                    let action = if homepage {
+                        BrowserAction::SetHomepage {
+                            url: args.text(parameter).unwrap_or_default().into(),
+                        }
+                    } else {
+                        BrowserAction::SetSearchEngine {
+                            template: args.text(parameter).unwrap_or_default().into(),
+                        }
+                    };
+                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
+                        EncodedAction {
+                            type_id: BROWSER_ACTION_TYPE.into(),
+                            payload: Vec::new(),
+                        }
+                    })
+                },
+            )
+            .reversible(),
+        );
+    }
+    settings
+}
+
 fn local_background_contract(tags: &[&str]) -> ActionContract {
     ActionContract {
         execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
@@ -5941,16 +6066,15 @@ impl ui::resources::PublishesResources for BrowserWidget {
         }
 
         let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        if let Some(spec) = operation(
-            "show",
-            "Show bookmarks",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Bookmarks,
-            },
-        ) {
-            bookmarks.actions.push(spec);
-        }
+        let documented_bookmarks: std::collections::HashSet<String> =
+            crate::actions::bookmarks_from_doc(doc)
+                .map(|book| {
+                    book.entries()
+                        .iter()
+                        .map(|entry| bookmark_resource_id(&entry.url))
+                        .collect()
+                })
+                .unwrap_or_default();
         for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
             let mut child = Resource::new(
                 bookmark_resource_id(&entry.url),
@@ -5969,16 +6093,19 @@ impl ui::resources::PublishesResources for BrowserWidget {
                     .actions
                     .push(spec.with_contract(navigation_contract()));
             }
-            if let Ok(spec) = ActionSpec::immediate(
-                "remove",
-                "Remove bookmark",
-                BROWSER_ACTION_TYPE,
-                &BrowserAction::RemoveBookmark {
-                    url: entry.url.clone(),
-                    observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
-                },
-            ) {
-                // Removing one bookmark is a reversible document edit.
+            // Remove is the published document action. A bookmark that exists
+            // only in this window's file cache still needs it here.
+            if !documented_bookmarks.contains(child.id.as_str())
+                && let Ok(spec) = ActionSpec::immediate(
+                    "remove",
+                    "Remove bookmark",
+                    BROWSER_ACTION_TYPE,
+                    &BrowserAction::RemoveBookmark {
+                        url: entry.url.clone(),
+                        observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
+                    },
+                )
+            {
                 child.actions.push(spec);
             }
             bookmarks.children.push(child);
@@ -6218,112 +6345,6 @@ impl ui::resources::PublishesResources for BrowserWidget {
                     spec
                 });
         }
-        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
-        if let Some(spec) = operation(
-            "show",
-            "Show browser settings",
-            OperationKind::View,
-            BrowserOperation::ShowSettings,
-        ) {
-            settings.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "request-site-data-clear",
-            "Request local site-data clear",
-            OperationKind::Effect,
-            BrowserOperation::RequestWebsiteDataClear,
-        ) {
-            settings.actions.push(
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "site-data",
-                    "sensitive-data",
-                ]))
-                .destructive(),
-            );
-        }
-        for (id, label, operation) in [
-            ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
-            (
-                "set-clear-on-exit",
-                "Set clear data on exit",
-                "set-clear-on-exit",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    "enabled",
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        "enabled",
-                        ParamType::Boolean,
-                        "Whether the setting is enabled",
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "set-adblock" {
-                            BrowserAction::SetAdblock {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        } else {
-                            BrowserAction::SetClearOnExit {
-                                enabled: args.boolean("enabled").unwrap_or(false),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-        for (id, label, parameter, operation) in [
-            ("set-homepage", "Set homepage", "url", "homepage"),
-            (
-                "set-search-engine",
-                "Set search engine template",
-                "template",
-                "search-engine",
-            ),
-        ] {
-            settings.actions.push(
-                ActionSpec::typed(
-                    id,
-                    label,
-                    parameter,
-                    ui::tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        parameter,
-                        ParamType::Text,
-                        parameter,
-                    )],
-                    move |args: &ActionArgs| {
-                        let action = if operation == "homepage" {
-                            BrowserAction::SetHomepage {
-                                url: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        } else {
-                            BrowserAction::SetSearchEngine {
-                                template: args.text(parameter).unwrap_or_default().into(),
-                            }
-                        };
-                        EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                            EncodedAction {
-                                type_id: BROWSER_ACTION_TYPE.into(),
-                                payload: Vec::new(),
-                            }
-                        })
-                    },
-                )
-                .reversible(),
-            );
-        }
-
         let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
         let mut browser =
@@ -6341,10 +6362,72 @@ impl ui::resources::PublishesResources for BrowserWidget {
         {
             browser.actions.push(spec);
         }
+        let published = std::mem::take(&mut browser.children);
+        let mut bookmarks = bookmarks;
+        let mut settings = None;
+        let mut extra = Vec::new();
+        for document in published {
+            if document.id.as_str() == "browser.bookmarks" {
+                for action in document.actions {
+                    if !bookmarks.actions.iter().any(|have| have.id == action.id) {
+                        bookmarks.actions.push(action);
+                    }
+                }
+                let hand_children = std::mem::take(&mut bookmarks.children);
+                bookmarks.children = document.children;
+                for hand in hand_children {
+                    if let Some(existing) = bookmarks
+                        .children
+                        .iter_mut()
+                        .find(|child| child.id == hand.id)
+                    {
+                        for action in hand.actions {
+                            if !existing.actions.iter().any(|have| have.id == action.id) {
+                                existing.actions.push(action);
+                            }
+                        }
+                    } else {
+                        bookmarks.children.push(hand);
+                    }
+                }
+            } else if document.id.as_str() == "browser.settings" {
+                settings = Some(document);
+            } else {
+                extra.push(document);
+            }
+        }
+        let settings = settings.unwrap_or_else(settings_resource);
         browser.children = vec![
             page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
+        browser.children.extend(extra);
         vec![browser]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.framework_hosted {
+            if id == "browser" {
+                return None;
+            }
+            let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let root = ui::tilo_resource::publish::<crate::resource::Browser>(
+                "browser", "Browser", &state,
+            );
+            return find(&[root], id);
+        }
+        find(&self.resources(doc), id)
     }
 }
 
