@@ -4,7 +4,7 @@
 //! palette door and the CRDT mutations stay one vocabulary.
 
 use automerge::transaction::Transactable;
-use automerge::{ObjType, ROOT, ReadDoc};
+use automerge::{ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
@@ -31,8 +31,23 @@ fn valid_app_id(value: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreDocumentAction {
-    CreateReportDraft { app_id: String },
-    SetReportNote { app_id: String, note: String },
+    CreateReportDraft {
+        app_id: String,
+    },
+    SetReportNote {
+        app_id: String,
+        note: String,
+    },
+    /// Create the shared note text when a report has none yet.
+    EnsureReportNote {
+        app_id: String,
+    },
+    /// Record the registry's case id and status for one app's report.
+    RecordModerationCase {
+        app_id: String,
+        case_id: String,
+        status: String,
+    },
 }
 
 impl Action for StoreDocumentAction {
@@ -66,6 +81,47 @@ impl Action for StoreDocumentAction {
                 if !note.is_empty() {
                     doc.splice_text(&object, 0, 0, note)?;
                 }
+            }
+            Self::EnsureReportNote { app_id } => {
+                let app_id = app_id.trim();
+                if !valid_app_id(app_id) {
+                    return Err(ActionError::Refused(
+                        "invalid app id for report note".into(),
+                    ));
+                }
+                let key = format!("{REPORT_NOTE_KEY_PREFIX}{app_id}");
+                match doc.get(&ROOT, &key)? {
+                    Some((Value::Object(ObjType::Text), _)) => {}
+                    Some(_) => {
+                        return Err(ActionError::Refused("report note is not text".into()));
+                    }
+                    None => {
+                        doc.put_object(&ROOT, key, ObjType::Text)?;
+                    }
+                }
+            }
+            Self::RecordModerationCase {
+                app_id,
+                case_id,
+                status,
+            } => {
+                let app_id = app_id.trim();
+                let case_id = case_id.trim();
+                if !valid_app_id(app_id)
+                    || !valid_case_id(case_id)
+                    || status.is_empty()
+                    || status.chars().count() > MAX_REPORT_STATUS_CHARS
+                {
+                    return Err(ActionError::Refused(
+                        "invalid moderation case record".into(),
+                    ));
+                }
+                doc.put(&ROOT, format!("{REPORT_CASE_KEY_PREFIX}{app_id}"), case_id)?;
+                doc.put(
+                    &ROOT,
+                    format!("{REPORT_RESOURCE_KEY_PREFIX}{app_id}"),
+                    status.as_str(),
+                )?;
             }
         }
         Ok(())
@@ -339,6 +395,70 @@ mod tests {
                 resolved.as_str(),
                 "left evidence" | "right evidence"
             ));
+        }
+
+        // Case `a_moderation_case_is_a_replayable_document_action`.
+        {
+            let mut doc = Doc::new();
+            StoreDocumentAction::RecordModerationCase {
+                app_id: "so.tilo.notes".into(),
+                case_id: "case-authoritative".into(),
+                status: "Open".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            assert_eq!(
+                doc.get(&ROOT, "store.report_case.so.tilo.notes")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)),
+                Some("case-authoritative".into())
+            );
+            assert!(
+                StoreDocumentAction::RecordModerationCase {
+                    app_id: "so.tilo.notes".into(),
+                    case_id: "case-../../outside".into(),
+                    status: "Open".into(),
+                }
+                .apply(&mut doc)
+                .is_err()
+            );
+        }
+
+        // Case `a_missing_report_note_is_created_by_the_action`.
+        {
+            let mut doc = Doc::new();
+            StoreDocumentAction::CreateReportDraft {
+                app_id: "so.tilo.notes".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            let _app = synced_app(&mut doc);
+            assert!(
+                matches!(
+                    doc.get(&ROOT, "store.report_note.so.tilo.notes").unwrap(),
+                    Some((Value::Object(ObjType::Text), _))
+                ),
+                "sync creates the note through the document action"
+            );
+            StoreDocumentAction::SetReportNote {
+                app_id: "so.tilo.notes".into(),
+                note: "kept".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            StoreDocumentAction::EnsureReportNote {
+                app_id: "so.tilo.notes".into(),
+            }
+            .apply(&mut doc)
+            .unwrap();
+            assert_eq!(note(&doc), "kept");
+            assert!(
+                StoreDocumentAction::EnsureReportNote {
+                    app_id: "../x".into(),
+                }
+                .apply(&mut doc)
+                .is_err()
+            );
         }
     }
 }
