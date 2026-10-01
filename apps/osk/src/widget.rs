@@ -794,7 +794,7 @@ impl OskWidget {
         }
     }
 
-    pub(crate) fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut choices = self
             .layouts
             .keys()
@@ -802,10 +802,23 @@ impl OskWidget {
             .cloned()
             .collect::<Vec<_>>();
         choices.sort();
+        // Layout, suggestions, and personalization are the document. The
+        // installed layout list stays on this device. An unwritten field
+        // still uses the widget until sync stores it.
+        let from_doc = <crate::resource::Osk as ui::tilo_resource::Resource>::read(doc).ok();
         let state = crate::resource::OskPreferences {
-            layout: Some(self.preferred_text_layout.clone()),
-            suggestions: Some(self.suggestions_enabled),
-            personalization: Some(self.personalization_enabled),
+            layout: from_doc
+                .as_ref()
+                .and_then(|state| state.layout.clone())
+                .or_else(|| Some(self.preferred_text_layout.clone())),
+            suggestions: from_doc
+                .as_ref()
+                .and_then(|state| state.suggestions)
+                .or(Some(self.suggestions_enabled)),
+            personalization: from_doc
+                .as_ref()
+                .and_then(|state| state.personalization)
+                .or(Some(self.personalization_enabled)),
             layout_choices: choices,
         };
         crate::resource::provide_resources(&state)
@@ -2805,6 +2818,30 @@ impl ui::resources::PublishesResources for OskWidget {
             return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.is_hosted() && id == crate::actions::KEYBOARD_RESOURCE_ID {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id).or_else(|| {
+            self.is_hosted().then(|| {
+                crate::resource::live_extras(self)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 

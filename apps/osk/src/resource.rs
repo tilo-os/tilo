@@ -356,6 +356,12 @@ mod tests {
         assert_eq!(app.current_word(), "hi");
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, KEYBOARD_RESOURCE_ID).is_none());
+        assert!(
+            ui::resources::resource(&app, &seeded, "osk.keyboard.layout")
+                .is_some_and(|layout| layout.actions.iter().any(|action| action.id == "qwerty")),
+            "a hosted layout stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
