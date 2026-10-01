@@ -1734,21 +1734,31 @@ impl VelloDrmBridge {
         needed > 0 && self.readback.len() == needed
     }
 
+    /// Fast overview clips stay under this edge. A 1080p panel plus its
+    /// shadow outset is taller than 1024, and rejecting that clip made the
+    /// fade GPU-read both outputs.
+    pub(crate) const OVERVIEW_PANEL_EDGE: u32 = 2048;
+
+    /// Whether `width`×`height` can be composited without a combined readback.
+    pub(crate) fn overview_clip_fits_fast_target(width: u32, height: u32) -> bool {
+        width > 0
+            && height > 0
+            && width <= Self::OVERVIEW_PANEL_EDGE
+            && height <= Self::OVERVIEW_PANEL_EDGE
+    }
+
     /// Panel-sized overview frame over the desktop image captured before this fade.
     ///
     /// # Errors
     /// The panel is larger than the fixed fast target, or no desktop image exists yet.
-    /// Callers fall back to a full readback.
+    /// A missing desktop image may seed one full readback. A clip that merely
+    /// exceeds an old 1024px cap must not: a 1080p panel plus its shadow is
+    /// taller than that, and falling through read both outputs back.
     pub(crate) fn composite_overview_frame(
         &mut self,
         patch: &crate::shell::overlay_host::OverviewFastPatch,
     ) -> Result<Vec<u8>, BridgeError> {
-        const EDGE: u32 = 1024;
-        if patch.panel.width == 0
-            || patch.panel.height == 0
-            || patch.panel.width > EDGE
-            || patch.panel.height > EDGE
-        {
+        if !Self::overview_clip_fits_fast_target(patch.panel.width, patch.panel.height) {
             return Err(BridgeError::InvalidSize(format!(
                 "overview panel {}x{} exceeds the fast target",
                 patch.panel.width, patch.panel.height
@@ -1862,10 +1872,13 @@ impl VelloDrmBridge {
         scene: &Scene,
         size: (u32, u32),
     ) -> Result<Vec<u8>, BridgeError> {
-        const EDGE: u32 = 1024;
         if self.panel_renderer.is_none() {
             self.panel_renderer = Some(
-                ui::offscreen::OffscreenRenderer::try_new(EDGE, EDGE).map_err(|error| {
+                ui::offscreen::OffscreenRenderer::try_new(
+                    Self::OVERVIEW_PANEL_EDGE,
+                    Self::OVERVIEW_PANEL_EDGE,
+                )
+                .map_err(|error| {
                     BridgeError::Render(format!("overview panel renderer: {error}"))
                 })?,
             );
@@ -2364,7 +2377,11 @@ impl VelloDrmBridge {
         // Compile the panel renderer on a full frame, not on the first
         // overview sample. A fade must not pay pipeline creation.
         if self.panel_renderer.is_none() {
-            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(1024, 1024).ok();
+            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(
+                Self::OVERVIEW_PANEL_EDGE,
+                Self::OVERVIEW_PANEL_EDGE,
+            )
+            .ok();
         }
 
         Ok(&self.readback)
@@ -3954,6 +3971,14 @@ impl VelloDrmBridge {
             Self::allocate_staging(&self.target.device, width, height);
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
+        // Stale images no longer match the framebuffer. The next settled
+        // paint records the workspace again; replaying the old bytes would
+        // upload the wrong size, and rejecting them made the close render
+        // both outputs.
+        self.workspace_snapshots.clear();
+        self.shown_workspace = None;
+        self.overview_base.clear();
+        self.overview_generation = 0;
         Ok(())
     }
 

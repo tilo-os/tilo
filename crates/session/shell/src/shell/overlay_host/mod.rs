@@ -19092,7 +19092,26 @@ impl ShellOverlayHost {
 
     fn overview_stable_clip(&self, theme: &Theme) -> Rect {
         let outset = Self::overview_shadow_outset(theme) + OVERVIEW_PANEL_RISE_PX;
-        self.overview_panel_rect().inflate(outset, outset)
+        let clip = self.overview_panel_rect().inflate(outset, outset);
+        let output = self.overview_output_rect();
+        let x0 = clip.x0.max(output.x0);
+        let y0 = clip.y0.max(output.y0);
+        let x1 = clip.x1.min(output.x1);
+        let y1 = clip.y1.min(output.y1);
+        if x1 <= x0 || y1 <= y0 {
+            clip
+        } else {
+            Rect::new(x0, y0, x1, y1)
+        }
+    }
+
+    /// The display the overview dims. The combined desktop rect covers every
+    /// scanout, and a scrim that wide is the two-output readback.
+    fn overview_output_rect(&self) -> Rect {
+        self.focused_output()
+            .or_else(|| self.primary_output())
+            .map(|output| output.rect())
+            .unwrap_or(self.rect)
     }
 
     fn overview_panel_cache_key(&self, reduce_motion: bool) -> OverviewPanelCacheKey {
@@ -19273,7 +19292,13 @@ impl ShellOverlayHost {
             self.add_workspace_rect = Rect::ZERO;
         }
         if overview_alpha > 0.0 {
-            draw_modal_scrim_at(scene, transform, self.rect, overview_alpha, theme);
+            draw_modal_scrim_at(
+                scene,
+                transform,
+                self.overview_output_rect(),
+                overview_alpha,
+                theme,
+            );
             let panel_xform = if (overview_scale - 1.0).abs() > f64::EPSILON
                 || overview_dy.abs() > f64::EPSILON
             {
