@@ -641,11 +641,7 @@ impl ThemesApp {
         // shared store, else default to the seeded selection.
         if ui::doc::read_str(state, path, doc::KEY_ACTIVE).is_none() {
             let active = store::load_active_id().unwrap_or_else(|| sel.clone());
-            if self.actions.is_hosted() {
-                self.perform_action(state, &crate::actions::set_active_theme_action(&active));
-            } else {
-                doc::put_str(state, path, doc::KEY_ACTIVE, &active);
-            }
+            self.perform_action(state, &crate::actions::set_active_theme_action(&active));
         }
     }
 
@@ -2089,6 +2085,26 @@ mod tests {
     /// A freshly-seeded **live** app + its CRDT state (first-run seed done),
     /// with the config isolation scope that must outlive both.
     /// Live = presets only, no fabricated custom theme.
+    /// A live first sync records the active theme through the theme action.
+    #[test]
+    fn a_fresh_library_sets_the_active_theme_through_the_action() {
+        let _env = isolate_config();
+        let mut app = ThemesApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let recorded = app
+            .last_dispatched()
+            .expect("the first sync submits SetActiveTheme");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::THEMES_ACTION_TYPE
+        );
+        let active = ui::doc::read_str(&state.doc, &state.root, doc::KEY_ACTIVE)
+            .expect("the active theme is in the document");
+        assert_eq!(active, app.selected);
+        assert!(crate::model::builtin_theme(&active).is_some());
+    }
+
     fn seeded() -> (ThemesApp, ui::State, ScopedEnv) {
         let env = isolate_config();
         let mut app = ThemesApp::new();

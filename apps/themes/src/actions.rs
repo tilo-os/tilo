@@ -100,11 +100,12 @@ impl Action for ThemesAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             ThemesAction::SetActiveTheme { id } => {
-                // Only name a theme that actually exists in the catalog, so a
-                // stale / malformed id can't point the desktop at nothing.
-                let exists =
+                // A shipped preset is product data and is not copied into the
+                // document. A custom id must already be a catalog record, so a
+                // stale id cannot point the desktop at nothing.
+                let in_catalog =
                     doc::load_catalog(doc, &ROOT).is_some_and(|c| c.iter().any(|s| &s.id == id));
-                if exists {
+                if in_catalog || crate::model::builtin_theme(id).is_some() {
                     doc::put_str(doc, &ROOT, doc::KEY_ACTIVE, id);
                 }
             }
@@ -935,6 +936,28 @@ mod tests {
             assert_eq!(
                 ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
                 Some("dracula")
+            );
+        }
+
+        // Case `a_shipped_preset_is_active_without_a_catalog_copy`.
+        {
+            let mut doc = AutoCommit::new();
+            let id = crate::model::default_catalog()[0].id.clone();
+            let action = set_active_theme_action(id.clone());
+            let encoded = encode(&action);
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
+            assert_eq!(
+                ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+                Some(id.as_str())
+            );
+            let refused = set_active_theme_action("not-a-theme");
+            let encoded = encode(&refused);
+            tilo_actions::dispatch(&mut doc, &refused, encoded, &mut tx).unwrap();
+            assert_eq!(
+                ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+                Some(id.as_str()),
+                "an unknown id must not replace the active theme"
             );
         }
 
