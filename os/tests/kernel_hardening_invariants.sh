@@ -507,7 +507,6 @@ done
 for unit in \
   tilo-boot-entries.service \
   tilo-growfs-sysroot.service \
-  tilo-security-audit.service \
   tilo-secureboot-sign.service \
   tilo-system-extension-boot-pack-stage.service \
   tilo-system-extension-boot-pack-status.service; do
@@ -517,6 +516,11 @@ for unit in \
     grep -Fqx "$required" "$unit_path" \
       || bad "$unit does not yield background resources with $required"
   done
+done
+for required in 'Nice=19' 'CPUSchedulingPolicy=idle' 'CPUWeight=20' 'IOWeight=20' \
+    'IOSchedulingClass=idle'; do
+  grep -Fqx "$required" "$repo/os/usr/lib/systemd/system/tilo-security-audit.service" \
+    || bad "tilo-security-audit.service does not run idle with $required"
 done
 update_resources="$repo/os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf"
 for required in 'Nice=10' 'CPUWeight=20' 'IOWeight=20' \
