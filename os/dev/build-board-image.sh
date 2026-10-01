@@ -54,6 +54,7 @@ run_build() {
 slow_steps() {
   awk -v board="$board" '
     { ts = $1; $1 = ""; $0 = substr($0, 2) }
+    NF == 0 { next }
     prev && ts - prev >= 5 && ($1 !~ /^#[0-9]+$/ || !($1 in name)) {
       printf "%s:   %6ds   (waited before) %s\n", board, ts - prev, substr($0, 1, 70) }
     { prev = ts }
