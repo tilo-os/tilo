@@ -3623,6 +3623,11 @@ impl SlidesApp {
     }
 
     fn apply_loaded_deck(&mut self, doc: &mut AutoCommit, deck: Deck) {
+        // Direct document write, not a deck action. Opening a file replaces
+        // the title, palette, and every slide, including ids the current deck
+        // already holds. `InsertSlide` rejects those ids, `DeleteSlide` refuses
+        // the last slide, and imported geometry can fall outside action
+        // validators. `SlideData` already carries blocks as `ClipBlock`.
         SlidesDoc::seed(doc, &deck);
         self.deck = deck;
         self.bump_deck_revision();
@@ -3725,16 +3730,7 @@ impl SlidesApp {
         let Ok(deck) = deck else {
             return false;
         };
-        SlidesDoc::seed(doc, &deck);
-        self.deck = deck;
-        self.bump_deck_revision();
-        self.cur_slide = 0;
-        self.sel = None;
-        self.editing_text = false;
-        self.editing_notes = false;
-        self.presentation.invalidate_cache();
-        self.mark();
-        self.reload(doc);
+        self.apply_loaded_deck(doc, deck);
         true
     }
 
@@ -5774,6 +5770,12 @@ impl Widget for SlidesApp {
         }
         if !self.seeded {
             if SlidesDoc::is_uninitialized(state) {
+                // Direct document write, not a deck action. Every `SlidesAction`
+                // loads an existing deck and refuses while that key is missing,
+                // which is the only time this runs. `Resource::initialize`
+                // already seeded its own `starter_deck()` ids; writing this
+                // widget's `starter_deck()` over that deck would replace them.
+                // Shots that set `self.deck` before sync depend on this write.
                 SlidesDoc::seed(state, &self.deck);
             }
             self.seeded = true;
