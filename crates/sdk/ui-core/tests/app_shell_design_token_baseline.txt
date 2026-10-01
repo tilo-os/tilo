@@ -37,8 +37,8 @@ apps/pdf-viewer/src/render.rs literal_color 11
 apps/pdf-viewer/src/render.rs white_or_black 3
 apps/remote/src/app.rs literal_color 1
 apps/remote/src/app.rs white_or_black 1
-apps/sheets/src/app.rs literal_color 1
-apps/sheets/src/grid.rs literal_color 7
+apps/sheets/src/app.rs literal_color 0
+apps/sheets/src/grid.rs literal_color 0
 apps/slides/src/app.rs literal_color 1
 apps/slides/src/app.rs white_or_black 4
 apps/slides/src/model.rs literal_color 1
