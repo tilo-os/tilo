@@ -24,11 +24,24 @@ use crate::shell::i18n::{t, t_args};
 use os_actions::{LinkKind, LinkStatus, VolumeState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
-/// When `nmcli monitor` or `pw-dump --monitor` is silent, still refresh
-/// battery and missed events. Thirty seconds is slow enough that idle
-/// does not fork `nmcli`/`wpctl` twice a second, and fast enough that
-/// a charger still shows up while the user is looking at the tray.
+/// When `nmcli monitor` is silent, still refresh battery, volume and
+/// missed events. Thirty seconds is slow enough that idle does not fork
+/// `nmcli`/`wpctl` twice a second, and fast enough that a charger still
+/// shows up while the user is looking at the tray.
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Change monitors that may wake the status poller.
+///
+/// `pw-dump --monitor` is not one of them. PipeWire reprints the graph on
+/// client and parameter churn, so a line-oriented watch never goes quiet:
+/// each line forked `wpctl`, and that client kept the dump, WirePlumber and
+/// PipeWire awake. The shell's reader burned CPU on that stream while the
+/// frame loop stayed asleep. Volume still arrives on the media-key path and
+/// on [`FALLBACK_INTERVAL`]. The privacy worker owns the only `pw-dump
+/// --monitor`, and it exits once the device graph is unchanged.
+pub(crate) fn status_change_monitors() -> &'static [&'static [&'static str]] {
+    &[&["nmcli", "monitor"]]
+}
 
 /// Every field is `Option` because "not read yet" and "this machine
 /// has none" are both real and both drawn as absence, not a zero.
@@ -188,12 +201,10 @@ impl StatusBridge {
             return;
         }
         let (wake_tx, wake_rx) = mpsc::channel();
-        spawn_change_monitor("tilo-nm-watch", &["nmcli", "monitor"], wake_tx.clone());
-        spawn_change_monitor(
-            "tilo-pw-watch",
-            &["pw-dump", "--monitor", "--no-colors"],
-            wake_tx,
-        );
+        for argv in status_change_monitors() {
+            spawn_change_monitor("tilo-nm-watch", argv, wake_tx.clone());
+        }
+        drop(wake_tx);
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
@@ -546,6 +557,12 @@ mod tests {
             watch.observe_document(dump_stream),
             os_actions::MonitorDisposition::Stop,
             "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
+        );
+        assert!(
+            status_change_monitors()
+                .iter()
+                .all(|argv| !argv.contains(&"pw-dump")),
+            "the status poller must not keep pw-dump --monitor; a quiet graph still emits client lines, and waking wpctl on each one held WirePlumber and PipeWire in the idle budget"
         );
         assert_eq!(
             privacy_watch_followup(false),
