@@ -1513,6 +1513,7 @@ impl ForeignFrameStore {
         buffer: &WlBuffer,
         capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        note_client_pump();
         if let Some(token) = capture_token {
             self.with_entry(id, |entry| entry.mapped = true);
             return self
@@ -1779,6 +1780,7 @@ impl ForeignFrameStore {
     /// frame, while keeping placement bookkeeping until the toplevel is
     /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
+        note_client_pump();
         self.with_entry(id, |e| {
             e.mapped = false;
             e.rgba.clear();
@@ -3303,6 +3305,19 @@ pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State)
         return false;
     }
     release_frame_throttle(state) > 0
+}
+
+/// Bumped when a client commit changes something the frame pump must see
+/// (a buffer, a title, a new toplevel). A `wl_surface.frame` on its own does
+/// not: answering it must not schedule another shell tick.
+static CLIENT_PUMP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn note_client_pump() {
+    CLIENT_PUMP_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+pub fn client_pump_epoch() -> u64 {
+    CLIENT_PUMP_EPOCH.load(Ordering::Acquire)
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen
