@@ -6755,7 +6755,13 @@ impl Widget for CalendarApp {
                 let _ = state.merge_incoming(&mut loaded);
             }
             // Seed sample content ONLY in the demo build, and only when the
-            // document is still empty.
+            // document is still empty. This stays a direct `CalDoc::seed` plus
+            // `seed_demo_notes`, not an action. `AdoptRemoteEvent` round-trips
+            // through `EventData`, which keeps only reminders of -1, 10, 30, or
+            // 60 minutes; the selected "Design review" event and "Quarterly
+            // planning" use 15, and the detail chip renders that. `UpsertEvent`
+            // also enqueues a push when `calendar_id` is `Some`. The curated
+            // notes are heading blocks filled into empty note maps.
             if self.demo && CalDoc::is_empty(state) {
                 CalDoc::seed(state, &self.model);
                 self.seed_demo_notes(state);
