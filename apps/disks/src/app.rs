@@ -511,14 +511,12 @@ impl DisksApp {
         if state.topology.drives.is_empty() && !self.topo.drives.is_empty() {
             state.topology = self.topo.clone();
         }
-        let mut root = ui::tilo_resource::publish::<crate::resource::Disks>(
+        state.live = self.live;
+        vec![ui::tilo_resource::publish::<crate::resource::Disks>(
             "disks",
             "Storage devices",
             &state,
-        );
-        // Match this surface's live flag (same as the previous hand-built tree).
-        root.children = crate::resource::topology_children(&state, self.live);
-        vec![root]
+        )]
     }
 
     pub(crate) fn adopt_shared(&mut self, state: &crate::resource::DisksState) {
@@ -3502,7 +3500,33 @@ impl Widget for DisksApp {
                 } else {
                     Topology::sample()
                 };
-                DisksDoc::seed(state, &topo);
+                self.commit_topology(state, &topo);
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetTab {
+                        tab: "overview".into(),
+                    },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelected { index: 0 },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetPending {
+                        pending: String::new(),
+                    },
+                );
+                self.commit_shared(
+                    state,
+                    &crate::resource::DisksAction::SetStatus {
+                        status: String::new(),
+                    },
+                );
             }
             self.init.seeded = true;
         }
@@ -4212,6 +4236,24 @@ impl ui::resources::PublishesResources for DisksApp {
             return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.is_hosted() && id == "disks" {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
