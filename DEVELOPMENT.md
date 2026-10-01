@@ -42,7 +42,8 @@ main also moves `tilo-vm:main-ci` to its newest dev images.
 and a `release` dispatch of main.
 
 To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
+full commit SHA, `base_image` to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
 `tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
 not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
