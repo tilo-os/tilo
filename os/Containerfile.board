@@ -85,12 +85,17 @@ RUN --mount=type=tmpfs,target=/tmp \
 # registry_auth secret (a containers auth file) for a private registry.
 FROM uki-tools AS cfs-digest
 ARG TILO_CFS_SOURCE
+# The composefs repository it unpacks the layers into stays in a cache mount
+# (bootc patch 0003), so only layers it has not seen are fetched: the other
+# board's and the previous commit's are already there. Emptied past 40 GiB.
 RUN --mount=type=bind,from=bootc-helper,source=/bootc,target=/usr/local/libexec/tilo-bootc \
     --mount=type=secret,id=registry_auth,target=/run/secrets/registry_auth \
+    --mount=type=cache,id=tilo-board-cfs-digest,target=/var/cache/tilo-cfs,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
     case "${TILO_CFS_SOURCE:-}" in docker://*@sha256:*) ;; *) echo 'TILO_CFS_SOURCE must be docker://NAME@sha256:...' >&2; exit 1 ;; esac \
+    && { [ "$(du -s --block-size=1G /var/cache/tilo-cfs | cut -f1)" -lt 40 ] || rm -rf /var/cache/tilo-cfs/repo; } \
     && mkdir -p /out \
-    && REGISTRY_AUTH_FILE=/run/secrets/registry_auth \
+    && REGISTRY_AUTH_FILE=/run/secrets/registry_auth BOOTC_COMPOSEFS_DIGEST_REPO=/var/cache/tilo-cfs/repo \
        /usr/local/libexec/tilo-bootc container compute-composefs-digest-from-storage "$TILO_CFS_SOURCE" > /out/digest \
     && grep -Eqx '[0-9a-f]{128}' /out/digest \
     && rm -rf /var/tmp/*
