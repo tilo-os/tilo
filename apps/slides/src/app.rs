@@ -4099,7 +4099,10 @@ impl SlidesApp {
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(routed.state, &t);
+            self.perform_action(
+                routed.state,
+                &crate::actions::SlidesAction::SetDeckTitle { title: t },
+            );
             self.mark();
             self.reload(routed.state);
         }
@@ -6425,6 +6428,9 @@ impl ui::resources::PublishesResources for SlidesApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
+            return None;
+        }
+        if (self.framework_hosted || self.framework.is_some()) && id == "slides.deck" {
             return None;
         }
         Self::publish_resource(self, doc, id)
