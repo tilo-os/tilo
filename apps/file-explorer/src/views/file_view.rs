@@ -1899,19 +1899,12 @@ fn ext_label(path: &std::path::Path) -> String {
 /// contrast retints every slot because the series is grown from the accent.
 fn category_tint(theme: &Theme, cat: FileCategory) -> Color {
     let slot = match cat {
-        FileCategory::Image => 0,
-        FileCategory::Video => 1,
-        FileCategory::Document => 2,
-        FileCategory::Spreadsheet => 3,
-        FileCategory::Pdf => 4,
-        FileCategory::Code => 5,
-        FileCategory::Audio => 1,
-        FileCategory::Ebook => 2,
-        FileCategory::Presentation => 3,
-        FileCategory::Text => 2,
-        FileCategory::Archive => 0,
-        FileCategory::Font => 5,
-        FileCategory::Unknown => 4,
+        FileCategory::Image | FileCategory::Archive => 0,
+        FileCategory::Video | FileCategory::Audio => 1,
+        FileCategory::Document | FileCategory::Ebook | FileCategory::Text => 2,
+        FileCategory::Spreadsheet | FileCategory::Presentation => 3,
+        FileCategory::Pdf | FileCategory::Unknown => 4,
+        FileCategory::Code | FileCategory::Font => 5,
     };
     let c = &theme.tokens.colors;
     c.ink_on(
