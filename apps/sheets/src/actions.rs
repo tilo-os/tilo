@@ -2043,8 +2043,8 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 
 /// Stable workbook root for directory paging: the published door without nested
 /// sheets/cells (those stay on the retained search provider).
-pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
-    let state = crate::resource::SheetsState::from_ctx(ctx);
+pub fn workbook_root(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Resource {
+    let state = sheets_state_for_publish(ctx, doc);
     let mut root = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
         "sheets.workbook",
         "Workbook",
@@ -2080,15 +2080,14 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
         ("commands", "Open command palette", OperationKind::View, 6),
     ] {
         if variant == 6 {
-            root = root.with_action(operation(
-                id,
-                label,
-                kind,
-                SheetsOperation::OpenCommandPalette,
-            ));
+            replace_workbook_action(
+                &mut root,
+                operation(id, label, kind, SheetsOperation::OpenCommandPalette),
+            );
             continue;
         }
-        root = root.with_action(
+        replace_workbook_action(
+            &mut root,
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -2123,6 +2122,16 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
     }
     root.children.clear();
     root
+}
+
+/// The directory page lists import and export once. Publish already declared
+/// them; a second copy with the same id is the same action.
+fn replace_workbook_action(root: &mut Resource, spec: ActionSpec) {
+    if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
+        *existing = spec;
+    } else {
+        root.actions.push(spec);
+    }
 }
 
 /// Sheet / chart / comment children for [`tilo_resource::publish`]. Selection
@@ -2431,15 +2440,24 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resou
         "Workbook",
         &state,
     );
-    // Keep the established workbook command ordering for keyboard users while
-    // publishing the same envelopes under the selected range as well. Views
+    // Selection-bound commands replace a published action with the same id so
+    // the palette does not list it twice. New ids stay at the end. Views
     // already on `local_operations` are not duplicated here.
-    workbook.actions.extend(
-        ctx.palette_actions
-            .iter()
-            .filter(|action| action.id != "go-to-cell" && action.id != "toggle-formula-view")
-            .cloned(),
-    );
+    for action in ctx
+        .palette_actions
+        .iter()
+        .filter(|action| action.id != "go-to-cell" && action.id != "toggle-formula-view")
+    {
+        if let Some(existing) = workbook
+            .actions
+            .iter_mut()
+            .find(|existing| existing.id == action.id)
+        {
+            *existing = action.clone();
+        } else {
+            workbook.actions.push(action.clone());
+        }
+    }
     attach_live_selection(&mut workbook, ctx);
     vec![workbook]
 }

@@ -342,6 +342,9 @@ pub(crate) struct ActionSink {
     pub(crate) framework: Option<ui::framework::Dispatcher<SheetsWorkbook>>,
     #[cfg(test)]
     pub(crate) last: Option<tilo_actions::EncodedAction>,
+    /// Test-only: hosted lookup without a framework dispatcher.
+    #[cfg(test)]
+    hosted: bool,
 }
 
 impl Default for ActionSink {
@@ -351,6 +354,8 @@ impl Default for ActionSink {
             framework: None,
             #[cfg(test)]
             last: None,
+            #[cfg(test)]
+            hosted: false,
         }
     }
 }
@@ -361,7 +366,17 @@ impl ActionSink {
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.hosted {
+            return true;
+        }
         self.framework.is_some()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 
     pub(crate) fn try_dispatch_with_context(
