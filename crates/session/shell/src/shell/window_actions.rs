@@ -394,7 +394,10 @@ fn sole_live_unconfined_launch(launch_key: &str) -> bool {
     #[cfg(any(test, target_os = "linux"))]
     {
         let live = crate::shell::launcher::live_unconfined_package_ids();
-        live.len() == 1 && live[0].eq_ignore_ascii_case(launch_key)
+        live.len() == 1
+            && live
+                .first()
+                .is_some_and(|package| package.eq_ignore_ascii_case(launch_key))
     }
     #[cfg(not(any(test, target_os = "linux")))]
     {
