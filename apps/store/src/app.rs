@@ -36,7 +36,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
@@ -1157,7 +1156,7 @@ impl StoreApp {
     pub fn set_moderation_case(
         &mut self,
         state: &mut AutoCommit,
-        path: &ObjId,
+        _path: &ObjId,
         case: &registry_types::ModerationCase,
     ) {
         if !valid_case_id(&case.case_id) {
@@ -1174,15 +1173,13 @@ impl StoreApp {
             report.id.clone_from(&case.case_id);
             report.status = moderation_status_label(case.status).into();
         }
-        let _ = state.put(
-            path,
-            format!("{REPORT_CASE_KEY_PREFIX}{}", case.package_id),
-            case.case_id.clone(),
-        );
-        let _ = state.put(
-            path,
-            format!("{REPORT_RESOURCE_KEY_PREFIX}{}", case.package_id),
-            moderation_status_label(case.status),
+        self.perform_document_action(
+            state,
+            &crate::doc_actions::StoreDocumentAction::RecordModerationCase {
+                app_id: case.package_id.clone(),
+                case_id: case.case_id.clone(),
+                status: moderation_status_label(case.status).into(),
+            },
         );
         self.status_line = format!(
             "Moderation case {} is {}.",
@@ -3940,25 +3937,6 @@ impl StoreApp {
     }
 }
 
-/// Resolve (or lazily create) the `Text` object at `path`.`key`. The
-/// toolkit's `TextInput` binds to an existing `Text` but never creates
-/// one, so the host must seed it before the input syncs.
-///
-/// # Panics
-/// Panics if `root` is not a live Map.
-#[allow(
-    clippy::expect_used,
-    reason = "root is always a live Map (the widget's own CRDT path), so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
-)]
-fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
-    if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
-        return id;
-    }
-    state
-        .put_object(root, key, ObjType::Text)
-        .expect("put_object Text never fails")
-}
-
 fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
     ui::doc::read_text(state, root, key)
         .unwrap_or_default()
@@ -4041,10 +4019,24 @@ impl Widget for StoreApp {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.drain_report_export();
-        for report in &self.reports {
-            let _ = ensure_text_obj(state, path, &report_note_key(&report.app_id));
-        }
         self.sync_report_resources(state, path);
+        let missing_notes: Vec<String> = self
+            .reports
+            .iter()
+            .filter(|report| {
+                !matches!(
+                    state.get(path, &report_note_key(&report.app_id)),
+                    Ok(Some((Value::Object(ObjType::Text), _)))
+                )
+            })
+            .map(|report| report.app_id.clone())
+            .collect();
+        for app_id in missing_notes {
+            self.perform_document_action(
+                state,
+                &crate::doc_actions::StoreDocumentAction::EnsureReportNote { app_id },
+            );
+        }
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
@@ -4543,12 +4535,28 @@ impl StoreApp {
     }
 
     fn overlay_live_catalogue(&self, root: &mut Resource, doc: &AutoCommit) {
-        // Drop the document-only moderation child; replace with the live-enriched
-        // moderation tree so submit/export stay on the standalone door.
-        root.children
-            .retain(|child| child.kind != "store.moderation");
+        // The document moderation child stays. Live reports that are not in
+        // the document are added beside it. Catalogue rows stay live.
+        let live = self.live_moderation_resource(doc);
+        if let Some(published) = root
+            .children
+            .iter_mut()
+            .find(|child| child.kind == "store.moderation")
+        {
+            for action in live.actions {
+                if !published.actions.iter().any(|have| have.id == action.id) {
+                    published.actions.push(action);
+                }
+            }
+            for child in live.children {
+                if !published.children.iter().any(|have| have.id == child.id) {
+                    published.children.push(child);
+                }
+            }
+        } else {
+            root.children.push(live);
+        }
         root.children.extend(self.live_catalogue_children(doc));
-        root.children.push(self.live_moderation_resource(doc));
     }
 }
 
@@ -4569,12 +4577,15 @@ impl ui::resources::PublishesResources for StoreApp {
         self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        // Resolve every ID we currently publish before falling back to the
-        // unbounded catalogue's lazy app/version/publisher lookup.  This
-        // preserves discovery links for privileged remote and moderation
-        // actions without turning resource snapshots into an unbounded scan.
+        // The framework root already owns the catalogue door.
+        if self.is_hosted() && id == "store" {
+            return None;
+        }
+        // Resolve every ID the published catalogue already lists before
+        // falling back to an app outside that page. Hosted lookup uses the
+        // same catalogue, not only the live install-progress extra.
         if let Some(resource) = self
-            .resources(doc)
+            .publish_resources(doc)
             .into_iter()
             .find_map(|resource| find_snapshot_resource(resource, id))
         {
@@ -5222,6 +5233,44 @@ mod tests {
                 .flat_map(|publisher| publisher.children.iter())
                 .count();
             assert_eq!(snapshot_count, RESOURCE_SNAPSHOT_LIMIT);
+            let eager = "app:dev.example.utility0000";
+            let on_tree = root
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "store.publisher")
+                .flat_map(|publisher| publisher.children.iter())
+                .find(|resource| resource.id.as_str() == eager)
+                .expect("the first app is on the published page");
+            let looked_up = ui::resources::resource(&app, &doc, eager).unwrap();
+            assert_eq!(
+                looked_up
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                on_tree
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "an eager app is the published row"
+            );
+            app.mark_hosted_for_test();
+            let hosted = ui::resources::resource(&app, &doc, eager).unwrap();
+            assert_eq!(
+                hosted
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                on_tree
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "a hosted app is the published row"
+            );
+            assert!(ui::resources::resource(&app, &doc, "store").is_none());
             let omitted = "app:dev.example.utility0216";
             let resolved = ui::resources::resource(&app, &doc, omitted).unwrap();
             assert_eq!(resolved.id.0, omitted);
