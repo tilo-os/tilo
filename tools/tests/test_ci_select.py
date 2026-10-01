@@ -604,6 +604,7 @@ class SelectorTests(unittest.TestCase):
             self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
             for row in rows:
                 self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["check_runner"], row["runner"])
             clippy = plan["clippy_matrix"]["include"]
             self.assertEqual({row["arch"] for row in clippy}, {"x86_64"})
             self.assertEqual(" ".join(row["packages"] for row in clippy).split()[1::2],
@@ -613,6 +614,7 @@ class SelectorTests(unittest.TestCase):
             self.assertEqual({row["arch"] for row in check}, set(ci_select.NATIVE_RUNNERS) - {"x86_64"})
             for row in clippy + check:
                 self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["check_runner"], row["runner"])
             self.assertEqual(sorted(row["packages"] for row in check),
                              sorted(row["packages"] for row in clippy))
             output = self.root / "github-output"
