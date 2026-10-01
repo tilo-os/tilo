@@ -5320,6 +5320,57 @@ mod tests {
     }
 
     #[test]
+    fn overview_close_paints_intermediate_frames_on_the_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+        use crate::shell::render::paint::VelloDrmBridge;
+
+        let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        fb.with_chrome(|st| {
+            st.overlays.overview = true;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        for _ in 0..4 {
+            let _ = fb.paint_with_damage();
+        }
+        fb.with_chrome(|st| {
+            st.overlays.overview = false;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        for index in 0..8 {
+            let frame = fb.paint_with_damage();
+            let patch = frame.overview_patch.unwrap_or_else(|| {
+                panic!("close frame {index} paints the overview clip");
+            });
+            let right = patch.panel.x.saturating_add(patch.panel.width);
+            assert!(
+                right <= 1920,
+                "close frame {index} stays on the first display (clip ends at {right})"
+            );
+            assert!(
+                patch.panel.width < 1920,
+                "close frame {index} is the panel ({} px), not a scanout",
+                patch.panel.width
+            );
+            assert!(
+                VelloDrmBridge::overview_clip_fits_fast_target(
+                    patch.panel.width,
+                    patch.panel.height
+                ),
+                "close frame {index} clip {}x{} must not force a combined readback",
+                patch.panel.width,
+                patch.panel.height
+            );
+        }
+    }
+
+    #[test]
     fn an_unchanged_frame_reports_empty_damage() {
         let mut frame = FrameBuilder::new((800, 600));
         frame.relayout();
