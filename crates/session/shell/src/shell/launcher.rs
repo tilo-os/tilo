@@ -1057,7 +1057,9 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
     })
 }
 
-static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
+/// Last enumeration and when it was memoised; `None` marks it stale, so it
+/// is only the baseline the next read compares against.
+static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Option<Instant>)>> = Mutex::new(None);
 static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// Bumped when a watch (or an explicit invalidate) makes the memoised
 /// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: a
@@ -1418,7 +1420,7 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     {
         let cache = lock(&APP_CACHE);
-        if let Some((apps, at)) = cache.as_ref()
+        if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
             return Ok(apps.clone());
@@ -1426,52 +1428,48 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
-    let mut cache = lock(&APP_CACHE);
-    if APP_CACHE_EPOCH.load(Ordering::Acquire) != epoch {
-        // The cache was invalidated (an install, a removal, a repointed
-        // registry) while this read was in flight, so the read may predate
-        // it. Memoising it would hide the change for a whole TTL. Still
-        // advance the search generation when the observed apps differ —
-        // otherwise a watch-driven epoch bump that races this refresh can
-        // leave callers with a stale generation after a manifest rewrite.
-        let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
-        if changed {
-            APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-        }
-        drop(cache);
-        ensure_app_cache_watch();
-        return Ok(apps);
-    }
-    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
-    *cache = Some((apps.clone(), Instant::now()));
-    // The TTL controls disk freshness, not search identity. Advancing this
-    // generation for identical records invalidates both native and host app
-    // indexes, making a just-discovered action disappear before invocation.
-    if changed {
-        APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    }
-    drop(cache);
+    record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
     Ok(apps)
 }
 
+/// Store a registry read that started at `read_epoch` as the new baseline.
+fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
+    let mut cache = lock(&APP_CACHE);
+    // An invalidation (install, removal, watch event, repointed registry)
+    // that raced this read means the read may predate it: keep it only as
+    // a stale baseline so the next call re-reads instead of hiding the
+    // change for a whole TTL.
+    let fresh = (APP_CACHE_EPOCH.load(Ordering::Acquire) == read_epoch).then(Instant::now);
+    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != apps);
+    // The TTL controls disk freshness, not search identity. Advancing this
+    // generation for identical records invalidates both native and host app
+    // indexes, making a just-discovered action disappear before invocation.
+    if changed {
+        APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+    }
+    *cache = Some((apps.to_vec(), fresh));
+}
+
 /// Drop the memoised enumeration. Used after an install/remove and by
 /// tests that repoint `TILO_APPS_DATA_DIR`.
 pub fn invalidate_app_cache() {
-    *lock(&APP_CACHE) = None;
+    // Bump the epoch under the lock so a read finishing right after cannot
+    // memoise itself as fresh.
+    let mut cache = lock(&APP_CACHE);
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+    *cache = None;
 }
 
 fn expire_watched_app_cache() {
-    if let Some((_, at)) = lock(&APP_CACHE).as_mut()
-        && let Some(expired) = Instant::now().checked_sub(APP_CACHE_TTL)
-    {
-        *at = expired;
+    let mut cache = lock(&APP_CACHE);
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+    if let Some((_, at)) = cache.as_mut() {
+        *at = None;
     }
-    APP_CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
 fn app_cache_roots() -> Vec<PathBuf> {
@@ -4441,9 +4439,7 @@ mod tests {
             let initial = installed_apps().unwrap();
             let initial_generation = gui_apps_generation();
             let expire = || {
-                lock(&APP_CACHE).as_mut().unwrap().1 = Instant::now()
-                    .checked_sub(APP_CACHE_TTL)
-                    .expect("test clock has enough history to expire the app cache");
+                lock(&APP_CACHE).as_mut().unwrap().1 = None;
             };
             expire();
             let unchanged = installed_apps().unwrap();
@@ -4474,6 +4470,48 @@ mod tests {
             assert_ne!(changed_generation, unchanged_generation);
             assert!(removed.is_empty());
             assert_ne!(removed_generation, changed_generation);
+        }
+
+        fn raced_app_cache_refresh_keeps_its_read_as_the_baseline() {
+            let tmp = tempfile::tempdir().unwrap();
+            let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APPS_DATA_DIR", tmp.path());
+            invalidate_app_cache();
+            // Seed the baseline without `installed_apps`, which would arm the
+            // real watch and let its event for the rewrite race this test.
+            record_app_read(
+                APP_CACHE_EPOCH.load(Ordering::Acquire),
+                &read_installed_apps().unwrap(),
+            );
+            let manifest = payload.join("manifest.toml");
+            let changed_manifest = std::fs::read_to_string(&manifest)
+                .unwrap()
+                .replace("1.2.3", "1.2.4");
+            std::fs::write(&manifest, changed_manifest).unwrap();
+            let before_race = gui_apps_generation();
+            // A watch event lands while this refresh is reading the registry.
+            let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
+            let raced = read_installed_apps().unwrap();
+            expire_watched_app_cache();
+            record_app_read(read_epoch, &raced);
+            let raced_generation = gui_apps_generation();
+            let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
+            let reread = installed_apps().unwrap();
+            let reread_generation = gui_apps_generation();
+            let fresh = lock(&APP_CACHE).as_ref().unwrap().1.is_some();
+            env.remove("TILO_APPS_DATA_DIR");
+            invalidate_app_cache();
+
+            assert_eq!(raced[0].version, "1.2.4");
+            assert_ne!(raced_generation, before_race, "the raced read saw a change");
+            assert!(stale, "a raced read must not be memoised as fresh");
+            assert_eq!(reread, raced);
+            assert_eq!(
+                reread_generation, raced_generation,
+                "an identical re-read after a raced refresh keeps the generation"
+            );
+            assert!(fresh, "the uncontested re-read is memoised");
         }
 
         fn enumeration_reads_the_registry_and_flags_gui_apps() {
@@ -4567,6 +4605,7 @@ mod tests {
         }
 
         unchanged_app_cache_refresh_preserves_search_generation();
+        raced_app_cache_refresh_keeps_its_read_as_the_baseline();
         enumeration_reads_the_registry_and_flags_gui_apps();
         installed_continuity_lookup_reads_signed_manifest_contract();
         display_name_title_cases_the_trailing_component();
