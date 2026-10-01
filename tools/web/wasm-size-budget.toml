@@ -13,3 +13,7 @@
 # larger.)
 [bundles.desktop]
 bytes = 74377063
+
+[bundles.desktop.rebaseline]
+run = 55499
+reason = "first measurement by the app-sdk web lane; the earlier budget came from a local build on another branch"
