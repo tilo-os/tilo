@@ -255,20 +255,24 @@ Verified against the code at the time of writing:
   `ensure_legible`). `Theme::from_custom_spec` repairs a file that reaches the
   runtime anyway. Every shipped preset is swept against the same floors
   (`every_theme_that_materializes_keeps_the_contrast_floors`).
-- **One active theme, no layer stack.** `Theme::from_settings_json` resolves a
-  single `appearance.theme` value (a preset name, `Automatic`, or
-  `custom:<id>`). Accessibility is applied after the fact:
-  `Theme::configured_from_text` replaces the whole theme with
-  `Theme::high_contrast()` when `appearance.high_contrast` is set, and
-  `Theme::with_a11y` does the same for apps. There is no `distribution` /
-  `distribution_defaults` layer, no workspace tint, and no general precedence
-  function.
-- **No forced-colours signal for content.** An app cannot ask "is the person
-  in high contrast?" except by comparing `Theme::name`. The ebook has a high
-  contrast page palette, but the reader picks it by hand; the word processor's
-  paper stays off-white under the high contrast theme.
-- **No brand-accent API.** Nothing in `tilo-app-package`'s manifest or in
-  `ui` lets an app declare an accent.
+- **Layer resolution has landed.** [`theme::resolve_theme_layers`](../../crates/sdk/ui-core/src/theme_layers.rs)
+  resolves built-in defaults, distribution defaults (`distribution` /
+  `distribution_defaults`), the user theme, an optional workspace tint, and
+  accessibility, lowest to highest. Policy pins live on
+  `DistributionPolicy.pins` and name only `palette` or `accent`. A pin beats
+  the user theme for that field; accessibility still replaces the colour
+  track and applies text scale, UI scale and reduced motion last.
+  `Theme::configured` reads the same function. Wallpaper, greeter and boot
+  artwork are not part of this layer.
+- **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
+  answer "am I forced?" with the theme's page, ink and accent tokens. A
+  content palette keeps its own page when the flag is clear. Apps still have
+  to honour the flag; the toolkit does not restyle them.
+- **Brand accent.** `Theme::brand_accent` takes one `[u8; 3]`. It must clear
+  the 3:1 accent floor on the active base and raised surfaces. A miss, a
+  cleared `appearance.app_accents` switch, or forced colours rejects it and
+  the theme accent stays. The call cannot replace surfaces, text, chrome or
+  accessibility.
 - **Hard-coded colours in apps.** `rg -c "Color::from_rgb8\(|Color::rgb8\(|Color::new\(\["`
   still counts 155 sites in `apps/`. 122 are legitimate (document and media
   colours, stored user choices, colour-math helpers, test fixtures) and 33
@@ -287,14 +291,11 @@ Verified against the code at the time of writing:
    distinct-hue series for spreadsheet references, a forced-colours flag for
    content surfaces) rather than hard-coding it locally. Extend
    `design_token_audit.rs` to `apps/` with a baseline that can only fall.
-2. **Layer resolution.** A typed stack — built-in defaults, distribution
-   defaults (`distribution` / `distribution_defaults`), user theme, optional
-   workspace tint, accessibility — resolved by one tested function in
-   `ui-core`, read from the settings record and the image's distribution
-   defaults.
-3. **Forced colours, brand accent, trusted-UI marker.** A `Theme` flag every
-   content palette honours; a contrast-checked app-accent field the user can
-   turn off; a compositor-drawn marker no theme or app can reproduce.
+2. **Layer resolution.** Landed: `theme::resolve_theme_layers`.
+3. **Forced colours and brand accent.** Landed: `Theme::content_surface` and
+   `Theme::brand_accent`. Still open: a compositor-drawn trusted-UI marker no
+   theme or app can reproduce, and wallpaper / greeter / boot artwork on the
+   distribution layer.
 
 ## Appendix: hard-coded colours in `apps/`
 
