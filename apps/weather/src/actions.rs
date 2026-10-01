@@ -410,6 +410,17 @@ mod tests {
         // ResourceRoot's tilo_resource::publish.
         app.mark_actions_hosted_for_test();
         assert!(app.actions_are_hosted());
+        assert!(ui::resources::resource(&app, &doc, "weather.locations").is_none());
+        if let Some(place_id) = standalone[0]
+            .children
+            .first()
+            .map(|child| child.id.as_str().to_owned())
+        {
+            assert!(
+                ui::resources::resource(&app, &doc, &place_id).is_some(),
+                "a hosted place stays the published row"
+            );
+        }
         let extras = ui::resources::PublishesResources::resources(&app, &doc);
         assert!(
             extras.is_empty(),
