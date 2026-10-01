@@ -701,6 +701,8 @@ impl DrmPresenter {
                 damage: None,
                 hdr_layers: &[],
                 overview: None,
+                workspace_id: None,
+                workspace_hold: false,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -731,6 +733,8 @@ impl DrmPresenter {
                 }),
                 hdr_layers: &frame.hdr_layers,
                 overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -1011,12 +1015,42 @@ struct ScanoutFrame<'a> {
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
     overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
+    workspace_id: Option<u64>,
+    workspace_hold: bool,
 }
 
 /// An unchanged frame, or an overview fade that carries its own panel patch,
 /// must not read the combined framebuffer back from the GPU.
 pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -> bool {
     unchanged || overview
+}
+
+/// How a workspace-switch frame reaches the scanouts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceUpload {
+    /// GPU-render the combined scene and flush both outputs.
+    Render,
+    /// Put a workspace this bridge already rendered back on the scanouts.
+    Replay,
+    /// Intermediate frame of the switch: leave both scanouts alone.
+    Skip,
+}
+
+/// The frame run after a workspace switch. Returning to a workspace replays
+/// the image rendered on the way out; every later sample of either direction
+/// skips the upload. The first visit still renders.
+pub(crate) fn workspace_frame_upload(
+    changed: bool,
+    has_snapshot: bool,
+    hold: bool,
+) -> WorkspaceUpload {
+    if changed && has_snapshot {
+        WorkspaceUpload::Replay
+    } else if hold && !changed {
+        WorkspaceUpload::Skip
+    } else {
+        WorkspaceUpload::Render
+    }
 }
 
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
@@ -1041,7 +1075,7 @@ fn paint_scanouts(
         scene,
         damage,
         hdr_layers,
-        overview: _,
+        ..
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
@@ -1479,6 +1513,8 @@ fn render_combined_readback(
         damage,
         hdr_layers,
         overview,
+        workspace_id,
+        workspace_hold,
     } = frame;
     let unchanged = damage.is_some_and(|damage| {
         damage
@@ -1501,6 +1537,19 @@ fn render_combined_readback(
         && let Ok(composed) = bridge.composite_overview_frame(patch)
     {
         return present_composed_readback(scanouts, outputs, pointer, &composed, Some(patch.panel));
+    }
+    if overview.is_none()
+        && hdr_layers.is_empty()
+        && let Some(handled) = present_workspace_hold(
+            scanouts,
+            outputs,
+            paint,
+            pointer,
+            workspace_id,
+            workspace_hold,
+        )
+    {
+        return handled;
     }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
@@ -1545,11 +1594,48 @@ fn render_combined_readback(
     for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
         paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr, None);
     }
+    if overview.is_none()
+        && let Some(id) = workspace_id
+    {
+        bridge.note_shown_workspace(id);
+    }
     PaintScanoutSample {
         legacy_attempted: true,
         bridge_us,
         scanout_us: scanout_started.elapsed().as_micros(),
         ..PaintScanoutSample::default()
+    }
+}
+
+fn present_workspace_hold(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    workspace_id: Option<u64>,
+    workspace_hold: bool,
+) -> Option<PaintScanoutSample> {
+    let bridge = paint.as_mut()?;
+    let changed = workspace_id.is_some_and(|id| bridge.shown_workspace() != Some(id));
+    let has_snapshot = workspace_id.is_some_and(|id| bridge.has_workspace_snapshot(id));
+    match workspace_frame_upload(changed, has_snapshot, workspace_hold) {
+        WorkspaceUpload::Skip if bridge.has_complete_readback() => {
+            Some(PaintScanoutSample::default())
+        }
+        WorkspaceUpload::Replay => {
+            let id = workspace_id?;
+            let bytes = bridge.replay_workspace(id)?;
+            Some(present_composed_readback(
+                scanouts, outputs, pointer, &bytes, None,
+            ))
+        }
+        WorkspaceUpload::Render => {
+            if changed {
+                bridge.retain_shown_workspace();
+            }
+            None
+        }
+        WorkspaceUpload::Skip => None,
     }
 }
 
@@ -1867,6 +1953,8 @@ impl Backend for DrmBackend {
                 damage: None,
                 hdr_layers: &[],
                 overview: None,
+                workspace_id: None,
+                workspace_hold: false,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1893,6 +1981,8 @@ impl Backend for DrmBackend {
                 }),
                 hdr_layers: &frame.hdr_layers,
                 overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -2059,6 +2149,19 @@ mod tests {
         assert!(super::skips_full_framebuffer_readback(true, false));
         assert!(super::skips_full_framebuffer_readback(false, true));
         assert!(!super::skips_full_framebuffer_readback(false, false));
+    }
+
+    #[test]
+    fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
+        use super::WorkspaceUpload::{Render, Replay, Skip};
+        // First visit renders. The frame run after that does not upload.
+        assert_eq!(super::workspace_frame_upload(true, false, true), Render);
+        assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
+        // Switching back replays the image already rendered, then holds.
+        assert_eq!(super::workspace_frame_upload(true, true, true), Replay);
+        assert_eq!(super::workspace_frame_upload(false, true, true), Skip);
+        // A settled desktop still renders when its pixels actually change.
+        assert_eq!(super::workspace_frame_upload(false, true, false), Render);
     }
 
     use super::*;

@@ -276,9 +276,14 @@ Verified against the code at the time of writing:
   misses `Color::from_rgba8` (71 sites) and `Color::WHITE`/`BLACK` (150
   sites); the HIG §9.13 audit covers `ui-core` only, so apps are not ratcheted
   yet.
-- **No trusted-UI marker.** The onboarding ceremony is compositor-drawn so an
-  app cannot imitate its placement, but nothing in its appearance is
-  unforgeable.
+- **Trusted-UI frame for permission prompts and portal sheets.** The shell
+  paints a seal band on those surfaces and publishes it as
+  `tilo.shell.trusted-frame/permission-prompt` or
+  `tilo.shell.trusted-frame/portal-dialog`. The widget walk drops that
+  namespace, so an app widget cannot mint the same target. The band is not a
+  theme token; the active theme may recolour it. A session-tied personal
+  image is still absent, and onboarding, the lock screen, and capability
+  indicators do not carry the frame yet.
 
 ## Roadmap
 

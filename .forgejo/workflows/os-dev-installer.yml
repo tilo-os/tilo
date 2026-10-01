@@ -10,6 +10,11 @@ on:
         description: "Exact ARM64 dev OS image (registry.tilo.so/tilo/tilo-ci@sha256:<digest>)"
         required: true
         type: string
+      installer_rootfs:
+        description: "Live installer root filesystem; ext4 avoids WHPX Btrfs fs-verity read failures"
+        required: false
+        default: "btrfs"
+        type: string
 
 concurrency:
   group: os-dev-installer-${{ github.ref }}
@@ -24,6 +29,10 @@ jobs:
       TILO_LOCAL_TAG: dev-installer-${{ github.run_id }}
       TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
       TILO_IMAGE: ${{ github.event.inputs.os_image }}
+      TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
+      # The nested Podman build must reach Cargo's GitHub sources; its private
+      # network stalled there while the native runner's network was available.
+      TILO_PODMAN_BUILD_NETWORK: host
       # This disposable, unsigned medium is exercised only in the WHPX VM.
       # Physical Windows-direct installs use paired CI-signed offline targets.
       TILO_UNVERIFIED_VM_INSTALL: "1"
@@ -36,6 +45,10 @@ jobs:
           [[ "$TILO_IMAGE" =~ ^registry\.tilo\.so/tilo/tilo-ci@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::os_image must pin one published ARM64 dev image by digest'; exit 1;
           }
+          case "$TILO_INSTALLER_ROOTFS" in
+            btrfs|ext4) ;;
+            *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
+          esac
       - name: Install native disk builder dependencies
         run: |
           set -euo pipefail
