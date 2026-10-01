@@ -82,7 +82,7 @@ else
 fi
 
 if grep -Fq 'cmd_wait_greeter_return()' "$vm" \
-  && grep -Fq "! pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$vm" \
+  && grep -Fq '! busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$vm" \
   && grep -Fq 'systemctl is-active --quiet greetd.service' "$vm" \
   && grep -Fq 'cmd_shutdown()' "$vm" \
   && grep -Fq 'sudo systemctl poweroff' "$vm" \

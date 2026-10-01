@@ -206,7 +206,7 @@ if [ "$(grep -Fc 'TILO_VM_DISPLAY' "$workflow")" -eq 3 ] \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh' "$workflow" \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop' "$workflow" \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock' "$workflow" \
-   && grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |\$)'" "$workflow"; then
+   && grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$workflow"; then
   ok 'installed compositor, OOBE and AT-SPI gates run in both the virgl and 2D display modes'
 else
   bad 'the display mode can bypass an installed compositor, OOBE or AT-SPI gate'

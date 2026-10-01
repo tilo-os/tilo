@@ -208,7 +208,7 @@ wpe_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Conta
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$wpe_copy_line" -lt "$wpe_deps_line"
 test "$wpe_deps_line" -lt "$shell_link_check_line"
-grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
+grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
 # stronger accessibility release gate before any filesystem test could run.
