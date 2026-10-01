@@ -4023,7 +4023,7 @@ impl CameraApp {
                 button,
                 label,
                 11.5,
-                theme.tokens.colors.readable_on(face, Color::WHITE),
+                theme.tokens.colors.readable_on(face, theme.tokens.colors.text_primary),
             );
             self.push_tap_region(button, action);
         }
@@ -4069,7 +4069,7 @@ impl CameraApp {
                     row,
                     device,
                     12.0,
-                    theme.tokens.colors.readable_on(row_fill, Color::WHITE),
+                    theme.tokens.colors.readable_on(row_fill, theme.tokens.colors.text_primary),
                 );
                 self.push_tap_region(row, Action::SelectCamera(device.clone()));
             }
