@@ -2777,15 +2777,11 @@ impl Widget for GitClientApp {
             // preferences. An initial override forced at construction (the
             // GIT_CLIENT_SPLIT screenshot path) wins over the persisted value.
             if !self.settings_forced {
-                self.settings = Settings::read(state);
+                // Read without creating the map. The preference actions below
+                // are what write it, hosted or standalone.
+                self.settings = Settings::read_only(state);
             }
-            if self.actions.is_hosted() {
-                self.publish_settings(state);
-            } else {
-                for action in self.preference_actions() {
-                    let _ = ui::tilo_actions::Action::apply(&action, state);
-                }
-            }
+            self.publish_settings(state);
             self.settings_seeded = true;
         }
         self.publish_shared_repo_if_needed(state);
@@ -3733,6 +3729,7 @@ impl GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::Widget;
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.
@@ -3745,6 +3742,26 @@ mod tests {
         // Settle the reveal to the resolved default for this width.
         app.flap.snap(app.flap_open());
         app
+    }
+
+    /// The first sync publishes preferences through the action sink.
+    #[test]
+    fn a_fresh_client_publishes_preferences_through_the_sink() {
+        let mut app = GitClientApp::new();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let recorded = app
+            .actions
+            .last_dispatched()
+            .expect("the first sync submits a preference action");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::GIT_CLIENT_ACTION_TYPE
+        );
+        assert_eq!(
+            crate::settings::Settings::read_only(&state.doc).diff_layout,
+            app.settings.diff_layout
+        );
     }
 
     /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
