@@ -4,10 +4,12 @@
 # with the base revision. When a bundle shrinks, the lane prints the lower
 # budget to commit.
 
-# All web-capable Tilo apps (31), as the app-sdk web lane builds them:
+# All web-capable Tilo apps (32), as the app-sdk web lane builds them:
 # `tilo-app build --target web --bundle desktop --release apps/calculator`,
-# measured on the SDK integration branch with feat/sdk-apps and
-# feat/sdk-complete merged. (`build.sh --profile release` optimizes less and
-# comes out about 2 MB larger.)
+# measured by that lane (app-sdk run 55499, wasm-opt 126, wasm-bindgen 0.2.108).
+# The first budget, 67430997, came from a local build on another branch and
+# was never met in CI: the lane was OOM-killed before it reached the check.
+# (`build.sh --profile release` optimizes less and comes out about 2 MB
+# larger.)
 [bundles.desktop]
-bytes = 67430997
+bytes = 74377063
