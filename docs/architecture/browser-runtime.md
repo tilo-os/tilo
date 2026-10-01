@@ -154,7 +154,7 @@ With these, `tilo-ui --no-default-features` and `tilo-relay-client` (iroh
 | Gap | Where | Browser implementation |
 |---|---|---|
 | Threads | `render_thread` (`ui-render`), `tilo_rt::app()` (a dedicated thread), `cpu_pool` (rayon), `ThreadPool` background executor, collaboration broker worker | *Done except the broker.* Render on the page thread (`FrameHarness` + Vello on the canvas). `tilo_rt::app()` on wasm is a `LocalSet` polled by one `wasm_bindgen_futures::spawn_local` task (same `spawn`/`spawn_then`/`spawn_blocking` signatures; `block_on` refuses with `UiThread`; tokio `time`/`net` have no driver). `cpu()` runs as an app task, `cpu_pool()` is the page thread alone, `tilo_rt::io` refuses. `tilo-host`'s default `Background` on wasm is `PageExecutor` (microtasks + `setTimeout`). The broker worker is behind `broker-transport` (milestone 5). Frames follow input, component wakes, animation and wake deadlines only (`FrameHarness::frame_schedule`, as the native runner): an idle mount presents nothing. |
-| Files | `settings-store`, `app-state::FsStore`, `xdg-paths`, `atomic-file`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
+| Files | `settings-store`, `app-state::FsStore`, `xdg-paths`, `tilo_files::native::atomic`, `advisory-lock`, `font_catalog` file sources | *Done.* `DurableStore` = `MemoryStore::queued` per profile/device, committed by `web/durable-host.mjs` in strict IndexedDB transactions under the `tilo-writer:[profile,device]` Web Lock; the store's write hook schedules commits, `flush()` resolves when durable. Settings: `settings_store::SettingsSource`, installed by the page as a `HostDocument` kept in the same store (`StorageKey::Package("so.tilo.settings")`), optionally seeded by the host. Fonts from bytes (`load_browser_startup_bytes`). |
 | Local daemons | none linked (milestone 5) | `CollaborationManager::with_transport` with a relay-backed `CollabTransport` (not wired yet); the certified peer installs its user as `ui::local_identity` ([Seams](#seams-the-page-installs)). |
 | Fonts | cosmic-text `fontconfig` finds nothing | Verified product fonts from the manifest loaded as bytes before first frame. |
 | Speech, spellcheck | `tts`, `spellcheck` | *Done.* `NullSpeaker`. The English dictionary is compiled in, so spell checking works in-process; the warm-up thread is skipped on wasm. Other languages would need dictionaries fetched as assets. |
@@ -206,11 +206,10 @@ for capnp, not at all, so the linker already discarded them.
 Still in the wasm graph, left for later:
 
 - `app-state` → `cli` → `runtime-portal` (discovery only), `advisory-lock`,
-  `atomic-file`, `xdg-paths`: `FsStore` and the package path helpers share
+  `xdg-paths`: `FsStore` and the package path helpers share
   `app-state/src/lib.rs` with `DocOwner`/`DocWriter`. Splitting `FsStore`
   behind an `app-state` feature would drop `cli`, `advisory-lock` and
-  `anyhow`; `atomic-file` stays through `channel-crypto`, `xdg-paths`
-  through `spellcheck`.
+  `anyhow`; `xdg-paths` stays through `spellcheck`.
 - `tts`: on wasm only its vocabulary (`Speaker`, `Priority`, `NullSpeaker`)
   compiles; the SSIP backend is `cfg(unix)`.
 - `spellcheck`: pure Rust, but embeds a ~690 KB word list. Candidate for a

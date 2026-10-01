@@ -48,7 +48,7 @@ pipewire = ["dep:pipewire"]
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../tilo-files" }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.

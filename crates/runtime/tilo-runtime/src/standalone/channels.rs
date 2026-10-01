@@ -73,7 +73,7 @@ pub(super) fn open(
         broker,
     )?;
     let access = ChannelKeyAccess::new(service);
-    let keys = ChannelKeyProvider::default();
+    let keys = joined.channel_keys();
     keys.set(Some(access.clone()));
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
@@ -127,7 +127,7 @@ fn vault_key(profile: &Path, room: RoomId, storage: IdentityStorage) -> io::Resu
         return Ok(VaultKey::new(key));
     }
     let key = random_key();
-    atomic_file::write_with_mode(&file, &key, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&file, &key, 0o600)?;
     Ok(VaultKey::new(key))
 }
 

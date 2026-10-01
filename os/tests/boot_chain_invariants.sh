@@ -138,7 +138,10 @@ for kver in "${kvers[@]}"; do
     done
     omitted_drivers="$OS_ROOT/usr/lib/tilo/initramfs-omitted-drivers.txt"
     if [ -s "$omitted_drivers" ]; then
-      for unwanted_driver in ext4 xfs; do
+      if grep -qx ext4 "$omitted_drivers"; then
+        bad "initramfs excludes Ext4, so a supported Ext4 root cannot boot"
+      fi
+      for unwanted_driver in xfs; do
         if grep -qx "$unwanted_driver" "$omitted_drivers"; then
           ok "initramfs excludes the $unwanted_driver kernel driver"
         else

@@ -51,6 +51,11 @@ mod linux {
         width: u32,
         height: u32,
         first_configure: bool,
+        /// Input events from the dispatch in progress. Published together
+        /// after `blocking_dispatch` returns, so a click cannot become
+        /// visible while key presses already read in that queue are still
+        /// waiting to be delivered.
+        pending_events: Vec<String>,
     }
 
     impl ClientApp {
@@ -83,8 +88,25 @@ mod linux {
                 width: 256,
                 height: 256,
                 first_configure: true,
+                pending_events: Vec::new(),
             })
         }
+
+        fn record_event(&mut self, line: impl Into<String>) {
+            self.pending_events.push(line.into());
+        }
+    }
+
+    /// One write for every input event this dispatch delivered. Separate
+    /// lines would let a reader observe the click before key presses that
+    /// were already queued behind it in the same read.
+    fn publish_events(app: &mut ClientApp) {
+        if app.pending_events.is_empty() {
+            return;
+        }
+        let record = app.pending_events.drain(..).collect::<Vec<_>>().join(" ");
+        println!("{record}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
     impl CompositorHandler for ClientApp {
@@ -227,7 +249,7 @@ mod linux {
             _: &[u32],
             _: &[Keysym],
         ) {
-            println!("EVENT:KEYBOARD ENTER");
+            self.record_event("EVENT:KEYBOARD ENTER");
         }
 
         fn leave(
@@ -238,7 +260,7 @@ mod linux {
             _: &wl_surface::WlSurface,
             _: u32,
         ) {
-            println!("EVENT:KEYBOARD LEAVE");
+            self.record_event("EVENT:KEYBOARD LEAVE");
         }
 
         fn press_key(
@@ -249,7 +271,7 @@ mod linux {
             _: u32,
             event: KeyEvent,
         ) {
-            println!("EVENT:KEY PRESS {:?}", event.utf8);
+            self.record_event(format!("EVENT:KEY PRESS {:?}", event.utf8));
         }
 
         fn repeat_key(
@@ -296,11 +318,11 @@ mod linux {
             for event in events {
                 match event.kind {
                     PointerEventKind::Enter { .. } => {
-                        println!("EVENT:ENTER");
+                        self.record_event("EVENT:ENTER");
                     }
                     PointerEventKind::Press { .. } => {
                         let (x, y) = event.position;
-                        println!("EVENT:CLICK AT {x:.1},{y:.1}");
+                        self.record_event(format!("EVENT:CLICK AT {x:.1},{y:.1}"));
                     }
                     _ => {}
                 }
@@ -349,6 +371,7 @@ mod linux {
             event_queue
                 .blocking_dispatch(&mut app)
                 .map_err(|e| format!("blocking_dispatch: {e}"))?;
+            publish_events(&mut app);
         }
     }
 }

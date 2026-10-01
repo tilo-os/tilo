@@ -28,7 +28,9 @@
 # The kernel choice is cached in $TILO_OUTPUT/local-inputs/, keyed by the
 # kernel and kernel buildroot pins, so a rebuild does not ask the registry again.
 
-_li_arch="$(uname -m)"
+# TILO_BUILD_ARCH selects the image architecture when the builder itself is the
+# other one and can emulate it. Unset, the image matches this machine.
+_li_arch="${TILO_BUILD_ARCH:-$(uname -m)}"
 case "$_li_arch" in
   x86_64) _li_pin_var=KERNEL_RPMS_X86_64_REF; _li_buildroot_var=KERNEL_BUILDROOT_X86_64_REF ;;
   aarch64) _li_pin_var=KERNEL_RPMS_AARCH64_REF; _li_buildroot_var=KERNEL_BUILDROOT_AARCH64_REF ;;

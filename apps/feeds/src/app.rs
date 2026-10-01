@@ -2494,9 +2494,13 @@ impl FeedsApp {
             // Pure-black dimming scrim faded by the eased reveal (matches the
             // shared NavSplit flap), so the content clearly recedes behind the
             // floating sidebar.
-            let scrim = Color::from_rgba8(0, 0, 0, 255)
-                .with_alpha_factor((self.sidebar.reveal() * 0.5) as f32);
-            scene.fill(Fill::NonZero, t, scrim, None, &self.scrim_rect);
+            ui::chrome::fill_scrim(
+                scene,
+                t,
+                self.scrim_rect,
+                (self.sidebar.reveal() * 0.5) as f32,
+                theme,
+            );
         }
         if self.sidebar_rect.area() > 0.0 {
             scene.fill(Fill::NonZero, t, sidebar_bg, None, &self.sidebar_rect);
@@ -3392,7 +3396,7 @@ fn draw_sidebar(
         // Badge (right-aligned), then label clipped to the remaining width.
         let badge_w = if row.badge > 0 {
             let (bg, fg) = if row.selected {
-                (c.accent[5], Color::WHITE)
+                (c.accent[5], theme.on_surface(c.accent[5]).ink)
             } else {
                 (alpha(c.neutral[3], 180), c.text_dim)
             };

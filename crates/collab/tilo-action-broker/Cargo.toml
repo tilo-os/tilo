@@ -10,7 +10,7 @@ test-support = []
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
 parking_lot.workspace = true

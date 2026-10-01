@@ -175,7 +175,14 @@ base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null |
 base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
+fi
+case "$SOURCE_DATE_EPOCH" in
+  ''|0|*[!0-9]*)
+    die "SOURCE_DATE_EPOCH must be a positive commit time. A zero clock makes DNF reject RPM headers. Set SOURCE_DATE_EPOCH=\$(git log -1 --format=%ct) from the real checkout."
+    ;;
+esac
 export SOURCE_DATE_EPOCH
 : "${TMPDIR:=$TILO_OUTPUT/.tmp}"
 mkdir -p "$TMPDIR"
@@ -193,11 +200,16 @@ if [ -z "$rpms_ref" ]; then
   rpms_ref="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"     || die "no fingerprint-resolved RPMS_REF; run snapshot-rpms or set RPMS_REF"
 fi
 
+# The Fedora bootc base the dev binaries compile on, as the production builder's.
+dev_compile_base="$(. "$TILO_OS_DIR/base-snapshot.env" && printf '%s' "${BASE_REF:-}")"
+[ -n "$dev_compile_base" ] || die "os/base-snapshot.env pins no BASE_REF"
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
   --build-arg "BASE_IMAGE=$base" \
   --build-arg "RPMS_REF=$rpms_ref" \
+  --build-arg "BASE_REF=$dev_compile_base" \
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \

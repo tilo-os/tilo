@@ -151,6 +151,10 @@ rustPlatform.buildRustPackage rec {
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
 
+  # NixOS display managers require this when the module registers the package
+  # in services.displayManager.sessionPackages.
+  passthru.providedSessions = [ "tilo" ];
+
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
     homepage = "https://code.tilo.so/tilo/tilo";

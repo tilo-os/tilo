@@ -147,7 +147,27 @@ fn studio_id(appearance: &serde_json::Map<String, serde_json::Value>) -> Option<
 ///
 /// Returns an error if the document cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
+    ensure_legible(spec)?;
     appearance().in_file(path).update(appearance_values(spec))
+}
+
+/// A custom theme that misses a contrast floor is not applied: the runtime
+/// would repair it anyway, but the person should see which pair failed and
+/// fix it here rather than get colours they did not pick. Presets are swept
+/// against the same floors in `ui`'s tests.
+fn ensure_legible(spec: &ThemeSpec) -> std::io::Result<()> {
+    if spec.builtin {
+        return Ok(());
+    }
+    let findings = spec.to_custom_spec().contrast_findings();
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let pairs: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("too little contrast: {}", pairs.join("; ")),
+    ))
 }
 
 /// The active theme id in the settings document at `path`, if any.
@@ -164,6 +184,7 @@ pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
 /// Returns an error if there is no settings document to write, or the
 /// write fails.
 pub fn save(spec: &ThemeSpec) -> std::io::Result<()> {
+    ensure_legible(spec)?;
     appearance().update(appearance_values(spec))
 }
 
@@ -177,6 +198,45 @@ pub fn load_active_id() -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::{presets, seed_custom};
+
+    #[test]
+    fn an_illegible_custom_theme_is_refused_and_presets_and_their_copies_apply() {
+        let dir = std::env::temp_dir().join(format!("tilo-themes-contrast-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // Case `a_custom_theme_under_a_contrast_floor_is_not_written`.
+        {
+            let mut murky = seed_custom();
+            murky.text_dim = murky.surface_raised;
+            let err = save_to(&path, &murky).expect_err("dim text on its own surface");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                err.to_string().contains("text_dim on surface_base"),
+                "the failing pair is named: {err}"
+            );
+            assert!(!path.exists(), "nothing reached the settings file");
+        }
+
+        // Case `every_preset_and_an_editable_copy_of_it_apply`: duplicating a
+        // preset is how most custom themes start, and the copy is measured as
+        // a custom spec (derived popover and tertiary), not as the preset.
+        {
+            for (i, preset) in presets().into_iter().enumerate() {
+                save_to(&path, &preset).unwrap_or_else(|e| panic!("{}: {e}", preset.name));
+                let copy = crate::actions::duplicate_spec(&preset, &format!("copy-{i}"), 99);
+                assert_eq!(
+                    copy.to_custom_spec().contrast_findings(),
+                    Vec::new(),
+                    "a copy of {} must apply unchanged",
+                    preset.name
+                );
+                save_to(&path, &copy).unwrap_or_else(|e| panic!("{} copy: {e}", preset.name));
+            }
+            save_to(&path, &seed_custom()).expect("the demo custom theme is legible");
+        }
+    }
 
     /// The appearance store: merge preserving foreign keys, document and file round-trips, and garbage input.
     #[test]
