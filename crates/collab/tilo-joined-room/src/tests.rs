@@ -58,11 +58,20 @@ fn member() -> SigningKey {
 }
 
 fn edit(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> OwnerCommitRequest {
+    edit_with(owner, room, now, "written while joined")
+}
+
+fn edit_with(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    now: SystemTime,
+    topic: &str,
+) -> OwnerCommitRequest {
     let message = owner
         .with_current(room, |view| {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
-            chat.put(ROOT, "topic", "written while joined").unwrap();
+            chat.put(ROOT, "topic", topic).unwrap();
             chat.commit();
             view.peer().clone().publish_incremental(
                 APP,
@@ -147,7 +156,7 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 
 #[test]
 fn an_uncertain_write_fences_every_room_until_reopened() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let joined = enrolled();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
@@ -239,4 +248,198 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
         "a device outside the room reads nothing"
     );
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
+}
+
+/// What a sealed write says, which no file of the keyless owner may hold.
+const SECRET: &str = "only key holders read this";
+
+/// A channel's key holder, and its content keys before and after a rotation.
+fn rotated_channel() -> (
+    channel_crypto::ChannelContentKeys,
+    channel_crypto::ChannelContentKeys,
+) {
+    let channel = collab_types::document_channel_id(APP, ROOM, "");
+    let mut group = channel_crypto::ChannelGroup::create(
+        channel,
+        channel_crypto::MemberKey::generate("steward").unwrap(),
+    )
+    .unwrap();
+    let before = group.content_keys().unwrap();
+    group
+        .add_member(
+            channel_crypto::MemberKey::generate("reader")
+                .unwrap()
+                .fresh_key_package()
+                .unwrap(),
+        )
+        .unwrap();
+    (before, group.content_keys().unwrap())
+}
+
+/// Commit a write sealed under `keys`, as an SDK app seals it, at `now`.
+fn commit_sealed(
+    joined: &Enrolled,
+    keys: &channel_crypto::ChannelContentKeys,
+) -> collab_types::SignedOp {
+    let OwnerCommitRequest {
+        operation: CommitOperation::Document { mut envelope, .. },
+        ..
+    } = edit_with(&joined.owner, joined.room, joined.now, SECRET)
+    else {
+        panic!("a document write")
+    };
+    let (metadata, sealed) = keys
+        .seal_content(
+            envelope.artifact,
+            collab_types::ContentRetention::Delta,
+            &envelope.payload,
+        )
+        .unwrap();
+    envelope.payload = sealed;
+    envelope.encryption = Some(metadata);
+    collab_types::sign_op(&mut envelope, &member()).unwrap();
+    joined
+        .owner
+        .commit_document(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::Document {
+                    app: APP.into(),
+                    record: String::new(),
+                    envelope: envelope.clone(),
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    *envelope
+}
+
+fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
+    owner
+        .with_outgoing(room, now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect())
+        })
+        .unwrap()
+}
+
+#[test]
+fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
+    let joined = enrolled();
+    let (before, current) = rotated_channel();
+    let original = commit_sealed(&joined, &before);
+    let later = joined
+        .now
+        .checked_add(std::time::Duration::from_secs(301))
+        .unwrap();
+    assert!(sent(&joined.owner, joined.room, later).is_empty());
+
+    let mut asked = 0;
+    joined
+        .owner
+        .renew_outgoing(
+            joined.room,
+            &member(),
+            &mut |op| {
+                asked += 1;
+                let metadata = op.encryption.ok_or("not sealed")?;
+                let plaintext = current
+                    .open_content(op.artifact, &metadata, &op.payload)
+                    .map_err(|e| e.to_string())?;
+                current
+                    .seal_content(
+                        op.artifact,
+                        collab_types::ContentRetention::Delta,
+                        &plaintext,
+                    )
+                    .map_err(|e| e.to_string())
+            },
+            later,
+        )
+        .unwrap();
+    assert_eq!(asked, 1);
+    let status = joined.owner.outgoing_status(joined.room, later).unwrap();
+    assert_eq!(status.pending, 1, "the renewal replaces its original");
+    let [bytes] = sent(&joined.owner, joined.room, later).try_into().unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&bytes).unwrap() else {
+        panic!("a document write")
+    };
+    collab_types::verify_op(&envelope).unwrap();
+    assert_eq!(envelope.seq, original.seq.checked_add(1).unwrap());
+    assert_eq!(envelope.timestamp, later);
+    let metadata = envelope.encryption.unwrap();
+    assert_eq!(metadata.epoch, current.epoch());
+    assert_eq!(
+        current
+            .open_current_content(envelope.artifact, &metadata, &envelope.payload)
+            .unwrap()
+            .as_slice(),
+        before
+            .open_content(
+                original.artifact,
+                &original.encryption.unwrap(),
+                &original.payload
+            )
+            .unwrap()
+            .as_slice(),
+        "the renewal carries the same content under the current epoch"
+    );
+
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(sent(&reopened, joined.room, later), vec![bytes]);
+    for file in std::fs::read_dir(joined.path.parent().unwrap()).unwrap() {
+        let contents = std::fs::read(file.unwrap().path()).unwrap();
+        assert!(
+            !contents
+                .windows(SECRET.len())
+                .any(|window| window == SECRET.as_bytes()),
+            "the keyless owner's files hold the plaintext"
+        );
+    }
+}
+
+#[test]
+fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let committed = std::fs::read(&joined.path).unwrap();
+    let later = joined
+        .now
+        .checked_add(std::time::Duration::from_secs(301))
+        .unwrap();
+    joined
+        .owner
+        .renew_outgoing(
+            joined.room,
+            &member(),
+            &mut |_| Err("this device holds no current key".into()),
+            later,
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), committed);
+    assert_eq!(
+        joined
+            .owner
+            .outgoing_status(joined.room, later)
+            .unwrap()
+            .pending,
+        1
+    );
+    assert!(sent(&joined.owner, joined.room, later).is_empty());
+    assert!(
+        joined
+            .owner
+            .renew_outgoing(
+                joined.room,
+                &SigningKey::from_bytes(&[99; 32]),
+                &mut |_| panic!("another signer's renewal asked the key holder"),
+                later,
+            )
+            .is_err()
+    );
 }

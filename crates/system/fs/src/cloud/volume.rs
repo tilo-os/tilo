@@ -460,7 +460,7 @@ impl CloudVolume {
             };
             serde_json::to_vec(&file).map_err(io::Error::other)?
         };
-        atomic_file::write(&self.dir.join("tree.json"), &bytes)?;
+        tilo_files::native::atomic::write(&self.dir.join("tree.json"), &bytes)?;
         self.content().map_or(Ok(()), |content| content.flush())
     }
 
@@ -491,7 +491,7 @@ impl CloudVolume {
             };
             serde_json::to_vec(&file).map_err(io::Error::other)?
         };
-        atomic_file::write(&self.dir.join("local.json"), &bytes)
+        tilo_files::native::atomic::write(&self.dir.join("local.json"), &bytes)
     }
 
     fn persist_local(&self) -> Result<(), Errno> {

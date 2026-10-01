@@ -28,7 +28,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }

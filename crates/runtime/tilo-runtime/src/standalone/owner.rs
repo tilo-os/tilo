@@ -185,7 +185,7 @@ impl RoomOwner {
                 self.workspace.keep_effect_receipt(&self.room, receipt)?;
             }
             CommitOperation::DesktopCommand { .. }
-            | CommitOperation::AgentRuntime { .. }
+            | CommitOperation::RetiredAgentRuntime
             | CommitOperation::DocumentImport { .. } => {
                 return Err("the runtime room owner commits documents and effect receipts".into());
             }
@@ -393,7 +393,7 @@ fn save(path: &Path, governor: &DeviceCert, committed: &Committed) -> io::Result
         peer: committed.durable.clone(),
     })
     .map_err(io::Error::other)?;
-    atomic_file::write_with_mode(path, &bytes, 0o600)
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {

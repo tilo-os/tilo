@@ -406,10 +406,10 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
             };
             crate::HistoryEntry {
                 id: crate::HistoryEntryId(*version.id.0.as_bytes()),
-                author: crate::HistoryAuthor::new(
+                author: crate::history_source::author_coloured(
                     author,
-                    crate::history_source::stable_hue(&identity),
-                    identity,
+                    identity.clone(),
+                    crate::presence::user_color(&identity),
                 ),
                 op_class: collab_types::OpClass::Compaction,
                 artifact_kind: collab_types::ArtifactKind::File,

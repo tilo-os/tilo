@@ -40,9 +40,6 @@ impl LocalCaller {
             .certificate
             .as_ref()
             .ok_or("durable local caller certificate missing")?;
-        if admitted.enrolled {
-            return Err("enrolled caller requires its task-owned surface".into());
-        }
         let owner = InvocationOwner::AuthenticatedLocal {
             root: cert.user_public_key,
             device: cert.device_public_key,
@@ -621,10 +618,8 @@ pub(super) fn invoke(
                 AdmissionProvenance {
                     durable: Some(context),
                     revision: Some(&request.revision),
-                    private_owner: None,
                     origin: None,
                     retained_time: None,
-                    enrolled_durable: None,
                 },
             )
             .map_err(capnp::Error::failed)?;

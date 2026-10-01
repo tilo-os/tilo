@@ -99,13 +99,14 @@ def resize(ctx, res):
     expect(w2 < w1 - 10, f"Super+- narrowed it again ({w1:.0f} -> {w2:.0f} px)")
 
 
-@check("W06", AREA, "Super+Up maximizes and restores the focused window", needs=("two_windows",))
+@check("W06", AREA, "Super+M maximizes and restores the focused window", needs=("two_windows",))
 def maximize(ctx, res):
     _, g2 = ctx.facts["two_windows"]
-    ctx.vm.key("super+Up")
+    # Super+Up/Down move strip focus (docs/architecture/window-management.md).
+    ctx.vm.key("super+m")
     ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is True, 5, "window maximized")
     ctx.shot("W06-maximized")
-    ctx.vm.key("super+Up")
+    ctx.vm.key("super+m")
     ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is False, 5, "window restored")
 
 
@@ -114,9 +115,11 @@ def fullscreen(ctx, res):
     _, g2 = ctx.facts["two_windows"]
     r0 = _group_rect(ctx, g2)
     ctx.vm.key("super+f")
-    st = ctx.wait_state(lambda s: (core.group_by_id(s, g2) or {}).get("maximized") is True
+    st = ctx.wait_state(lambda s: s.get("chrome", {}).get("fullscreen_group") == g2
+                        or s.get("chrome", {}).get("fullscreen") is True
+                        or (core.group_by_id(s, g2) or {}).get("maximized") is True
                         or (core.group_by_id(s, g2) or {}).get("fullscreen") is True,
-                        5, "window full screen (a Tilo app maximizes its group)")
+                        5, "window full screen")
     r1 = _group_rect(ctx, g2)
     disp = core.display_rects(st)[core.display_of_group(st, g2) or 0]
     res.metrics.update(rect_before=r0, rect_full=r1, display=disp)
@@ -234,29 +237,29 @@ def overview(ctx, res):
 @check("W13", AREA, "Super+S summons and dismisses the workspace wheel")
 def wheel(ctx, res):
     ctx.reset()
-    # The wheel is summoned at the last pointer position; without one it has nowhere to go.
     d0 = core.display_rects(ctx.state())[0]
     px, py = int(d0[0] + d0[2] / 2), int(d0[1] + d0[3] / 2)
     ctx.vm.input("move", str(px), str(py))
     ctx.settle(0.5)
-    before_t = core.target_map(ctx.vm.targets())
-    before_c = ctx.state()["chrome"]
-    before_img = ctx.shot("W13-before")
+    before_disc = core.target_map(ctx.vm.targets()).get("wheel_disc")
     ctx.vm.key("super+s")
-    ctx.settle(1.0)
-    after_t = core.target_map(ctx.vm.targets())
-    after_c = ctx.state()["chrome"]
-    after_img = ctx.shot("W13-wheel")
-    changed_t = sorted(n for n in set(before_t) ^ set(after_t) if "heel" in n or "Disc" in n)
-    changed_c = sorted(k for k in after_c if after_c.get(k) != before_c.get(k) and k != "revision")
-    pixels = core.region_diff(core.load_image(before_img), core.load_image(after_img),
-                              (px - 250, py - 250, 500, 500))
-    res.metrics.update(pointer=[px, py], changed_targets=changed_t[:20], changed_chrome=changed_c,
-                       pixel_change_at_pointer=pixels)
+    st = ctx.wait_state(lambda s: s["chrome"].get("wheel_summon"), 5,
+                        "chrome.wheel_summon after Super+S")
+    summoned = st["chrome"]["wheel_summon"]
+    after_disc = core.target_map(ctx.vm.targets()).get("wheel_disc")
+    expect(after_disc, "summoned wheel stays addressable as wheel_disc")
+    # A chrome flag without a moved disc is the same lie the previous
+    # check was blind to: the target name never changes, only the rect.
+    moved = (before_disc is None
+             or abs(after_disc[0] - before_disc[0]) > 20
+             or abs((after_disc[0] + after_disc[2]) - px) < 40)
+    expect(moved, f"wheel_disc stayed at {before_disc} after summon to {px},{py} (now {after_disc})")
+    res.metrics.update(pointer=[px, py], wheel_summon=summoned,
+                       wheel_disc_before=before_disc, wheel_disc_after=after_disc)
+    ctx.shot("W13-wheel")
     ctx.vm.key("Escape")
-    expect(changed_t or any("wheel" in k for k in changed_c) or pixels > 0.02,
-           f"no observable change after Super+S with the pointer at {px},{py}: no wheel target, "
-           f"no state-dump flag, pixels around the pointer changed by {pixels}")
+    ctx.wait_state(lambda s: not s["chrome"].get("wheel_summon"), 5,
+                   "chrome.wheel_summon cleared after Escape")
 
 
 @check("W14", AREA, "Touch: a tap on a window focuses it; a horizontal swipe pans the strip")

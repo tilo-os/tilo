@@ -297,7 +297,7 @@ impl ThumbCache {
         let Ok(address) = self.store.put(arc.as_slice()) else {
             return;
         };
-        if atomic_file::write_regenerable(&entry, address.as_bytes()).is_ok() {
+        if tilo_files::native::atomic::write_regenerable(&entry, address.as_bytes()).is_ok() {
             self.prune();
         }
     }

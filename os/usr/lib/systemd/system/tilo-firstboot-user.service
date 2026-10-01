@@ -3,8 +3,9 @@ Description=Tilo first-boot user creation (from custom installer)
 # Only runs if the custom installer seeded a credential file.
 ConditionPathExists=/etc/tilo/install-user.conf
 After=local-fs.target
-# Must finish before the login greeter so the new account is loginable.
-Before=greetd.service
+# Must finish before the login greeter so the new account is loginable,
+# and before shell first-boot reads the enrolled device key.
+Before=greetd.service shell-firstboot.service
 
 [Service]
 Type=oneshot

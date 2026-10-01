@@ -4,21 +4,44 @@
 # the same commit (BASE_IMAGE, a tilo-vm image built by os/Containerfile.dev).
 # The firmware comes from the board's pinned firmware artifact, imported into
 # os/hardware/firmware/<profile>/ before the build
-# (os/dev/hardware-firmware-artifact.py import). The dev image boots unsealed
-# from ordinary boot entries, so the profile's device tree goes where bootc
-# points them at one: /usr/lib/modules/<kver>/devicetree.
+# (os/dev/hardware-firmware-artifact.py import).
+#
+# Unlike the generic dev image, a board image is sealed: bootc takes a device
+# tree only from a UKI's .dtb section, never from ordinary boot entries, so the
+# profile's DTB reaches the kernel, and survives `bootc upgrade`, only inside a
+# UKI. The layout is the release's (os/Containerfile `split`, `uki`, `final`):
+# the kernel is split out of the rootfs, os/dev/uki.sh builds the UKI with the
+# DTB, and the final stage adds only /boot, which the composefs digest excludes.
+#
+# The digest the UKI seals is the one `bootc install` computes from the pushed
+# layers. BuildKit's merged tree differs from those (sub-second directory
+# times, file capabilities; bootc#2334), so it cannot be computed in the build
+# that makes the layers. The aarch64 dev lane builds the image with a
+# placeholder digest and pushes it by digest, computes the real one from the
+# registry (target cfs-digest-out, TILO_CFS_SOURCE), and builds again with
+# TILO_CFS_DIGEST set: only the UKI is rebuilt, the rootfs layers are the
+# cached ones the digest was computed from.
 ARG BASE_IMAGE
 ARG RPMS_REF
+# The resealing bootc (os/Containerfile.bootc-helper); only cfs-digest uses it.
+ARG BOOTC_HELPER_IMAGE=scratch
 
 FROM ${RPMS_REF} AS rpms
+FROM ${BOOTC_HELPER_IMAGE} AS bootc-helper
+
+# The board's imported firmware, os/hardware/firmware/<profile>, as its own
+# build context (--build-context board-firmware=...), so a build sends only
+# this board's firmware. Empty for a board without any.
+FROM scratch AS board-firmware
 
 FROM scratch AS board-inputs
+ARG TILO_HARDWARE_PROFILE
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
-COPY os/hardware/firmware /tilo/os/hardware/firmware
+COPY --from=board-firmware / /tilo/os/hardware/firmware/${TILO_HARDWARE_PROFILE}/
 
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS board-root
 ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
@@ -37,11 +60,55 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
-    && dtb="$(python3 -c 'import json; print(json.load(open("/usr/lib/tilo/hardware-profile.json"))["devicetree"] or "")')" \
-    && { [ -z "$dtb" ] || install -m 0644 "$dtb" "/usr/lib/modules/$kver/devicetree"; } \
     && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
     && dnf clean all \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
     && bootc container lint
 
+# Nothing may be added to the rootfs after the split: the UKI seals its digest.
+FROM board-root AS split
+RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+FROM ${BASE_IMAGE} AS uki-tools
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        systemd-ukify \
+        systemd-boot-unsigned \
+        binutils \
+    && dnf clean all
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+FROM uki-tools AS uki
+ARG TILO_CFS_DIGEST=
+ENV CFS_DIGEST=${TILO_CFS_DIGEST}
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
+    bash /usr/local/bin/uki.sh
+
+# The composefs digest `bootc install` computes for TILO_CFS_SOURCE, an image
+# of this file pushed to a registry, read from its layers. Needs the
+# registry_auth secret (a containers auth file) for a private registry.
+FROM uki-tools AS cfs-digest
+ARG TILO_CFS_SOURCE
+# The composefs repository it unpacks the layers into stays in a cache mount
+# (bootc patch 0003), so only layers it has not seen are fetched: the other
+# board's and the previous commit's are already there. Emptied past 40 GiB.
+RUN --mount=type=bind,from=bootc-helper,source=/bootc,target=/usr/local/libexec/tilo-bootc \
+    --mount=type=secret,id=registry_auth,target=/run/secrets/registry_auth \
+    --mount=type=cache,id=tilo-board-cfs-digest,target=/var/cache/tilo-cfs,sharing=locked \
+    --mount=type=tmpfs,target=/tmp \
+    case "${TILO_CFS_SOURCE:-}" in docker://*@sha256:*) ;; *) echo 'TILO_CFS_SOURCE must be docker://NAME@sha256:...' >&2; exit 1 ;; esac \
+    && { [ "$(du -s --block-size=1G /var/cache/tilo-cfs | cut -f1)" -lt 40 ] || rm -rf /var/cache/tilo-cfs/repo; } \
+    && mkdir -p /out \
+    && REGISTRY_AUTH_FILE=/run/secrets/registry_auth BOOTC_COMPOSEFS_DIGEST_REPO=/var/cache/tilo-cfs/repo \
+       /usr/local/libexec/tilo-bootc container compute-composefs-digest-from-storage "$TILO_CFS_SOURCE" > /out/digest \
+    && grep -Eqx '[0-9a-f]{128}' /out/digest \
+    && rm -rf /var/tmp/*
+
+FROM scratch AS cfs-digest-out
+COPY --from=cfs-digest /out/digest /
+
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
 LABEL org.opencontainers.image.title="Tilo board dev image (not for production)"

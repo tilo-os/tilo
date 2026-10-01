@@ -983,22 +983,24 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         .tabs
         .len()
         == 1;
-    let process_local_foreign = tree
+    let cache_only = tree
         .desktop
         .workspaces
         .get(ws_idx)
         .and_then(|workspace| workspace.strips.get(strip_idx))
         .and_then(|strip| strip.window_groups.get(group_idx))
         .and_then(|group| group.tabs.get(tab_idx))
-        .is_some_and(|tab| matches!(&tab.tile, TileContent::Foreign { .. }));
+        .is_some_and(|tab| {
+            matches!(&tab.tile, TileContent::Foreign { .. }) || tab.tile.is_device_local()
+        });
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
-    // insertion and resurrect it. A newly adopted `Foreign` surface is
-    // deliberately process-local and may never have entered the replicated
-    // document; absence there is therefore already the desired durable
-    // state, not a failed close.
-    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !process_local_foreign {
+    // insertion and resurrect it. A newly adopted `Foreign` surface, and
+    // the device-local workspace-activity window, may never have entered
+    // the replicated document; absence there is therefore already the
+    // desired durable state, not a failed close.
+    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !cache_only {
         return false;
     }
 
@@ -1136,6 +1138,46 @@ mod tests {
                     .filter(|tab| matches!(tab.tile, TileContent::WorkspaceActivity))
                     .count(),
                 1
+            );
+        }
+
+        // Phase `closing_workspace_activity_drops_it_from_durable_state`.
+        {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("workspace.json");
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            tree.persist_path = Some(path.clone());
+            let tab = open_workspace_activity(&mut tree);
+            tree.flush_to_disk();
+            let saved = crate::shell::persist::load_tree_from(&path).expect("activity persisted");
+            assert!(
+                saved
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .flat_map(|group| group.tabs.iter())
+                    .any(|tab| matches!(tab.tile, TileContent::WorkspaceActivity)),
+                "open activity is durable"
+            );
+            assert!(
+                remove_tab(&mut tree, tab),
+                "activity is a closeable tiled window"
+            );
+            tree.flush_to_disk();
+            let restarted =
+                crate::shell::persist::load_tree_from(&path).expect("closed activity state");
+            assert!(
+                restarted
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.strips.iter())
+                    .flat_map(|strip| strip.window_groups.iter())
+                    .flat_map(|group| group.tabs.iter())
+                    .all(|tab| !matches!(tab.tile, TileContent::WorkspaceActivity)),
+                "closing activity must drop it from durable desktop state"
             );
         }
 

@@ -50,6 +50,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         encrypt: false,
         encryption_passphrase: String::new(),
         persist_mb: 0,
+        wifi_ssid: String::new(),
+        device_label: String::new(),
+        enroll_local_identity: false,
     };
 
     let mut options = std::fs::OpenOptions::new();

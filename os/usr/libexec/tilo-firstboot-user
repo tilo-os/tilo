@@ -88,8 +88,20 @@ if [ "$valid_user" -ne 1 ] || [ "$valid_hash" -ne 1 ]; then
   exit 1
 fi
 
+# The installer copies the enrolled device key before this machine's
+# `tilo-identity` group exists, so the stored group id can be wrong. The
+# session reads that key as a member of this machine's group.
+repair_enrolled_device_key() {
+  key=/var/lib/tilo/device-private/keypair.bin
+  if [ -f "$key" ] && [ ! -L "$key" ]; then
+    chgrp tilo-identity "$key"
+    chmod 0640 "$key"
+  fi
+}
+
 if id "$user" >/dev/null 2>&1; then
   echo "tilo-firstboot-user: refusing to modify pre-existing account '$user'" >&2
+  repair_enrolled_device_key
   shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
   exit 1
 else
@@ -102,12 +114,35 @@ else
   # hands the group `/sys/class/backlight/*/brightness`, which is what
   # the brightness keys and the quick-settings slider write. Without it
   # brightness silently does nothing.
-  if [ -n "$full_name" ]; then
+  #
+  # The setup handoff may already have seeded this home with the enrolled
+  # identity. `useradd -m` refuses an existing home, which would leave the
+  # account uncreated and the device key unreadable.
+  seeded_home=""
+  for candidate in "/home/$user" "/var/home/$user"; do
+    if [ -d "$candidate" ] && [ ! -L "$candidate" ]; then
+      seeded_home="$candidate"
+      break
+    fi
+  done
+  if [ -n "$seeded_home" ]; then
+    if [ -n "$full_name" ]; then
+      useradd -M -d "$seeded_home" -p "$hash" -c "$full_name" -G wheel,tilo-identity,video "$user"
+    else
+      useradd -M -d "$seeded_home" -p "$hash" -G wheel,tilo-identity,video "$user"
+    fi
+    if [ -d /etc/skel ]; then
+      cp -an /etc/skel/. "$seeded_home/" || true
+    fi
+    chown -R "$user:$user" "$seeded_home"
+  elif [ -n "$full_name" ]; then
     useradd -m -p "$hash" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
     useradd -m -p "$hash" -G wheel,tilo-identity,video "$user"
   fi
 fi
+
+repair_enrolled_device_key
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
