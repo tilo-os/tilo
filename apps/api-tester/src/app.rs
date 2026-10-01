@@ -4060,6 +4060,9 @@ impl ui::resources::PublishesResources for ApiTesterApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "api_tester.workspace" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }

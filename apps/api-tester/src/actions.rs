@@ -836,7 +836,12 @@ impl crate::app::ApiTesterApp {
         roots
     }
 
-    pub fn publish_resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "api_tester.workspace" {
+            // The palette's published workspace. Collections, requests, and
+            // variables still resolve from the search catalog.
+            return self.publish_resources(doc).into_iter().next();
+        }
         self.resource_from_catalog(id)
     }
 }
