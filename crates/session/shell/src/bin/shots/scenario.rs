@@ -3219,7 +3219,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("05-restored"),
             ],
-        },,
+        },
         Scenario {
             name: "window_maximize_sibling_fade",
             description: "Super+M fades neighbour windows on the fast curve instead of \
