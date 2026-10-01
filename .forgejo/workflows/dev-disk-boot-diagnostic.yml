@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           sudo -n apt-get update
           sudo -n apt-get install -y --no-install-recommends \
-            curl ipxe-qemu jq openssh-client qemu-efi-aarch64 qemu-system-arm \
+            curl gcc ipxe-qemu jq openssh-client qemu-efi-aarch64 qemu-system-arm \
             qemu-utils socat sshpass
           test -r /usr/lib/ipxe/qemu/efi-virtio.rom
           python3 os/dev/probe-kvm.py aarch64 || {
@@ -107,10 +107,13 @@ jobs:
             sleep 1
           done
           [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
+          cc -shared -fPIC -O2 -Wall -Wextra -o "$TILO_RUN/tilo-sigill-probe.so" \
+            os/dev/greeter-sigill-probe.c -ldl
           sshpass -p "$TILO_PASS" scp -q -P 2222 \
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-            os/dev/guest-greeter-diagnostic.sh "$TILO_USER@127.0.0.1:/tmp/guest-greeter-diagnostic.sh"
+            os/dev/guest-greeter-diagnostic.sh "$TILO_RUN/tilo-sigill-probe.so" \
+            "$TILO_USER@127.0.0.1:/tmp/"
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' env GREETER_RENDER_VARIANT=$RENDERER_VARIANT bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-diagnostic.log' > "$TILO_RUN/cage-diagnostic.log" || true
           sleep 3
