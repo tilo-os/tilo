@@ -167,8 +167,11 @@ pub struct FilesProvider {
 /// to leave `$HOME` as the login home, so the walker indexed the operator's
 /// real files. When `XDG_CONFIG_HOME` is set and does not live under `$HOME`,
 /// walk the profile's `home` (or the profile root if that directory does not
-/// exist). A control-socket session (`TILO_TEST_CONTROL`) that still has the
-/// login layout gets a directory under the session cache instead.
+/// exist). A control-socket or identity-root process that still has the login
+/// layout, and is not a Tilo desktop, gets a directory under the session cache
+/// instead. A desktop session (`XDG_SESSION_DESKTOP=tilo`, including a dev VM
+/// slot driven through `TILO_TEST_CONTROL`) indexes `$HOME`: that is where
+/// `~/Documents` is written.
 fn indexable_home() -> PathBuf {
     let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
     if let Some(config) = xdg_paths::config_dir()
@@ -182,8 +185,9 @@ fn indexable_home() -> PathBuf {
             profile.to_path_buf()
         };
     }
-    if std::env::var_os("TILO_TEST_CONTROL").is_some()
-        || std::env::var_os("TILO_IDENTITY_ROOT").is_some()
+    if !is_tilo_desktop_session()
+        && (std::env::var_os("TILO_TEST_CONTROL").is_some()
+            || std::env::var_os("TILO_IDENTITY_ROOT").is_some())
     {
         let scratch = xdg_paths::cache_dir()
             .unwrap_or_else(std::env::temp_dir)
@@ -192,6 +196,13 @@ fn indexable_home() -> PathBuf {
         return scratch;
     }
     home
+}
+
+/// Greetd's `tilo-session` and a dev VM slot both export this. The slot also
+/// sets `TILO_TEST_CONTROL` so a harness can drive it; that socket must not
+/// send file search to a scratch directory.
+fn is_tilo_desktop_session() -> bool {
+    std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
 }
 
 impl FilesProvider {
@@ -1586,6 +1597,86 @@ mod tests {
             !got.starts_with(login.path()),
             "the control-socket session must not walk the login home"
         );
+    }
+
+    /// The dev VM session is a real desktop (`XDG_SESSION_DESKTOP=tilo`) that
+    /// also sets `TILO_TEST_CONTROL` so the harness can drive it. The slot
+    /// user writes `~/Documents`; search has to query that home.
+    #[test]
+    #[serial_test::serial]
+    fn a_driven_desktop_session_finds_a_file_just_written_in_documents() {
+        let home = tempfile::tempdir().expect("session home");
+        let cache = tempfile::tempdir().expect("cache");
+        let documents = home.path().join("Documents");
+        std::fs::create_dir_all(&documents).expect("Documents");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("XDG_SESSION_DESKTOP", "tilo")
+            .set("TILO_TEST_CONTROL", "/run/tilo-vm/slot/control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            home.path(),
+            "a driven desktop session must search $HOME, not the headless cache"
+        );
+
+        let provider = FilesProvider::new();
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let hits = |needle: &str| {
+            provider.query(ctx_for(
+                needle,
+                &[ResourceKind::File, ResourceKind::Folder],
+                &state,
+                &doc,
+            ))
+        };
+        // The first palette query arms the walk and the Documents watch.
+        drop(hits(" "));
+        tilo_test_env::wait_until("the name walk to publish", || {
+            provider
+                .published()
+                .is_some_and(|index| index.generation > 0)
+        });
+
+        let needle = "accneedleff3e9f";
+        let dest = documents.join(format!("{needle}.txt"));
+        let tmp = documents.join(format!("{needle}.txt.acc-tmp"));
+        std::fs::write(&tmp, b"acceptance search probe\n").expect("probe temp");
+        std::fs::rename(&tmp, &dest).expect("probe rename");
+
+        tilo_test_env::wait_until("the Documents probe to be searchable", || {
+            hits(needle)
+                .iter()
+                .any(|row| action_text_contains(row, needle))
+        });
+        let hit = hits(needle)
+            .into_iter()
+            .find(|row| action_text_contains(row, needle))
+            .expect("probe");
+        assert!(
+            Path::new(&hit.id).starts_with(home.path()),
+            "search indexed {} instead of the session home {}",
+            hit.id,
+            home.path().display()
+        );
+        assert!(
+            !Path::new(&hit.id).starts_with(cache.path()),
+            "search indexed the headless cache {} for a desktop session",
+            hit.id
+        );
+    }
+
+    fn action_text_contains(row: &SearchResult, needle: &str) -> bool {
+        row.title.contains(needle)
+            || row.id.contains(needle)
+            || row
+                .subtitle
+                .as_deref()
+                .is_some_and(|text| text.contains(needle))
     }
 
     #[test]
