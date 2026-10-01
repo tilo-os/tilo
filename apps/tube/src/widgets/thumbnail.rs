@@ -19,9 +19,11 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, Gradient, ImageData as PenikoImage};
 
 use ui::ImageStore;
+use ui::paint::with_alpha;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::colors::Colors;
 use ui::widget::Widget;
 
 use crate::util::{duration_hms, seed_gradient};
@@ -156,12 +158,19 @@ impl Thumbnail {
                   duration/live pill, dearrow marker, progress bar); splitting it would only \
                   relocate the line count, not the amount a reader must hold in mind"
     )]
-    fn paint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer) {
+    fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if self.rect.width() <= 0.0 {
             return;
         }
         let radius = 12.0;
         let shape = RoundedRect::from_rect(self.rect, radius);
+        let chrome = ThumbChrome::for_theme(theme);
 
         if let Some(img) = &self.image {
             // Real thumbnail: paint the decoded image cover-fit, clipped to the
@@ -180,7 +189,7 @@ impl Thumbnail {
             // circles never bleed past the thumbnail. Unclipped they are
             // invisible on a dark card but paint stray blobs on a light one.
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-            let glass = Color::from_rgba8(255, 255, 255, 18);
+            let glass = chrome.motif_light;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -191,7 +200,7 @@ impl Thumbnail {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(0, 0, 0, 24),
+                chrome.motif_dark,
                 None,
                 &Circle::new(Point::new(self.rect.x0 + 24.0, self.rect.y1 - 18.0), 52.0),
             );
@@ -203,7 +212,7 @@ impl Thumbnail {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(0, 0, 0, 110),
+                chrome.play_plate,
                 None,
                 &Circle::new(Point::new(cx, cy), r),
             );
@@ -213,7 +222,7 @@ impl Thumbnail {
             tri.line_to((cx - t * 0.5, cy + t));
             tri.line_to((cx + t, cy));
             tri.close_path();
-            scene.fill(Fill::NonZero, transform, Color::WHITE, None, &tri);
+            scene.fill(Fill::NonZero, transform, chrome.play_glyph, None, &tri);
             scene.pop_layer();
         }
 
@@ -226,8 +235,8 @@ impl Thumbnail {
                 "LIVE",
                 &PillSpec {
                     size: 11.0,
-                    bg: Color::from_rgb8(0xcc, 0x00, 0x00),
-                    fg: Color::WHITE,
+                    bg: chrome.live_bg,
+                    fg: chrome.live_fg,
                     anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
                     right_align: true,
                 },
@@ -240,8 +249,8 @@ impl Thumbnail {
                 &duration_hms(self.duration),
                 &PillSpec {
                     size: 11.0,
-                    bg: Color::from_rgba8(0, 0, 0, 200),
-                    fg: Color::WHITE,
+                    bg: chrome.duration_bg,
+                    fg: chrome.duration_fg,
                     anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
                     right_align: true,
                 },
@@ -254,7 +263,7 @@ impl Thumbnail {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(255, 255, 255, 60),
+                chrome.progress_track,
                 None,
                 &track,
             );
@@ -264,23 +273,51 @@ impl Thumbnail {
                 self.rect.x0 + self.rect.width() * f64::from(p),
                 self.rect.y1,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgb8(0xff, 0x00, 0x33),
-                None,
-                &fill,
-            );
+            scene.fill(Fill::NonZero, transform, chrome.progress_fill, None, &fill);
         }
 
         // Hairline border to seat it on the surface.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            Color::from_rgba8(255, 255, 255, 20),
-            None,
-            &shape,
-        );
+        scene.stroke(&Stroke::new(1.0), transform, chrome.edge, None, &shape);
+    }
+}
+
+/// Chrome drawn on top of a thumbnail's media (decoded still or seed
+/// gradient). LIVE / progress take the theme's danger; duration and the play
+/// plate sit on the scrim so high contrast strengthens the wash and the ink
+/// is measured against it.
+struct ThumbChrome {
+    motif_light: Color,
+    motif_dark: Color,
+    play_plate: Color,
+    play_glyph: Color,
+    live_bg: Color,
+    live_fg: Color,
+    duration_bg: Color,
+    duration_fg: Color,
+    progress_track: Color,
+    progress_fill: Color,
+    edge: Color,
+}
+
+impl ThumbChrome {
+    fn for_theme(theme: &Theme) -> Self {
+        let c = &theme.tokens.colors;
+        let scrim = c.surfaces.scrim;
+        let on_scrim = theme.on_surface(scrim);
+        let (live_bg, live_fg) = c.legible_fill(c.semantic.danger, Color::WHITE);
+        Self {
+            motif_light: c.overlay_subtle,
+            motif_dark: with_alpha(scrim, 24),
+            play_plate: with_alpha(scrim, 110),
+            play_glyph: on_scrim.ink,
+            live_bg,
+            live_fg,
+            duration_bg: with_alpha(scrim, 200),
+            duration_fg: on_scrim.ink,
+            progress_track: c.overlay_medium,
+            progress_fill: c.semantic.danger,
+            edge: Colors::hairline_on(scrim, 51),
+        }
     }
 }
 
@@ -333,10 +370,10 @@ impl Widget for Thumbnail {
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
-        _theme: &Theme,
+        theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.paint(scene, transform, text_renderer);
+        self.paint(scene, transform, text_renderer, theme);
     }
 
     fn name(&self) -> &'static str {
@@ -382,7 +419,7 @@ mod tests {
         let mut tr = ui::text_render::TextRenderer::new();
         let mut scene = Scene::new();
         thumb.rect = Rect::new(0.0, 0.0, 300.0, 169.0);
-        thumb.paint(&mut scene, Affine::IDENTITY, &mut tr);
+        thumb.paint(&mut scene, Affine::IDENTITY, &mut tr, &Theme::dark());
         scene
             .encoding()
             .draw_tags
@@ -412,6 +449,39 @@ mod tests {
                 paint_count_images(&mut t),
                 0,
                 "no image → gradient poster, no IMAGE draw"
+            );
+        }
+    }
+
+    /// LIVE / progress / duration pills are chrome on media: they come from
+    /// the theme, and the LIVE label clears body-text contrast on its fill
+    /// under every shipped preset (including high contrast).
+    #[test]
+    fn thumbnail_chrome_follows_the_theme() {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let chrome = ThumbChrome::for_theme(&theme);
+            let c = &theme.tokens.colors;
+            assert_eq!(
+                chrome.progress_fill, c.semantic.danger,
+                "{name} progress is the danger token"
+            );
+            assert_eq!(
+                chrome.live_bg,
+                c.legible_fill(c.semantic.danger, Color::WHITE).0,
+                "{name} LIVE fill is the danger chip"
+            );
+            assert!(
+                contrast_ratio(chrome.live_fg, chrome.live_bg) >= ON_FILL_MIN_CONTRAST,
+                "{name} LIVE label {:.2}:1",
+                contrast_ratio(chrome.live_fg, chrome.live_bg)
+            );
+            assert!(
+                contrast_ratio(chrome.duration_fg, c.surfaces.scrim) >= ON_FILL_MIN_CONTRAST,
+                "{name} duration ink {:.2}:1 on scrim",
+                contrast_ratio(chrome.duration_fg, c.surfaces.scrim)
             );
         }
     }
