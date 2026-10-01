@@ -78,8 +78,13 @@ async fn status(client: &dyn HttpClient, guest: &Guest, request_id: [u8; 32]) ->
     .unwrap()
 }
 
+/// Subscribe on `link`: `Err` with the host's reason when it refuses, or
+/// when it has ended the session (a removed member's, once the host audits
+/// its access).
 async fn subscribe(link: &mut HttpsLink, workspace_id: u64) -> Result<(), String> {
-    link.send(Envelope::Subscribe { workspace_id }).unwrap();
+    if link.send(Envelope::Subscribe { workspace_id }).is_err() {
+        return Err("session ended".into());
+    }
     tilo_test_env::within("the host answers the subscription", async {
         loop {
             match link.recv().await {

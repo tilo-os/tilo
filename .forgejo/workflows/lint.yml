@@ -31,6 +31,9 @@ jobs:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.
       CARGO_HOME: /cargo-home
+      # The app lints build ~950 crates on the 20 GiB quality store.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Disable automatic Git maintenance in the disposable job container
         # Git 2.54 maintenance can rewrite shallow history between fetches.
