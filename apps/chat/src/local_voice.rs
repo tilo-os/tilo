@@ -102,9 +102,9 @@ impl LocalVoice {
         }
         if self.pending.is_empty()
             && self.queued.is_empty()
-            && self.last_poll.is_none_or(|last| {
-                now.saturating_duration_since(last) >= Duration::from_millis(500)
-            })
+            && self
+                .last_poll
+                .is_none_or(|last| now.saturating_duration_since(last) >= self.status_interval())
         {
             let _ = self.submit(Command::Status);
         }
@@ -116,13 +116,23 @@ impl LocalVoice {
         }
         std::mem::take(&mut self.queued)
     }
-    pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) {
+    fn status_interval(&self) -> Duration {
+        if self.channel.is_some() {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(5)
+        }
+    }
+
+    pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
         if self.pending.remove(&request_id).is_none()
             || request_id < self.intent_floor
             || request_id < self.applied
         {
-            return;
+            return false;
         }
+        let before = self.snapshot.clone();
+        let before_channel = self.channel.clone();
         if self.pending.is_empty() {
             self.pending_since = None;
         }
@@ -136,11 +146,11 @@ impl LocalVoice {
         }
         let Ok(snapshot) = result else {
             self.invalidate();
-            return;
+            return before != self.snapshot || before_channel != self.channel;
         };
         if !snapshot.valid() {
             self.invalidate();
-            return;
+            return before != self.snapshot || before_channel != self.channel;
         }
         self.snapshot = snapshot.clone();
         if !self.unmute_requested {
@@ -158,6 +168,7 @@ impl LocalVoice {
             self.snapshot.muted = true;
             self.snapshot.capture_active = false;
         }
+        before != self.snapshot || before_channel != self.channel
     }
     /// Forget the service's state and leave the call, if there is one. With
     /// no channel there is nothing to leave: a Leave here would itself be
@@ -421,6 +432,55 @@ mod tests {
         assert_eq!(voice.snapshot.state, State::Unavailable);
         assert!(voice.snapshot.muted);
         assert!(!voice.snapshot.capture_active);
+    }
+
+    #[test]
+    fn idle_status_poll_backs_off_and_unchanged_replies_are_silent() {
+        let now = ui::time::now();
+        let mut voice = LocalVoice::default();
+        let first = voice.take_requests(now);
+        assert_eq!(first.len(), 1);
+        assert!(!voice.complete(request_id(&first[0]), &Ok(Snapshot::unavailable())));
+        assert!(
+            voice
+                .take_requests(now + Duration::from_millis(500))
+                .is_empty(),
+            "idle Chat does not poll voice status every 500 ms"
+        );
+        let later = voice.take_requests(now + Duration::from_secs(5));
+        assert_eq!(
+            later.len(),
+            1,
+            "an idle session still notices a late voice service"
+        );
+        assert!(!voice.complete(request_id(&later[0]), &Ok(Snapshot::unavailable())));
+
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now + Duration::from_secs(5));
+        assert!(voice.complete(request_id(&join[0]), &Ok(live())));
+        assert_eq!(
+            voice
+                .take_requests(now + Duration::from_secs(5) + Duration::from_millis(500))
+                .len(),
+            1,
+            "an active call still polls twice a second"
+        );
+
+        let same = live();
+        let mut voice = LocalVoice::default();
+        voice
+            .submit(Command::Join {
+                channel_id: "voice".into(),
+            })
+            .unwrap();
+        let join = voice.take_requests(now);
+        assert!(voice.complete(request_id(&join[0]), &Ok(same.clone())));
+        let status = voice.take_requests(now + Duration::from_millis(500));
+        assert!(!voice.complete(request_id(&status[0]), &Ok(same)));
     }
 
     #[test]

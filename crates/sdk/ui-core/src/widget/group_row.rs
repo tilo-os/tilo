@@ -4,6 +4,7 @@
 //! `pending_detach`, splices the tab + `TileHost` into a matching sibling.
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
+use crate::animation::{Curve, Transition};
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
@@ -325,6 +326,18 @@ pub struct GroupRow {
     /// `theme.reduce_motion` as last laid out or drawn: the strip's snaps
     /// and make-space slides jump to where they were going.
     reduce_motion: bool,
+    /// Openness of sibling groups while one is maximized or fullscreen.
+    /// `1` is the tiled strip; `0` is hidden. A mid-flight Super+M
+    /// retargets from the current alpha so the fade is interruptible.
+    sibling_fade: Transition,
+    /// Capture-harness pose for [`Self::hold_sibling_fade_at`]. Skips
+    /// `sync_sibling_fade` so a slow offscreen paint cannot retire the
+    /// 130 ms curve before the next snapshot.
+    sibling_fade_hold: Option<Duration>,
+    /// Group that stayed visible through the last maximize/fullscreen.
+    /// Restore uses this so siblings fade in on the tiled draw path,
+    /// not only while `maximized_idx` is still set.
+    fade_hero: Option<u64>,
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
@@ -888,6 +901,9 @@ impl GroupRow {
             move_omega: spring_omega(crate::tokens::SpringPresets::default().heavy),
             shift_hold: None,
             reduce_motion: false,
+            sibling_fade: Transition::open(),
+            sibling_fade_hold: None,
+            fade_hero: None,
             culled_groups: Vec::new(),
         }
     }
@@ -918,6 +934,159 @@ impl GroupRow {
             group.set_external_navigation(external);
         }
     }
+    fn siblings_should_hide(&self) -> bool {
+        self.fullscreen_group.is_some() || self.groups.iter().any(|g| g.maximized)
+    }
+
+    fn layout_hides_group(&self, i: usize) -> bool {
+        let Some(group) = self.groups.get(i) else {
+            return false;
+        };
+        if group.maximized || self.fullscreen_group == Some(group.id) {
+            return false;
+        }
+        let lane = self.lane_index_of(i);
+        self.groups.iter().enumerate().any(|(j, other)| {
+            j != i
+                && self.lane_index_of(j) == lane
+                && (other.maximized || self.fullscreen_group == Some(other.id))
+        })
+    }
+
+    fn sync_sibling_fade(&mut self, theme: &Theme) {
+        if self.sibling_fade_hold.is_some() {
+            return;
+        }
+        let hide = self.siblings_should_hide();
+        if hide {
+            self.fade_hero = self
+                .fullscreen_idx()
+                .or_else(|| self.groups.iter().position(|g| g.maximized))
+                .and_then(|i| self.groups.get(i).map(|g| g.id));
+        } else if self.sibling_fade.is_open() && !self.sibling_fade.is_animating(crate::time::now())
+        {
+            self.fade_hero = None;
+        }
+        let want_open = !hide;
+        if theme.reduce_motion {
+            self.sibling_fade
+                .set_open(want_open, Duration::ZERO, Curve::EaseOut);
+            return;
+        }
+        // `set_open` retargets from the current alpha. Calling it every
+        // layout/draw frame with the same intent would restart the curve.
+        if want_open == self.sibling_fade.is_open() {
+            return;
+        }
+        self.sibling_fade.set_open(
+            want_open,
+            theme.tokens.motion.durations.fast(),
+            Curve::EaseOut,
+        );
+    }
+
+    fn draw_fading_siblings(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        max_i: usize,
+        in_run: &[bool],
+    ) {
+        let now = crate::time::now();
+        if !self.sibling_fade.is_visible(now) {
+            return;
+        }
+        let alpha = self.sibling_fade.value(now);
+        if alpha <= f32::EPSILON {
+            return;
+        }
+        for i in 0..self.groups.len() {
+            if i == max_i || !in_run.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            let rect = self.groups[i].get_rect();
+            if rect.width() <= 1.0 || rect.height() <= 1.0 {
+                continue;
+            }
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                alpha,
+                transform,
+                &rect.inflate(16.0, 16.0),
+            );
+            self.groups[i].draw(scene, transform, tr, theme, presence);
+            scene.pop_layer();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sibling_fade_value(&self) -> f32 {
+        self.sibling_fade.value(crate::time::now())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sibling_fade_is_animating(&self) -> bool {
+        self.sibling_fade.is_animating(crate::time::now())
+    }
+
+    /// Rewind the live fade so a test can sample it mid-flight without
+    /// sleeping. Rebuilds from the current hide intent against a start
+    /// `elapsed` ago.
+    #[cfg(test)]
+    pub(crate) fn advance_sibling_fade(&mut self, elapsed: Duration) {
+        let now = crate::time::now();
+        let started = now.checked_sub(elapsed).unwrap_or(now);
+        let hide = self.siblings_should_hide();
+        self.sibling_fade = if hide {
+            Transition::open()
+        } else {
+            Transition::closed()
+        };
+        self.sibling_fade.set_open_at(
+            !hide,
+            crate::tokens::Durations::default().fast(),
+            Curve::EaseOut,
+            started,
+        );
+    }
+
+    /// Freeze the sibling fade at `elapsed` along `durations.fast`.
+    /// Offscreen paints cost more wall time than the 130 ms curve, so a
+    /// capture harness stepping frames only ever sees the endpoints —
+    /// this poses production `draw` at a chosen point. Not gated on
+    /// `debug_assertions`: `shots` ships in release.
+    pub fn hold_sibling_fade_at(&mut self, elapsed: Duration) -> bool {
+        if self.groups.len() < 2 {
+            return false;
+        }
+        let hide = self.siblings_should_hide();
+        let duration = crate::tokens::Durations::default().fast();
+        let t = if duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        let eased = Curve::EaseOut.apply(t);
+        let openness = if hide { 1.0 - eased } else { eased };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "openness is 0..=1 so permille is 0..=1000, which fits u16"
+        )]
+        let permille = (openness * 1000.0).round().clamp(0.0, 1000.0) as u16;
+        self.sibling_fade = Transition::capture_open_at(permille);
+        self.sibling_fade_hold = Some(elapsed);
+        true
+    }
+
+    pub fn clear_sibling_fade_hold(&mut self) {
+        self.sibling_fade_hold = None;
+    }
+
     pub fn set_fullscreen(&mut self, fullscreen_group: Option<u64>, hidden: bool) {
         if self.fullscreen_group != fullscreen_group || self.hidden != hidden {
             self.fullscreen_group = fullscreen_group;
@@ -2783,6 +2952,7 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
+        self.sync_sibling_fade(theme);
         self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
         let usable_per_group = self.usable_per_group();
         for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
@@ -3188,7 +3358,16 @@ impl Widget for GroupRow {
                 Point::new(pan.viewport.x0 + inset - scroll, pan.viewport.y0)
             })
             .collect();
+        let hide: Vec<bool> = (0..self.groups.len())
+            .map(|i| self.layout_hides_group(i))
+            .collect();
         for (i, (g, child_id)) in self.groups.iter_mut().zip(self.node_ids.iter()).enumerate() {
+            // Display::None would zero the last tiled rect. Keep it so
+            // the sibling fade can draw from the last presented frame
+            // instead of ghosting at the origin.
+            if hide.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let k = lane_of.get(i).copied().unwrap_or(0);
             let origin = origins.get(k).copied().unwrap_or(Point::ORIGIN);
             g.apply_layout(taffy, *child_id, origin);
@@ -3211,6 +3390,7 @@ impl Widget for GroupRow {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
+        self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
             return;
         }
@@ -3250,9 +3430,8 @@ impl Widget for GroupRow {
                 &clip,
             );
             let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
-            // When a group is maximized, paint ONLY that group: siblings'
-            // rects are degenerate (collapsed by `build_layout`), but
-            // drawing them anyway would emit ghost chrome at the origin.
+            // When a group is maximized, siblings stay out of layout so
+            // they are not squashed; they still paint under a fade.
             let maximized_idx =
                 self.fullscreen_idx()
                     .filter(|&i| in_run.get(i).copied().unwrap_or(false))
@@ -3314,6 +3493,9 @@ impl Widget for GroupRow {
         // cursor update and the press; otherwise the seam keeps its usual
         // first refusal. Forwarding the move matters because button events
         // carry no coordinates and the child bar hit-tests its cursor cache.
+        let hidden: Vec<bool> = (0..self.groups.len())
+            .map(|i| self.layout_hides_group(i))
+            .collect();
         let new_tab_owned = matches!(
             event,
             WindowEvent::CursorMoved { .. }
@@ -3321,10 +3503,9 @@ impl Widget for GroupRow {
                     button: MouseButton::Left,
                     ..
                 }
-        ) && self
-            .groups
-            .iter()
-            .any(|group| group.new_tab_hit(self.last_cursor));
+        ) && self.groups.iter().enumerate().any(|(i, group)| {
+            !hidden.get(i).copied().unwrap_or(false) && group.new_tab_hit(self.last_cursor)
+        });
         let cursor = self.last_cursor;
         let direct_new_tab = matches!(
             event,
@@ -3336,8 +3517,11 @@ impl Widget for GroupRow {
         ) && self
             .groups
             .iter_mut()
-            .find(|group| group.new_tab_hit(cursor))
-            .is_some_and(|group| group.request_new_tab_if_hit(cursor));
+            .enumerate()
+            .find(|(i, group)| {
+                !hidden.get(*i).copied().unwrap_or(false) && group.new_tab_hit(cursor)
+            })
+            .is_some_and(|(_, group)| group.request_new_tab_if_hit(cursor));
         if direct_new_tab {
             *ctx.handled = true;
         }
@@ -3401,19 +3585,29 @@ impl Widget for GroupRow {
         if self.group_drag.is_some() {
             return Some(winit::window::CursorIcon::Grabbing);
         }
-        if self.groups.iter().any(|group| group.bar_grab_hit(point)) {
+        if self
+            .groups
+            .iter()
+            .enumerate()
+            .any(|(i, group)| !self.layout_hides_group(i) && group.bar_grab_hit(point))
+        {
             return Some(winit::window::CursorIcon::Grab);
         }
         self.groups
             .iter()
-            .find_map(|group| group.cursor_shape(point))
+            .enumerate()
+            .filter(|(i, _)| !self.layout_hides_group(*i))
+            .find_map(|(_, group)| group.cursor_shape(point))
     }
 
     /// Publish qualified affordances by group id, plus bare aliases for
     /// the leftmost group, so single-group scenarios stay unqualified.
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut out = Vec::new();
-        for g in &self.groups {
+        for (i, g) in self.groups.iter().enumerate() {
+            if self.layout_hides_group(i) {
+                continue;
+            }
             let r = g.new_tab_rect();
             if r.area() <= 0.0 {
                 continue;
@@ -3426,7 +3620,10 @@ impl Widget for GroupRow {
         // `tab:Files` per pill, so a scenario names a tab instead of a
         // coordinate; first group's pills also take the bare name.
         let mut first = true;
-        for g in &self.groups {
+        for (i, g) in self.groups.iter().enumerate() {
+            if self.layout_hides_group(i) {
+                continue;
+            }
             for (tab, rect) in g.tabs().iter().zip(g.tab_rects().iter()) {
                 if rect.area() <= 0.0 {
                     continue;
@@ -3449,7 +3646,10 @@ impl Widget for GroupRow {
         // Hosted app widgets aren't children of the row (the tile host
         // owns them), so the walk into each active tile happens here.
         let mut first = true;
-        for g in &self.groups {
+        for (i, g) in self.groups.iter().enumerate() {
+            if self.layout_hides_group(i) {
+                continue;
+            }
             let Some(host) = g.active_host() else {
                 continue;
             };
@@ -3511,6 +3711,7 @@ impl Widget for GroupRow {
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.group_drag_active()
+            || self.sibling_fade.is_animating(crate::time::now())
             || self
                 .groups
                 .iter()
@@ -3660,15 +3861,22 @@ impl GroupRow {
     ) {
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
+            // Hero first so it can jump to the work area; fading siblings
+            // paint on top as ghosts. Under-draw would hide the fade the
+            // moment maximize absorbs the strip (the leftover this PR
+            // owns — the dest-rect spring is #1848).
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
             }
+            self.draw_fading_siblings(scene, transform, tr, theme, presence, max_i, in_run);
             return;
         }
         // A group an insert, close or reorder moved paints where it was
         // and springs to its new spot, so the strip is seen opening or
         // closing a gap rather than having always had one.
         let now = crate::time::now();
+        let fade_alpha = self.sibling_fade.value(now);
+        let fade_hero = self.fade_hero;
         for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
                 continue;
@@ -3691,6 +3899,20 @@ impl GroupRow {
             let source_is_lifted = self
                 .group_drag
                 .is_some_and(|drag| drag.moved && drag.group_id == id);
+            let fading_sibling =
+                fade_hero.is_some_and(|hero| hero != id) && fade_alpha < 1.0 - f32::EPSILON;
+            if fading_sibling && fade_alpha <= f32::EPSILON {
+                continue;
+            }
+            if fading_sibling {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    fade_alpha,
+                    t,
+                    &rect.inflate(16.0, 16.0),
+                );
+            }
             if source_is_lifted {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -3702,6 +3924,9 @@ impl GroupRow {
             }
             self.groups[i].draw(scene, t, tr, theme, presence);
             if source_is_lifted {
+                scene.pop_layer();
+            }
+            if fading_sibling {
                 scene.pop_layer();
             }
         }
@@ -3948,16 +4173,19 @@ impl GroupRow {
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
-                .position(|group| group.new_tab_hit(self.last_cursor))
-                .or_else(|| {
-                    self.groups
-                        .iter()
-                        .position(|group| group.wants_pointer_capture())
+                .enumerate()
+                .position(|(i, group)| {
+                    !self.layout_hides_group(i) && group.new_tab_hit(self.last_cursor)
                 })
                 .or_else(|| {
-                    self.groups
-                        .iter()
-                        .position(|group| group.get_rect().contains(self.last_cursor))
+                    self.groups.iter().enumerate().position(|(i, group)| {
+                        !self.layout_hides_group(i) && group.wants_pointer_capture()
+                    })
+                })
+                .or_else(|| {
+                    self.groups.iter().enumerate().position(|(i, group)| {
+                        !self.layout_hides_group(i) && group.get_rect().contains(self.last_cursor)
+                    })
                 })
         });
         let preferred = preferred.flatten();
@@ -3965,7 +4193,10 @@ impl GroupRow {
         if let Some(i) = preferred {
             order.push(i);
         }
-        order.extend((0..self.groups.len()).filter(|i| Some(*i) != preferred));
+        order.extend(
+            (0..self.groups.len())
+                .filter(|i| Some(*i) != preferred && !self.layout_hides_group(*i)),
+        );
         for i in order {
             let Some(g) = self.groups.get_mut(i) else {
                 continue;
@@ -7254,13 +7485,13 @@ mod tests {
             let r0 = row.groups[0].get_rect();
             let r2 = row.groups[2].get_rect();
             assert!(
-                r0.width() <= 0.5,
-                "left sibling must collapse to zero width when a peer is maximized; got {}",
+                r0.width() > 1.0,
+                "left sibling keeps its last tiled rect so the fade can draw it; got {}",
                 r0.width(),
             );
             assert!(
-                r2.width() <= 0.5,
-                "right sibling must collapse to zero width when a peer is maximized; got {}",
+                r2.width() > 1.0,
+                "right sibling keeps its last tiled rect so the fade can draw it; got {}",
                 r2.width(),
             );
 
@@ -7372,13 +7603,13 @@ mod tests {
                 "row reports it owns the fullscreen group"
             );
             assert!(
-                row.groups[0].get_rect().width() <= 0.5,
-                "left sibling collapses under fullscreen; got {}",
+                row.groups[0].get_rect().width() > 1.0,
+                "left sibling keeps its last tiled rect under fullscreen; got {}",
                 row.groups[0].get_rect().width(),
             );
             assert!(
-                row.groups[2].get_rect().width() <= 0.5,
-                "right sibling collapses under fullscreen; got {}",
+                row.groups[2].get_rect().width() > 1.0,
+                "right sibling keeps its last tiled rect under fullscreen; got {}",
                 row.groups[2].get_rect().width(),
             );
             // The wheel gutter is dropped because the sidebar is suppressed.
@@ -7465,6 +7696,70 @@ mod tests {
         fullscreen_group_collapses_siblings_and_absorbs_row();
         exiting_fullscreen_restores_prior_layout_exactly();
         hidden_row_collapses_and_restores();
+    }
+
+    #[test]
+    fn maximize_fades_siblings_on_the_fast_curve_and_keeps_velocity() {
+        // Case `maximize_starts_a_fast_fade_and_keeps_the_tiled_rect`.
+        {
+            let (row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let before = row.groups[0].get_rect().width();
+            assert!(
+                (row.sibling_fade_value() - 1.0).abs() < 0.02,
+                "a tiled strip starts with siblings fully visible",
+            );
+            let mut row = row;
+            row.groups[1].maximized = true;
+            let (row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
+            let mut row = row;
+            assert!(
+                row.sibling_fade_is_animating(),
+                "maximize must run the sibling fade, not snap Display::None",
+            );
+            assert!(
+                (row.groups[0].get_rect().width() - before).abs() < 1.0,
+                "the fading sibling keeps its last tiled width, was {before} now {}",
+                row.groups[0].get_rect().width(),
+            );
+            // EaseOut is front-loaded: 32ms of 130ms is still mid-opacity,
+            // while 65ms is already ~0.12 and reads as "almost gone".
+            row.advance_sibling_fade(Duration::from_millis(32));
+            let mid = row.sibling_fade_value();
+            assert!(
+                mid > 0.2 && mid < 0.8,
+                "a quarter of the way through fast the sibling is still on screen, got {mid}",
+            );
+
+            // Case `restore_retargets_from_the_current_alpha`.
+            row.groups[1].maximized = false;
+            let (row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
+            let after = row.sibling_fade_value();
+            assert!(
+                (after - mid).abs() < 0.15,
+                "a new Super+M must keep the current alpha, was {mid} now {after}",
+            );
+            assert!(
+                row.sibling_fade_is_animating(),
+                "restore from mid-fade must keep pumping toward visible",
+            );
+        }
+
+        // Case `reduced_motion_snaps_siblings_away`.
+        {
+            let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            row.groups[1].maximized = true;
+            let theme = Theme::dark().with_reduce_motion(true);
+            let (row, ..) = relayout_row_owned_with(row, 2000.0, &theme);
+            assert!(
+                row.sibling_fade_value() < 0.02,
+                "reduced motion hides siblings on the first frame, got {}",
+                row.sibling_fade_value(),
+            );
+            assert!(
+                !row.sibling_fade_is_animating(),
+                "reduced motion must not pump fade frames",
+            );
+        }
     }
 
     /// Shared relayout helper for the fullscreen tests: rebuilds the taffy

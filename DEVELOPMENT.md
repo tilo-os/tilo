@@ -69,8 +69,9 @@ installs the flashable disk:
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
 | Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The moving tag moves once the board job has installed the disk from that image.
-The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+The moving tag moves once the aarch64 lane has sealed and pushed the image; the
+board job then installs the disk from it.
+On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
 Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):
