@@ -1172,6 +1172,9 @@ fn render_one_frame(
             .create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
                 label: Some("ui-render-thread blit-to-surface"),
             });
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-encoder-done");
+    }
     surface.blitter.copy(
         &device_handle.device,
         &mut encoder,
@@ -1180,6 +1183,9 @@ fn render_one_frame(
             .texture
             .create_view(&vello::wgpu::TextureViewDescriptor::default()),
     );
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-copy-done");
+    }
     device_handle.queue.submit([encoder.finish()]);
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-blit-done");
