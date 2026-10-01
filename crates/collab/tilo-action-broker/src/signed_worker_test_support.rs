@@ -314,7 +314,7 @@ pub struct OriginalRoom {
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
-    _owner_mailbox: tilo_workspace_host::owner_commit::OwnerCommitMailbox,
+    _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
 }
 
 impl OriginalRoom {
@@ -350,7 +350,7 @@ impl OriginalRoom {
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
-            tilo_workspace_host::owner_commit::OwnerCommitMailbox::bounded(8);
+            crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let (state, _) = CapnpBrokerState::new(

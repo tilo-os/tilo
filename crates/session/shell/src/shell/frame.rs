@@ -144,6 +144,17 @@ pub struct FramePaint {
     pub revision: u64,
     pub previous_revision: Option<u64>,
     pub damage_regions: Option<Vec<FineDamageRect>>,
+    /// Set while the overview is fading. The multi-output presenter composites
+    /// this panel over the previous desktop instead of readback of both outputs.
+    pub(crate) overview_patch: Option<crate::shell::overlay_host::OverviewFastPatch>,
+    /// Active workspace, so a switch back can replay pixels already rendered
+    /// instead of uploading both outputs again.
+    pub(crate) workspace_id: Option<u64>,
+    /// The workspace-switch frame run. Intermediate frames must not upload.
+    pub(crate) workspace_hold: bool,
+    /// Content column of the first display while that run is in flight.
+    /// The close stays inside it instead of flushing every scanout.
+    pub(crate) workspace_clip: Option<FineDamageRect>,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -158,6 +169,10 @@ impl FramePaint {
             revision: 0,
             previous_revision: None,
             damage_regions: None,
+            overview_patch: None,
+            workspace_id: None,
+            workspace_hold: false,
+            workspace_clip: None,
             hdr_layers: Vec::new(),
         }
     }
@@ -177,6 +192,7 @@ impl FramePaint {
         self.revision = 0;
         self.damage_regions = None;
         self.previous_revision = None;
+        self.overview_patch = None;
     }
 }
 
@@ -382,6 +398,7 @@ pub struct FrameBuilder {
     watch_configured_theme: bool,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
+    appearance_generation: u64,
     night_light: bool,
     night_light_temperature: u32,
     /// The day/night schedule an "Automatic" theme or a scheduled night light
@@ -449,6 +466,9 @@ pub struct FrameBuilder {
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
+    /// The session network, once peer sync is up, so a control invoke can
+    /// address an enrolled device.
+    enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -624,6 +644,7 @@ impl FrameBuilder {
             watch_configured_theme: false,
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
+            appearance_generation: 0,
             night_light: false,
             night_light_temperature: 3_700,
             day_phase: None,
@@ -657,6 +678,7 @@ impl FrameBuilder {
             next_scene_revision: 1,
             painted_hdr_layers: Vec::new(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            enrolled_actions: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -681,6 +703,49 @@ impl FrameBuilder {
     /// viewport.
     pub fn output_geometry(&self) -> Vec<OutputGeometry> {
         self.effective_outputs()
+    }
+
+    /// Remember the session network so a later control invoke can address an
+    /// enrolled device.
+    pub fn set_enrolled_action_network(
+        &mut self,
+        network: std::sync::Arc<crate::shell::network::ShellNetwork>,
+    ) {
+        self.enrolled_actions = Some(network);
+    }
+
+    /// Hand one native action to an enrolled device on a shared workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this session has no network, or the network
+    /// refuses the device or the address.
+    pub fn invoke_enrolled_device(
+        &self,
+        device: &str,
+        provider: &str,
+        id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let network = self
+            .enrolled_actions
+            .as_ref()
+            .ok_or_else(|| "this session is not on the network".to_string())?;
+        let address = tilo_actions::ActionAddress::parse(id)
+            .ok_or_else(|| "action id is not a resource address".to_string())?;
+        let argument = if args.is_empty() {
+            tilo_actions::remote::InvokeArgument::None
+        } else {
+            tilo_actions::remote::InvokeArgument::Json(args.clone())
+        };
+        network.invoke_enrolled_device(
+            device,
+            tilo_actions::remote::RemoteActionTarget {
+                provider: provider.to_string(),
+                address,
+            },
+            argument,
+        )
     }
 
     /// Tell the frame builder which displays it's painting across, so a
@@ -800,9 +865,15 @@ impl FrameBuilder {
             let pointer = std::ptr::from_ref(widget);
             if widget.is_focusable()
                 && widget.is_enabled()
-                && let Some((&node, _)) = node_map
-                    .iter()
-                    .find(|(_, mapped)| std::ptr::addr_eq(**mapped as *const dyn Widget, pointer))
+                && let Some((&node, _)) = node_map.iter().find(|(_, mapped)| {
+                    // `TileHost` children are `dyn AppWidget`; comparing the
+                    // full `dyn Widget` fat pointer misses the same heap
+                    // object because the vtables differ.
+                    std::ptr::eq(
+                        (**mapped as *const dyn Widget).cast::<()>(),
+                        pointer.cast::<()>(),
+                    )
+                })
             {
                 order.push(node);
             }
@@ -873,7 +944,84 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    fn widget_name(&self, id: NodeId) -> Option<&'static str> {
+        self.node_map.get(&id).map(|&widget| {
+            // SAFETY: this map belongs to the current, live layout tree.
+            unsafe { (*widget).name() }
+        })
+    }
+
+    fn active_tile_is_terminal(&self) -> bool {
+        let chrome = self.chrome();
+        let tree = chrome.tree();
+        let is_terminal = Self::workspace_active_tile_is_terminal(&tree);
+        drop(tree);
+        is_terminal
+    }
+
+    fn workspace_active_tile_is_terminal(tree: &crate::shell::state::WorkspaceTree) -> bool {
+        use crate::shell::state::{AppKind, TileContent};
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return false;
+        };
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .and_then(|sid| ws.strips.iter().find(|s| s.id == *sid))
+            .or_else(|| ws.strips.first());
+        let Some(strip) = strip else {
+            return false;
+        };
+        let group = tree
+            .desktop
+            .active_group_for(strip.id)
+            .and_then(|gid| strip.window_groups.iter().find(|g| g.id == gid))
+            .or_else(|| strip.window_groups.first());
+        let Some(group) = group else {
+            return false;
+        };
+        let tab = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first());
+        tab.is_some_and(|tab| match &tab.tile {
+            TileContent::AppPlaceholder {
+                kind: AppKind::Terminal,
+                ..
+            }
+            | TileContent::Stub {
+                kind: AppKind::Terminal,
+                ..
+            } => true,
+            TileContent::Foreign { app_id, .. } => app_id == "so.tilo.terminal",
+            _ => false,
+        })
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        // A focused Terminal must receive typing, including Space and Enter.
+        // Chrome controls come first in DFS and used to steal initial focus;
+        // Activate then opened workspace settings instead of sending CR.
+        if self.active_tile_is_terminal() {
+            // TileHost children are `dyn AppWidget`; chrome focus order
+            // compares `dyn Widget` fat pointers and used to miss the
+            // Terminal even though it is in the live node map.
+            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
+                let widget = unsafe { &***mapped };
+                widget.name() == "Terminal" && widget.is_focusable() && widget.is_enabled()
+            }) {
+                return Some(id);
+            }
+            if let Some(terminal) = order
+                .iter()
+                .copied()
+                .find(|id| self.widget_name(*id) == Some("Terminal"))
+            {
+                return Some(terminal);
+            }
+        }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
         // form's first control. Keep it in the Tab order for keyboard scrolling.
@@ -911,15 +1059,21 @@ impl FrameBuilder {
     fn restore_focus_after_tree_change(&mut self, focus: &mut Option<NodeId>) {
         *focus = None;
         let order = self.focusable_order();
-        let target = self.native_focus_ordinal.map_or_else(
-            || self.initial_focus_target(&order),
-            |ordinal| {
-                order
-                    .get(ordinal)
-                    .copied()
-                    .or_else(|| order.last().copied())
-            },
-        );
+        // Opening a Terminal rebuilds the tree. Restoring the previous
+        // chrome ordinal leaves Space/Enter on the workspace pill.
+        let target = if self.active_tile_is_terminal() {
+            self.initial_focus_target(&order)
+        } else {
+            self.native_focus_ordinal.map_or_else(
+                || self.initial_focus_target(&order),
+                |ordinal| {
+                    order
+                        .get(ordinal)
+                        .copied()
+                        .or_else(|| order.last().copied())
+                },
+            )
+        };
         self.set_native_focus(focus, target);
         self.focus_tree_changed = false;
     }
@@ -1304,6 +1458,39 @@ impl FrameBuilder {
         scene
     }
 
+    /// A transition frame is the clip, not a new encoding of both displays.
+    /// `None` when the desktop itself has to be drawn.
+    fn paint_content_clip(&mut self) -> Option<FramePaint> {
+        // Reduced motion is a settled frame, not a clip run. The retained
+        // oracle has to see the new workspace's commands.
+        if self.theme.reduce_motion || !self.host.presents_on_content_clip() {
+            return None;
+        }
+        self.host
+            .prepare_content_clip(&mut self.text_renderer, &self.theme);
+        let revision = self.next_scene_revision;
+        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let previous_revision = self
+            .last_produced_sections
+            .as_ref()
+            .map(|last| last.revision);
+        let overview_patch = self.host.take_overview_fast_patch();
+        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
+        let workspace_hold = self.host.workspace_switch_holding();
+        let workspace_clip = self.host.workspace_switch_clip();
+        Some(FramePaint {
+            scene: Scene::new(),
+            revision,
+            previous_revision,
+            damage_regions: None,
+            overview_patch,
+            workspace_id,
+            workspace_hold,
+            workspace_clip,
+            hdr_layers: Vec::new(),
+        })
+    }
+
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
     /// independent for capture and pixel-oracle use.
@@ -1314,6 +1501,10 @@ impl FrameBuilder {
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
         self.refresh_magnifier();
+        if let Some(frame) = self.paint_content_clip() {
+            return frame;
+        }
+        self.host.dense_scene_covers_content_rebuild();
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
@@ -1439,11 +1630,19 @@ impl FrameBuilder {
             global_filter,
             revision,
         });
+        let overview_patch = self.host.take_overview_fast_patch();
+        let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
+        let workspace_hold = self.host.workspace_switch_holding();
+        let workspace_clip = self.host.workspace_switch_clip();
         FramePaint {
             scene,
             revision,
             previous_revision,
             damage_regions,
+            overview_patch,
+            workspace_id,
+            workspace_hold,
+            workspace_clip,
             hdr_layers,
         }
     }
@@ -1468,7 +1667,10 @@ impl FrameBuilder {
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
-            return None;
+            // Proven identical to the previous frame. `None` means "no
+            // authority, redraw everything"; an empty list means the pixels
+            // already on screen are still correct.
+            return Some(Vec::new());
         }
         let mut regions = Vec::with_capacity(2);
         if topbar_changed {
@@ -1750,7 +1952,12 @@ impl FrameBuilder {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
-            || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
+        {
+            return;
+        }
+        let appearance_generation = self.chrome.borrow().appearance_generation;
+        let appearance_changed = appearance_generation != self.appearance_generation;
+        if !appearance_changed && self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
         }
@@ -1760,11 +1967,13 @@ impl FrameBuilder {
         let phase_changed = self
             .day_phase
             .is_some_and(|(schedule, night)| schedule.is_night(ui::theme::local_moment()) != night);
-        if stamp == self.theme_store_stamp && !phase_changed {
+        if stamp == self.theme_store_stamp && !phase_changed && !appearance_changed {
             return;
         }
         self.theme_store_stamp = stamp;
+        self.appearance_generation = appearance_generation;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
@@ -1776,6 +1985,8 @@ impl FrameBuilder {
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
         self.theme = Theme::configured();
+        crate::shell::i18n::apply_configured_locale();
+        self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
         self.theme_store_stamp = settings_store::settings_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
@@ -2822,6 +3033,60 @@ impl FrameBuilder {
         (&mut self.host, &self.taffy)
     }
 
+    /// Send Named Space/Enter to the hosted Terminal before chrome Activate.
+    fn offer_terminal_typing(
+        &self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root_obj: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed
+                    && matches!(
+                        key.logical_key,
+                        Key::Named(NamedKey::Enter | NamedKey::Space)
+                    )
+        ) || !self.active_tile_is_terminal()
+        {
+            return false;
+        }
+        // Super+Shift+Enter is DetachTab (W08). Super+Space is search.
+        // Only unmodified Space/Enter belong on the live Terminal first.
+        let mods = modifiers.state();
+        if mods.super_key() || mods.shift_key() {
+            return false;
+        }
+        let Some((&id, &widget)) = self
+            .node_map
+            .iter()
+            .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+        else {
+            return false;
+        };
+        let mut handled = false;
+        let taffy = self.taffy();
+        unsafe {
+            (*widget).handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers,
+                    state,
+                    path: root_obj,
+                    handled: &mut handled,
+                    focus_target,
+                    node_id: id,
+                    taffy,
+                },
+            );
+        }
+        handled
+    }
+
     /// Dispatch a single `WindowEvent` through the host's `handle_event`
     /// pipeline. Returns whether it was consumed.
     ///
@@ -2850,6 +3115,14 @@ impl FrameBuilder {
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
         let mut focus_target: Option<NodeId> = None;
+        if self.offer_terminal_typing(event, modifiers, state, root_obj, &mut focus_target) {
+            if let Some(new_id) = focus_target
+                && prior_focus != Some(new_id)
+            {
+                self.set_native_focus(focus, Some(new_id));
+            }
+            return true;
+        }
         {
             let (host, taffy) = self.host_and_taffy_mut();
             host.handle_event(
@@ -2885,9 +3158,8 @@ impl FrameBuilder {
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
         // normally turns Enter/Space on the focused widget into an
-        // accessibility Activate action. First offer the raw event to the
-        // widget (editing controls may consume it), then activate only when it
-        // was otherwise unhandled.
+        // accessibility Activate action. Space/Enter for a live Terminal
+        // were already offered above; activate only when they were unhandled.
         if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
@@ -2895,6 +3167,8 @@ impl FrameBuilder {
                 event.logical_key,
                 Key::Named(NamedKey::Enter | NamedKey::Space)
             )
+            && !modifiers.state().super_key()
+            && !modifiers.state().shift_key()
             && let Some(focused) = *focus
             && let Some(widget) = self.node_map.get(&focused).copied()
         {
@@ -3024,6 +3298,9 @@ impl FrameBuilder {
         for (name, rect) in host.power_menu_semantic_rects() {
             put(name.into(), rect);
         }
+        for (name, rect) in host.trusted_frame_targets(&self.theme) {
+            put(name.to_string(), rect);
+        }
     }
 }
 
@@ -3071,23 +3348,34 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     } else {
         format!("{parent_path}/{name}[{my_index}]")
     };
-    out.insert(path.clone(), w.get_rect());
+    // Shell chrome owns `tilo.shell.trusted-frame/...`. A widget that
+    // copies the name, test id, or painted affordance does not publish it.
+    if crate::shell::trusted_ui::widget_may_publish(&path) {
+        out.insert(path.clone(), w.get_rect());
+    }
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
             name
         } else {
             format!("{parent_path}/{name}")
         };
-        out.entry(bare).or_insert_with(|| w.get_rect());
+        if crate::shell::trusted_ui::widget_may_publish(&bare) {
+            out.entry(bare).or_insert_with(|| w.get_rect());
+        }
     }
-    if let Some(id) = w.test_id() {
+    if let Some(id) = w.test_id()
+        && crate::shell::trusted_ui::widget_may_publish(id)
+    {
         out.insert(id.to_string(), w.get_rect());
     }
     // Affordances the widget paints itself. Skipping zero-area entries
     // is what makes a name mean "on screen now".
     for (name, rect) in w.test_rects() {
-        if rect.area() > 0.0 {
-            out.insert(format!("{path}/{name}"), rect);
+        if rect.area() > 0.0 && crate::shell::trusted_ui::widget_may_publish(&name) {
+            let qualified = format!("{path}/{name}");
+            if crate::shell::trusted_ui::widget_may_publish(&qualified) {
+                out.insert(qualified, rect);
+            }
             out.entry(name).or_insert(rect);
         }
     }
@@ -3747,6 +4035,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn super_s_moves_the_wheel_disc_to_the_pointer() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        let before = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the docked wheel is addressable");
+        let at = Point::new(1180.0, 450.0);
+        fb.host_mut().note_pointer(at);
+        let chord = Modifiers::from(ModifiersState::SUPER);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus = None;
+        assert!(
+            fb.dispatch_event(
+                &key_press(Key::Character("s".into())),
+                &chord,
+                &mut doc,
+                &root,
+                &mut focus
+            ),
+            "Super+S is handled by the shell"
+        );
+        let summoned = fb
+            .chrome()
+            .wheel_summon()
+            .expect("Super+S writes chrome.wheel_summon");
+        assert!(
+            (summoned.x - at.x).abs() < 1.0 && (summoned.y - at.y).abs() < 1.0,
+            "summon follows the pointer, got {summoned:?}"
+        );
+        let _ = fb.paint_settled();
+        let after = *fb
+            .widget_registry()
+            .get("wheel_disc")
+            .expect("the summoned wheel stays addressable");
+        assert!(
+            (after.x1 - at.x).abs() < 2.0,
+            "the rim's right edge sits on the pointer so a shot at that point sees the wheel; \
+             got x1={} for pointer x={}",
+            after.x1,
+            at.x
+        );
+        assert!(
+            (after.x0 - before.x0).abs() > 50.0,
+            "the disc actually moved: docked {before:?} summoned {after:?}"
+        );
+    }
+
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }
@@ -4163,6 +4501,333 @@ mod tests {
     }
 
     #[test]
+    fn control_socket_typing_reaches_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        use winit::keyboard::SmolStr;
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(
+            fb.widget_name(focus.expect("a terminal tile must take initial focus")),
+            Some("Terminal"),
+            "chrome must not keep initial focus on a workspace pill"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let mut doc = AutoCommit::new();
+        for key in [
+            Key::Character(SmolStr::new_static("e")),
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+        ] {
+            assert!(
+                fb.dispatch_event(
+                    &key_press(key),
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "typed keys must be consumed on the production chrome path"
+            );
+        }
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"e \r",
+            "letters, Space and Enter must reach the PTY, not chrome Activate",
+        );
+    }
+
+    #[test]
+    fn chrome_focus_does_not_steal_terminal_space_and_enter() {
+        use crate::shell::state::{AppKind, TileContent};
+        use winit::keyboard::SmolStr;
+        // W17 / A01 on the live compositor: the workspace pill keeps
+        // keyboard focus after the Terminal tile opens. Letters still
+        // reach the PTY through tree dispatch; Named Space/Enter used
+        // to Activate chrome (Homeoffice workspace settings).
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
+            let name = unsafe { (**widget).name() };
+            (name == "TopBarChrome").then_some(*id)
+        });
+        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
+        fb.set_native_focus(&mut focus, Some(chrome_id));
+        assert_eq!(
+            fb.widget_name(focus.expect("top bar must take keyboard focus")),
+            Some("TopBarChrome"),
+            "this case is the VM path: chrome, not the Terminal, holds focus"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let mut doc = AutoCommit::new();
+        for key in [
+            Key::Character(SmolStr::new_static("e")),
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+        ] {
+            assert!(
+                fb.dispatch_event(
+                    &key_press(key),
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "typed keys must be consumed on the production chrome path"
+            );
+        }
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"e \r",
+            "Space and Enter must reach the PTY while chrome still has focus",
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one production-path case keeps chrome focus, PTY probe, and group split visible"
+    )]
+    fn super_shift_enter_splits_the_tab_instead_of_reaching_the_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        // W08: Super+Shift+Enter is DetachTab. Offering unmodified Space/Enter
+        // to the Terminal before chrome must not also swallow this chord.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
+            let name = unsafe { (**widget).name() };
+            (name == "TopBarChrome").then_some(*id)
+        });
+        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
+        fb.set_native_focus(&mut focus, Some(chrome_id));
+        assert_eq!(
+            fb.widget_name(focus.expect("top bar must take keyboard focus")),
+            Some("TopBarChrome"),
+            "chrome holds focus, as on the VM path"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let groups_before = {
+            let chrome = fb.chrome();
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
+        };
+        let tabs_before = {
+            let chrome = fb.chrome();
+            chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| {
+                    ws.strips
+                        .iter()
+                        .flat_map(|s| s.window_groups.iter())
+                        .find(|candidate| candidate.id == group)
+                })
+                .map_or(0, |g| g.tabs.len())
+        };
+        let mut doc = AutoCommit::new();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+        assert!(
+            fb.dispatch_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                &chord,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ),
+            "Super+Shift+Enter must be consumed as the split-tab chord"
+        );
+        fb.relayout();
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"",
+            "Super+Shift+Enter must not be delivered to the PTY"
+        );
+        let groups_after = {
+            let chrome = fb.chrome();
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
+        };
+        let tabs_after = {
+            let chrome = fb.chrome();
+            chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| {
+                    ws.strips
+                        .iter()
+                        .flat_map(|s| s.window_groups.iter())
+                        .find(|candidate| candidate.id == group)
+                })
+                .map_or(0, |g| g.tabs.len())
+        };
+        assert_eq!(
+            groups_after,
+            groups_before + 1,
+            "Super+Shift+Enter must split the tab into a new group"
+        );
+        assert_eq!(
+            tabs_after,
+            tabs_before.saturating_sub(1),
+            "the source group must keep the remaining tabs"
+        );
+    }
+
+    #[test]
     fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
         fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
             let (mut fb, _identity_dir) = onboarding_frame();
@@ -4479,12 +5144,20 @@ mod tests {
             );
         }
 
-        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
-        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
+        /// clients; chrome fullscreen still wins so W07 sees
+        /// `fullscreen_group`. Maximize stays beside the wheel.
         fn super_f_on_a_tilo_group_covers_the_wheel() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            // The native loop writes `set_fullscreen(None)` every tick so
+            // client xdg stays an overlay. Super+F must survive that wipe.
+            fb.set_fullscreen(None);
+            assert!(
+                fb.fullscreen_group().is_some(),
+                "compositor set_fullscreen(None) must not clear Super+F"
+            );
             let _ = fb.paint_settled();
             assert!(fb.chrome().is_fullscreen());
             let during = fb.widget_registry();
@@ -4508,6 +5181,403 @@ mod tests {
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
         super_f_on_a_tilo_group_covers_the_wheel();
+    }
+
+    fn both_directions_hold_the_scanout() {
+        let mut fb = FrameBuilder::new((3200, 1080));
+        let _ = fb.paint_settled();
+        let mut switched = false;
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(1);
+        });
+        assert!(switched, "the demo tree has a second workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let forward = fb.paint_with_damage();
+        assert!(
+            forward.workspace_hold,
+            "switching away holds the scanouts instead of uploading both"
+        );
+        let held = fb.paint_with_damage();
+        assert!(held.workspace_hold);
+        assert_eq!(held.workspace_id, forward.workspace_id);
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(-1);
+        });
+        assert!(switched, "switching back moves to the previous workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let back = fb.paint_with_damage();
+        assert!(
+            back.workspace_hold,
+            "switching back holds the scanouts instead of uploading both"
+        );
+        assert_ne!(back.workspace_id, forward.workspace_id);
+    }
+
+    #[test]
+    fn overview_and_workspace_switch_request_a_run_of_frames() {
+        fn overview_toggle_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            // Latch on the host before update, as Super+Tab does.
+            fb.host_mut().latch_overview_transition();
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "root-transition"),
+                "overview must request frames on the chord, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "root-transition"),
+                "overview must request frames on the update that sees the toggle, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn workspace_switch_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            // Latch on the host before update, as Super+PageDown does.
+            fb.host_mut().start_workspace_switch_frames();
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "workspace-switch"),
+                "a workspace switch must request frames on the chord, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "workspace-switch"),
+                "a workspace switch must keep requesting a run of frames; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn compositor_paint_run_is_not_host_demand() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| st.request_transition_paints(8));
+            assert_eq!(fb.chrome().transition_paints_remaining(), 8);
+            assert!(
+                !fb.needs_animation_frame(),
+                "the compositor paint run must not keep the host asking after the crossfade; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn latch_asks_the_compositor_for_eight_paints() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            assert_eq!(
+                fb.chrome().transition_paints_remaining(),
+                8,
+                "overview must keep the compositor painting until eight frames have run"
+            );
+        }
+
+        overview_toggle_requests_frames_before_draw();
+        workspace_switch_requests_frames_before_draw();
+        compositor_paint_run_is_not_host_demand();
+        latch_asks_the_compositor_for_eight_paints();
+        both_directions_hold_the_scanout();
+    }
+
+    #[test]
+    fn workspace_switch_close_paints_intermediate_frames_on_the_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        let mut switched = false;
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(1);
+        });
+        assert!(switched, "the demo tree has a second workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let open = fb.paint_with_damage();
+        assert!(open.workspace_hold);
+        for _ in 0..8 {
+            let frame = fb.paint_with_damage();
+            assert!(
+                frame.workspace_hold,
+                "the open keeps a run of frames without idling"
+            );
+        }
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(-1);
+        });
+        assert!(switched, "switching back moves to the previous workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        for index in 0..8 {
+            let frame = fb.paint_with_damage();
+            assert!(
+                frame.workspace_hold,
+                "close frame {index} is still in the frame run"
+            );
+            let clip = frame
+                .workspace_clip
+                .expect("the close paints on the workspace clip");
+            let right = clip.x.saturating_add(clip.width);
+            assert!(
+                right <= 1920,
+                "close frame {index} stays on the first display (clip ends at {right})"
+            );
+            assert!(
+                clip.width < 1920,
+                "close frame {index} is the content column ({} px), not a scanout",
+                clip.width
+            );
+        }
+    }
+
+    #[test]
+    fn overview_open_and_workspace_switch_paint_a_content_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        fn clip_scene(frame: &FramePaint) {
+            assert_eq!(
+                frame.scene.encoding().n_paths,
+                0,
+                "a transition frame does not encode both outputs"
+            );
+        }
+
+        fn overview_open_is_a_clip() {
+            let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+            ]);
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            for index in 0..8 {
+                let frame = fb.paint_with_damage();
+                clip_scene(&frame);
+                let patch = frame
+                    .overview_patch
+                    .unwrap_or_else(|| panic!("open frame {index} paints the overview clip"));
+                let right = patch.panel.x.saturating_add(patch.panel.width);
+                assert!(
+                    right <= 1920,
+                    "open frame {index} stays on the first display (clip ends at {right})"
+                );
+            }
+        }
+
+        fn workspace_open_is_a_clip() {
+            let mut fb = FrameBuilder::new((3200, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+            ]);
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            fb.host_mut().start_workspace_switch_frames();
+            for index in 0..8 {
+                let frame = fb.paint_with_damage();
+                clip_scene(&frame);
+                assert!(
+                    frame.workspace_hold,
+                    "open frame {index} stays in the frame run"
+                );
+                let clip = frame
+                    .workspace_clip
+                    .unwrap_or_else(|| panic!("open frame {index} paints the workspace clip"));
+                let right = clip.x.saturating_add(clip.width);
+                assert!(
+                    right <= 1920,
+                    "open frame {index} stays on the first display (clip ends at {right})"
+                );
+            }
+        }
+
+        overview_open_is_a_clip();
+        workspace_open_is_a_clip();
+    }
+
+    #[test]
+    fn overview_close_paints_intermediate_frames_on_the_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+        use crate::shell::render::paint::VelloDrmBridge;
+
+        let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        fb.with_chrome(|st| {
+            st.overlays.overview = true;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        for _ in 0..4 {
+            let _ = fb.paint_with_damage();
+        }
+        fb.with_chrome(|st| {
+            st.overlays.overview = false;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        for index in 0..8 {
+            let frame = fb.paint_with_damage();
+            let patch = frame.overview_patch.unwrap_or_else(|| {
+                panic!("close frame {index} paints the overview clip");
+            });
+            let right = patch.panel.x.saturating_add(patch.panel.width);
+            assert!(
+                right <= 1920,
+                "close frame {index} stays on the first display (clip ends at {right})"
+            );
+            assert!(
+                patch.panel.width < 1920,
+                "close frame {index} is the panel ({} px), not a scanout",
+                patch.panel.width
+            );
+            assert!(
+                VelloDrmBridge::overview_clip_fits_fast_target(
+                    patch.panel.width,
+                    patch.panel.height
+                ),
+                "close frame {index} clip {}x{} must not force a combined readback",
+                patch.panel.width,
+                patch.panel.height
+            );
+        }
+    }
+
+    #[test]
+    fn overview_publishes_new_workspace_before_the_fade_paints() {
+        use crate::shell::output_scene::OutputGeometry;
+        use crate::shell::state::WorkspaceTree;
+
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        let before = fb.chrome().tree().desktop.workspaces.len();
+        fb.with_chrome(|st| {
+            st.overlays.overview = true;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        // No settled paint: the acceptance check lists targets as soon as the
+        // overlay flag is up, which is this moment. The open's first sample
+        // is still alpha 0.
+        let rect = fb
+            .widget_registry()
+            .get("add_workspace")
+            .copied()
+            .unwrap_or(Rect::ZERO);
+        assert!(
+            rect.area() > 0.0,
+            "overview must publish add_workspace as soon as it is open"
+        );
+        assert!(
+            rect.x1 <= 1920.0,
+            "the new-workspace control stays on the first display (right edge {})",
+            rect.x1
+        );
+        let _ = fb.paint_with_damage();
+        assert!(
+            fb.widget_registry()
+                .get("add_workspace")
+                .is_some_and(|hit| hit.area() > 0.0),
+            "the alpha-zero open sample must keep add_workspace addressable"
+        );
+        let center = rect.center();
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let _ = fb.dispatch_event(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        );
+        let clicked = fb.dispatch_event(
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        );
+        assert!(
+            clicked,
+            "the new-workspace click is handled by the overview"
+        );
+        let after = fb.chrome().tree().desktop.workspaces.len();
+        let open = fb.chrome().overlays.overview;
+        assert_eq!(
+            after,
+            before + 1,
+            "clicking add_workspace creates a workspace"
+        );
+        assert!(
+            !open,
+            "creating a workspace closes the overview so navigation reaches it"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_frame_reports_empty_damage() {
+        let mut frame = FrameBuilder::new((800, 600));
+        frame.relayout();
+        let first = frame.paint_with_damage();
+        assert!(
+            first.damage_regions.is_none(),
+            "the first frame has no predecessor to retain"
+        );
+        let second = frame.paint_with_damage();
+        assert_eq!(
+            second.damage_regions.as_deref(),
+            Some(&[][..]),
+            "an identical frame must not request another full upload"
+        );
     }
 
     /// Look up a widget's rect by its *last* path segment
@@ -4579,6 +5649,140 @@ mod tests {
         let node = fb.focusable_order().into_iter().next();
         fb.note_keyboard_focus(node);
         assert_eq!(fb.keyboard_focus_rect, None);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_actions_repaint_quick_settings_chrome() {
+        use crate::shell::search::action_api::ActionArgs;
+        use crate::shell::search::providers::ActionsProvider;
+        use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| {
+            let user = {
+                let tree = chrome.tree();
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| chrome.local_user_for_room(&workspace.room))
+            };
+            if let Some(user) = user {
+                let mut tree = chrome.tree_mut();
+                if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                    workspace.set_owner(user);
+                }
+            }
+            chrome.overlays.quick_settings = true;
+        });
+        frame.relayout();
+
+        let chrome = frame.chrome_handle();
+        let provider = ActionsProvider::new();
+        let invoke = |id: &str| {
+            let row = {
+                let document = AutoCommit::new();
+                let state = chrome.borrow();
+                provider
+                    .query(SearchContext {
+                        needle: "",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    })
+                    .into_iter()
+                    .find(|row| row.id == id)
+                    .unwrap_or_else(|| panic!("{id} must be exported"))
+            };
+            let mut document = AutoCommit::new();
+            (row.on_open)(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
+        };
+
+        invoke("appearance.theme.light");
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        invoke("appearance.theme.dark");
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "invoking appearance.theme.light then dark must change the Quick Settings chrome the next paint uses, not only the settings file"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_file_write_repaint_quick_settings_chrome() {
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let write = |theme: &str| {
+            let mut values = serde_json::Map::new();
+            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+            settings_store::update_section("appearance", values).expect("write appearance");
+        };
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
+        frame.relayout();
+
+        write("light");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        write("dark");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "writing appearance.theme light then dark must change the Quick Settings chrome the next paint uses"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
     }
 }
 

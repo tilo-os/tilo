@@ -14,7 +14,6 @@ pub enum PrivateOperation {
     Invoke,
     Status,
     Cancel,
-    AgentRead,
 }
 impl PrivateOperation {
     pub fn path(self) -> &'static str {
@@ -23,23 +22,16 @@ impl PrivateOperation {
             Self::Invoke => "/peer/v3/commands/invoke",
             Self::Status => "/peer/v3/commands/status",
             Self::Cancel => "/peer/v3/commands/cancel",
-            Self::AgentRead => "/peer/v3/reads",
         }
     }
     /// # Errors
     ///
     /// Returns `WireError` if the inputs violate this operation's bounds or invariants.
     pub fn from_target(method: &str, target: &str) -> Result<Self, WireError> {
-        [
-            Self::Catalogue,
-            Self::Invoke,
-            Self::Status,
-            Self::Cancel,
-            Self::AgentRead,
-        ]
-        .into_iter()
-        .find(|v| method == "POST" && v.path() == target)
-        .ok_or(WireError::Direction)
+        [Self::Catalogue, Self::Invoke, Self::Status, Self::Cancel]
+            .into_iter()
+            .find(|v| method == "POST" && v.path() == target)
+            .ok_or(WireError::Direction)
     }
     pub fn request_kind(self) -> MessageType {
         match self {
@@ -47,22 +39,16 @@ impl PrivateOperation {
             Self::Invoke => MessageType::Invoke,
             Self::Status => MessageType::Status,
             Self::Cancel => MessageType::Cancel,
-            Self::AgentRead => MessageType::AgentRead,
         }
     }
     pub fn response_kind(self) -> MessageType {
         match self {
             Self::Catalogue => MessageType::CatalogueResponse,
-            Self::AgentRead => MessageType::AgentReadResult,
             _ => MessageType::PrivateUpdate,
         }
     }
     pub fn capability(self) -> u64 {
-        if self == Self::AgentRead {
-            capabilities::PRIVATE_READS_V1
-        } else {
-            capabilities::PRIVATE_COMMANDS_V1
-        }
+        capabilities::PRIVATE_COMMANDS_V1
     }
 }
 #[derive(Clone, Copy, Debug)]
@@ -101,10 +87,6 @@ fn request_direction(op: PrivateOperation, message: &ActionMessage) -> bool {
         ) | (PrivateOperation::Invoke, ActionMessage::InvokeBound { .. })
             | (PrivateOperation::Status, ActionMessage::Status { .. })
             | (PrivateOperation::Cancel, ActionMessage::Cancel { .. })
-            | (
-                PrivateOperation::AgentRead,
-                ActionMessage::AgentReadV1 { .. }
-            )
     )
 }
 fn response_direction(op: PrivateOperation, message: &ActionMessage) -> bool {
@@ -113,9 +95,6 @@ fn response_direction(op: PrivateOperation, message: &ActionMessage) -> bool {
             && matches!(message, ActionMessage::CancellationRequested { .. }))
         || match op {
             PrivateOperation::Catalogue => matches!(message, ActionMessage::BrokerCatalogue { .. }),
-            PrivateOperation::AgentRead => {
-                matches!(message, ActionMessage::AgentReadResultV1 { .. })
-            }
             _ => matches!(
                 message,
                 ActionMessage::Observation { .. } | ActionMessage::CommittedDesktop { .. }
@@ -324,27 +303,6 @@ fn response_check(
             .as_ref()
             .is_some_and(|value| value.invocation() != *invocation)
             || matches!(&request.message, ActionMessage::InvokeBound { host: expected, .. } if expected != host))
-    {
-        return Err(WireError::Scope);
-    }
-    if let (
-        ActionMessage::AgentReadV1 {
-            host,
-            invocation,
-            request: read,
-        },
-        ActionMessage::AgentReadResultV1 {
-            host: rh,
-            invocation: ri,
-            binding,
-            response,
-        },
-    ) = (&request.message, &action.message)
-        && (host != rh
-            || invocation != ri
-            || !crate::agent_reads::matches_request(read, response)
-            || binding.agent.room != request.room.to_string()
-            || binding.agent.device != hex::encode(request.source))
     {
         return Err(WireError::Scope);
     }

@@ -402,6 +402,11 @@ portal-launcher-reason = Review the launcher before it is added to your applicat
 portal-launcher-confirm = Add launcher
 portal-launcher-icon-supplied = Supplied image (validated)
 portal-launcher-icon-monogram = Tilo monogram
+portal-chooser-nothing-granted = This app has been given no files to choose from.
+portal-chooser-file-not-granted = This app has not been given { $path }.
+portal-chooser-no-file = There is no file to open.
+portal-chooser-session-closing = The session is closing.
+portal-chooser-other-workspace = The app's workspace is not the one on screen.
 portal-launcher-icon-compass = Tilo web compass
 portal-background-title = Allow background activity?
 portal-background-resource = The app may keep working after its window is closed.
@@ -510,6 +515,7 @@ host-search-in-resource-fallback = resource
 host-search-scope-app = { $title } app
 host-json-arguments = JSON arguments: {"{"}{ $names }{"}"}
 host-a11y-filter-all = Filter: All
+host-a11y-filter-more = Filter: More
 host-a11y-filter-kind = Filter: { $kind }
 host-a11y-scope = Scope: { $scope }
 host-a11y-search-filters = Search filters
@@ -806,6 +812,7 @@ follow-stop = Stop
 
 # Search filter chips
 search-filter-all = All
+search-filter-more = More
 
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here

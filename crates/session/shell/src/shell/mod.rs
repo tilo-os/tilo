@@ -153,6 +153,7 @@ pub mod test_support;
 pub mod tile;
 pub mod tool_intents;
 pub mod topbar_chrome;
+pub mod trusted_ui;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_previews;

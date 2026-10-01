@@ -56,6 +56,11 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
+/// The session shell's own file choosers, for sessions without a desktop
+/// portal (`tilo_dialogs::shell`). Not declared by manifests: every app
+/// launched into a room is handed a connection naming itself and the room.
+pub const CHOOSER_SERVICE: &str = "chooser";
+const CHOOSER_PROTOCOL: u16 = 1;
 pub const COMPAT_SERVICE: &str = "compat";
 /// Hosted model planning is performed by this per-user, desktop-owned
 /// gateway. The launcher authenticates the consuming package before handing
@@ -80,16 +85,19 @@ const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty(
 const BLOB_CHILD_FD: i32 = 30;
 /// Slot of the automatic identity service.
 const IDENTITY_CHILD_FD: i32 = 31;
+/// Slot of the automatic chooser service.
+const CHOOSER_CHILD_FD: i32 = 32;
 /// Slots bwrap reads its two seccomp programs from (`--add-seccomp-fd`).
 /// They sit above bwrap's own descriptors and outside the numbers declared
 /// services are handed on, so no service can replace a filter.
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 5] = [
+pub(crate) const RESERVED_CHILD_FDS: [i32; 6] = [
     runtime_identity::broker::BROKER_CHILD_FD,
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
+    CHOOSER_CHILD_FD,
     CLONE3_COMPAT_SECCOMP_CHILD_FD,
     BASELINE_SECCOMP_CHILD_FD,
 ];
@@ -302,6 +310,78 @@ pub fn resolve_identity_bind(
         // Normal manifest services start at 17. Keep the automatic service in
         // a reserved slot so it cannot collide as the manifest evolves.
         child_fd: IDENTITY_CHILD_FD,
+    }))
+}
+
+/// The first line the launcher writes on a chooser connection: the app and
+/// the room it runs in, read by the shell before anything the app sends.
+///
+/// # Errors
+///
+/// Returns an error if the frame cannot be serialized.
+pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result<Vec<u8>> {
+    let mut frame = serde_json::to_vec(&serde_json::json!({
+        "protocol": CHOOSER_PROTOCOL,
+        "app_id": app_id,
+        "workspace_id": workspace_id,
+    }))?;
+    frame.push(b'\n');
+    Ok(frame)
+}
+
+/// Connect the session shell's chooser service on the app's behalf and name
+/// the app and its room before the sandboxed app can write to it.
+///
+/// A launch outside a room, or a session whose shell serves no chooser (it
+/// has a desktop portal), degrades to `Ok(None)`.
+///
+/// # Errors
+///
+/// Returns [`ServiceError::OpenFailed`] if the handshake cannot be written.
+pub fn resolve_chooser_bind(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_chooser_bind_at(
+        &socket_for(CHOOSER_SERVICE),
+        app_id,
+        workspace_id,
+        no_services,
+    )
+}
+
+fn resolve_chooser_bind_at(
+    path: &Path,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(None);
+    };
+    if no_services || !path.exists() {
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "chooser service refused connection");
+            return Ok(None);
+        }
+    };
+    chooser_handshake(app_id, workspace_id)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        .and_then(|frame| stream.write_all(&frame))
+        .and_then(|()| stream.flush())
+        .map_err(|source| ServiceError::OpenFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(Some(ResolvedService {
+        name: CHOOSER_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: CHOOSER_CHILD_FD,
     }))
 }
 
@@ -870,6 +950,63 @@ mod tests {
                 resolve_blob_bind_at(&path, "../escape", None, false)
                     .expect("invalid app id degrades")
                     .is_none()
+            );
+        }
+        // Phase `chooser_handshake_names_the_app_and_room_before_the_app_holds_the_descriptor`.
+        {
+            use std::io::BufRead;
+
+            let dir = tempfile::tempdir().expect("socket dir");
+            let path = dir.path().join("chooser.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+            let reader = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept");
+                let mut line = String::new();
+                std::io::BufReader::new(stream)
+                    .read_line(&mut line)
+                    .expect("handshake");
+                line
+            });
+            let bind = resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), false)
+                .expect("resolve")
+                .expect("chooser bind");
+            assert_eq!(bind.name, CHOOSER_SERVICE);
+            assert_eq!(bind.child_fd, CHOOSER_CHILD_FD);
+            assert_eq!(
+                crate::sandbox::svc_env_var(&bind.name),
+                "TILO_SVC_CHOOSER_FD"
+            );
+            let line = reader.join().expect("reader");
+            assert!(line.ends_with('\n'));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).expect("json"),
+                serde_json::json!({
+                    "protocol": 1,
+                    "app_id": "so.tilo.sheets",
+                    "workspace_id": "room-7",
+                })
+            );
+
+            assert!(
+                resolve_chooser_bind_at(&path, "so.tilo.sheets", None, false)
+                    .expect("no room")
+                    .is_none(),
+                "the shell cannot scope a launch outside a room"
+            );
+            assert!(
+                resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), true)
+                    .expect("no services")
+                    .is_none()
+            );
+            assert!(
+                resolve_chooser_bind_at(
+                    &dir.path().join("absent.sock"),
+                    "so.tilo.sheets",
+                    Some("room-7"),
+                    false
+                )
+                .expect("a shell with a portal serves no chooser")
+                .is_none()
             );
         }
         // Phase `collab_handoff_is_framed_for_broker_authentication`.

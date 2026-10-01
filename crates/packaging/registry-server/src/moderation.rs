@@ -836,6 +836,19 @@ fn validate_version_history(
                 .iter()
                 .find(|version| same_version_identity(version, old))
             else {
+                // Only an entry at its version limit drops versions, the
+                // oldest first, and only one superseded by a newer version
+                // for its target, so no target loses its current release.
+                let at_limit = proposed.versions.len() == registry_types::entry::MAX_ENTRY_VERSIONS;
+                let superseded = at_limit
+                    && proposed.versions.iter().any(|version| {
+                        same_version_target(version, old)
+                            && tilo_app_package::version::compare(&version.version, &old.version)
+                                .is_gt()
+                    });
+                if superseded {
+                    continue;
+                }
                 return Err(ModerationError::VersionHistoryRemoved {
                     package_id: proposed.package_id.clone(),
                     version: old.version.clone(),
@@ -1131,6 +1144,54 @@ mod tests {
                 namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
             }],
         }
+    }
+
+    #[test]
+    fn an_entry_at_its_version_limit_drops_only_superseded_versions() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let official = ArtifactHosts::default();
+        let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
+        let version = |n: usize, architecture: &str| {
+            let mut v = entry(&key, 1).versions[0].clone();
+            v.version = format!("1.{n}");
+            v.target.architecture = architecture.into();
+            if architecture == "aarch64" {
+                v.target.isa = "aarch64".into();
+            }
+            v
+        };
+        // A full entry: one old aarch64 release and x86_64 releases 1..limit.
+        let mut current = entry(&key, 1);
+        current.versions = std::iter::once(version(0, "aarch64"))
+            .chain((1..limit).map(|n| version(n, "x86_64")))
+            .collect();
+
+        // A new x86_64 release drops the oldest superseded x86_64 one.
+        let mut next = current.clone();
+        next.versions.retain(|v| v.version != "1.1");
+        next.versions.push(version(limit, "x86_64"));
+        assert_eq!(next.versions.len(), limit);
+        assert!(validate_version_history(&next, Some(&current), &official).is_ok());
+
+        // Dropping a target's only release is still removing history.
+        let mut lost = current.clone();
+        lost.versions.retain(|v| v.target.architecture != "aarch64");
+        lost.versions.push(version(limit, "x86_64"));
+        assert!(matches!(
+            validate_version_history(&lost, Some(&current), &official),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
+
+        // Below the limit nothing may be dropped.
+        let mut short = current.clone();
+        short
+            .versions
+            .retain(|v| v.version != "1.1" && v.version != "1.2");
+        short.versions.push(version(limit, "x86_64"));
+        assert!(matches!(
+            validate_version_history(&short, Some(&current), &official),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
     }
 
     #[test]

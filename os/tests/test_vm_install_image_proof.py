@@ -92,6 +92,20 @@ class ProofTests(unittest.TestCase):
                 with patch.object(proof, "command", side_effect=command):
                     with self.assertRaisesRegex(ValueError, "signed offline target"):
                         proof.build_proof(args)
+        with self.subTest(phase="development_vm_copy_changes_oci_manifest_only"):
+            with tempfile.TemporaryDirectory() as directory:
+                args, status, _, command = self.fixture(directory)
+                status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
+                with patch.object(proof, "command", side_effect=command), \
+                        patch.object(proof, "copied_dev_manifest_digest", return_value=DIGEST):
+                    result = proof.build_proof(args)
+                self.assertEqual(result["schema"], "tilo.vm-install-image-proof.v3")
+                self.assertEqual(result["copied_manifest_digest"], DIGEST)
+                with patch.object(proof, "command", side_effect=command), \
+                        patch.object(proof, "copied_dev_manifest_digest",
+                                     return_value="sha256:" + "d" * 64):
+                    with self.assertRaisesRegex(ValueError, "VM-local bootc copy"):
+                        proof.build_proof(args)
         with self.subTest(phase="backend_emits_proof_only_after_encrypted_finish"):
             backend = (SCRIPT.parent / "tilo-install").read_text(encoding="utf-8")
             prepared = backend.index("VM_INSTALL_PROOF=/run/tilo-installer/vm-install-proof.json")
@@ -109,13 +123,13 @@ class ProofTests(unittest.TestCase):
                 args, status, origin, command = self.fixture(directory)
                 status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
                 with patch.object(proof, "command", side_effect=command):
-                    with self.assertRaisesRegex(ValueError, "does not match"):
+                    with self.assertRaisesRegex(ValueError, "development copy proof"):
                         proof.build_proof(args)
                 status["status"]["booted"]["image"]["imageDigest"] = DIGEST
                 origin.write_text("[image]\nmanifest_digest=sha256:" + "c" * 64 + "\n"
                                   "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:latest\n")
                 with patch.object(proof, "command", side_effect=command):
-                    with self.assertRaisesRegex(ValueError, "does not match"):
+                    with self.assertRaisesRegex(ValueError, "development copy proof"):
                         proof.build_proof(args)
         with self.subTest(phase="wrong_uki_composefs_or_deployment_path_refused"):
             with tempfile.TemporaryDirectory() as directory:

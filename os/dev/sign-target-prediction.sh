@@ -198,7 +198,7 @@ PY
 rm -f "$signature"
 
 "$signer" sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"
-image_crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
+image_crypto verify-rsa-sha256-efi "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
   || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
   "$work/layer/boot/EFI/tilo/pcr-predictions/"

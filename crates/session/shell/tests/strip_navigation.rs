@@ -1346,12 +1346,16 @@ fn super_v_and_super_a_open_clipboard_history_and_notifications() {
 #[test]
 fn super_f_asks_the_compositor_to_toggle_full_screen() {
     let mut h = Harness::new();
-    assert!(!h.chrome.borrow_mut().take_fullscreen_toggle_request());
+    assert!(h.chrome.borrow().fullscreen_group().is_none());
     h.key(Key::Character("f".into()), ModifiersState::SUPER);
-    assert!(h.chrome.borrow_mut().take_fullscreen_toggle_request());
     assert!(
-        !h.chrome.borrow_mut().take_fullscreen_toggle_request(),
-        "one press, one toggle"
+        h.chrome.borrow().fullscreen_group().is_some(),
+        "Super+F must set chrome group fullscreen on the key, not a later compositor wipe"
+    );
+    h.key(Key::Character("f".into()), ModifiersState::SUPER);
+    assert!(
+        h.chrome.borrow().fullscreen_group().is_none(),
+        "a second Super+F restores"
     );
 }
 

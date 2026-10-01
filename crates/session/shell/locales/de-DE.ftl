@@ -405,6 +405,11 @@ portal-launcher-reason = Prüfe den Starter, bevor er zu deiner App-Bibliothek h
 portal-launcher-confirm = Starter hinzufügen
 portal-launcher-icon-supplied = Mitgeliefertes Bild (geprüft)
 portal-launcher-icon-monogram = Tilo-Monogramm
+portal-chooser-nothing-granted = Dieser App wurden keine Dateien zur Auswahl freigegeben.
+portal-chooser-file-not-granted = Dieser App wurde { $path } nicht freigegeben.
+portal-chooser-no-file = Es gibt keine Datei zum Öffnen.
+portal-chooser-session-closing = Die Sitzung wird beendet.
+portal-chooser-other-workspace = Der Arbeitsbereich der App ist nicht der angezeigte.
 portal-launcher-icon-compass = Tilo-Webkompass
 portal-background-title = Hintergrundaktivität erlauben?
 portal-background-resource = Die App kann weiterarbeiten, nachdem ihr Fenster geschlossen wurde.
@@ -513,6 +518,7 @@ host-search-in-resource-fallback = Ressource
 host-search-scope-app = App { $title }
 host-json-arguments = JSON-Argumente: {"{"}{ $names }{"}"}
 host-a11y-filter-all = Filter: Alle
+host-a11y-filter-more = Filter: Mehr
 host-a11y-filter-kind = Filter: { $kind }
 host-a11y-scope = Bereich: { $scope }
 host-a11y-search-filters = Suchfilter
@@ -809,6 +815,7 @@ follow-stop = Beenden
 
 # Filterchips der Suche
 search-filter-all = Alle
+search-filter-more = Mehr
 
 # Schnelleinstellungen: Zeilen für Geräte und Medien
 qs-devices-mic-other = Mikrofon · von hier aufnehmen

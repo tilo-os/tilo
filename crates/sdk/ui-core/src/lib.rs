@@ -238,6 +238,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+mod theme_layers;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;
@@ -329,7 +330,9 @@ pub use state::{
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
-pub use theme::{AppearanceIntent, Theme};
+pub use theme::{
+    AppearanceIntent, BrandAccentRejection, ContentSurface, Theme, resolve_theme_layers,
+};
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
     UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,

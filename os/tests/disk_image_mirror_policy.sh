@@ -37,6 +37,7 @@ EOF
 cat >"$work/bin/python3" <<'EOF'
 #!/bin/bash
 if [[ ${1:-} == -u && ${2:-} == */hold-loop-partition-nodes.py ]]; then shift; fi
+if [[ ${1:-} == */check-composefs-verity.py ]]; then exit 0; fi
 if [[ ${1:-} == */hold-loop-partition-nodes.py ]]; then
   printf 'READY\n'
   read -r release
@@ -61,13 +62,14 @@ exit 41
 EOF
 chmod +x "$work/bin/"*
 python3 - "$work/bootc-helper" <<'PY'
+import platform
 import struct
 import sys
 
 header = bytearray(64)
 header[:7] = b"\x7fELF\x02\x01\x01"
 struct.pack_into("<H", header, 16, 2)
-struct.pack_into("<H", header, 18, 183)
+struct.pack_into("<H", header, 18, {"aarch64": 183, "x86_64": 62}[platform.machine()])
 with open(sys.argv[1], "wb") as output:
     output.write(header)
 PY
@@ -77,7 +79,7 @@ set +e
 PATH="$work/bin:$PATH" TILO_DISTROBOX= TILO_DISK_HOST_UDEV_DIR="$work/udev" \
   "$repo/os/dev/disk-image.sh" "$authoritative" "$work/out" \
   --composefs --sealed-source-imgref "$mirror_repository:local" \
-  --bootc-helper "$work/bootc-helper" --raw \
+  --bootc-helper "$work/bootc-helper" --reseal-uki --raw \
   >"$work/stdout" 2>"$work/stderr"
 status=$?
 set -e
@@ -109,6 +111,7 @@ grep -Fxq -- "$work/udev:/run/udev:ro" "$work/podman-argv"
 grep -Fxq -- "$work/bootc-helper:/run/tilo-installer-bootc:ro" "$work/podman-argv"
 grep -Fxq -- '--entrypoint' "$work/podman-argv"
 grep -Fxq -- '/run/tilo-installer-bootc' "$work/podman-argv"
+grep -Fxq -- 'BOOTC_INSTALL_RESEAL_UKI=1' "$work/podman-argv"
 ! grep -Fxq -- 'bootc' "$work/podman-argv"
 ! grep -Fxq -- "$mirror_repository:local" "$work/podman-argv"
 [ ! -e "$work/out/.source-policy.json" ]

@@ -831,23 +831,27 @@ fn request_window_shortcut(
 }
 
 fn persist_appearance(
+    st: &mut ChromeState,
     values: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), ActionError> {
     settings_store::update_section("appearance", values)
-        .map_err(|err| ActionError::Refused(err.to_string()))
+        .map_err(|err| ActionError::Refused(err.to_string()))?;
+    crate::shell::i18n::apply_configured_locale();
+    st.note_appearance_change();
+    Ok(())
 }
 
-fn set_theme(theme: &str, high_contrast: bool) -> Result<(), ActionError> {
+fn set_theme(st: &mut ChromeState, theme: &str, high_contrast: bool) -> Result<(), ActionError> {
     let mut values = serde_json::Map::new();
     values.insert("theme".into(), serde_json::Value::String(theme.into()));
     values.insert(
         "high_contrast".into(),
         serde_json::Value::Bool(high_contrast),
     );
-    persist_appearance(values)
+    persist_appearance(st, values)
 }
 
-fn set_language(requested: &str) -> Result<(), ActionError> {
+fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
     let language = match requested.trim() {
         "en" | "en-US" | "english" | "English" => "en-US",
         "de" | "de-DE" | "german" | "German" | "deutsch" | "Deutsch" => "de-DE",
@@ -862,7 +866,7 @@ fn set_language(requested: &str) -> Result<(), ActionError> {
         "language".into(),
         serde_json::Value::String(language.into()),
     );
-    persist_appearance(values)
+    persist_appearance(st, values)
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -899,24 +903,6 @@ const fn chrome(
 
 impl Action {
     const ALL: &'static [Action] = &[
-        chrome(
-            "shortcut-help.toggle",
-            "search-action-shortcut-help-toggle",
-            "search-action-shortcut-help-toggle-subtitle",
-            |st, _| {
-                st.overlays.shortcut_help = !st.overlays.shortcut_help;
-                Ok(())
-            },
-        ),
-        chrome(
-            "desktop-tour.open",
-            "search-action-desktop-tour-open",
-            "search-action-desktop-tour-open-subtitle",
-            |st, _| {
-                st.overlays.desktop_tour = true;
-                Ok(())
-            },
-        ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
@@ -1768,33 +1754,33 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |_, _| set_theme("dark", false),
+            |st, _| set_theme(st, "dark", false),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |_, _| set_theme("light", false),
+            |st, _| set_theme(st, "light", false),
         ),
         chrome(
             "appearance.high-contrast",
             "search-action-appearance-high-contrast",
             "search-action-appearance-high-contrast-subtitle",
-            |_, _| set_theme("dark", true),
+            |st, _| set_theme(st, "dark", true),
         ),
         Action {
             id: "appearance.language",
             label: "search-action-appearance-language",
             subtitle: "search-action-appearance-language-subtitle",
             params: LANGUAGE_PARAMS,
-            apply: |_, args| {
+            apply: |st, args| {
                 let language = args.text("language").unwrap_or_default();
                 if language.trim().is_empty() {
                     return Err(ActionError::Refused(
                         "a language is required; nothing was changed".into(),
                     ));
                 }
-                set_language(language)
+                set_language(st, language)
             },
         },
         // The first exported action that changes a document rather than
@@ -1843,6 +1829,27 @@ impl Action {
                 Ok(())
             },
         },
+        // Last: an English "open" on a German desktop matches every *.open
+        // id at the same score, so declaration order is the only tiebreak.
+        // The tour and the help overlay must not win that race.
+        chrome(
+            "shortcut-help.toggle",
+            "search-action-shortcut-help-toggle",
+            "search-action-shortcut-help-toggle-subtitle",
+            |st, _| {
+                st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                Ok(())
+            },
+        ),
+        chrome(
+            "desktop-tour.open",
+            "search-action-desktop-tour-open",
+            "search-action-desktop-tour-open-subtitle",
+            |st, _| {
+                st.overlays.desktop_tour = true;
+                Ok(())
+            },
+        ),
     ];
 }
 
@@ -3492,6 +3499,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn typing_open_on_a_german_desktop_does_not_prefer_the_tour() {
+        crate::shell::i18n::ensure();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            needle: "open",
+            wanted: &[ResourceKind::Action],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert!(
+            !out.is_empty(),
+            "an English 'open' still finds the *.open addresses"
+        );
+        assert_ne!(
+            out[0].id,
+            "desktop-tour.open",
+            "equal id-scores must not put the tour first; got {:?}",
+            out.iter()
+                .take(5)
+                .map(|r| (&r.id, r.score))
+                .collect::<Vec<_>>()
+        );
+        let tour = out.iter().position(|r| r.id == "desktop-tour.open");
+        let settings = out.iter().position(|r| r.id == "settings.open");
+        assert!(
+            settings.is_some() && tour.is_some() && settings < tour,
+            "settings.open ({settings:?}) should outrank the tour ({tour:?})"
+        );
+    }
+
     /// Every offered action resolves by its address, however many are
     /// offered: the table is longer than a palette page.
     #[test]
@@ -3864,6 +3908,10 @@ mod tests {
         );
 
         invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
+        assert!(
+            chrome.borrow().appearance_generation > 0,
+            "theme actions must wake the live frame, not only write the store"
+        );
         let appearance = settings_store::load_section("appearance");
         assert_eq!(
             appearance.get("theme").and_then(serde_json::Value::as_str),
@@ -3903,6 +3951,61 @@ mod tests {
             settings_store::str_at(&settings_store::load(), "appearance", "language"),
             Some("de-DE")
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn language_action_switches_the_live_catalogue() {
+        struct RestoreLocale;
+        impl Drop for RestoreLocale {
+            fn drop(&mut self) {
+                ui::i18n::I18nManager::set_locale("en-US");
+            }
+        }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let _restore = RestoreLocale;
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let language = {
+            let state = chrome.borrow();
+            let doc = AutoCommit::new();
+            provider
+                .query(SearchContext {
+                    needle: "language",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "appearance.language")
+                .expect("language action")
+        };
+        let args = ActionArgs::bind(
+            &language.params,
+            [(
+                "language".into(),
+                crate::shell::search::action_api::ArgValue::Text("German".into()),
+            )],
+        )
+        .expect("language arguments");
+        let mut document = AutoCommit::new();
+        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+
+        assert_eq!(
+            settings_store::str_at(&settings_store::load(), "appearance", "language"),
+            Some("de-DE")
+        );
+        assert_eq!(
+            crate::shell::i18n::current_locale(),
+            "de-DE",
+            "writing the store without selecting the live catalogue leaves chrome English"
+        );
+        assert_eq!(t("tab-closed-undo"), "Rückgängig");
+        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
     }
 
     #[test]

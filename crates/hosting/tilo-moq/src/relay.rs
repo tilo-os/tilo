@@ -60,6 +60,13 @@ const MAX_GROUPS_IN_FLIGHT: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceRoute(());
 
+impl VoiceRoute {
+    /// The route of a session this crate's own listener matched exactly.
+    pub(crate) const fn routed() -> Self {
+        Self(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Publish,
@@ -336,7 +343,7 @@ impl Relay {
     /// or authorizing sessions exist. Dropping this future aborts every task
     /// and its protocol session; no detached session survives shutdown.
     pub async fn serve(self, endpoint: quinn::Endpoint) {
-        carrier::serve_endpoint(endpoint, VOICE_PATH, move |session| {
+        carrier::serve_endpoint(endpoint, &[VOICE_PATH], move |_, session| {
             let relay = self.clone();
             async move { relay.serve_session(VoiceRoute(()), session).await }
         })

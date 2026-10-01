@@ -1088,8 +1088,21 @@ impl App {
 
     /// Apply the native host's fallback for an Enter/Space press that the
     /// focused widget did not consume during normal event dispatch.
+    fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
+        self.focusable_order
+            .iter()
+            .copied()
+            .find(|&id| {
+                self.inspect_node(id, |widget| widget.name() == "Terminal")
+                    .unwrap_or(false)
+            })
+            .or_else(|| self.focusable_order.first().copied())
+    }
+
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         if *handled
+            || self.input.modifiers.state().super_key()
+            || self.input.modifiers.state().shift_key()
             || !matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -1105,6 +1118,33 @@ impl App {
             )
         {
             return;
+        }
+        if self.root_widget.name() == "Terminal"
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| !history.captures_input())
+            && let Some(root) = self.layout.root_node
+        {
+            let mut focus = None;
+            self.root_widget.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &self.input.modifiers,
+                    state: &mut self.state.doc,
+                    path: &self.state.root,
+                    handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &self.layout.taffy,
+                },
+            );
+            if *handled {
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+                return;
+            }
         }
         let Some(focused) = self.focused_node else {
             return;
@@ -1857,6 +1897,9 @@ impl App {
         &mut self,
         host: crate::host_appearance::HostAppearance,
     ) -> bool {
+        if crate::host_appearance::session_document_owns_appearance() {
+            return false;
+        }
         let _entry = self.enter_wake_scope();
         let mut base_theme = crate::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;
@@ -2223,11 +2266,10 @@ impl App {
         } else if let Some(view) = dev_view {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
-        if self.autofocus_first
-            && self.focused_node.is_none()
-            && let Some(&first) = self.focusable_order.first()
-        {
-            self.set_focused_node(Some(first));
+        if self.autofocus_first && self.focused_node.is_none() {
+            if let Some(id) = self.initial_live_focus_target() {
+                self.set_focused_node(Some(id));
+            }
         }
         self.focus_history.stable_focus_idx = self
             .focused_node

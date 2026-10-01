@@ -706,6 +706,7 @@ impl FrameHarness {
             FilterAction::AllKinds => overlay.wanted.clear(),
             FilterAction::ToggleKind(kind) => toggle_kind(&mut overlay.wanted, kind),
             FilterAction::Scope(scope) => overlay.scope = scope,
+            FilterAction::More => overlay.filters.more_open = !overlay.filters.more_open,
         }
         self.refresh_system_search();
     }
