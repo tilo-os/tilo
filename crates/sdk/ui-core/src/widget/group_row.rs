@@ -1317,6 +1317,40 @@ impl GroupRow {
             .collect()
     }
 
+    /// Dest-width canvas extent of one lane, in the same units as
+    /// [`Pan::content_w`]. Taffy sees in-flight spring widths; the legal
+    /// pan bound is the strip those springs are going to, so a half-open
+    /// slot cannot shrink overflow.
+    fn dest_content_w(&self, lane: usize) -> f64 {
+        let inset = self.pan_of_lane(lane).inset;
+        let collapsed = self.groups.iter().enumerate().any(|(i, g)| {
+            self.lane_index_of(i) == lane && (g.maximized || self.fullscreen_group == Some(g.id))
+        });
+        if collapsed {
+            return inset;
+        }
+        let mut x = inset;
+        let mut prev = false;
+        for i in 0..self.groups.len() {
+            if self.lane_index_of(i) != lane {
+                continue;
+            }
+            let Some(g) = self.groups.get(i) else {
+                continue;
+            };
+            if prev && !self.external_navigation {
+                x += HANDLE_SLOT_PX;
+            }
+            x += if g.is_closing() {
+                g.layout_width_px()
+            } else {
+                g.dest_width_px()
+            };
+            prev = true;
+        }
+        x
+    }
+
     /// Ids of groups currently visible. Reads laid-out rects, not canvas
     /// spans: "can I see it" is a question about pixels, so a group with
     /// no rect yet just reads as not-on-screen for that one frame.
@@ -2750,6 +2784,32 @@ impl Widget for GroupRow {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
+        let usable_per_group = self.usable_per_group();
+        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+            g.set_strip_usable_px(usable);
+        }
+        let runs = self.lanes.len().max(1);
+        let snap_lane: Vec<bool> = (0..runs)
+            .map(|k| {
+                let dest = self.dest_content_w(k);
+                let inset = self.pan_of_lane(k).inset;
+                let viewport = self.pan_of_lane(k).viewport.width().max(self.rect.width());
+                dest - inset <= viewport
+            })
+            .collect();
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        for (i, group) in self.groups.iter_mut().enumerate() {
+            group.set_reduce_motion(theme.reduce_motion);
+            let lane = lane_of.get(i).copied().unwrap_or(0);
+            let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
+            if dest_fits || group.width_target_is_stale() {
+                group.snap_width_spring();
+            } else {
+                group.step_width_spring();
+            }
+        }
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
             // Retained groups remain lifecycle owners, but none of their
@@ -3063,10 +3123,15 @@ impl Widget for GroupRow {
         let mut moved = false;
         let ease_reframe = self.shift_armed && !self.reduce_motion;
         let now = crate::time::now();
+        let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
+            let dest = dest_w.get(k).copied().unwrap_or(0.0);
             let pan = self.pan_of_lane_mut(k);
             let before = pan.scroll_x;
-            pan.content_w = w;
+            // Dest for pan only when the dest strip itself overflows.
+            // In-flight springs from a wider share can be larger than
+            // the viewport even though the settled slots still fit.
+            pan.content_w = if dest > pan.viewport.width() { dest } else { w };
             pan.group_left_edges = e;
             // Preserve transient rubber-band travel while fingers are down
             // or a release settle is in flight. At rest, geometry changes
@@ -6898,7 +6963,9 @@ mod tests {
             // `Normal`s the left neighbour couldn't reach the minimum at all,
             // since the right would have to grow past the display.
             row.groups[0].set_width(WindowWidth::Narrow);
+            row.groups[0].snap_width_spring();
             row.groups[1].set_width(WindowWidth::Narrow);
+            row.groups[1].snap_width_spring();
             drop((taffy, root));
             let (mut row, taffy, root) = relayout_row_owned(row, 2000.0);
 

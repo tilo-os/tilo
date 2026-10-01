@@ -3255,6 +3255,9 @@ impl FrameBuilder {
         for (name, rect) in host.power_menu_semantic_rects() {
             put(name.into(), rect);
         }
+        for (name, rect) in host.trusted_frame_targets(&self.theme) {
+            put(name.to_string(), rect);
+        }
     }
 }
 
@@ -3302,23 +3305,34 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     } else {
         format!("{parent_path}/{name}[{my_index}]")
     };
-    out.insert(path.clone(), w.get_rect());
+    // Shell chrome owns `tilo.shell.trusted-frame/...`. A widget that
+    // copies the name, test id, or painted affordance does not publish it.
+    if crate::shell::trusted_ui::widget_may_publish(&path) {
+        out.insert(path.clone(), w.get_rect());
+    }
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
             name
         } else {
             format!("{parent_path}/{name}")
         };
-        out.entry(bare).or_insert_with(|| w.get_rect());
+        if crate::shell::trusted_ui::widget_may_publish(&bare) {
+            out.entry(bare).or_insert_with(|| w.get_rect());
+        }
     }
-    if let Some(id) = w.test_id() {
+    if let Some(id) = w.test_id()
+        && crate::shell::trusted_ui::widget_may_publish(id)
+    {
         out.insert(id.to_string(), w.get_rect());
     }
     // Affordances the widget paints itself. Skipping zero-area entries
     // is what makes a name mean "on screen now".
     for (name, rect) in w.test_rects() {
-        if rect.area() > 0.0 {
-            out.insert(format!("{path}/{name}"), rect);
+        if rect.area() > 0.0 && crate::shell::trusted_ui::widget_may_publish(&name) {
+            let qualified = format!("{path}/{name}");
+            if crate::shell::trusted_ui::widget_may_publish(&qualified) {
+                out.insert(qualified, rect);
+            }
             out.entry(name).or_insert(rect);
         }
     }
