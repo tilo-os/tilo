@@ -155,6 +155,10 @@ pub struct HostEnvironment {
     /// Directory of live `ui/*.json` screens. Absent when the app uses the
     /// graph embedded in its binary.
     pub ui_graph_dir: Option<PathBuf>,
+    /// Session `settings.json` the launcher named for this process
+    /// (`TILO_SESSION_SETTINGS`). Present when this process paints the same
+    /// document the shell chrome watches.
+    pub session_settings: Option<PathBuf>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);
