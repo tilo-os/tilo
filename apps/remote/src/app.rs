@@ -3612,6 +3612,30 @@ impl ui::resources::PublishesResources for RemoteApp {
         }
         self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "remote.connections" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                self.live_session_resources()
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
+    }
 }
 
 impl ui::undo::CommittedActions for RemoteApp {
