@@ -113,8 +113,15 @@ const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
 /// Keep only the current and immediately superseded thumbnail while an async
 /// recent-capture handoff changes; Camera never owns a browsing cache.
 const MAX_THUMB_CACHE: usize = 2;
-fn white() -> Color {
-    Color::from_rgb8(255, 255, 255)
+/// Ink for chrome sitting on the viewfinder. Measured against the theme's
+/// scrim so high contrast and a light desktop both stay readable on the
+/// dark wash over the feed.
+fn hud_ink(theme: &Theme) -> Color {
+    theme.on_surface(theme.tokens.colors.surfaces.scrim).ink
+}
+
+fn media_scrim(theme: &Theme) -> Color {
+    theme.tokens.colors.surfaces.scrim
 }
 fn shrink(r: Rect, d: f64) -> Rect {
     Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
@@ -3680,7 +3687,7 @@ impl CameraApp {
             t,
             icon,
             Rect::new(cx - ir, cy - ir, cx + ir, cy + ir),
-            white(),
+            hud_ink(theme),
             1.9,
         );
         let hit = Rect::new(cx - r, cy - r, cx + r, cy + r);
@@ -3815,7 +3822,10 @@ impl CameraApp {
                 );
             }
             let col = if selected {
-                white()
+                theme
+                    .tokens
+                    .colors
+                    .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 p::alpha(c.text_primary, 0.78)
             };
@@ -3883,9 +3893,9 @@ impl CameraApp {
         let (fill, title_col, sub_col, icon_col) = if glass {
             (
                 p::alpha(c.neutral[1], 0.55),
-                p::alpha(white(), 0.92),
-                p::alpha(white(), 0.55),
-                p::alpha(white(), 0.5),
+                p::alpha(hud_ink(theme), 0.92),
+                p::alpha(hud_ink(theme), 0.55),
+                p::alpha(hud_ink(theme), 0.5),
             )
         } else {
             (
@@ -3961,7 +3971,7 @@ impl CameraApp {
             layout.icon.y0 + 3.0,
             layout.icon.x1 - 3.0,
             layout.icon.y1 - 3.0,
-            p::alpha(white(), 0.5),
+            p::alpha(hud_ink(theme), 0.5),
             2.2,
         );
         self.draw_camera_recovery_actions(scene, t, tr, theme, layout.panel);
@@ -4007,7 +4017,17 @@ impl CameraApp {
             };
             p::fill_round(scene, t, button, 12.0, face);
             p::stroke_round(scene, t, button, 12.0, surface::edge_on(face), 1.0);
-            p::text_in(scene, tr, button, label, 11.5, white());
+            p::text_in(
+                scene,
+                tr,
+                button,
+                label,
+                11.5,
+                theme
+                    .tokens
+                    .colors
+                    .readable_on(face, theme.tokens.colors.text_primary),
+            );
             self.push_tap_region(button, action);
         }
 
@@ -4041,7 +4061,22 @@ impl CameraApp {
                 if selected {
                     p::fill_round(scene, t, row, 10.0, theme.accent_primary);
                 }
-                p::text_in(scene, tr, row, device, 12.0, white());
+                let row_fill = if selected {
+                    theme.accent_primary
+                } else {
+                    ui::chrome::panel_ground(theme)
+                };
+                p::text_in(
+                    scene,
+                    tr,
+                    row,
+                    device,
+                    12.0,
+                    theme
+                        .tokens
+                        .colors
+                        .readable_on(row_fill, theme.tokens.colors.text_primary),
+                );
                 self.push_tap_region(row, Action::SelectCamera(device.clone()));
             }
         }
@@ -4110,7 +4145,7 @@ impl CameraApp {
             ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 30),
             1.0,
         );
-        p::text_in(scene, tr, rect, label, 11.5, white());
+        p::text_in(scene, tr, rect, label, 11.5, hud_ink(theme));
     }
 
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -4244,7 +4279,7 @@ impl CameraApp {
             self.draw_viewfinder_overlays(scene, t, theme, full);
             // Legibility washes: a soft dark fade top and bottom so white
             // controls stay readable over any scene — no opaque panels.
-            let blk = Color::from_rgb8(0, 0, 0);
+            let blk = media_scrim(theme);
             p::vscrim(
                 scene,
                 t,
@@ -4314,7 +4349,7 @@ impl CameraApp {
     fn draw_viewfinder_overlays(&self, scene: &mut Scene, t: Affine, theme: &Theme, vf: Rect) {
         // Rule-of-thirds grid.
         if self.settings.grid {
-            let gc = p::alpha(white(), 0.22);
+            let gc = p::alpha(hud_ink(theme), 0.22);
             for k in 1..3 {
                 let x = vf.x0 + vf.width() * f64::from(k) / 3.0;
                 p::line(scene, t, x, vf.y0, x, vf.y1, gc, 1.0);
@@ -4343,7 +4378,7 @@ impl CameraApp {
                 y,
                 vf.center().x - 70.0,
                 y,
-                p::alpha(white(), 0.55),
+                p::alpha(hud_ink(theme), 0.55),
                 2.0,
             );
             p::line(
@@ -4353,7 +4388,7 @@ impl CameraApp {
                 y,
                 vf.center().x + 92.0,
                 y,
-                p::alpha(white(), 0.55),
+                p::alpha(hud_ink(theme), 0.55),
                 2.0,
             );
         }
@@ -4423,9 +4458,9 @@ impl CameraApp {
             );
         }
         let fg = if active {
-            white()
+            hud_ink(theme)
         } else {
-            p::alpha(white(), 0.92)
+            p::alpha(hud_ink(theme), 0.92)
         };
         let mut cx = pos.x + pad;
         if let Some(ic) = icon {
@@ -4604,7 +4639,7 @@ impl CameraApp {
                 img.paint_at(scene, t, thumb);
             }
             p::pop(scene);
-            p::stroke_round(scene, t, thumb, 14.0, p::alpha(white(), 0.65), 1.5);
+            p::stroke_round(scene, t, thumb, 14.0, p::alpha(hud_ink(theme), 0.65), 1.5);
             // The named handoff makes Camera's ownership boundary obvious at
             // a glance without squeezing the shutter at phone widths.
             if full.width() >= 520.0 && theme.text_scale < 1.5 {
@@ -4618,8 +4653,8 @@ impl CameraApp {
                 // control even when visual density asks us to keep the preview
                 // compact.
                 if label_rect.x1 <= self.stage_center_x() - 42.0 {
-                    p::fill_round(scene, t, label_rect, 16.0, p::alpha(white(), 0.2));
-                    p::text_in(scene, tr, label_rect, &label, 11.5, white());
+                    p::fill_round(scene, t, label_rect, 16.0, p::alpha(hud_ink(theme), 0.2));
+                    p::text_in(scene, tr, label_rect, &label, 11.5, hud_ink(theme));
                     self.push_tap_region(label_rect, Action::OpenRecentCapture);
                 }
             }
@@ -4643,17 +4678,17 @@ impl CameraApp {
         let ring = if state.recording {
             danger
         } else if state.has_feed {
-            p::alpha(white(), 0.95)
+            p::alpha(hud_ink(theme), 0.95)
         } else {
-            p::alpha(white(), 0.4)
+            p::alpha(hud_ink(theme), 0.4)
         };
         p::circle_stroke(scene, t, scx, cy, outer, ring, 4.5);
         match self.mode {
             CaptureMode::Photo => {
                 let core = if state.has_feed {
-                    white()
+                    hud_ink(theme)
                 } else {
-                    p::alpha(white(), 0.4)
+                    p::alpha(hud_ink(theme), 0.4)
                 };
                 p::circle(scene, t, scx, cy, outer - 8.0, core);
             }
@@ -4712,7 +4747,7 @@ impl CameraApp {
             t,
             "switch",
             Rect::new(lx - 13.0, cy - 13.0, lx + 13.0, cy + 13.0),
-            white(),
+            hud_ink(theme),
             2.0,
         );
         p::text_center(
@@ -4722,7 +4757,7 @@ impl CameraApp {
             cy + 34.0,
             self.facing.label(),
             10.0,
-            p::alpha(white(), 0.78),
+            p::alpha(hud_ink(theme), 0.78),
         );
         self.push_region(
             Rect::new(lx - 26.0, cy - 26.0, lx + 26.0, cy + 26.0),
@@ -4753,13 +4788,7 @@ impl CameraApp {
             scx + w / 2.0,
             full.y0 + EDGE + 28.0,
         );
-        p::fill_round(
-            scene,
-            t,
-            pill,
-            14.0,
-            p::alpha(Color::from_rgb8(0, 0, 0), 0.55),
-        );
+        p::fill_round(scene, t, pill, 14.0, p::alpha(media_scrim(theme), 0.55));
         p::stroke_round(scene, t, pill, 14.0, p::alpha(red, 0.55), 1.0);
         p::circle(scene, t, pill.x0 + 17.0, pill.center().y, 5.0, red);
         p::text(
@@ -4769,7 +4798,7 @@ impl CameraApp {
             pill.center().y - 8.0,
             &label,
             12.5,
-            white(),
+            hud_ink(theme),
         );
     }
 
@@ -4828,7 +4857,7 @@ impl CameraApp {
             pill.center().y - 8.0,
             &label,
             12.5,
-            white(),
+            hud_ink(theme),
         );
     }
 
@@ -5504,7 +5533,15 @@ impl CameraApp {
             ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             1.0,
         );
-        p::text(scene, tr, pos.x + 16.0, pos.y + 12.0, &title, 15.0, white());
+        p::text(
+            scene,
+            tr,
+            pos.x + 16.0,
+            pos.y + 12.0,
+            &title,
+            15.0,
+            hud_ink(theme),
+        );
         if let Some(subtitle) = subtitle {
             p::text(
                 scene,
@@ -5513,7 +5550,7 @@ impl CameraApp {
                 pos.y + 32.0,
                 &subtitle,
                 11.5,
-                p::alpha(white(), 0.7),
+                p::alpha(hud_ink(theme), 0.7),
             );
         }
     }
@@ -5626,7 +5663,7 @@ impl CameraApp {
             wc.x + side / 2.0,
             wc.y + side / 2.0,
         );
-        let dark = p::alpha(Color::from_rgb8(0, 0, 0), 0.5);
+        let dark = p::alpha(media_scrim(theme), 0.5);
         p::fill_rect(scene, t, Rect::new(full.x0, full.y0, full.x1, win.y0), dark);
         p::fill_rect(scene, t, Rect::new(full.x0, win.y1, full.x1, full.y1), dark);
         p::fill_rect(scene, t, Rect::new(full.x0, win.y0, win.x0, win.y1), dark);
@@ -5703,7 +5740,7 @@ impl CameraApp {
         let th = (p::text_h(tr, &label_text, 11.0) + BADGE_PAD_Y * 2.0).max(20.0);
         let label_rect = Rect::new(label_x, top - 6.0 - th, label_x + tw, top - 6.0);
         p::fill_round(scene, t, label_rect, th / 2.0, green);
-        p::text_in(scene, tr, label_rect, &label_text, 11.0, white());
+        p::text_in(scene, tr, label_rect, &label_text, 11.0, hud_ink(theme));
     }
 
     /// No live camera: let the user scan a code out of a photo already in
@@ -5729,7 +5766,7 @@ impl CameraApp {
         let cx = content.center().x;
         let cy = content.center().y;
         let ic = Rect::new(cx - 28.0, cy - 92.0, cx + 28.0, cy - 36.0);
-        p::icon(scene, t, "scan", ic, p::alpha(white(), 0.72), 2.2);
+        p::icon(scene, t, "scan", ic, p::alpha(hud_ink(theme), 0.72), 2.2);
         p::text_center(
             scene,
             tr,
@@ -5737,7 +5774,7 @@ impl CameraApp {
             cy - 14.0,
             "Scan without a camera",
             19.0,
-            white(),
+            hud_ink(theme),
         );
         let hint = tr.elide_to_width(
             "Choose a QR or barcode image from this device",
@@ -5751,7 +5788,7 @@ impl CameraApp {
             cy + 16.0,
             &hint,
             12.5,
-            p::alpha(white(), 0.68),
+            p::alpha(hud_ink(theme), 0.68),
         );
         let button_width = (content.width() - 24.0).clamp(160.0, 240.0);
         let button = Rect::new(
@@ -5766,7 +5803,7 @@ impl CameraApp {
         } else {
             "Choose image"
         };
-        p::text_center(scene, tr, cx, button.y0 + 16.0, label, 14.0, white());
+        p::text_center(scene, tr, cx, button.y0 + 16.0, label, 14.0, hud_ink(theme));
         if self.scan_image_picker.is_none() {
             self.push_region(button, Action::ImportScanImage);
         }
@@ -5864,7 +5901,7 @@ impl CameraApp {
             card.y0 + 16.0,
             s.kind.title(),
             title_size,
-            white(),
+            hud_ink(theme),
         );
         let summ = s.kind.summary(&s.raw);
         let summ = tr.elide_to_width(
@@ -5879,7 +5916,7 @@ impl CameraApp {
             card.y0 + if large_type { 50.0 } else { 39.0 },
             &summ,
             summary_size,
-            p::alpha(white(), 0.7),
+            p::alpha(hud_ink(theme), 0.7),
         );
 
         let xr = Rect::new(
@@ -5888,7 +5925,7 @@ impl CameraApp {
             card.x1 - 12.0,
             card.y0 + 34.0,
         );
-        p::icon(scene, t, "close", xr, p::alpha(white(), 0.6), 1.8);
+        p::icon(scene, t, "close", xr, p::alpha(hud_ink(theme), 0.6), 1.8);
         self.push_tap_region(xr, Action::DismissScan);
 
         let mut bx = card.x0 + 16.0;
@@ -5901,14 +5938,64 @@ impl CameraApp {
             let br = Rect::new(bx, by, bx + bw, by + button_height);
             if i == 0 {
                 p::fill_round(scene, t, br, button_height / 2.0, theme.accent_primary);
-                p::text_in(scene, tr, br, label, button_font, white());
+                p::text_in(scene, tr, br, label, button_font, hud_ink(theme));
             } else {
                 p::fill_round(scene, t, br, button_height / 2.0, c.lift(0.72));
-                p::text_in(scene, tr, br, label, button_font, p::alpha(white(), 0.92));
+                p::text_in(
+                    scene,
+                    tr,
+                    br,
+                    label,
+                    button_font,
+                    p::alpha(hud_ink(theme), 0.92),
+                );
             }
             self.push_tap_region(br, Action::Scan(i));
             bx += bw + 10.0;
         }
+    }
+
+    fn draw_scan_panel_empty(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let cx = panel.center().x;
+        let cy = panel.y0 + 120.0;
+        p::icon(
+            scene,
+            t,
+            "scan",
+            Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0),
+            p::alpha(hud_ink(theme), 0.45),
+            1.8,
+        );
+        // The second line follows the first's measured height (13 → 16.25
+        // + 3.75 gap = the authored 20 px pitch at 1×) instead of a fixed
+        // offset that 200% lines painted through.
+        let title = "No codes scanned yet";
+        let title_top = cy + 28.0;
+        let title_h = p::text_h(tr, title, 13.0);
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            title_top,
+            title,
+            13.0,
+            p::alpha(hud_ink(theme), 0.7),
+        );
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            title_top + title_h + 3.75,
+            "Scanned codes show up here",
+            11.5,
+            p::alpha(hud_ink(theme), 0.5),
+        );
     }
 
     fn draw_scan_panel(
@@ -5937,44 +6024,11 @@ impl CameraApp {
             panel.y0 + 20.0,
             "Recent scans",
             14.0,
-            white(),
+            hud_ink(theme),
         );
 
         if self.scans.is_empty() {
-            let cx = panel.center().x;
-            let cy = panel.y0 + 120.0;
-            p::icon(
-                scene,
-                t,
-                "scan",
-                Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0),
-                p::alpha(white(), 0.45),
-                1.8,
-            );
-            // The second line follows the first's measured height (13 → 16.25
-            // + 3.75 gap = the authored 20 px pitch at 1×) instead of a fixed
-            // offset that 200% lines painted through.
-            let title = "No codes scanned yet";
-            let title_top = cy + 28.0;
-            let title_h = p::text_h(tr, title, 13.0);
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                title_top,
-                title,
-                13.0,
-                p::alpha(white(), 0.7),
-            );
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                title_top + title_h + 3.75,
-                "Scanned codes show up here",
-                11.5,
-                p::alpha(white(), 0.5),
-            );
+            Self::draw_scan_panel_empty(scene, t, tr, theme, panel);
             return;
         }
 
@@ -6011,7 +6065,15 @@ impl CameraApp {
                 ui::num::f32_of_f64(row.width() - 44.0),
             );
             let summ_top = row.center().y - block_h / 2.0;
-            p::text(scene, tr, row.x0 + 36.0, summ_top, &summ, 13.0, white());
+            p::text(
+                scene,
+                tr,
+                row.x0 + 36.0,
+                summ_top,
+                &summ,
+                13.0,
+                hud_ink(theme),
+            );
             p::text(
                 scene,
                 tr,
@@ -6019,7 +6081,7 @@ impl CameraApp {
                 summ_top + summ_h,
                 &ui::format::relative(now - entry.ts),
                 11.0,
-                p::alpha(white(), 0.6),
+                p::alpha(hud_ink(theme), 0.6),
             );
             y += row_h + 2.0;
         }
@@ -6701,6 +6763,25 @@ impl CameraApp {
 mod tests {
     use super::*;
     use ui::headless::{Framed, viewport};
+
+    /// Viewfinder washes and HUD ink are chrome on media: they come from the
+    /// theme scrim, and the ink clears body-text contrast on it in every
+    /// shipped preset (including high contrast).
+    #[test]
+    fn viewfinder_chrome_follows_the_theme() {
+        use ui::a11y::contrast_ratio;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            assert_eq!(media_scrim(&theme), theme.tokens.colors.surfaces.scrim);
+            let ink = hud_ink(&theme);
+            assert!(
+                contrast_ratio(ink, media_scrim(&theme)) >= ON_FILL_MIN_CONTRAST,
+                "{name} HUD ink {:.2}:1 on scrim",
+                contrast_ratio(ink, media_scrim(&theme))
+            );
+        }
+    }
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
