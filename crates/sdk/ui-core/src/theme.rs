@@ -711,9 +711,19 @@ impl Theme {
         // follows the host override: the compositor is itself a UI host, so an
         // explicitly reduced-motion session must not keep full-desktop
         // transitions running even when settings.json has not been written yet.
-        stack.accessibility.text_scale = 1.0;
-        stack.accessibility.ui_scale = 1.0;
-        stack.accessibility.reduce_motion = reduce_motion_override;
+        // A file schema this build rejects does not contribute contrast or
+        // caret. The host override is its own admitted layer.
+        let file = stack.accessibility;
+        let admitted = file.validate().is_ok();
+        stack.accessibility = crate::theme_layers::AccessibilityLayer {
+            high_contrast: admitted && file.high_contrast,
+            forced_colors: admitted && file.forced_colors,
+            thick_caret: admitted && file.thick_caret,
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            reduce_motion: reduce_motion_override,
+            ..crate::theme_layers::AccessibilityLayer::default()
+        };
         resolve_theme_layers(&stack)
     }
 
