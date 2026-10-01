@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Collect cage's stderr on a disposable dev guest without changing its image.
+# Diagnose a verified dev disk in a disposable guest overlay.
 set -euo pipefail
 
 config=/etc/greetd/config.toml
+log=/tmp/tilo-cage-diagnostic.log
 original=$(mktemp /tmp/tilo-greetd-config.XXXXXX)
 cp -- "$config" "$original"
 restore() {
@@ -24,82 +25,50 @@ chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
+lscpu | grep -E 'Architecture:|Model name:|Features:' || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-for variant in child-status; do
-  log="/tmp/tilo-cage-${variant}.log"
-  child='/usr/bin/tilo-greeter'
-  case "$variant" in
-    stock) extra='';;
-    pixman) extra='WLR_RENDERER=pixman ';;
-    legacy-drm) extra='WLR_DRM_NO_ATOMIC=1 ';;
-    pixman-legacy-drm) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 ';;
-    sleep-client) extra=''; child='/usr/bin/sleep 15';;
-    sleep-client-pixman) extra='WLR_RENDERER=pixman '; child='/usr/bin/sleep 15';;
-    wrapper) extra='';;
-    softpipe-gl) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 WGPU_BACKEND=gl GALLIUM_DRIVER=softpipe ';;
-    child-status) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 '; child='/tmp/tilo-child-status.sh';;
-  esac
-  python3 - "$config" "$original" "$log" "$extra" "$child" <<'PY'
+python3 - "$config" "$original" "$log" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
-original_path = Path(sys.argv[2])
+text = Path(sys.argv[2]).read_text()
 log = sys.argv[3]
-extra = sys.argv[4]
-child = sys.argv[5]
-old = 'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"'
-new = 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"'
+commands = (
+    'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"',
+    'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"',
+)
 instrumented = (
     'command = "/usr/bin/bash -c '
-    "'WLR_NO_HARDWARE_CURSORS=1 WLR_LOG=debug RUST_BACKTRACE=1 " + extra +
-    'cage -s -- ' + child + ' >>' + log + ' 2>&1; '
-    'echo cage-exit=$? >>' + log + '\'"'
+    "'WLR_NO_HARDWARE_CURSORS=1 WLR_RENDERER=pixman "
+    'WLR_DRM_NO_ATOMIC=1 WLR_LOG=debug cage -s -- '
+    '/tmp/tilo-child-status.sh >>' + log + ' 2>&1\'"'
 )
-if sys.argv[3].endswith('wrapper.log'):
-    instrumented = 'command = "/tmp/tilo-cage-session /usr/bin/tilo-greeter"'
-text = original_path.read_text()
-if text.count(old) + text.count(new) != 1:
+if sum(text.count(command) for command in commands) != 1:
     raise SystemExit('expected exactly one graphical greeter command')
-path.write_text(text.replace(old, instrumented).replace(new, instrumented))
+for command in commands:
+    text = text.replace(command, instrumented)
+path.write_text(text)
 PY
 
-  rm -f -- "$log"
-  systemctl reset-failed greetd.service
-  systemctl restart greetd.service
-  sleep 4
-  echo "::group::guest cage diagnostic: $variant"
-  if test -s "$log"; then
-    echo "log lines: $(wc -l < "$log")"
-    grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|modesetting|renderer|started|exited|TILO_GREETER_EXIT|TILO_SIGILL|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
-    echo 'last 20 lines:'
-    tail -n 20 "$log" | cut -c 1-320
-  else
-    echo 'cage wrote no diagnostic log (the wrapper uses the journal)'
-  fi
-  if [[ $variant == sleep-client* ]]; then
-    client_alive=$(pgrep -x sleep || true)
-  else
-    client_alive=$(pgrep -x tilo-greeter || true)
-  fi
-  if systemctl is-active --quiet greetd && pgrep -x cage && [[ -n $client_alive ]]; then
-    echo "variant $variant: GREETER_ALIVE"
-  else
-    echo "variant $variant: GREETER_EXITED"
-  fi
-  systemctl status greetd.service --no-pager -l 2>&1 || true
-  echo '::endgroup::'
-done
-
-echo '::group::guest crash and kernel diagnostics'
+rm -f -- "$log"
+systemctl reset-failed greetd.service
+systemctl restart greetd.service
+sleep 6
+echo '::group::guest greeter diagnostic'
+if [[ -s $log ]]; then
+  grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|renderer|started|exited|TILO_GREETER_EXIT|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
+  echo 'last 20 lines:'
+  tail -n 20 "$log" | cut -c 1-320
+else
+  echo 'cage wrote no diagnostic log'
+fi
 for metrics in /tmp/tilo-greeter-metrics-*.json; do
   [[ -f $metrics ]] || continue
   echo "startup marks from $metrics:"
-  jq -r '.events[]? | "\(.name) \(.ns)"' "$metrics" | tail -n 25 || true
+  jq -r '.events[]? | "\(.name) \(.ns)"' "$metrics" | tail -n 30 || true
 done
-journalctl -b -u greetd.service --no-pager -n 60 2>&1 || true
-journalctl -b -k --no-pager 2>&1 | grep -Ei 'segfault|oom|killed process|virtio.gpu|drm|avc.*denied' | tail -n 60 || true
-coredumpctl --no-pager list 2>&1 | tail -n 20 || true
+systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
