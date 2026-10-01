@@ -5,6 +5,20 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn a_standalone_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id));
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("the terminal panel is submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+}
+
+#[test]
 fn hosted_terminal_panel_is_created_by_the_action() {
     let mut app = CodeApp::new();
     app.mark_hosted_for_test();

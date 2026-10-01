@@ -1131,23 +1131,21 @@ impl CodeApp {
         }
     }
 
-    /// The embedded terminal's document map. A hosted window creates it
-    /// through the dispatcher; a standalone window creates it in
-    /// [`EditorDoc::terminal_root`].
+    /// The embedded terminal's document map. Missing panels are created by
+    /// [`CodeEditorAction::EnsureTerminalPanel`](actions::CodeEditorAction::EnsureTerminalPanel)
+    /// through the action sink, hosted or standalone.
     fn terminal_document_root(&mut self, doc: &mut AutoCommit) -> ObjId {
-        if self.actions.is_hosted() {
-            if EditorDoc::terminal_panel(doc).is_none() {
-                let action = actions::CodeEditorAction::EnsureTerminalPanel;
-                self.actions.dispatch_with_context(
-                    doc,
-                    actions::CODE_EDITOR_ACTION_TYPE,
-                    &action,
-                    actions::history_context(&action, "Terminal", &self.project_id),
-                );
-            }
-            if let Some(id) = EditorDoc::terminal_panel(doc) {
-                return id;
-            }
+        if EditorDoc::terminal_panel(doc).is_none() {
+            let action = actions::CodeEditorAction::EnsureTerminalPanel;
+            self.actions.dispatch_with_context(
+                doc,
+                actions::CODE_EDITOR_ACTION_TYPE,
+                &action,
+                actions::history_context(&action, "Terminal", &self.project_id),
+            );
+        }
+        if let Some(id) = EditorDoc::terminal_panel(doc) {
+            return id;
         }
         EditorDoc::terminal_root(doc)
     }
