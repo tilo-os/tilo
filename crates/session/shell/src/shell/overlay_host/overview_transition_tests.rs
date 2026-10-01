@@ -268,3 +268,66 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
         "a settled closed overview stops replacing the desktop"
     );
 }
+
+#[test]
+fn both_overview_directions_stay_on_the_panel_clip() {
+    fn panel_is_not_both_outputs(host: &ShellOverlayHost) {
+        let patch = host
+            .overview_fast_patch()
+            .expect("this sample publishes a panel patch");
+        let desktop = host.rect.width() * host.rect.height();
+        let panel = f64::from(patch.panel.width) * f64::from(patch.panel.height);
+        assert!(
+            panel * 4.0 < desktop,
+            "the uploaded region is {panel} px on a {desktop} px desktop"
+        );
+        assert!(
+            patch.panel.width < 1920,
+            "the upload is one panel ({} px wide), not a scanout",
+            patch.panel.width
+        );
+    }
+
+    let mut host = host();
+    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
+    host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
+    ]);
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+
+    // The open's first sample is still the millisecond the chord landed, so
+    // progress is 0. That frame must clip to the panel, same as the close.
+    host.tick_overview_transition(1.0, false);
+    host.overview_t = 0.0;
+    host.transition_from = 0.0;
+    host.overview_target = 1.0;
+    host.transition_started = Some(std::time::Instant::now());
+    let mut opening = Scene::new();
+    host.draw_overview_overlay(&mut opening, Affine::IDENTITY, &mut renderer, &theme, true);
+    panel_is_not_both_outputs(&host);
+
+    // Halfway through the close, still the panel, not both outputs.
+    host.overview_t = 1.0;
+    host.overview_target = 1.0;
+    host.transition_from = 1.0;
+    host.transition_started = None;
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+            .expect("half a transition fits in the clock"),
+    );
+    let mut closing = Scene::new();
+    host.draw_overview_overlay(&mut closing, Affine::IDENTITY, &mut renderer, &theme, false);
+    panel_is_not_both_outputs(&host);
+    assert!(
+        host.overview_fast_patch()
+            .is_some_and(|patch| patch.draw_panel),
+        "a mid-close frame still draws the panel"
+    );
+}
