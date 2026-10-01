@@ -3713,7 +3713,12 @@ impl BooksApp {
 
     /// Resolve the reader's page palette: a selected, enabled custom scheme wins;
     /// otherwise the built-in tint. Custom schemes carry their own accent.
+    /// An OS high-contrast theme still reaches the page — sepia and custom
+    /// paper must not ignore it.
     fn resolve_palette(&self, theme: &Theme) -> ReaderPalette {
+        if theme.name == Theme::high_contrast().name {
+            return ReaderPalette::resolve(ReadTheme::HighContrast, theme);
+        }
         if !self.settings.scheme_id.is_empty()
             && let Some(s) = self
                 .schemes
@@ -11970,13 +11975,7 @@ fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
         3 => c.semantic.warning,
         _ => c.semantic.danger,
     };
-    let lum =
-        0.299 * f32::from(base.r()) + 0.587 * f32::from(base.g()) + 0.114 * f32::from(base.b());
-    let ink = if lum < 150.0 {
-        Color::from_rgb8(248, 248, 250)
-    } else {
-        Color::from_rgb8(28, 26, 30)
-    };
+    let ink = theme.on_surface(base).ink;
     (base, ink)
 }
 

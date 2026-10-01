@@ -1,26 +1,18 @@
 //! Contrast-aware foreground selection for selected / active chrome.
 //!
-//! Tilo's [`ui::theme::Theme`] ships **no on-accent token**: there is no
-//! field that says "the readable text colour to place on top of an accent
-//! fill". Worse, `text_primary` is *white* in the dark theme but *black* in
-//! the light theme, so any hard-coded `Color::WHITE` (or any "accent text on
-//! a bright neutral surface") silently fails in one theme or the other.
+//! Selected tabs, nav items and status pills route through this module so a
+//! control never picks a highlight without a label that reads on it. The
+//! toolkit already owns that measurement — [`ui::tokens::Colors::readable_on`]
+//! prefers the theme's own text, then white or black — so this file is the
+//! app-facing seam, not a second palette.
 //!
-//! Selected tabs / nav items / chips are exactly the surfaces that get a
-//! bright or saturated highlight, so picking their foreground by eye is how
-//! the readability bug crept in (indigo-500 label on a slate-200 highlight =
-//! 3.6:1; indigo-500 text on an indigo wash = 3.4:1 — both below the WCAG AA
-//! 4.5:1 floor for body text).
-//!
-//! This module is the single seam every selected/active state in
-//! [`crate::screens`] routes through. Given the background a control will be
-//! painted with, [`readable_on`] returns black or white — whichever has the
-//! higher WCAG contrast — and [`SelectedStyle`] bundles the
-//! `(background, foreground)` pair so a screen never picks one without the
-//! other. Because the same functions are called from the views *and* from the
-//! tests, the contrast guarantee is asserted on the real code path.
+//! Hard-coded RGB used to stand in for "slate-200" / "indigo-500" in the
+//! tests; those were one dark-theme snapshot and silently drifted from the
+//! OS tokens. The tests now ask every shipped theme.
 
 use ui::ColorCompat;
+use ui::theme::Theme;
+use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use vello::peniko::Color;
 
 pub use ui::color::{contrast_ratio, relative_luminance};
@@ -49,15 +41,9 @@ pub fn composite_over(fg: Color, bg: Color) -> Color {
     )
 }
 
-/// Pick the foreground (black or white) with the higher contrast against
-/// `bg`. This is the swappable seam every selected/active surface uses
-/// instead of hard-coding `Color::WHITE` (which breaks in the light theme).
-pub fn readable_on(bg: Color) -> Color {
-    if contrast_ratio(Color::WHITE, bg) >= contrast_ratio(Color::BLACK, bg) {
-        Color::WHITE
-    } else {
-        Color::BLACK
-    }
+/// Pick a foreground that reads on `bg`, using the theme's own tokens.
+pub fn readable_on(theme: &Theme, bg: Color) -> Color {
+    theme.tokens.colors.readable_on(bg, Color::WHITE)
 }
 
 /// A selected/active surface's background paired with a foreground that is
@@ -70,21 +56,21 @@ pub struct SelectedStyle {
 }
 
 impl SelectedStyle {
-    /// Build a style whose foreground is the most-readable choice on `bg`.
-    pub fn on(bg: Color) -> Self {
+    /// Build a style whose foreground is the most-readable theme choice on `bg`.
+    pub fn on(theme: &Theme, bg: Color) -> Self {
         Self {
             bg,
-            fg: readable_on(bg),
+            fg: readable_on(theme, bg),
         }
     }
 
     /// Build a style for a translucent highlight `wash` layered over `base`,
     /// measuring contrast against the composited result the user sees.
-    pub fn over(wash: Color, base: Color) -> Self {
+    pub fn over(theme: &Theme, wash: Color, base: Color) -> Self {
         let bg = composite_over(wash, base);
         Self {
             bg,
-            fg: readable_on(bg),
+            fg: readable_on(theme, bg),
         }
     }
 
@@ -97,7 +83,7 @@ impl SelectedStyle {
 /// The WCAG AA contrast floor for normal-size body text. Selected-state
 /// labels (chips, nav items) are small, so they must clear this, not the
 /// looser 3:1 large-text floor.
-pub const AA_BODY: f64 = 4.5;
+pub const AA_BODY: f64 = ON_FILL_MIN_CONTRAST;
 
 #[cfg(test)]
 mod tests {
@@ -121,66 +107,33 @@ mod tests {
     }
 
     #[test]
-    fn readable_on_picks_the_higher_contrast_text() {
-        // Case `readable_on_bright_surface_is_black_not_white`.
-        {
-            // slate-200 (a nav-item highlight candidate) is bright → black wins.
-            let slate_200 = Color::from_rgb8(226, 232, 240);
-            assert_eq!(readable_on(slate_200), Color::BLACK);
-        }
-        // Case `readable_on_dark_accent_fill_is_white`.
-        {
-            // indigo-700: the dark theme's actual selected chip/nav fill.
-            let indigo_700 = Color::from_rgb8(67, 56, 202);
-            assert_eq!(readable_on(indigo_700), Color::WHITE);
-        }
-        // Case `readable_on_picks_the_genuinely_higher_contrast_choice`.
-        {
-            // Mid-tone indigo-500: black (4.70:1) narrowly beats white (4.47:1),
-            // so the seam must follow the maths, not an assumption that white
-            // always reads on an accent.
-            let indigo_500 = Color::from_rgb8(99, 102, 241);
-            let picked = readable_on(indigo_500);
-            let other = if picked == Color::WHITE {
-                Color::BLACK
-            } else {
-                Color::WHITE
-            };
-            assert!(
-                contrast_ratio(picked, indigo_500) >= contrast_ratio(other, indigo_500),
-                "readable_on must pick the higher-contrast foreground"
-            );
-            assert_eq!(
-                picked,
-                Color::BLACK,
-                "black narrowly beats white on indigo-500"
-            );
-        }
-        // Case `regression_old_buggy_combos_fail_aa`.
-        {
-            // Both were real selected-state foreground/background pairs and both
-            // fall below the 4.5:1 body-text floor — pins the bug this module
-            // fixes so the seam can't silently regress back to it.
-            let indigo_500 = Color::from_rgb8(99, 102, 241); // accent_primary
-            let slate_200 = Color::from_rgb8(226, 232, 240); // neutral.stops[8]
-            // accent text/icon on a bright slate-200 chip (nav_item active).
-            assert!(
-                contrast_ratio(indigo_500, slate_200) < 4.5,
-                "old nav-item combo should be below AA"
-            );
-            // accent text on an indigo-900 wash over slate-900 (status_pill on).
-            let wash = Color::from_rgba8(49, 46, 129, 102); // indigo-900 @ ~0.4
-            let bg = composite_over(wash, Color::from_rgb8(15, 23, 42));
-            assert!(
-                contrast_ratio(indigo_500, bg) < 4.5,
-                "old status-pill combo should be below AA"
-            );
+    fn selected_chrome_reads_on_every_shipped_theme() {
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let c = &theme.tokens.colors;
+            for (what, bg) in [
+                ("accent_hover", theme.accent_hover),
+                ("accent_primary", theme.accent_primary),
+                ("accent[3]", c.accent[3]),
+                ("raised", c.surfaces.raised),
+                ("neutral[8]", c.neutral[8]),
+            ] {
+                let style = SelectedStyle::on(&theme, bg);
+                assert!(
+                    style.ratio() >= AA_BODY,
+                    "[{name}] {what} selected label {:.2}:1 < {AA_BODY}",
+                    style.ratio()
+                );
+            }
 
-            // The fix clears AA: white on indigo-700 (the on-pill bg) and the
-            // readable_on choice on the accent fill both pass.
-            let indigo_700 = Color::from_rgb8(67, 56, 202);
-            assert!(contrast_ratio(Color::WHITE, indigo_700) >= 4.5);
-            assert!(contrast_ratio(readable_on(indigo_500), indigo_500) >= 4.5);
+            // A translucent overlay wash over the base surface — the old
+            // status-pill path — still has to produce a readable pair.
+            let washed = SelectedStyle::over(&theme, c.overlay_strong, c.surfaces.base);
+            assert!(
+                washed.ratio() >= AA_BODY,
+                "[{name}] overlay-on-base selected label {:.2}:1 < {AA_BODY}",
+                washed.ratio()
+            );
         }
     }
 }

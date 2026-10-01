@@ -11,9 +11,9 @@
 //! a random id (`ActorId::random()`, which resolves to nobody).
 //!
 //! For an unknown actor, use [`UNKNOWN_AUTHOR_NAME`] as the name, the first
-//! eight hex characters as the label, and
-//! the avatar hue is derived deterministically from the actor id so the same
-//! stranger keeps the same colour across sessions.
+//! eight hex characters as the label, and the same
+//! [`crate::presence::user_color`] / [`crate::presence::PEER_PALETTE`] slot
+//! presence uses for that identity, so history and presence cannot disagree.
 
 use std::collections::HashMap;
 
@@ -41,6 +41,10 @@ const MAX_HANDLE_LEN: usize = 64;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
+    /// A person's own colour (`Collaborator::cursor_color`, local
+    /// `avatar_color`). Wins over [`crate::presence::user_color`] for
+    /// that identity, matching [`crate::presence::PresenceCtx::color_for`].
+    color_overrides: HashMap<String, (u8, u8, u8)>,
 }
 
 impl AuthorDirectory {
@@ -80,15 +84,43 @@ impl AuthorDirectory {
         if let Some(a) = registered {
             let mut presented = a.clone();
             presented.name = participant_display_label(&presented.name);
+            let override_key = actor_handle(&key).unwrap_or_else(|| key.clone());
+            if let Some(rgb) = self.color_overrides.get(&override_key) {
+                presented = presented.with_rgb(*rgb);
+            }
             return presented;
         }
         let short = short_id(&key);
         match actor_handle(&key) {
             Some(handle) => {
-                HistoryAuthor::new(participant_display_label(&handle), stable_hue(&key), short)
+                self.author_from_identity(participant_display_label(&handle), &handle, short)
             }
-            None => HistoryAuthor::new(UNKNOWN_AUTHOR_NAME, stable_hue(&key), short),
+            None => self.author_from_identity(UNKNOWN_AUTHOR_NAME, &key, short),
         }
+    }
+
+    /// Seed or replace this identity's colour so history agrees with
+    /// [`crate::presence::PresenceCtx::color_for`].
+    pub fn set_color_override(&mut self, identity: impl Into<String>, rgb: (u8, u8, u8)) {
+        self.color_overrides.insert(identity.into(), rgb);
+    }
+
+    /// The colour history paints `identity` in: the person's own colour
+    /// when one was seeded, otherwise the shared palette slot.
+    pub fn colour_for(&self, identity: &str) -> (u8, u8, u8) {
+        self.color_overrides
+            .get(identity)
+            .copied()
+            .unwrap_or_else(|| crate::presence::user_color(identity))
+    }
+
+    fn author_from_identity(
+        &self,
+        name: impl Into<String>,
+        identity: &str,
+        identity_short: impl Into<String>,
+    ) -> HistoryAuthor {
+        author_coloured(name, identity_short, self.colour_for(identity))
     }
 
     /// True when this actor has an explicitly registered identity, as opposed
@@ -158,11 +190,31 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
     } else {
         id.display_name
     };
-    Some(HistoryAuthor::new(
+    Some(author_coloured(
         name,
-        rgb_to_hue(id.avatar_color),
         short_id(&key_hex),
+        (id.avatar_color[0], id.avatar_color[1], id.avatar_color[2]),
     ))
+}
+
+/// History row for `identity`: the shared palette slot, same RGB
+/// [`crate::presence::user_color`] / [`crate::presence::PresenceCtx::color_for`]
+/// pick when no override is set.
+pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAuthor {
+    author_coloured(
+        name,
+        short_id(identity),
+        crate::presence::user_color(identity),
+    )
+}
+
+/// History row whose colour is already decided (a person's own colour).
+pub fn author_coloured(
+    name: impl Into<String>,
+    identity_short: impl Into<String>,
+    rgb: (u8, u8, u8),
+) -> HistoryAuthor {
+    HistoryAuthor::new(name, rgb_to_hue([rgb.0, rgb.1, rgb.2]), identity_short).with_rgb(rgb)
 }
 
 /// Decode an actor id back to the handle the authoring process chose for
@@ -492,6 +544,11 @@ mod tests {
                 (author.avatar_hue - 120.0).abs() < 0.5,
                 "green avatar colour"
             );
+            assert_eq!(
+                author.rgb(),
+                (0, 255, 0),
+                "the person's own colour wins, not hue_to_rgb of its hue"
+            );
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
             assert_eq!(author.identity_short.len(), SHORT_LEN);
         }
@@ -515,5 +572,58 @@ mod tests {
             assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
         }
+    }
+
+    #[test]
+    fn history_and_presence_pick_the_same_colour_for_the_same_identity() {
+        use crate::permissions::UserId;
+        use crate::presence::{PresenceCtx, user_color};
+
+        for id in [
+            "alice",
+            "bob",
+            "carol",
+            "agent:scribe",
+            "unknown-person-xyz",
+        ] {
+            let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
+            let history = AuthorDirectory::new().resolve(&hex);
+            let presence = PresenceCtx::default().color_for(&UserId(id.to_string()));
+            assert_eq!(
+                history.rgb(),
+                presence,
+                "history and presence diverged for {id}"
+            );
+            assert_eq!(
+                history.rgb(),
+                user_color(id),
+                "unoverridden identity must land on the shared palette slot for {id}"
+            );
+        }
+
+        let unknown = "ff00ff00ff00ff00";
+        let history = AuthorDirectory::new().resolve(unknown);
+        assert_eq!(
+            history.rgb(),
+            PresenceCtx::default().color_for(&UserId(unknown.into())),
+            "unknown people share the palette slot keyed by that identity"
+        );
+
+        let mut ctx = PresenceCtx::default();
+        ctx.set_color_override(UserId("carol".into()), "#112233");
+        let mut dir = AuthorDirectory::new();
+        dir.set_color_override("carol", (0x11, 0x22, 0x33));
+        let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
+        assert_eq!(
+            dir.resolve(&hex).rgb(),
+            ctx.color_for(&UserId("carol".into())),
+            "a person's own colour must win on history and presence together"
+        );
+        assert_eq!(dir.resolve(&hex).rgb(), (0x11, 0x22, 0x33));
+        assert_ne!(
+            user_color("carol"),
+            (0x11, 0x22, 0x33),
+            "the override must differ from the palette or the win is invisible"
+        );
     }
 }

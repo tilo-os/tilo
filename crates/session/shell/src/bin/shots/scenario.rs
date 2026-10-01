@@ -287,6 +287,17 @@ pub enum Action {
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
     },
+    /// Sample the maximize/restore sibling fade at fixed points along
+    /// `durations.fast` and capture each as `prefix-<ms>`.
+    ///
+    /// Same escape as [`Action::SampleMakeSpace`]: an offscreen frame
+    /// costs more wall time than the 130 ms curve, so stepping frames
+    /// only ever catches the endpoints.
+    SampleSiblingFade {
+        prefix: &'static str,
+        /// Milliseconds into the fade.
+        at_ms: &'static [u64],
+    },
     /// Sample a tab pill's reveal curve at fixed points and capture each
     /// as `prefix-<ms>`.
     ///
@@ -994,14 +1005,45 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
     }
 }
 
-/// `Action::SampleMakeSpace` and `Action::SetWindowWidths` — split out of
-/// [`apply`] to keep that dispatcher short.
+/// `Action::SampleMakeSpace`, `Action::SampleSiblingFade` and
+/// `Action::SetWindowWidths` — split out of [`apply`] to keep that
+/// dispatcher short.
 fn apply_make_space_sample_and_widths<S: SnapshotSink>(
     driver: &mut ShellDriver,
     action: &Action,
     sink: &mut S,
 ) {
     match action {
+        Action::SampleSiblingFade { prefix, at_ms } => {
+            driver.relayout();
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.desktop
+                    .active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for ms in *at_ms {
+                let mut any = false;
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        any |= row.hold_sibling_fade_at(std::time::Duration::from_millis(*ms));
+                    }
+                }
+                if !any {
+                    eprintln!("scenario: no sibling fade to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str = Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
+            for sid in &strips {
+                if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                    row.clear_sibling_fade_hold();
+                }
+            }
+        }
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
             // which is the pass that measures how far each pushed group
@@ -1478,6 +1520,10 @@ const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 /// Points along the make-space spring to render. Evenly spaced, ending
 /// past its settle so the last one is the settled layout.
 const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
+
+/// Points along the 130 ms sibling fade. Dense at the start, where
+/// ease-out does most of its travelling.
+const SIBLING_FADE_SAMPLES: &[u64] = &[0, 20, 40, 65, 100, 130];
 
 /// Frames to let the motion finish before the settled capture.
 const PLACEMENT_SETTLE_FRAMES: u32 = 8;
@@ -3132,6 +3178,99 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::Snapshot("03-settled"),
+            ],
+        },
+        Scenario {
+            name: "window_maximize_sibling_fade",
+            description: "Super+M fades neighbour windows on the fast curve instead of \
+                      collapsing them, then Super+M again fades them back in.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6301,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "02-maximize",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SampleSiblingFade {
+                    prefix: "04-restore",
+                    at_ms: SIBLING_FADE_SAMPLES,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
+            name: "window_width_spring",
+            description: "An opening window grows its slot from zero, a committed resize \
+                      springs to the new width, and Super+W collapses the last \
+                      frame while the slot closes.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6101,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(333),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-before-open"),
+                Action::OpenWindow {
+                    app_id: "org.example.new",
+                    surface_id: 6102,
+                },
+                // Placement gives a new group the default fraction; retarget
+                // the in-flight 0→width spring to a third so the slot stays
+                // on screen next to its neighbours (and so a new input keeps
+                // the current velocity).
+                Action::SetWindowWidths(333),
+                Action::Snapshot("02-open-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-open",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-open-settled"),
+                Action::SetWindowWidths(500),
+                Action::Snapshot("04-resize-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-resize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-resize-settled"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("w".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SnapshotSequence {
+                    prefix: "06-close",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("07-close-settled"),
             ],
         },
         Scenario {
