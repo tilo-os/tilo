@@ -40,4 +40,5 @@ __attribute__((constructor)) static void install_sigill_probe(void) {
     action.sa_flags = SA_SIGINFO;
     sigemptyset(&action.sa_mask);
     sigaction(SIGILL, &action, NULL);
+    dprintf(STDERR_FILENO, "TILO_SIGILL_PROBE_INSTALLED pid=%ld\n", (long)getpid());
 }

@@ -35,6 +35,9 @@ chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
+ls -l /usr/bin/tilo-greeter /tmp/tilo-sigill-probe.so || true
+getcap /usr/bin/tilo-greeter 2>&1 || true
+LD_PRELOAD=/tmp/tilo-sigill-probe.so /usr/bin/true 2>&1 || true
 lscpu | grep -E 'Architecture:|Model name:|Features:' || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
@@ -69,7 +72,7 @@ systemctl restart greetd.service
 sleep 6
 echo '::group::guest greeter diagnostic'
 if [[ -s $log ]]; then
-  grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|renderer|started|exited|TILO_GREETER_EXIT|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
+  grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|renderer|started|exited|TILO_GREETER_EXIT|TILO_SIGILL|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
   echo 'last 20 lines:'
   tail -n 20 "$log" | cut -c 1-320
 else
