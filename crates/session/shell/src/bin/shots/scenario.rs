@@ -3231,7 +3231,6 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("07-close-settled"),
             ],
         },
-
         Scenario {
             name: "window_open_into_tabbed_group",
             description: "Open a window from inside the default four-tab group; it becomes \
