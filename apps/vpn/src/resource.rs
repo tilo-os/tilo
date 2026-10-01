@@ -38,11 +38,7 @@ impl Resource for Vpn {
     fn bound_actions(state: &Vault) -> Vec<ActionSpec> {
         // Global Tor follows the saved preference. Import stays on
         // `local_operations`.
-        crate::actions::provide_resources(state)
-            .into_iter()
-            .flat_map(|root| root.actions)
-            .filter(|spec| spec.kind == OperationKind::Document)
-            .collect()
+        vec![crate::actions::tor_global_spec(state)]
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -81,10 +77,7 @@ impl Resource for Vpn {
     }
 
     fn children(state: &Vault) -> Vec<tilo_actions::Resource> {
-        crate::actions::provide_resources(state)
-            .into_iter()
-            .flat_map(|root| root.children)
-            .collect()
+        crate::actions::connection_resources(state)
     }
 
     fn search(state: &Vault) -> Vec<SearchEntry> {
@@ -268,6 +261,17 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &doc, "vpn.vault").is_none());
+        let connection_id = standalone[0].children[0].id.as_str().to_owned();
+        assert!(
+            ui::resources::resource(&app, &doc, &connection_id).is_some_and(|connection| {
+                connection
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "connect")
+            }),
+            "a hosted connection stays the published row"
+        );
         let extras = app.resources(&doc);
         assert!(
             extras.is_empty(),

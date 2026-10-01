@@ -566,11 +566,7 @@ impl VpnApp {
     fn refresh(&mut self, doc: &mut AutoCommit) {
         if !self.seeded {
             if VpnDoc::is_empty(doc) && !self.vault.connections.is_empty() {
-                if self.actions.is_hosted() {
-                    self.publish_vault(doc);
-                } else {
-                    VpnDoc::write_vault(doc, &self.vault);
-                }
+                self.publish_vault(doc);
             }
             self.seeded = true;
         }
@@ -3798,11 +3794,41 @@ impl ui::resources::PublishesResources for VpnApp {
     /// delete. When hosted, [`tilo_resource::publish`] already owns that door
     /// (including tunnel Effects on connection children) — return nothing so
     /// we do not republish a second `vpn.vault` root.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.actions.is_hosted() {
             return Vec::new();
         }
-        vec![self.published_vault(&self.vault)]
+        self.connection_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "vpn.vault" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.connection_resources(doc), id)
+    }
+}
+
+impl VpnApp {
+    fn connection_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let from_doc = VpnDoc::read_vault(doc);
+        let vault = if from_doc.connections.is_empty() && !self.vault.connections.is_empty() {
+            &self.vault
+        } else {
+            &from_doc
+        };
+        vec![self.published_vault(vault)]
     }
 }
 
@@ -4350,6 +4376,18 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    #[test]
+    fn a_demo_vault_is_published_by_connection_actions() {
+        let (app, doc) = demo_with_doc();
+        assert!(!VpnDoc::is_empty(&doc));
+        let recorded = app.last_dispatched().expect("a connection action");
+        let payload = String::from_utf8_lossy(&recorded.payload);
+        assert!(
+            payload.contains("AddConnection") || payload.contains("SetTorGlobal"),
+            "{payload}"
+        );
     }
 
     #[test]

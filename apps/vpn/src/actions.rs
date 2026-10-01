@@ -250,62 +250,27 @@ fn connection_label(c: &Connection) -> String {
     format!("{} — {} · {}", c.name, c.kind.long_name(), c.status.label())
 }
 
-/// Build the resource tree the VPN client currently has open: the vault (add a
-/// connection per protocol + the global Tor toggle) and each saved connection
-/// (rename, toggle Tor, delete). Every document-mutating operation is exported
-/// as the same action the on-screen affordance dispatches.
-///
-/// The vault root is always published — an open VPN app can always "add a
-/// connection", even with an empty fleet — while the per-connection children
-/// track the saved list.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one resource-tree builder keeps profile actions and their contracts together"
-)]
-pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
-    let mut root = Resource::new("vpn.vault", "vpn.vault", "VPN");
-
-    // Global Tor preference (stored config).
+/// Global Tor preference. The label follows the saved setting.
+pub(crate) fn tor_global_spec(vault: &Vault) -> ActionSpec {
     let tor_label = if vault.tor_global {
         "Stop routing all traffic over Tor"
     } else {
         "Route all traffic over Tor"
     };
-    root = root.with_action(immediate_spec(
+    immediate_spec(
         "toggle-tor-global",
         tor_label,
         &set_tor_global_action(!vault.tor_global),
-    ));
+    )
+}
 
-    // A name is not a VPN profile. Import is a typed privileged host effect;
-    // the collaborative add action is emitted only after validation succeeds.
-    for kind in [ConnKind::WireGuard, ConnKind::OpenVpn] {
-        let (id, label) = match kind {
-            ConnKind::WireGuard => ("import-wireguard", "Import WireGuard profile"),
-            ConnKind::OpenVpn => ("import-openvpn", "Import OpenVPN profile"),
-        };
-        let Ok(mut spec) = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::Effect,
-            VPN_IMPORT_TYPE,
-            &kind.as_str(),
-        ) else {
-            continue;
-        };
-        spec.contract = ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: true },
-            result: ResultSpec::Job,
-            tags: vec!["vpn".into(), "import".into(), kind.as_str().into()],
-            ..ActionContract::default()
-        };
-        root = root.with_action(spec);
-    }
-
+/// Saved profiles as children of the published vault.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource-tree builder keeps profile actions and their contracts together"
+)]
+pub(crate) fn connection_resources(vault: &Vault) -> Vec<Resource> {
+    let mut children = Vec::new();
     for c in &vault.connections {
         let id = c.id;
         let mut cr = Resource::new(
@@ -384,10 +349,19 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             cr = cr.with_action(delete);
         }
 
-        root = root.with_child(cr);
+        children.push(cr);
     }
+    children
+}
 
-    vec![root]
+/// The published vault. Import effects and the Tor toggle ride that resource;
+/// each saved profile is a child.
+pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::Vpn>(
+        "vpn.vault",
+        "VPN",
+        vault,
+    )]
 }
 
 // Inherent resource publication (was ResourceProvider)
