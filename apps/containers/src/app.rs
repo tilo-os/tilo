@@ -3100,7 +3100,27 @@ impl ui::resources::PublishesResources for ContainersApp {
         }
         self.publish_resources(doc)
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.is_hosted() && id == "containers" {
+            return None;
+        }
+        if let Some(found) = find(&self.publish_resources(doc), id) {
+            return Some(found);
+        }
+        if let Some(found) = find(&self.resources(doc), id) {
+            return Some(found);
+        }
         if let Some(container_id) = id
             .strip_prefix("container:")
             .and_then(|rest| rest.strip_suffix(":logs"))
