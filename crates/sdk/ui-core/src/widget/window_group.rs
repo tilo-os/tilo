@@ -84,6 +84,87 @@ fn px_f32(v: f64) -> f32 {
     v as f32
 }
 
+/// One critically-damped heavy spring per rect edge. A new target mid-flight
+/// keeps value and velocity, so Super+M twice is one motion, not a queue.
+struct RectSprings {
+    x: Spring,
+    y: Spring,
+    w: Spring,
+    h: Spring,
+}
+
+impl RectSprings {
+    fn at(rect: Rect) -> Self {
+        let params = SpringPresets::default().heavy;
+        Self {
+            x: Spring::new(px_f32(rect.x0), params),
+            y: Spring::new(px_f32(rect.y0), params),
+            w: Spring::new(px_f32(rect.width()), params),
+            h: Spring::new(px_f32(rect.height()), params),
+        }
+    }
+
+    fn set_target(&mut self, rect: Rect) {
+        self.x.set_target(px_f32(rect.x0));
+        self.y.set_target(px_f32(rect.y0));
+        self.w.set_target(px_f32(rect.width().max(0.0)));
+        self.h.set_target(px_f32(rect.height().max(0.0)));
+    }
+
+    fn snap(&mut self, rect: Rect) {
+        self.x.snap(px_f32(rect.x0));
+        self.y.snap(px_f32(rect.y0));
+        self.w.snap(px_f32(rect.width().max(0.0)));
+        self.h.snap(px_f32(rect.height().max(0.0)));
+    }
+
+    fn step(&mut self, dt: f32) {
+        self.x.step(dt);
+        self.y.step(dt);
+        self.w.step(dt);
+        self.h.step(dt);
+    }
+
+    fn is_settled(&self) -> bool {
+        self.x.is_settled() && self.y.is_settled() && self.w.is_settled() && self.h.is_settled()
+    }
+
+    fn rect(&self) -> Rect {
+        let x = f64::from(self.x.value());
+        let y = f64::from(self.y.value());
+        Rect::new(
+            x,
+            y,
+            x + f64::from(self.w.value()).max(0.0),
+            y + f64::from(self.h.value()).max(0.0),
+        )
+    }
+
+    #[cfg(test)]
+    fn velocity_w(&self) -> f32 {
+        self.w.velocity()
+    }
+}
+
+impl WindowGroup {
+    #[cfg(test)]
+    pub(crate) fn drawn_rect(&self) -> Rect {
+        self.rect_spring
+            .as_ref()
+            .map_or(self.rect, RectSprings::rect)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn step_rect_spring_for_tests(&mut self) {
+        self.step_rect_spring();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rect_spring_width_velocity(&self) -> Option<f32> {
+        self.rect_spring.as_ref().map(RectSprings::velocity_w)
+    }
+}
+
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
 // The maximized work area starts immediately below the 48px top bar. Its
@@ -127,6 +208,10 @@ pub struct WindowGroup {
     close_hover: bool,
     last_cursor: Point,
     spawned_at: Option<Instant>,
+    /// Drawn rect in flight between the tiled slot and the work area.
+    /// Layout jumps to the destination; paint interpolates (no Taffy).
+    rect_spring: Option<RectSprings>,
+    last_rect_step: Option<Instant>,
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
     width_spring: Option<Spring>,
@@ -304,6 +389,8 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            rect_spring: None,
+            last_rect_step: None,
             width_spring: None,
             last_width_step: None,
             held_back: false,
@@ -758,9 +845,89 @@ impl WindowGroup {
 
     /// Keyboard/accessibility twin of the frame maximize button.
     pub fn toggle_maximized(&mut self) {
+        self.begin_rect_spring_from_current();
         self.maximized = !self.maximized;
         self.pending_maximize_change = Some(self.maximized);
         self.style_dirty = true;
+    }
+
+    fn begin_rect_spring_from_current(&mut self) {
+        if self.reduce_motion || self.rect.width() <= 1.0 || self.rect.height() <= 1.0 {
+            self.rect_spring = None;
+            self.last_rect_step = None;
+            return;
+        }
+        if self.rect_spring.is_some() {
+            // Already in flight: keep value and velocity. The next
+            // apply_layout retargets to the new destination.
+            return;
+        }
+        self.rect_spring = Some(RectSprings::at(self.rect));
+        self.last_rect_step = None;
+    }
+
+    fn retarget_rect_spring(&mut self) {
+        let dest = self.rect;
+        let Some(spring) = self.rect_spring.as_mut() else {
+            return;
+        };
+        if self.reduce_motion {
+            spring.snap(dest);
+            self.rect_spring = None;
+            self.last_rect_step = None;
+            return;
+        }
+        spring.set_target(dest);
+    }
+
+    /// Advance the maximize/restore draw spring. The first call after arm
+    /// does not step, so the first animated frame equals the last tiled one.
+    fn step_rect_spring(&mut self) {
+        let Some(spring) = self.rect_spring.as_mut() else {
+            return;
+        };
+        if self.reduce_motion {
+            spring.snap(self.rect);
+            self.rect_spring = None;
+            self.last_rect_step = None;
+            return;
+        }
+        let now = crate::time::now();
+        let Some(prev) = self.last_rect_step else {
+            self.last_rect_step = Some(now);
+            return;
+        };
+        let dt = now
+            .saturating_duration_since(prev)
+            .as_secs_f32()
+            .clamp(1.0 / 240.0, 1.0 / 20.0);
+        spring.step(dt);
+        self.last_rect_step = Some(now);
+        if spring.is_settled() {
+            self.rect_spring = None;
+        }
+    }
+
+    fn rect_draw_affine(&self, base: Affine) -> Affine {
+        let Some(spring) = &self.rect_spring else {
+            return base;
+        };
+        let src = self.rect;
+        let dst = spring.rect();
+        if src.width() < 1.0 || src.height() < 1.0 {
+            return base;
+        }
+        let sx = dst.width() / src.width();
+        let sy = dst.height() / src.height();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine `*` composes floating-point transform matrices"
+        )]
+        {
+            base * Affine::translate((dst.x0, dst.y0))
+                * Affine::scale_non_uniform(sx, sy)
+                * Affine::translate((-src.x0, -src.y0))
+        }
     }
 
     /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
@@ -842,6 +1009,8 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            rect_spring: None,
+            last_rect_step: None,
             width_spring: None,
             last_width_step: None,
             held_back: false,
@@ -1201,6 +1370,7 @@ impl WindowGroup {
             } if self.maximized && self.restore_rect.contains(self.last_cursor) => {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
+                self.begin_rect_spring_from_current();
                 self.maximized = false;
                 self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
@@ -2078,6 +2248,7 @@ impl Widget for WindowGroup {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         if !self.external_navigation {
@@ -2102,6 +2273,7 @@ impl Widget for WindowGroup {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
+        self.step_rect_spring();
         // Tolerance rather than exact float equality: this only gates a
         // no-op-transform fast path, so a value merely close to identity
         // is close enough to skip composing it.
@@ -2172,6 +2344,7 @@ impl Widget for WindowGroup {
         } else {
             transform
         };
+        let transform = self.rect_draw_affine(transform);
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
         if !self.maximized && !self.external_navigation {
@@ -2386,9 +2559,11 @@ impl Widget for WindowGroup {
             .iter()
             .find(|(i, _)| *i == active_id)
             .is_some_and(|(_, h)| h.needs_animation_frame());
+        let rect_in_flight = !self.reduce_motion && self.rect_spring.is_some();
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight
+            || rect_in_flight
             || width_in_flight
             || (!self.external_navigation && self.bar.needs_animation_frame())
             || host
@@ -4230,6 +4405,137 @@ mod tests {
             assert!(
                 inserted.1.spawn_in_flight(),
                 "inserting a detached tab must fire the tile-level spawn fade",
+            );
+        }
+    }
+
+    #[test]
+    fn maximize_restore_springs_the_drawn_rect_from_the_tiled_slot() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        fn layout(g: &mut WindowGroup, theme: &Theme, w: f32, h: f32) -> Rect {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, theme, &mut node_map);
+            let root = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            taffy
+                .compute_layout(root, taffy::Size::MAX_CONTENT)
+                .unwrap();
+            g.apply_layout(&taffy, node, Point::ZERO);
+            g.get_rect()
+        }
+
+        // Case `maximize_layout_jumps_and_the_draw_rect_starts_at_the_tile`.
+        {
+            let theme = Theme::dark();
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            let tiled = layout(&mut g, &theme, 1600.0, 900.0);
+            assert!(
+                tiled.width() > 100.0 && tiled.width() < 1600.0,
+                "tiled slot must be narrower than the work area, got {}",
+                tiled.width(),
+            );
+            g.toggle_maximized();
+            assert!(
+                g.needs_animation_frame(),
+                "a maximize spring must pump frames",
+            );
+            let dest = layout(&mut g, &theme, 1600.0, 900.0);
+            assert!(
+                dest.width() > tiled.width() + 50.0,
+                "layout must jump to the work area, tiled {} dest {}",
+                tiled.width(),
+                dest.width(),
+            );
+            let drawn = g.drawn_rect();
+            assert!(
+                (drawn.width() - tiled.width()).abs() < 1.0,
+                "the first animated frame must still be the tiled rect, got {} want {}",
+                drawn.width(),
+                tiled.width(),
+            );
+            g.step_rect_spring_for_tests();
+            assert!(
+                (g.drawn_rect().width() - tiled.width()).abs() < 1.0,
+                "the arming frame does not step, so there is no jump at the start",
+            );
+            g.last_rect_step = Some(instant_ago_ms(16));
+            g.step_rect_spring_for_tests();
+            let mid = g.drawn_rect().width();
+            assert!(
+                mid > tiled.width() + 1.0,
+                "the drawn width must grow toward the work area, {mid} from tiled {}",
+                tiled.width(),
+            );
+        }
+
+        // Case `a_second_maximize_keeps_velocity`.
+        {
+            let theme = Theme::dark();
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            let _ = layout(&mut g, &theme, 1600.0, 900.0);
+            g.toggle_maximized();
+            let _ = layout(&mut g, &theme, 1600.0, 900.0);
+            g.step_rect_spring_for_tests();
+            g.last_rect_step = Some(instant_ago_ms(48));
+            g.step_rect_spring_for_tests();
+            let vel_before = g
+                .rect_spring_width_velocity()
+                .expect("maximize spring in flight");
+            assert!(
+                vel_before > 0.0,
+                "opening maximize must grow, vel={vel_before}"
+            );
+            let mid = g.drawn_rect();
+            g.toggle_maximized();
+            let _ = layout(&mut g, &theme, 1600.0, 900.0);
+            let vel_after = g
+                .rect_spring_width_velocity()
+                .expect("restore retargets the same spring");
+            assert_eq!(
+                vel_after, vel_before,
+                "a new Super+M must keep velocity so the motion is interruptible",
+            );
+            assert!(
+                (g.drawn_rect().width() - mid.width()).abs() < 0.5,
+                "retargeting must not jump the drawn rect",
+            );
+        }
+
+        // Case `reduced_motion_maximize_snaps`.
+        {
+            let theme = Theme::dark();
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            let _ = layout(&mut g, &theme, 1600.0, 900.0);
+            g.reduce_motion = true;
+            g.toggle_maximized();
+            let dest = layout(&mut g, &theme, 1600.0, 900.0);
+            assert!(
+                g.rect_spring.is_none(),
+                "reduced motion must not leave a spring ticking",
+            );
+            assert_eq!(
+                g.drawn_rect(),
+                dest,
+                "reduced motion paints at the work-area rect immediately",
+            );
+            assert!(
+                !g.needs_animation_frame(),
+                "a snapped maximize must not pump frames",
             );
         }
     }
