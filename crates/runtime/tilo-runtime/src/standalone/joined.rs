@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tilo_action_broker::{
-    channel_encryption::{GovernanceTransport, InboundChannelGovernance},
+    channel_encryption::{ChannelKeyProvider, GovernanceTransport, InboundChannelGovernance},
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
     collab_inbound::{self, RemoteDocument},
@@ -48,6 +48,9 @@ pub(super) struct Joined {
     sessions: Mutex<BTreeMap<RoomId, RoomSession>>,
     /// Channel governance the sessions received, for the channel service.
     governance: Mutex<Vec<InboundChannelGovernance>>,
+    /// This device's channel keys, once the channel service runs: the only
+    /// renewer of its sealed writes that expire in custody.
+    keys: ChannelKeyProvider,
 }
 
 struct RoomSession {
@@ -78,6 +81,7 @@ impl Joined {
             fanout: broker.1,
             sessions: Mutex::new(BTreeMap::new()),
             governance: Mutex::new(Vec::new()),
+            keys: ChannelKeyProvider::default(),
         });
         for room in joined.owner.rooms() {
             joined.hold_session(room);
@@ -138,6 +142,11 @@ impl Joined {
                     .ok()
             })
             .collect()
+    }
+
+    /// The slot the channel service fills with this device's channel keys.
+    pub(super) fn channel_keys(&self) -> ChannelKeyProvider {
+        self.keys.clone()
     }
 
     /// The device key of `room`'s governor, which stewards its channels.
@@ -269,7 +278,13 @@ impl Joined {
     }
 
     fn publish(&self, scope: &Scope, session: &RelayCoeditSession) {
-        if let Err(error) = scope.publish(session, &self.custody) {
+        let result = match self.keys.get() {
+            Some(keys) => scope.publish_renewing(session, &self.custody, &mut |sealed| {
+                keys.renew_sealed(scope.room(), sealed)
+            }),
+            None => scope.publish(session, &self.custody),
+        };
+        if let Err(error) = result {
             tracing::debug!(%error, "joined room publication remains in durable custody");
         }
     }
