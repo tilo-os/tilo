@@ -447,6 +447,14 @@ print('sha256:' + '6' * 64)
             path.chmod(0o755)
         return path
 
+    def stage_alongside_bootc_inputs(self):
+        for path in (
+            "os/Containerfile.bootc-alongside-helper",
+            "os/external-assets/bootc/0001-probe-missing-partition-metadata.patch",
+            "os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch",
+        ):
+            self.write(path, (REPO / path).read_text())
+
     def run_builder(self, *arguments, **overrides):
         self.log.unlink(missing_ok=True)
         return subprocess.run(
@@ -572,6 +580,7 @@ print('sha256:' + '6' * 64)
                 "os/dev/build-custom-installer.sh",
                 (REPO / "os/dev/build-custom-installer.sh").read_text(),
             )
+            self.stage_alongside_bootc_inputs()
             self.write("os/Containerfile.installer", (REPO / "os/Containerfile.installer").read_text())
             for path in (
                 "os/tilo-installer", "os/dev/uki-cmdline.py",
@@ -590,9 +599,14 @@ exit 72
             self.write("bin/podman", f"""\
 #!/bin/sh
 if [ "$#" = 3 ] && [ "$1" = image ] && [ "$2" = exists ]; then
-    printf '%s\\0' "$@" > "$TILO_TEST_PROBE_LOG"
+    if [ "$3" = "$TILO_IMAGE" ]; then
+        printf '%s\\0' "$@" > "$TILO_TEST_PROBE_LOG"
+    fi
     exit 0
 fi
+if [ "$1" = create ]; then printf '%s\\n' helper-fixture; exit 0; fi
+if [ "$1" = cp ]; then printf '%s\\n' 'fixture helper' > "$3"; exit 0; fi
+if [ "$1" = rm ]; then exit 0; fi
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
@@ -606,6 +620,7 @@ exit {BUILD_INTERCEPTED}
         with self.subTest(phase="installer_reuses_base_binary_and_stops_before_disk_or_signing"):
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
+            self.stage_alongside_bootc_inputs()
             for path in ("os/dev/uki-cmdline.py", "os/etc/greetd/config.toml",
                          "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
@@ -617,6 +632,9 @@ exit {BUILD_INTERCEPTED}
             self.write("bin/podman", """\
 #!/bin/bash
 if [ "$1" = image ] && [ "$2" = exists ]; then exit 0; fi
+if [ "$1" = create ]; then printf '%s\\n' helper-fixture; exit 0; fi
+if [ "$1" = cp ]; then printf '%s\\n' 'fixture helper' > "$3"; exit 0; fi
+if [ "$1" = rm ]; then exit 0; fi
 [ "$1" = build ] || exit 72
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
 context="${@: -1}"
@@ -639,6 +657,7 @@ exit 0
         with self.subTest(phase="compact_installer_root_is_opt_in_and_capacity_bounded"):
             self.script = self.write("os/dev/build-custom-installer.sh",
                                      (REPO / "os/dev/build-custom-installer.sh").read_text())
+            self.stage_alongside_bootc_inputs()
             for path in ("os/usr/share/tilo/fixture", "os/dev/uki-cmdline.py",
                          "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml"):
                 self.write(path, "fixture only\n")
@@ -654,6 +673,9 @@ case "$1 $2" in
   'image exists') exit 0 ;;
   'image inspect') printf '%s\\n' "$TILO_TEST_IMAGE_BYTES" ;;
   'build '*) exit 0 ;;
+  'create '*) printf '%s\\n' helper-fixture ;;
+  'cp '*) printf '%s\\n' 'fixture helper' > "$3" ;;
+  'rm '*) exit 0 ;;
   *) exit 72 ;;
 esac
 """, executable=True)
