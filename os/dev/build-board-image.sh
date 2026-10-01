@@ -31,7 +31,11 @@ repository="${image%:*}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/tilo-board-$board.XXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 
-common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerfile.board"
+firmware=()
+if [ -d "$TILO_OS_DIR/hardware/firmware/$board" ]; then
+  firmware=(--build-context "board-firmware=$TILO_OS_DIR/hardware/firmware/$board")
+fi
+common=(--builder "$BUILDER_NAME" --provenance=false -f "$TILO_OS_DIR/Containerfile.board" "${firmware[@]}"
   --build-arg "BASE_IMAGE=$base"
   --build-arg "RPMS_REF=$RPMS_REF"
   --build-arg "TILO_HARDWARE_PROFILE=$board"
