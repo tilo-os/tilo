@@ -3,6 +3,10 @@
 //! edits with the room's owner, each seeing the other's presence.
 
 #![allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the whole test"
+)]
+#![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
