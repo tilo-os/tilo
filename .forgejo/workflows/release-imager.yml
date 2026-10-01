@@ -145,8 +145,8 @@ jobs:
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic
       # A release tag must use an OS release from the identical source commit.
-      # Offline media use the explicitly pinned signed OS source. Other manual
-      # rehearsals may still layer current installer code onto a published OS.
+      # Offline media verify the explicitly pinned signed OS source while
+      # layering the dispatched main installer code onto that immutable image.
       TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
@@ -157,12 +157,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}
-      - name: Verify checked out source revision
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Verify installer source descends from signed OS source
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: |
-          test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION" || {
-            echo '::error::offline medium checkout differs from signed OS source pin'; exit 1;
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" \
+            && git merge-base --is-ancestor "$TILO_EXPECTED_OS_SOURCE_REVISION" HEAD || {
+            echo '::error::offline installer source is not a descendant of the signed OS source'; exit 1;
           }
       - name: Require the native medium architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
@@ -273,7 +276,7 @@ jobs:
                 | tee "$target_verification_log"
             fi
             grep -Fq "verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation " "$target_verification_log" || {
-              echo '::error::signed offline target source differs from pinned installer source'; exit 1;
+              echo '::error::signed offline target source differs from pinned OS source'; exit 1;
             }
             export TILO_INSTALLER_OFFLINE_TARGET_DIR="$target_dir"
             printf 'TILO_OFFLINE_TARGET_IMAGE=%s\nTILO_OFFLINE_TARGET_PROFILE=%s\n' "$target_image" "$target_profile" >> "${GITHUB_ENV:?}"

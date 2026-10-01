@@ -112,6 +112,28 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
          "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
          "$INSTALLER_CONTEXT/rootfs/usr/share/tilo"
 cp -a "$TILO_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
+# `bootc install to-filesystem` otherwise picks the first ESP on the backing
+# disk, which can be Windows' ESP rather than the ESP mounted at /target/boot/efi.
+# Build the pinned corrected bootc once per source revision and put it in the
+# existing single installer overlay layer. The installed OS never inherits it.
+alongside_bootc_key="$(cat \
+  "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+  "$TILO_OS_DIR/external-assets/bootc/0001-probe-missing-partition-metadata.patch" \
+  "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
+  | sha256sum | cut -c1-16)"
+alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
+if ! podman image exists "$alongside_bootc_ref"; then
+  podman build -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+    -t "$alongside_bootc_ref" "$TILO_REPO"
+fi
+(
+  alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"
+  trap 'podman rm -f "$alongside_bootc_container" >/dev/null 2>&1 || true' EXIT
+  install -d -m 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec"
+  podman cp "$alongside_bootc_container:/bootc" \
+    "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
+)
+chmod 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
 if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
   [ -z "$OFFLINE_TARGET_DIR" ] && [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 0 ] \
     || die "unverified VM install is only for a disposable self-install medium"
