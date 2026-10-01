@@ -1569,7 +1569,7 @@ fn render_combined_readback(
             outputs,
             paint,
             pointer,
-            WorkspacePresent {
+            &WorkspacePresent {
                 id: workspace_id,
                 hold: workspace_hold,
                 clip: workspace_clip,
@@ -1645,7 +1645,7 @@ fn present_workspace_hold(
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
     pointer: (f64, f64),
-    workspace: WorkspacePresent,
+    workspace: &WorkspacePresent,
 ) -> Option<PaintScanoutSample> {
     let bridge = paint.as_mut()?;
     let changed = workspace
@@ -1657,7 +1657,7 @@ fn present_workspace_hold(
     match workspace_frame_upload(changed, has_snapshot, workspace.hold) {
         WorkspaceUpload::Skip => Some(PaintScanoutSample::default()),
         WorkspaceUpload::Clip => Some(present_workspace_clip(
-            scanouts, outputs, bridge, pointer, &workspace,
+            scanouts, outputs, bridge, pointer, workspace,
         )),
         WorkspaceUpload::Replay => {
             let id = workspace.id?;
