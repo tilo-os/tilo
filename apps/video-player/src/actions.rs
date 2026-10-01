@@ -1046,8 +1046,13 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     vec![app]
 }
 
-/// Standalone / `--shots` door. The resource publishes the application root;
-/// this peer's decoder and device library replace the static children.
+fn is_shared_library(resource: &Resource) -> bool {
+    resource.id.as_str() == "video-player.shared-library" || resource.kind == "media.shared-library"
+}
+
+/// Standalone / `--shots` door. The shared library stays the child
+/// [`tilo_resource::publish`] built. Decoder, queue, and recent videos are
+/// this device's live children.
 pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
     let state = crate::shared::read(doc);
     let mut published = ui::tilo_resource::publish::<crate::resource::VideoPlayer>(
@@ -1055,9 +1060,35 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
         "Video Player",
         &state,
     );
-    if let Some(live) = application_tree(ctx, doc).into_iter().next() {
-        published.children = live.children;
+    let Some(live) = application_tree(ctx, doc).into_iter().next() else {
+        return vec![published];
+    };
+    // The shared library stays the child publish built from the document.
+    // Decoder, queue, and recent videos replace that same id when the live
+    // player has one. Any other published child stays.
+    let mut live_children = live.children;
+    let mut children = Vec::new();
+    for published_child in std::mem::take(&mut published.children) {
+        if is_shared_library(&published_child) {
+            live_children.retain(|child| child.id != published_child.id);
+            children.push(published_child);
+            continue;
+        }
+        if let Some(index) = live_children
+            .iter()
+            .position(|child| child.id == published_child.id)
+        {
+            children.push(live_children.remove(index));
+        } else {
+            children.push(published_child);
+        }
     }
+    children.extend(
+        live_children
+            .into_iter()
+            .filter(|child| !is_shared_library(child)),
+    );
+    published.children = children;
     vec![published]
 }
 

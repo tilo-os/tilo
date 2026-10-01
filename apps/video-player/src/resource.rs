@@ -286,6 +286,7 @@ mod tests {
 
         app.set_framework_hosted(true);
         assert!(app.is_framework_hosted());
+        assert!(ui::resources::resource(&app, &state.doc, "video-player.application").is_none());
         let extras = app.resources(&state.doc);
         assert!(
             extras.iter().all(|resource| {
@@ -327,6 +328,11 @@ mod tests {
             hosted_tracks.children.len(),
             standalone_tracks.children.len(),
             "hosted keeps the same bounded track rows"
+        );
+        let track_id = hosted_tracks.children[0].id.as_str();
+        assert!(
+            ui::resources::resource(&app, &state.doc, track_id).is_some(),
+            "a hosted track stays addressable"
         );
 
         app.clear_shot_metadata_for_test();
