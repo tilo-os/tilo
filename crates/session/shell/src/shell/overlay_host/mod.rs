@@ -6813,7 +6813,20 @@ impl ShellOverlayHost {
     /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
     /// is hidden. Lets tests assert it's on screen and click its centre.
     pub fn add_workspace_rect_for_tests(&self) -> Rect {
-        self.add_workspace_rect
+        self.add_workspace_hit_rect()
+    }
+
+    /// The new-workspace row while the overview is open.
+    ///
+    /// The fade's first sample is still alpha 0, and that sample clears the
+    /// painted hit cache so a closing overview cannot create a room. The
+    /// row's geometry is the control: `list-targets` and a click both use
+    /// it as soon as the overlay flag is up, including that first sample.
+    fn add_workspace_hit_rect(&self) -> Rect {
+        if !self.overlay_flags().overview {
+            return Rect::ZERO;
+        }
+        self.overview_add_workspace_rect_for(self.overview_cards().len())
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -15089,8 +15102,11 @@ impl ShellOverlayHost {
     /// either way the overview closes.
     fn overview_click_at(&self, p: Point) {
         // Wins the hit-test before the row-card scan so a
-        // click on it doesn't fall through to "missed".
-        if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
+        // click on it doesn't fall through to "missed". Geometry, not the
+        // painted cache: the open's first sample is still alpha 0 and
+        // clears that cache.
+        let add = self.add_workspace_hit_rect();
+        if add.area() > 0.0 && add.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
                 // Creation switches to the new workspace. Release the
@@ -19282,10 +19298,15 @@ impl ShellOverlayHost {
                 .pre_translate((-cx, -pivot_y).into())
         };
 
-        if overview_alpha <= 0.0 {
+        if !overview_open {
             // Clear the cached hit rect so a stray click during an
-            // in-flight close can't create a workspace.
+            // in-flight close can't create a workspace. The open's first
+            // sample is still alpha 0; that sample must not drop the
+            // new-workspace control, which is addressable from geometry
+            // for the whole time the overlay flag is up.
             self.add_workspace_rect = Rect::ZERO;
+        } else if overview_alpha <= 0.0 {
+            self.add_workspace_rect = self.add_workspace_hit_rect();
         }
         if overview_alpha > 0.0 {
             draw_modal_scrim_at(
