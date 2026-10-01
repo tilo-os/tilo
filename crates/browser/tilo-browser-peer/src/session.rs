@@ -851,8 +851,9 @@ struct Task {
     /// Retained entry ids of every document delivered or published per
     /// route: what a snapshot of the route contains.
     delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
-    /// Entry ids delivered since this page last subscribed. A subscribe asks
-    /// for them again (a refresh wants the rooms whole), so it clears them.
+    /// Entry ids delivered since this page last subscribed whole. A resumed
+    /// subscription keeps them; a whole one asks for them again (a refresh
+    /// wants the rooms whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
@@ -1199,6 +1200,7 @@ impl Task {
                         Some(Command::Reconnect) => break,
                         Some(Command::Refresh) => {
                             self.positions.clear();
+                            self.received.clear();
                             break;
                         }
                         Some(command) => {
@@ -1229,6 +1231,7 @@ impl Task {
                 Some(Command::Reconnect) => return true,
                 Some(Command::Refresh) => {
                     self.positions.clear();
+                    self.received.clear();
                     return true;
                 }
                 Some(command) => {
@@ -1244,7 +1247,13 @@ impl Task {
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
         let mut sent_ok = true;
-        self.received.clear();
+        // A resuming subscription asks only for what follows the page's
+        // positions, yet a frame can reach the page before the position
+        // covering it does: the host then replays it, and the page takes it
+        // once. A whole subscription asks for the rooms again.
+        if !client.resumable() {
+            self.received.clear();
+        }
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
         }
