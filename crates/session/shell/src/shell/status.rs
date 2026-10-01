@@ -32,10 +32,10 @@ const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Change monitors that may wake the status poller.
 ///
-/// `pw-dump --monitor` is not one of them. PipeWire reprints the graph on
+/// `pw-dump --monitor` is not one of them. `PipeWire` reprints the graph on
 /// client and parameter churn, so a line-oriented watch never goes quiet:
-/// each line forked `wpctl`, and that client kept the dump, WirePlumber and
-/// PipeWire awake. The shell's reader burned CPU on that stream while the
+/// each line forked `wpctl`, and that client kept the dump, `WirePlumber` and
+/// `PipeWire` awake. The shell's reader burned CPU on that stream while the
 /// frame loop stayed asleep. Volume still arrives on the media-key path and
 /// on [`FALLBACK_INTERVAL`]. The privacy worker owns the only `pw-dump
 /// --monitor`, and it exits once the device graph is unchanged.
