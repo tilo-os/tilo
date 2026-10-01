@@ -39,6 +39,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
+tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
 tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 automerge.workspace = true
 tilo-automerge.workspace = true
@@ -66,7 +67,6 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
