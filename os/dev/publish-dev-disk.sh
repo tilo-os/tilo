@@ -179,7 +179,12 @@ for attempt in 1 2 3 4 5 6; do
     converged=true
     break
   fi
-  if command -v podman >/dev/null; then
+  # buildx writes the index straight to the registry; podman needs a local
+  # store, which a lane that merely has podman installed cannot always set up.
+  if docker buildx version >/dev/null 2>&1; then
+    mapfile -t sources < <(jq -r --arg repo "$REPOSITORY" '.[] | "\($repo)@\(.digest)"' <<< "$wanted")
+    docker buildx imagetools create --tag "$index_tag" "${sources[@]}"
+  else
     list="tilo-vm-index-$DEV_TAG-$ARCH-$$"
     podman manifest rm "$list" >/dev/null 2>&1 || true
     podman manifest create "$list" >/dev/null
@@ -188,9 +193,6 @@ for attempt in 1 2 3 4 5 6; do
     done
     podman manifest push --all "$list" "docker://$index_tag"
     podman manifest rm "$list" >/dev/null
-  else
-    mapfile -t sources < <(jq -r --arg repo "$REPOSITORY" '.[] | "\($repo)@\(.digest)"' <<< "$wanted")
-    docker buildx imagetools create --tag "$index_tag" "${sources[@]}"
   fi
   # A concurrent lane may have written between our read and write; let its
   # write land before reading back.
