@@ -32,7 +32,7 @@ video = ["dep:media", "media/decode"]
 
 [dependencies]
 # Crash-safe replacement of on-disk thumbnails.
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # Shared decode/downscale primitive; the workspace uses one `DynamicImage` type.
 image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 # EPUB cover extraction from ZIP/OPF containers, under the shared zip-bomb bounds.

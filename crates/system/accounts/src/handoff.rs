@@ -264,7 +264,7 @@ impl HandoffStore {
         let sealed = FORMAT
             .seal(&key, &plaintext)
             .ok_or_else(|| "handoff encryption failed".to_string())?;
-        atomic_file::write_creating_parent_with_mode(&self.file(id), &sealed, 0o600)
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.file(id), &sealed, 0o600)
             .map_err(|error| format!("could not write the handoff credential: {error}"))
     }
 

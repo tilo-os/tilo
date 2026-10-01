@@ -50,7 +50,7 @@ impl LockdownBackend {
 /// enforce Lockdown themselves; merely exposing these properties would let a
 /// policy controller report a restriction while privileged work still runs.
 pub fn current_policy() -> LockdownPolicy {
-    atomic_file::json::load_or_default(&default_path())
+    tilo_files::native::atomic::json::load_or_default(&default_path())
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Lockdown")]

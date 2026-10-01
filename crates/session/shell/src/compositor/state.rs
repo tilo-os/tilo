@@ -3129,7 +3129,8 @@ impl State {
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed = !completed.is_empty();
+        let changed =
+            crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
@@ -3182,6 +3183,10 @@ pub struct ClientState {
     /// credentials when it connected. Display changes it makes are kept
     /// without asking once the person trusts this executable.
     pub executable: Option<String>,
+    /// Peer pid from `SO_PEERCRED` when the connection was accepted.
+    /// Used to recognise xwayland-satellite after its last toplevel dies
+    /// while leftover X clients (Wine) still hold the X socket.
+    pub pid: Option<u32>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3198,6 +3203,7 @@ impl Default for ClientState {
             workspace_id: None,
             enforce_package_id: false,
             executable: None,
+            pid: None,
         }
     }
 }
@@ -3217,11 +3223,13 @@ impl ClientState {
     /// authenticated at the public socket boundary.
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
             enforce_package_id: identity.confined,
+            pid: Some(pid),
             ..Self::default()
         })
     }
@@ -4369,6 +4377,23 @@ impl State {
             self.ask_toplevel_to_close(&toplevel);
         }
     }
+
+    /// Wayland peer pids that currently own at least one `xdg_toplevel`.
+    /// xwayland-satellite keeps leftover X clients (Wine) after the last
+    /// window; this is how the supervisor knows the user already closed it.
+    pub(crate) fn mapped_xwayland_pids(&self) -> std::collections::HashSet<u32> {
+        let mut pids = std::collections::HashSet::new();
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            let Some(client) = toplevel.wl_surface().client() else {
+                continue;
+            };
+            let Some(pid) = client.get_data::<ClientState>().and_then(|data| data.pid) else {
+                continue;
+            };
+            pids.insert(pid);
+        }
+        pids
+    }
 }
 
 /// `px` physical pixels as whole surface-local (logical) pixels at `scale`.
@@ -5388,12 +5413,14 @@ mod osk_identity_tests {
         // Phase `launcher_attribution_overrides_missing_app_id_and_rejects_spoofing`.
         {
             let room = crate::shell::state::RoomId::new();
-            let client =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let client = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "so.tilo.notes".into(),
                     workspace_id: Some(room.to_string()),
                     confined: true,
-                });
+                },
+                42,
+            );
             assert_eq!(
                 authenticated_toplevel_identity(Some(&client), None),
                 Ok((Some("so.tilo.notes".into()), Some(room)))
@@ -5408,12 +5435,14 @@ mod osk_identity_tests {
         }
         // Phase `stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible`.
         {
-            let attributed =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let attributed = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "so.tilo.notes".into(),
                     workspace_id: Some("not-a-room".into()),
                     confined: true,
-                });
+                },
+                42,
+            );
             assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
             assert_eq!(
                 authenticated_toplevel_identity(
@@ -5423,12 +5452,14 @@ mod osk_identity_tests {
                 Ok((Some("org.example.HostApp".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
-            let host =
-                ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            let host = ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
                     package_id: "host.desktop-entry".into(),
                     workspace_id: Some(room.to_string()),
                     confined: false,
-                });
+                },
+                42,
+            );
             assert_eq!(
                 authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),
                 Ok((Some("LegacyStartupWMClass".into()), Some(room)))

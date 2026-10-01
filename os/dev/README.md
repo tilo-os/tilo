@@ -78,7 +78,8 @@ compositor**, so pick per task:
 | `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, greeter, **and the desktop** | llvmpipe — slow, but it runs |
 | `--gl` | `-device virtio-vga-gl -display egl-headless,rendernode=<iGPU>` | **GL compositor scanout** (2D content → "no surface") | hardware GL via virgl |
 
-`vm.sh serial` works in both (the image boots with `console=ttyS0`).
+`vm.sh serial` works in both (the image boots with `console=ttyS0` on x86 and
+`console=ttyAMA0` on ARM).
 
 * **`--2d` reaches the desktop.** `/usr/bin/shell --backend drm` paints the
   full desktop through llvmpipe, slowly. `--2d` captures a whole boot — firmware,
@@ -244,6 +245,28 @@ Tilo installs with its own installer: a bootable live qcow2 that
 runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage`
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
+
+For Windows ARM64 development, dispatch `os-dev-installer.yml` with the exact
+`registry.tilo.so/tilo/tilo-ci@sha256:<digest>` from a successful `os-dev.yml`
+ARM64 run. It layers the installer on that already-built unsigned image and
+uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
+`tilo-dev-installer-aarch64-<run>` artifact, verify its SHA-256, decompress the
+qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
+software` on the Windows WHPX host. Keep the medium as the immutable base for
+later throwaway install overlays. Component changes in a running dev VM use
+`tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+For a running WHPX installer, `installer-console.py --socket
+tcp://127.0.0.1:<console-port> state` reads the same action protocol that the
+scenario driver uses.
+
+Alongside installs on a Windows disk have two ESPs. Stock bootc can choose the
+first ESP instead of the one mounted under the new Tilo root. The live installer
+therefore builds a pinned, installer-only bootc helper that verifies and uses
+the mounted ESP; `tilo-install` checks for it before guided partition creation.
+The helper is absent from the installed OS image. `release-imager.yml` may layer
+newer main installer code onto an earlier CI-signed OS only when that OS source
+is an ancestor of the dispatched main commit and the signed target's SLSA
+source still matches the explicit OS pin.
 
 A CI install medium can instead carry a separately signed generic or Lenovo
 ARM64 target in

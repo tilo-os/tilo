@@ -359,6 +359,24 @@ impl DeviceFleetStore {
         Ok(())
     }
 
+    /// Remember a certificate this machine did not issue locally.
+    ///
+    /// The setup path uses this so an existing machine accepts a device the
+    /// imager certified, and so the new machine accepts the devices it should
+    /// join. The certificate must already verify and belong to `identity_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the certificate is invalid, belongs to another
+    /// person, or the fleet cannot be saved.
+    pub fn remember_certificate(
+        &self,
+        identity_id: &str,
+        cert: DeviceCert,
+    ) -> io::Result<DeviceFleet> {
+        self.insert_certificate(identity_id, cert)
+    }
+
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
         let _fleet_lock = self.lock_fleets()?;
@@ -406,7 +424,7 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_creating_parent(&path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
 
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {

@@ -2,8 +2,10 @@
 //!
 //! Several agents of one person share a hosted machine, and with it the one
 //! Wayland seat every app sees. Each agent therefore gets its own strip and
-//! its own logical seat: a pointer position inside that strip, the keys and
-//! buttons it holds, and the chrome modifier mask it built. Commands arrive
+//! its own logical seat: a pointer position, the keys and buttons it holds,
+//! and the chrome modifier mask it built. While agents drive the compositor
+//! only the focused strip is shown, filling the screen, so on its turn an
+//! agent sees its own strip and whatever its actions open over it. Commands arrive
 //! one at a time on the compositor thread, so the physical seat is handed from
 //! agent to agent between commands: the previous agent's held keys and buttons
 //! are released to its window, the next agent's strip takes focus, and what the
