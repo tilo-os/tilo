@@ -18,7 +18,7 @@ ls -l /dev/dri 2>&1 || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman; do
+for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman wrapper; do
   log="/tmp/tilo-cage-${variant}.log"
   child='/usr/bin/tilo-greeter'
   case "$variant" in
@@ -28,6 +28,7 @@ for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-clie
     pixman-legacy-drm) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 ';;
     sleep-client) extra=''; child='/usr/bin/sleep 15';;
     sleep-client-pixman) extra='WLR_RENDERER=pixman '; child='/usr/bin/sleep 15';;
+    wrapper) extra='';;
   esac
   python3 - "$config" "$original" "$log" "$extra" "$child" <<'PY'
 from pathlib import Path
@@ -38,17 +39,20 @@ original_path = Path(sys.argv[2])
 log = sys.argv[3]
 extra = sys.argv[4]
 child = sys.argv[5]
-original = 'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"'
+old = 'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"'
+new = 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"'
 instrumented = (
     'command = "/usr/bin/bash -c '
     "'WLR_NO_HARDWARE_CURSORS=1 WLR_LOG=debug RUST_BACKTRACE=1 " + extra +
     'cage -s -- ' + child + ' >>' + log + ' 2>&1; '
     'echo cage-exit=$? >>' + log + '\'"'
 )
+if sys.argv[3].endswith('wrapper.log'):
+    instrumented = 'command = "/tmp/tilo-cage-session /usr/bin/tilo-greeter"'
 text = original_path.read_text()
-if text.count(original) != 1:
-    raise SystemExit('expected exactly one stock graphical greeter command')
-path.write_text(text.replace(original, instrumented))
+if text.count(old) + text.count(new) != 1:
+    raise SystemExit('expected exactly one graphical greeter command')
+path.write_text(text.replace(old, instrumented).replace(new, instrumented))
 PY
 
   rm -f -- "$log"
@@ -62,7 +66,7 @@ PY
     echo 'last 20 lines:'
     tail -n 20 "$log" | cut -c 1-320
   else
-    echo 'cage wrote no diagnostic log'
+    echo 'cage wrote no diagnostic log (the wrapper uses the journal)'
   fi
   if [[ $variant == sleep-client* ]]; then
     client_alive=$(pgrep -x sleep || true)
