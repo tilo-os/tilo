@@ -100,6 +100,8 @@ struct Web {
     allowed_origins: Vec<String>,
     /// What `/session/finish` advertises.
     features: u64,
+    /// The rooms this relay governs, for `/rooms` and `/join`.
+    rooms: Option<crate::rooms::Rooms>,
 }
 
 impl Relay {
@@ -169,6 +171,7 @@ impl Relay {
             },
             allowed_origins: config.allowed_origins,
             features: self.web_features(),
+            rooms: self.rooms().cloned(),
         });
         let mut tasks = vec![tasks_bridge];
         let live = web.live.clone();
@@ -215,14 +218,15 @@ impl Relay {
 }
 
 impl Relay {
-    /// What `/session/finish` advertises: calls only where rooms are governed.
+    /// What `/session/finish` advertises: calls and room administration
+    /// only where rooms are governed.
     fn web_features(&self) -> u64 {
-        let voice = if self.rooms().is_some() {
-            protocol::FEATURE_VOICE
+        let rooms = if self.rooms().is_some() {
+            protocol::FEATURE_VOICE | protocol::FEATURE_ROOMS
         } else {
             0
         };
-        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | voice
+        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | rooms
     }
 
     /// The voice carrier of the calls in this relay's rooms, served beside
@@ -645,6 +649,25 @@ async fn route(
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
+        }
+        "/rooms" => {
+            let session = authed()?;
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let request = decode(&bytes)?;
+            Ok(encoded(
+                &rooms.page_rooms(&session.peer.cert, request).await,
+            ))
+        }
+        "/join" => {
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let step = decode(&bytes)?;
+            Ok(encoded(&rooms.page_join(step).await))
         }
         _ if path == FALLBACK_OPEN_PATH => {
             let id: [u8; 16] = rand::random();

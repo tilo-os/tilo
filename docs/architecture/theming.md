@@ -143,8 +143,8 @@ The theme a person sees is resolved from layers, lowest to highest:
 
 | # | Layer | Who writes it | Typical contents |
 |---|---|---|---|
-| 1 | Built-in defaults | Tilo | the Dark/Light presets, stock shape, density, type and motion |
-| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, wallpaper, greeter and boot artwork, logo; optional pins |
+| 1 | Built-in defaults | the toolkit, in code | [`Theme::dark()`](../../crates/sdk/ui-core/src/theme.rs): the stock dark palette, shape, density, type and motion. This is the code default. It is not a file |
+| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, and optional pins (`palette`, `accent`). Wallpaper, greeter and boot artwork are not part of this layer yet |
 | 3 | User theme | the person, through Settings and Theme Studio | preset or custom theme, accent, shape, density, type, motion, materials, icons |
 | 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
@@ -153,25 +153,33 @@ The theme a person sees is resolved from layers, lowest to highest:
 shrink text, or re-enable motion that the person turned off, and distribution
 defaults cannot pin a value that layer 5 touches.
 
+**Built-in defaults are `Theme::dark()`.** `resolve_theme_layers` uses
+that constructor when no higher layer supplies a palette. There is no
+defaults file, and nothing about this layer is signed.
+
 **Distribution defaults** (identifiers: `distribution`,
 `distribution_defaults`) are the layer for whoever ships the Tilo OS image —
 an agent-sandbox provider, a hardware vendor, an organisation's managed
-fleet. The name is that layer's, not a brand pack or a reseller overlay. The
-layer is a Profile layer in the sense of `distribution.md` §6: a signed,
-content-addressed, versioned fragment of the appearance record, delivered
-with the image. It sets defaults and may **pin** a choice by policy (a fixed
-wallpaper on kiosk machines, an accent that matches a company colour). A pin
-is visible: Settings shows the pinned control as set by the distribution, the
-way an employer policy layer shows which of your values it overrode.
-Distribution defaults go through the same validator as everything else, so
-they can no more ship an illegible palette than a user can.
+fleet. The layer sets a palette and a default accent, and may **pin**
+`palette` or `accent`. A pin beats the user theme only for that field.
+Accessibility fields are not pinnable. Wallpaper, greeter and boot artwork
+are not stored here yet.
 
-Every layer is the same kind of thing — a signed, versioned data file that is
-validated before it is applied — and resolution is one deterministic function
-over the stack, in the style of the default-application resolver in
-`docs/settings-and-studios.md`. Layers contribute individual roles, not whole
-themes: distribution defaults that set only an accent leave the user's choice
-of light or dark alone.
+Distribution defaults, the user theme, the workspace tint and accessibility
+live in the settings document as **versioned JSON**. The settings store does
+not sign appearance records, and this design does not add a signature. Each
+of those layers carries a `schema_version`. `validate` runs before the layer
+is applied: a schema this build does not admit is left unused, and the theme
+stays as the layers below it resolved. A finite value inside an admitted
+schema that falls outside the usable band — a custom theme's `spacing_px`,
+an accessibility text or UI scale — is clamped when the layer is
+materialized, before it changes the theme. A non-finite accessibility scale
+rejects that payload the same way an unknown schema does.
+
+Resolution is one deterministic function over the stack, in the style of the
+default-application resolver in `docs/settings-and-studios.md`. Layers
+contribute individual roles, not whole themes: distribution defaults that
+set only an accent leave the user's choice of light or dark alone.
 
 ### What users get
 
@@ -255,20 +263,29 @@ Verified against the code at the time of writing:
   `ensure_legible`). `Theme::from_custom_spec` repairs a file that reaches the
   runtime anyway. Every shipped preset is swept against the same floors
   (`every_theme_that_materializes_keeps_the_contrast_floors`).
-- **One active theme, no layer stack.** `Theme::from_settings_json` resolves a
-  single `appearance.theme` value (a preset name, `Automatic`, or
-  `custom:<id>`). Accessibility is applied after the fact:
-  `Theme::configured_from_text` replaces the whole theme with
-  `Theme::high_contrast()` when `appearance.high_contrast` is set, and
-  `Theme::with_a11y` does the same for apps. There is no `distribution` /
-  `distribution_defaults` layer, no workspace tint, and no general precedence
-  function.
-- **No forced-colours signal for content.** An app cannot ask "is the person
-  in high contrast?" except by comparing `Theme::name`. The ebook has a high
-  contrast page palette, but the reader picks it by hand; the word processor's
-  paper stays off-white under the high contrast theme.
-- **No brand-accent API.** Nothing in `tilo-app-package`'s manifest or in
-  `ui` lets an app declare an accent.
+- **Layer resolution has landed.** [`theme::resolve_theme_layers`](../../crates/sdk/ui-core/src/theme_layers.rs)
+  resolves built-in defaults (`Theme::dark()` in code, not a file),
+  distribution defaults (`distribution` / `distribution_defaults`), the user
+  theme, an optional workspace tint, and accessibility, lowest to highest.
+  Distribution defaults, the workspace tint and accessibility are versioned
+  JSON in settings. Each has `schema_version` and `validate`, and a rejected
+  schema is not applied. Policy pins live on `DistributionPolicy.pins` and
+  name only `palette` or `accent`. A pin beats the user theme for that
+  field; an admitted accessibility layer still replaces the colour track and
+  applies text scale, UI scale and reduced motion last. Out-of-range
+  accessibility scales are clamped in `AccessibilityLayer::materialize`
+  before that apply. `Theme::configured` reads the same function. Wallpaper,
+  greeter and boot artwork are not part of this layer. Appearance records
+  are unsigned.
+- **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
+  answer "am I forced?" with the theme's page, ink and accent tokens. A
+  content palette keeps its own page when the flag is clear. Apps still have
+  to honour the flag; the toolkit does not restyle them.
+- **Brand accent.** `Theme::brand_accent` takes one `[u8; 3]`. It must clear
+  the 3:1 accent floor on the active base and raised surfaces. A miss, a
+  cleared `appearance.app_accents` switch, or forced colours rejects it and
+  the theme accent stays. The call cannot replace surfaces, text, chrome or
+  accessibility.
 - **Hard-coded colours in apps.** `rg -c "Color::from_rgb8\(|Color::rgb8\(|Color::new\(\["`
   still counts 155 sites in `apps/`. 122 are legitimate (document and media
   colours, stored user choices, colour-math helpers, test fixtures) and 33
@@ -276,9 +293,14 @@ Verified against the code at the time of writing:
   misses `Color::from_rgba8` (71 sites) and `Color::WHITE`/`BLACK` (150
   sites); the HIG §9.13 audit covers `ui-core` only, so apps are not ratcheted
   yet.
-- **No trusted-UI marker.** The onboarding ceremony is compositor-drawn so an
-  app cannot imitate its placement, but nothing in its appearance is
-  unforgeable.
+- **Trusted-UI frame for permission prompts and portal sheets.** The shell
+  paints a seal band on those surfaces and publishes it as
+  `tilo.shell.trusted-frame/permission-prompt` or
+  `tilo.shell.trusted-frame/portal-dialog`. The widget walk drops that
+  namespace, so an app widget cannot mint the same target. The band is not a
+  theme token; the active theme may recolour it. A session-tied personal
+  image is still absent, and onboarding, the lock screen, and capability
+  indicators do not carry the frame yet.
 
 ## Roadmap
 
@@ -287,14 +309,11 @@ Verified against the code at the time of writing:
    distinct-hue series for spreadsheet references, a forced-colours flag for
    content surfaces) rather than hard-coding it locally. Extend
    `design_token_audit.rs` to `apps/` with a baseline that can only fall.
-2. **Layer resolution.** A typed stack — built-in defaults, distribution
-   defaults (`distribution` / `distribution_defaults`), user theme, optional
-   workspace tint, accessibility — resolved by one tested function in
-   `ui-core`, read from the settings record and the image's distribution
-   defaults.
-3. **Forced colours, brand accent, trusted-UI marker.** A `Theme` flag every
-   content palette honours; a contrast-checked app-accent field the user can
-   turn off; a compositor-drawn marker no theme or app can reproduce.
+2. **Layer resolution.** Landed: `theme::resolve_theme_layers`.
+3. **Forced colours and brand accent.** Landed: `Theme::content_surface` and
+   `Theme::brand_accent`. Still open: a compositor-drawn trusted-UI marker no
+   theme or app can reproduce, and wallpaper / greeter / boot artwork on the
+   distribution layer.
 
 ## Appendix: hard-coded colours in `apps/`
 

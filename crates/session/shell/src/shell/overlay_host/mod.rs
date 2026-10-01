@@ -3053,6 +3053,12 @@ impl ShellOverlayHost {
         let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
     }
 
+    /// Whether the workspace-switch frame run is still in flight.
+    /// Intermediate frames must not upload the desktop again.
+    pub(crate) fn workspace_switch_holding(&self) -> bool {
+        self.workspace_switch.is_animating(Instant::now())
+    }
+
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Draw snaps this when motion is reduced.
@@ -3080,6 +3086,16 @@ impl ShellOverlayHost {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
         self.chrome = Some(chrome);
         self
+    }
+
+    /// Fixture hosts start with explicit desktop controls, which skip launch
+    /// notifications. Tests of that drain switch to the persisted source the
+    /// session uses.
+    #[cfg(test)]
+    pub(crate) fn enable_persisted_launch_drain_for_test(&mut self) {
+        self.desktop_controls = DesktopControlsSource::Persisted(
+            settings_store::hardware::DesktopControlsConfig::default(),
+        );
     }
 
     /// Configure peer-sync palette commands during host construction.
@@ -5383,6 +5399,20 @@ impl ShellOverlayHost {
                     );
                     continue;
                 }
+                // Geoclue and nm-applet are autostart helpers. They are not the
+                // app the person opened, so their exit must not toast
+                // "crashed before opening" for that launch.
+                LaunchEventKind::Failed { .. }
+                    if crate::shell::launcher::unasked_session_helper(&event.package_id) =>
+                {
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        "session helper exited without a window the user asked to open"
+                    );
+                    continue;
+                }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
             }
             match &event.kind {
@@ -5659,6 +5689,49 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_permission_prompt_for_tests(&mut self) {
         self.pump_permission_prompt();
+    }
+
+    /// Geometry `draw_desktop_extras` gives the live permission prompt.
+    fn permission_prompt_surface(&self) -> Rect {
+        let area = self.overlay_area();
+        let inset = f64::from(self.sidebar_top_y);
+        let bar_top = area.y0 + inset;
+        Rect::new(
+            area.x0 + inset,
+            bar_top,
+            area.x1 - inset,
+            bar_top + PROMPT_HEIGHT,
+        )
+    }
+
+    /// Seal bands for trusted surfaces that are on screen. Empty when none
+    /// are up. Only [`crate::shell::frame::FrameBuilder::widget_registry`]
+    /// publishes these names; the widget walk cannot.
+    pub(crate) fn trusted_frame_targets(
+        &self,
+        theme: &ui::theme::Theme,
+    ) -> Vec<(&'static str, Rect)> {
+        let mut targets = Vec::new();
+        let thickness = f64::from(theme.tokens.spacing.s1);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            targets.push((
+                crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.md),
+                ),
+            ));
+        }
+        if let Some(layout) = self.portal_dialogs.layout(self.rect) {
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            targets.push((
+                crate::shell::trusted_ui::PORTAL_DIALOG_TARGET,
+                crate::shell::trusted_ui::seal_band(layout.sheet, thickness, radius),
+            ));
+        }
+        targets
     }
 
     /// Test-only accessor for the held [`PermissionPrompt`].
@@ -11277,8 +11350,13 @@ impl ShellOverlayHost {
             } else {
                 1
             };
-            if let Some(chrome) = self.chrome.clone() {
-                let _ = chrome.borrow_mut().switch_workspace(direction);
+            if let Some(chrome) = self.chrome.clone()
+                && chrome.borrow_mut().switch_workspace(direction)
+            {
+                // Both directions. Page Down's following frames were already
+                // cheap; Page Up fell through to a full upload of the desktop
+                // just restored.
+                self.start_workspace_switch_frames();
             }
             *handled = true;
             return true;
@@ -18866,17 +18944,21 @@ impl ShellOverlayHost {
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
-        if let Some(prompt) = self.permission_prompt.as_mut() {
-            let bar_top = area.y0 + f64::from(self.sidebar_top_y);
-            let bar_left = area.x0 + f64::from(self.sidebar_top_y);
-            let bar_right = area.x1 - f64::from(self.sidebar_top_y);
-            prompt.set_rect(Rect::new(
-                bar_left,
-                bar_top,
-                bar_right,
-                bar_top + PROMPT_HEIGHT,
-            ));
-            prompt.draw(scene, transform, text_renderer, theme, presence);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            if let Some(prompt) = self.permission_prompt.as_mut() {
+                prompt.set_rect(surface);
+                prompt.draw(scene, transform, text_renderer, theme, presence);
+            }
+            // The seal is shell chrome. `PermissionPrompt` itself cannot
+            // paint it, so an app that builds that widget does not get the frame.
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                surface,
+                theme,
+                f64::from(theme.tokens.radii.md),
+            );
         }
 
         // Above desktop content, below modal overlays and the permission
@@ -19203,14 +19285,18 @@ impl ShellOverlayHost {
                 overview_alpha,
             );
             self.store_overview_fast_patch(theme, overview_alpha, clip, panel_xform);
-        } else if self
-            .overview_fast_patch
-            .as_ref()
-            .is_some_and(|patch| patch.draw_panel)
+        } else if self.transition_started.is_some()
+            || self
+                .overview_fast_patch
+                .as_ref()
+                .is_some_and(|patch| patch.draw_panel)
         {
-            // The close has reached zero. Put the stashed desktop back inside
-            // the panel clip; a full readback here is the stall the fade just
-            // avoided. The following settled frame clears the patch.
+            // Progress is integer milliseconds, so the open's first sample is
+            // still alpha 0. That frame used to clear the patch and GPU-read
+            // both outputs; the close never did, because it starts at alpha 1.
+            // Keep the panel clip for the whole fade, including that sample
+            // and the frame that finishes a close. The next settled frame
+            // clears the patch.
             let clip = self.overview_stable_clip(theme);
             self.store_overview_fast_patch(theme, 0.0, clip, Affine::IDENTITY);
         } else {
@@ -20778,6 +20864,7 @@ impl ShellOverlayHost {
             None,
             &sheet,
         );
+        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
         text_renderer.draw_text(
             scene,
             &view.title(),
