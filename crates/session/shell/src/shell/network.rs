@@ -2325,6 +2325,7 @@ impl ShellNetwork {
                 ts,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Is `cluster_id` a room this machine is in? An app's cluster is
