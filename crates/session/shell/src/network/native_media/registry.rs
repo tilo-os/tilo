@@ -29,10 +29,8 @@ impl Registry {
                 Operation::Heartbeat { ticket } => self
                     .known(&ticket)
                     .and_then(|()| {
-                        ticket.heartbeat(
-                            &sessions(ticket.workspace()).ok_or(NOT_CONNECTED)?,
-                            |view| check_identity(view, identity),
-                        )
+                        let session = sessions(ticket.workspace()).ok_or(NOT_CONNECTED)?;
+                        ticket.heartbeat(&session, |view| check_identity(view, identity))
                     })
                     .map(|()| Reply::Sent)
                     .inspect_err(|_| ticket.stop()),

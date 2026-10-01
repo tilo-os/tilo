@@ -11,7 +11,7 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::{test_bootstrap_response, test_descriptor, test_enrolled_owner};
+pub(crate) use tests::test_enrolled_owner;
 
 use super::{
     persist,
@@ -20,12 +20,9 @@ use super::{
 pub use store::NativeStateRuntime;
 pub use tilo_joined_room::NativeAuthorityStorage;
 use tilo_joined_room::{Change, Store};
-pub(crate) use tilo_joined_room::{
-    DocumentRead, NativeBootstrap, NativeCommittedView, NativeFenceSubscription,
-    NativeWorkspaceOwner,
-};
+pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
 #[cfg(test)]
-pub(crate) use tilo_joined_room::{PendingEnrollmentId, PendingEnrollmentStatus};
+pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus};
 
 /// The owner's record as one field of the state file, written through the
 /// state file's single writer.
