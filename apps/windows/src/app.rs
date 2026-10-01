@@ -670,7 +670,27 @@ impl WindowsApp {
             "Windows manager",
             &state,
         );
-        root.children = actions::live_catalogue_extras(&self.catalogue);
+        // Live catalogue rows carry launch and maintenance. Document route
+        // overrides stay on the published children and are merged onto the
+        // matching app so a shared route is not dropped.
+        let published = std::mem::take(&mut root.children);
+        let mut children = actions::live_catalogue_extras(&self.catalogue);
+        for document in published {
+            if document.id.as_str() == "windows.appliance" {
+                continue;
+            }
+            if let Some(existing) = children.iter_mut().find(|child| child.id == document.id) {
+                for action in document.actions {
+                    if existing.actions.iter().any(|have| have.id == action.id) {
+                        continue;
+                    }
+                    existing.actions.push(action);
+                }
+            } else {
+                children.push(document);
+            }
+        }
+        root.children = children;
         vec![root]
     }
 
@@ -3151,6 +3171,30 @@ impl ui::resources::PublishesResources for WindowsApp {
             return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == actions::MANAGER_RESOURCE_ID {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id).or_else(|| {
+            self.is_hosted().then(|| {
+                crate::resource::live_extras(self)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
