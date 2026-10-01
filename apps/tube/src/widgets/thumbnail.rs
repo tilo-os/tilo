@@ -235,8 +235,8 @@ impl Thumbnail {
                 "LIVE",
                 &PillSpec {
                     size: 11.0,
-                    bg: chrome.live_bg,
-                    fg: chrome.live_fg,
+                    bg: chrome.live_plate,
+                    fg: chrome.live_ink,
                     anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
                     right_align: true,
                 },
@@ -290,8 +290,8 @@ struct ThumbChrome {
     motif_dark: Color,
     play_plate: Color,
     play_glyph: Color,
-    live_bg: Color,
-    live_fg: Color,
+    live_plate: Color,
+    live_ink: Color,
     duration_bg: Color,
     duration_fg: Color,
     progress_track: Color,
@@ -304,14 +304,14 @@ impl ThumbChrome {
         let c = &theme.tokens.colors;
         let scrim = c.surfaces.scrim;
         let on_scrim = theme.on_surface(scrim);
-        let (live_bg, live_fg) = c.legible_fill(c.semantic.danger, Color::WHITE);
+        let (live_plate, live_ink) = c.legible_fill(c.semantic.danger, Color::WHITE);
         Self {
             motif_light: c.overlay_subtle,
             motif_dark: with_alpha(scrim, 24),
             play_plate: with_alpha(scrim, 110),
             play_glyph: on_scrim.ink,
-            live_bg,
-            live_fg,
+            live_plate,
+            live_ink,
             duration_bg: with_alpha(scrim, 200),
             duration_fg: on_scrim.ink,
             progress_track: c.overlay_medium,
@@ -469,14 +469,14 @@ mod tests {
                 "{name} progress is the danger token"
             );
             assert_eq!(
-                chrome.live_bg,
+                chrome.live_plate,
                 c.legible_fill(c.semantic.danger, Color::WHITE).0,
                 "{name} LIVE fill is the danger chip"
             );
             assert!(
-                contrast_ratio(chrome.live_fg, chrome.live_bg) >= ON_FILL_MIN_CONTRAST,
+                contrast_ratio(chrome.live_ink, chrome.live_plate) >= ON_FILL_MIN_CONTRAST,
                 "{name} LIVE label {:.2}:1",
-                contrast_ratio(chrome.live_fg, chrome.live_bg)
+                contrast_ratio(chrome.live_ink, chrome.live_plate)
             );
             assert!(
                 contrast_ratio(chrome.duration_fg, c.surfaces.scrim) >= ON_FILL_MIN_CONTRAST,
