@@ -138,15 +138,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
-name = "tilo-atomic-file"
-version = "0.1.0"
-dependencies = [
- "tilo-advisory-lock",
- "rustix",
- "windows-sys",
-]
-
-[[package]]
 name = "atomic-polyfill"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2008,7 +1999,6 @@ dependencies = [
 name = "private-fs"
 version = "0.1.0"
 dependencies = [
- "tilo-atomic-file",
  "libc",
  "windows-sys",
 ]
@@ -2163,7 +2153,6 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "tilo-advisory-lock",
- "tilo-atomic-file",
  "bounded-command",
  "ed25519-dalek",
  "getrandom",
@@ -2557,7 +2546,6 @@ dependencies = [
 name = "tilo-app-package"
 version = "0.1.0"
 dependencies = [
- "tilo-atomic-file",
  "blake3",
  "collab-types",
  "ed25519-dalek",
@@ -2639,7 +2627,6 @@ name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "tilo-advisory-lock",
- "tilo-atomic-file",
  "automerge",
  "blake3",
  "data-encoding",

@@ -13,9 +13,9 @@
 # Tilo installs only onto a local block device and supports passphrase,
 # TPM2, and FIDO2 unlock. Network roots and network-bound disk encryption
 # add DHCP/TLS/NFS/iSCSI parsers plus startup work to every signed UKI with
-# no supported way to use them. The supported root is Btrfs; keep Ext4 and
-# XFS as signed modules for rescue/secondary filesystems after pivot_root,
-# but do not copy either parser into the pre-authentication initramfs.
+# no supported way to use them. The supported roots are Btrfs and Ext4;
+# Ext4 must be available before pivot_root for an Ext4 installation. Keep
+# XFS as a signed rescue/secondary-filesystem module after pivot_root.
 # Omit the consumers as well as their parents: bootc explicitly adds
 # clevis-pin-tpm2, and dracut can auto-select the other Clevis pins and
 # network-root transports. Omitting only clevis/network leaves their
@@ -40,7 +40,8 @@ log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
-    --omit-drivers "ext4 xfs" \
+    --omit-drivers xfs \
+    --add-drivers ext4 \
     --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
@@ -54,7 +55,7 @@ test -s "/usr/lib/modules/$kver/initramfs.img"
 mkdir -p /usr/lib/tilo
 sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' "$log" \
   | sort -u > /usr/lib/tilo/initramfs-modules.txt
-printf '%s\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt
+printf '%s\n' xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt
 for m in $required_modules; do
   grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || {
     echo "dracut did not include the $m module; an encrypted root could not be opened" >&2

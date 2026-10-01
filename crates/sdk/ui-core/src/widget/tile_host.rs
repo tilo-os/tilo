@@ -712,6 +712,11 @@ impl TileHost {
         &self.opening_name
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_opening_shown_for_test(&mut self) {
+        self.opening_shown = true;
+    }
+
     fn handover_in_flight(&self) -> bool {
         self.handed_over_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(HANDOVER_MS))
@@ -1031,6 +1036,12 @@ impl TileHost {
         let previous = self.history_lifetime.control_domain.clone();
         self.history_lifetime = crate::history_mode::owner::LegacyHistoryLifetime::new();
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
+    }
+
+    /// Typing may reach a live app that has no tab record yet. It must not
+    /// bypass a renewed lifetime or admitted owner-bound custody.
+    fn typing_may_bypass_missing_record(&self) -> bool {
+        !self.owner_bound_work && self.record_transition_error.is_none()
     }
 
     fn prepare_record_resolution(&mut self) -> Result<(), String> {
@@ -2157,18 +2168,25 @@ impl Widget for TileHost {
         if *ctx.handled {
             return;
         }
+        let typing = matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        );
         let live = if let Ok(live) = self.resolve_record() {
             live
-        } else {
-            let Some(live) = self.checked_old_owner_for_recovery() else {
-                *ctx.handled = true;
-                return;
-            };
+        } else if let Some(live) = self.checked_old_owner_for_recovery() {
             Some(live)
+        } else if typing && self.typing_may_bypass_missing_record() {
+            // A running Terminal still receives keystrokes when the tab
+            // record was never bound. A renewed or closed owner must not.
+            None
+        } else {
+            *ctx.handled = true;
+            return;
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
             *ctx.handled = true;
             return;
         }
@@ -2179,9 +2197,15 @@ impl Widget for TileHost {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
                 history.route_event(app.as_mut(), event, ctx);
-                return;
-            }
-            if !history.live_interactive() {
+                let leftover_typing = matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+                ) && !*ctx.handled
+                    && !history.captures_input();
+                if !leftover_typing {
+                    return;
+                }
+            } else if !history.live_interactive() {
                 return;
             }
         }
@@ -2351,7 +2375,15 @@ impl Widget for TileHost {
         };
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
-        self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+        // The card is painted, then the app presents. If we sleep there the
+        // last compositor frame is still the empty card — A05's Store shot.
+        let pending_handover =
+            self.opening_shown && !Widget::opening(self) && self.handed_over_at.is_none();
+        self.spawn_in_flight()
+            || self.handover_in_flight()
+            || opening_indicator
+            || inner
+            || pending_handover
     }
 }
 
@@ -4713,6 +4745,17 @@ mod tests {
             &PresenceCtx::empty(),
         );
         scene
+    }
+
+    #[test]
+    fn an_arrived_app_after_a_visible_card_still_asks_for_a_frame() {
+        // Case `retiring_the_opening_card_keeps_one_paint_so_the_app_replaces_it`.
+        let (mut host, _) = starting_host(true, false);
+        host.mark_opening_shown_for_test();
+        assert!(
+            Widget::needs_animation_frame(&host),
+            "the person already saw the opening card; without one more frame              the compositor sleeps on that empty fill (A05 Store)"
+        );
     }
 
     #[test]
