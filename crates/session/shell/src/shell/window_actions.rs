@@ -327,7 +327,10 @@ pub(crate) fn close_tab_unrecorded(
     {
         // Wine File's tab announces wineboot.exe. That is not the desktop
         // id the launch table uses, so terminate(key) is a no-op. Sweep
-        // every unconfined launch that now has no window.
+        // every unconfined launch that now has no window. A second X11
+        // window of that launch (Wine Mono announces control.exe) still
+        // counts, or killing the launch drops its group and group.close
+        // becomes unknown_action.
         let known = crate::shell::launcher::unconfined_launch_is_live(key)
             || crate::shell::launcher::launch_key_for_surface(
                 foreign.as_ref().map_or(0, |(_, id)| *id),
@@ -355,19 +358,49 @@ fn host_launch_key(app_id: &str, surface_id: u64) -> String {
 }
 
 fn foreign_tabs_remain_for(desktop: &crate::shell::state::DesktopTree, launch_key: &str) -> bool {
-    desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .any(|tab| match &tab.tile {
-            TileContent::Foreign { app_id, surface_id } => {
-                host_launch_key(app_id, *surface_id) == launch_key
-                    || app_id.eq_ignore_ascii_case(launch_key)
+    let mut unresolved = false;
+    for workspace in &desktop.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+                        continue;
+                    };
+                    let resolved = host_launch_key(app_id, *surface_id);
+                    if resolved.eq_ignore_ascii_case(launch_key)
+                        || app_id.eq_ignore_ascii_case(launch_key)
+                    {
+                        return true;
+                    }
+                    // `durable_app_id` falls back to the announced toolkit id
+                    // (wineboot.exe, control.exe) when the desktop id never
+                    // matched. That window still belongs to the only live
+                    // unconfined launch.
+                    if resolved.eq_ignore_ascii_case(app_id) {
+                        unresolved = true;
+                    }
+                }
             }
-            _ => false,
-        })
+        }
+    }
+    unresolved && sole_live_unconfined_launch(launch_key)
+}
+
+/// True when `launch_key` is the only unconfined host launch still running.
+///
+/// On hosts that do not track launches this is false: there is no process
+/// to keep, and a toolkit window id must not invent one.
+fn sole_live_unconfined_launch(launch_key: &str) -> bool {
+    #[cfg(any(test, target_os = "linux"))]
+    {
+        let live = crate::shell::launcher::live_unconfined_package_ids();
+        live.len() == 1 && live[0].eq_ignore_ascii_case(launch_key)
+    }
+    #[cfg(not(any(test, target_os = "linux")))]
+    {
+        let _ = launch_key;
+        false
+    }
 }
 
 /// [`close_tab`] on the focused group's active tab — the `tab.close`
