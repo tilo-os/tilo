@@ -18,7 +18,7 @@ ls -l /dev/dri 2>&1 || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman wrapper; do
+for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman wrapper softpipe-gl traced-pixman; do
   log="/tmp/tilo-cage-${variant}.log"
   child='/usr/bin/tilo-greeter'
   case "$variant" in
@@ -29,6 +29,8 @@ for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-clie
     sleep-client) extra=''; child='/usr/bin/sleep 15';;
     sleep-client-pixman) extra='WLR_RENDERER=pixman '; child='/usr/bin/sleep 15';;
     wrapper) extra='';;
+    softpipe-gl) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 WGPU_BACKEND=gl GALLIUM_DRIVER=softpipe ';;
+    traced-pixman) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 ';;
   esac
   python3 - "$config" "$original" "$log" "$extra" "$child" <<'PY'
 from pathlib import Path
@@ -39,12 +41,13 @@ original_path = Path(sys.argv[2])
 log = sys.argv[3]
 extra = sys.argv[4]
 child = sys.argv[5]
+trace = 'strace -ff -o /tmp/tilo-sigill -e trace=execve -e signal=SIGILL ' if log.endswith('traced-pixman.log') else ''
 old = 'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"'
 new = 'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"'
 instrumented = (
     'command = "/usr/bin/bash -c '
     "'WLR_NO_HARDWARE_CURSORS=1 WLR_LOG=debug RUST_BACKTRACE=1 " + extra +
-    'cage -s -- ' + child + ' >>' + log + ' 2>&1; '
+    trace + 'cage -s -- ' + child + ' >>' + log + ' 2>&1; '
     'echo cage-exit=$? >>' + log + '\'"'
 )
 if sys.argv[3].endswith('wrapper.log'):
@@ -79,6 +82,9 @@ PY
     echo "variant $variant: GREETER_EXITED"
   fi
   systemctl status greetd.service --no-pager -l 2>&1 || true
+  if [[ $variant == traced-pixman ]]; then
+    grep -H -E 'SIGILL|execve' /tmp/tilo-sigill.* | tail -n 40 || true
+  fi
   echo '::endgroup::'
 done
 
