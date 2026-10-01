@@ -506,7 +506,6 @@ where
     }
     let listener = UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    listener.set_nonblocking(true)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let workers = Arc::new(Mutex::new(Vec::new()));
@@ -514,11 +513,15 @@ where
     let active_workers = Arc::new(AtomicUsize::new(0));
     let thread_active_workers = Arc::clone(&active_workers);
     let listener_thread = std::thread::Builder::new()
-        .name("tilo-windows-compat".to_string())
+        .name("tilo-win-accept".to_string())
         .spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 reap_finished_workers(&thread_workers);
                 match listener.accept() {
+                    Ok((stream, _)) if thread_stop.load(Ordering::Acquire) => {
+                        drop(stream);
+                        break;
+                    }
                     Ok((stream, _)) => {
                         let Some(permit) = WorkerPermit::try_acquire(&thread_active_workers) else {
                             // The only accepted peers are launcher children, but a
@@ -555,9 +558,7 @@ where
                             workers.push(worker);
                         }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
@@ -1803,5 +1804,141 @@ mod tests {
         fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
             None
         }
+    }
+
+    fn thread_ids() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .expect("/proc/self/task")
+            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
+            .collect()
+    }
+
+    fn context_switches(tid: &str) -> u64 {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+            .expect("thread status")
+            .lines()
+            .filter(|line| line.contains("ctxt_switches"))
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum()
+    }
+
+    fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
+        let before = thread_ids();
+        let started = start();
+        let waiting = std::time::Instant::now();
+        loop {
+            let named = thread_ids()
+                .difference(&before)
+                .find(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|name| name.trim() == comm)
+                })
+                .cloned();
+            if let Some(tid) = named {
+                return (started, tid);
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "no new thread named {comm}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn assert_stays_asleep(tid: &str, what: &str) {
+        std::thread::sleep(Duration::from_millis(50));
+        let settled = context_switches(tid);
+        std::thread::sleep(Duration::from_millis(400));
+        let woke = context_switches(tid).saturating_sub(settled);
+        assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
+    }
+
+    struct IdleResources;
+
+    impl LaunchResourceBroker for IdleResources {
+        fn materialize(
+            &self,
+            _: crate::plan::ResourceRequest<'_>,
+        ) -> Result<crate::plan::LaunchLease, crate::plan::ResourceError> {
+            Err(crate::plan::ResourceError::Unavailable)
+        }
+
+        fn revoke(&self, _: &str) {}
+    }
+
+    struct IdleExecutor;
+
+    impl crate::SandboxExecutor for IdleExecutor {
+        fn execute(
+            &self,
+            _: &crate::plan::CapsuleCommandPlan,
+        ) -> Result<crate::execute::ExecutionOutcome, crate::execute::ExecutionError> {
+            Err(crate::execute::ExecutionError::Seccomp(
+                "idle accept test".into(),
+            ))
+        }
+    }
+
+    struct IdleVm;
+
+    impl crate::VmDelegate for IdleVm {
+        fn launch(
+            &self,
+            _: crate::VmRouteRequest<'_>,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            Err(windows_vm::LaunchError::InvalidRequest("idle accept test"))
+        }
+    }
+
+    struct IdleAuthority;
+
+    impl CapabilityAuthority for IdleAuthority {
+        fn capabilities_for(&self, _: &str, _: &str) -> Result<Vec<CapOverride>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct IdleLaunchers;
+
+    impl TrustedLauncherRegistry for IdleLaunchers {
+        fn consume(&self, _: u32, _: u64, _: &str, _: &str) -> Option<BTreeSet<String>> {
+            None
+        }
+    }
+
+    #[test]
+    fn idle_accept_thread_sleeps_without_clients() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CapsuleStore::new(dir.path()).unwrap();
+        let catalogue = Catalogue::from_json(r#"{"schema_version":1,"records":[]}"#).unwrap();
+        let managed = Arc::new(
+            ManagedCompatibility::new(
+                catalogue,
+                store,
+                crate::plan::SystemRuntimeRegistry::assuming_provider(),
+                IdleResources,
+                IdleExecutor,
+                IdleVm,
+                HostSession {
+                    uid: 1000,
+                    wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
+                    render_node: PathBuf::from("/dev/dri/renderD128"),
+                },
+            )
+            .unwrap(),
+        );
+        let sock = dir.path().join("compat.sock");
+        let exe = fs::read_link("/proc/self/exe").unwrap();
+        let (handle, tid) = spawned_thread("tilo-win-accept", || {
+            spawn_session_service(
+                sock.clone(),
+                Arc::clone(&managed),
+                Arc::new(IdleAuthority),
+                LauncherAuthenticator::new(exe, std::process::id(), Arc::new(IdleLaunchers)),
+            )
+            .unwrap()
+        });
+        assert_stays_asleep(&tid, "compat session accept");
+        drop(handle);
     }
 }
