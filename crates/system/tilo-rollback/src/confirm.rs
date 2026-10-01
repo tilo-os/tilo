@@ -81,7 +81,7 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let json = serde_json::to_string_pretty(state)?;
-    atomic_file::write_with_mode(path, json.as_bytes(), 0o600)
+    tilo_files::native::atomic::write_with_mode(path, json.as_bytes(), 0o600)
         .with_context(|| format!("atomically writing {}", path.display()))
 }
 

@@ -12,12 +12,22 @@
 # UKI. The layout is the release's (os/Containerfile `split`, `uki`, `final`):
 # the kernel is split out of the rootfs, os/dev/uki.sh builds the UKI with the
 # DTB, and the final stage adds only /boot, which the composefs digest excludes.
-# The first build seals an all-zero placeholder; os/dev/build-image.sh's install
-# learns the digest bootc wants and reseals the UKI in place (bootc#2334).
+#
+# The digest the UKI seals is the one `bootc install` computes from the pushed
+# layers. BuildKit's merged tree differs from those (sub-second directory
+# times, file capabilities; bootc#2334), so it cannot be computed in the build
+# that makes the layers. The aarch64 dev lane builds the image with a
+# placeholder digest and pushes it by digest, computes the real one from the
+# registry (target cfs-digest-out, TILO_CFS_SOURCE), and builds again with
+# TILO_CFS_DIGEST set: only the UKI is rebuilt, the rootfs layers are the
+# cached ones the digest was computed from.
 ARG BASE_IMAGE
 ARG RPMS_REF
+# The resealing bootc (os/Containerfile.bootc-helper); only cfs-digest uses it.
+ARG BOOTC_HELPER_IMAGE=scratch
 
 FROM ${RPMS_REF} AS rpms
+FROM ${BOOTC_HELPER_IMAGE} AS bootc-helper
 
 FROM scratch AS board-inputs
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
@@ -62,13 +72,36 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
 FROM uki-tools AS uki
-ARG TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+ARG TILO_CFS_DIGEST=
 ENV CFS_DIGEST=${TILO_CFS_DIGEST}
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target,rw \
     --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
     bash /usr/local/bin/uki.sh
+
+# The composefs digest `bootc install` computes for TILO_CFS_SOURCE, an image
+# of this file pushed to a registry, read from its layers. Needs the
+# registry_auth secret (a containers auth file) for a private registry.
+FROM uki-tools AS cfs-digest
+ARG TILO_CFS_SOURCE
+# The composefs repository it unpacks the layers into stays in a cache mount
+# (bootc patch 0003), so only layers it has not seen are fetched: the other
+# board's and the previous commit's are already there. Emptied past 40 GiB.
+RUN --mount=type=bind,from=bootc-helper,source=/bootc,target=/usr/local/libexec/tilo-bootc \
+    --mount=type=secret,id=registry_auth,target=/run/secrets/registry_auth \
+    --mount=type=cache,id=tilo-board-cfs-digest,target=/var/cache/tilo-cfs,sharing=locked \
+    --mount=type=tmpfs,target=/tmp \
+    case "${TILO_CFS_SOURCE:-}" in docker://*@sha256:*) ;; *) echo 'TILO_CFS_SOURCE must be docker://NAME@sha256:...' >&2; exit 1 ;; esac \
+    && { [ "$(du -s --block-size=1G /var/cache/tilo-cfs | cut -f1)" -lt 40 ] || rm -rf /var/cache/tilo-cfs/repo; } \
+    && mkdir -p /out \
+    && REGISTRY_AUTH_FILE=/run/secrets/registry_auth BOOTC_COMPOSEFS_DIGEST_REPO=/var/cache/tilo-cfs/repo \
+       /usr/local/libexec/tilo-bootc container compute-composefs-digest-from-storage "$TILO_CFS_SOURCE" > /out/digest \
+    && grep -Eqx '[0-9a-f]{128}' /out/digest \
+    && rm -rf /var/tmp/*
+
+FROM scratch AS cfs-digest-out
+COPY --from=cfs-digest /out/digest /
 
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/

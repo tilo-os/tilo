@@ -7,6 +7,7 @@
 //! its responsibility-specific implementation units.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -98,6 +99,12 @@ struct AppHandler {
     decorations: linux_header::Decorations,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
+    /// Settings.json changed while this process was idle. The next
+    /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
+    settings_store_changed: Arc<AtomicBool>,
+    /// Lives for the event loop so an idle app still hears Theme Studio
+    /// and compositor appearance writes.
+    _settings_watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1921,102 +1928,113 @@ impl AppHandler {
                 );
             }
         }
-        let req = RenderRequest::Frame {
-            cpu_frame_id: app
-                .profiler
-                .as_ref()
-                .and_then(|profiler| profiler.history().back())
-                .map(|sample| sample.frame),
-            scene,
-            width,
-            height,
-            base_color: app.theme.bg_app,
-            damage_regions,
-            full_redraw: full_redraw_required,
-            on_present: self.dev_reload_timing.take().map(|timing| {
-                let submitted = crate::time::wall();
-                Box::new(move |presented| timing.record(submitted, presented))
-                    as crate::render_thread::PresentHook
-            }),
-        };
-        record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
-        if let Some((origin, entered)) = native_redraw_entry {
-            // All three values use the input timeline's monotonic origin.
-            // This is a CPU submit attempt, not GPU/display completion.
-            crate::native_scenario::log::emit_json(
-                "tilo-native-redraw",
-                serde_json::json!({
-                    "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                    "redraw_enter_us": entered.duration_since(origin).as_micros(),
-                    "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
-                    "submit_attempt_us": origin.elapsed().as_micros(),
+        if crate::render_thread::retry::submit_redraw_frame(
+            full_redraw_required,
+            !damage_regions.is_empty(),
+        ) {
+            let req = RenderRequest::Frame {
+                cpu_frame_id: app
+                    .profiler
+                    .as_ref()
+                    .and_then(|profiler| profiler.history().back())
+                    .map(|sample| sample.frame),
+                scene,
+                width,
+                height,
+                base_color: app.theme.bg_app,
+                damage_regions,
+                full_redraw: full_redraw_required,
+                on_present: self.dev_reload_timing.take().map(|timing| {
+                    let submitted = crate::time::wall();
+                    Box::new(move |presented| timing.record(submitted, presented))
+                        as crate::render_thread::PresentHook
                 }),
-            );
-        }
-        record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
-        let send_cpu_frame_id = match &req {
-            RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
-            RenderRequest::Shutdown { .. } => None,
-        };
-        let (send_result, send_bounds) = crate::render_thread::timing::around(
-            self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
-            || render.render_tx.send(req),
-        );
-        if let Some(bounds) = send_bounds {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-send",
-                serde_json::json!({
-                    "cpu_frame_id": send_cpu_frame_id,
-                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
-                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
-                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
-                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
-                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-                    "send_ok": send_result.is_ok(),
-                }),
-            );
-        }
-        if let Some(stages) = native_main_stages {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-main-stages",
-                stages.row(send_cpu_frame_id),
-            );
-        }
-        if send_result.is_err() {
-            tracing::error!("ui-render thread receiver closed; exiting");
-            event_loop.exit();
-            return;
-        }
-        mark_first_frame("first-frame-submitted");
-        self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
-        let submitted = self.primary_frames_sent;
-        for required in self.floating_source_clear_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
+            };
+            record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
+            if let Some((origin, entered)) = native_redraw_entry {
+                // All three values use the input timeline's monotonic origin.
+                // This is a CPU submit attempt, not GPU/display completion.
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-redraw",
+                    serde_json::json!({
+                        "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                        "redraw_enter_us": entered.duration_since(origin).as_micros(),
+                        "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
+                        "submit_attempt_us": origin.elapsed().as_micros(),
+                    }),
+                );
             }
-        }
-        for required in self.floating_destination_present_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
+            record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
+            let send_cpu_frame_id = match &req {
+                RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
+                RenderRequest::Shutdown { .. } => None,
+            };
+            let (send_result, send_bounds) = crate::render_thread::timing::around(
+                self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+                || render.render_tx.send(req),
+            );
+            if let Some(bounds) = send_bounds {
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-send",
+                    serde_json::json!({
+                        "cpu_frame_id": send_cpu_frame_id,
+                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                        "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                        "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                        "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                        "send_ok": send_result.is_ok(),
+                    }),
+                );
             }
-        }
+            if let Some(stages) = native_main_stages {
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-main-stages",
+                    stages.row(send_cpu_frame_id),
+                );
+            }
+            if send_result.is_err() {
+                tracing::error!("ui-render thread receiver closed; exiting");
+                event_loop.exit();
+                return;
+            }
+            mark_first_frame("first-frame-submitted");
+            self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
+            let submitted = self.primary_frames_sent;
+            for required in self.floating_source_clear_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
+            for required in self.floating_destination_present_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
 
-        let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
-        if let Some(_start) = t_frame_start {
-            // On a static frame this reads `shape=0us hit=N miss=0`.
-            let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
-            crate::diag!(
-                "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
-                t_send_us,
-                if t_relayout_branch { "Y" } else { "n" },
-                t_compute_us,
-                t_apply_us,
-                t_draw_us,
-                shape_ns.checked_div(1000).unwrap_or(0),
-                shape_hits,
-                shape_misses,
-                t_send_us,
-            );
+            let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
+            if let Some(_start) = t_frame_start {
+                // On a static frame this reads `shape=0us hit=N miss=0`.
+                let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
+                crate::diag!(
+                    "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
+                    t_send_us,
+                    if t_relayout_branch { "Y" } else { "n" },
+                    t_compute_us,
+                    t_apply_us,
+                    t_draw_us,
+                    shape_ns.checked_div(1000).unwrap_or(0),
+                    shape_hits,
+                    shape_misses,
+                    t_send_us,
+                );
+            }
+        } else {
+            // The callback that woke this redraw changed no pixels. Presenting
+            // would commit a new buffer and a new frame callback, and the
+            // shell would paint that echo while the desktop sat still.
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
         }
 
         if needs_followup_redraw {
@@ -3322,7 +3340,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // event loop; this is short-lived only while GPU setup runs.
             audience.window.request_redraw();
         }
+        let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
         let app = &mut self.app;
+        if force_theme {
+            if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
+            {
+                app.last_theme_store_check = due;
+            }
+        }
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
@@ -3828,6 +3853,21 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
+        let settings_store_changed = Arc::new(AtomicBool::new(false));
+        let settings_watch = {
+            let _entry = self.enter_wake_scope();
+            self.watch_system_settings
+                .then(|| {
+                    let pending = Arc::clone(&settings_store_changed);
+                    let wake = crate::wake::WakeHandle::new();
+                    settings_store::watch::watch_settings(move || {
+                        pending.store(true, Ordering::Release);
+                        wake.wake();
+                    })
+                    .ok()
+                })
+                .flatten()
+        };
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -3879,6 +3919,8 @@ impl App {
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
             host_appearance,
+            settings_store_changed,
+            _settings_watch: settings_watch,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

@@ -700,6 +700,10 @@ impl DrmPresenter {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
+                workspace_id: None,
+                workspace_hold: false,
+                workspace_clip: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -729,6 +733,10 @@ impl DrmPresenter {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -1008,6 +1016,64 @@ struct ScanoutFrame<'a> {
     scene: &'a Scene,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
+    overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
+    workspace_id: Option<u64>,
+    workspace_hold: bool,
+    workspace_clip: Option<vello::FineDamageRect>,
+}
+
+/// An unchanged frame, or an overview fade that carries its own panel patch,
+/// must not read the combined framebuffer back from the GPU.
+pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -> bool {
+    unchanged || overview
+}
+
+/// How a workspace-switch frame reaches the scanouts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WorkspaceUpload {
+    /// GPU-render the combined scene and flush both outputs.
+    Render,
+    /// Put a workspace this bridge already rendered back on the scanouts.
+    Replay,
+    /// The held return: adopt the snapshot and upload only the workspace clip.
+    Clip,
+    /// Intermediate frame of the switch: leave both scanouts alone.
+    Skip,
+}
+
+/// The frame run after a workspace switch. The held return stays on the
+/// workspace clip; a settled return may still replay. Every later sample of
+/// either direction skips the upload. The first visit still renders.
+pub(crate) fn workspace_frame_upload(
+    changed: bool,
+    has_snapshot: bool,
+    hold: bool,
+) -> WorkspaceUpload {
+    if hold && changed && has_snapshot {
+        WorkspaceUpload::Clip
+    } else if hold && !changed {
+        WorkspaceUpload::Skip
+    } else if changed && has_snapshot {
+        WorkspaceUpload::Replay
+    } else {
+        WorkspaceUpload::Render
+    }
+}
+
+/// The close may upload the one display it is painting. A clip that also
+/// meets another scanout is the two-output flush this frame run must not do.
+pub(crate) fn close_frame_spares_other_scanouts(
+    clip: vello::FineDamageRect,
+    outputs: &[(i32, i32, u32, u32)],
+) -> bool {
+    if clip.width == 0 || clip.height == 0 {
+        return false;
+    }
+    let covered = outputs
+        .iter()
+        .filter(|&&(x, y, width, height)| output_local_clip(x, y, (width, height), clip).is_some())
+        .count();
+    covered == 1
 }
 
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
@@ -1032,6 +1098,7 @@ fn paint_scanouts(
         scene,
         damage,
         hdr_layers,
+        ..
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
@@ -1465,8 +1532,52 @@ fn render_combined_readback(
     frame: ScanoutFrame<'_>,
 ) -> PaintScanoutSample {
     let ScanoutFrame {
-        scene, hdr_layers, ..
+        scene,
+        damage,
+        hdr_layers,
+        overview,
+        workspace_id,
+        workspace_hold,
+        workspace_clip,
     } = frame;
+    let unchanged = damage.is_some_and(|damage| {
+        damage
+            .regions
+            .is_some_and(<[vello::FineDamageRect]>::is_empty)
+    });
+    if skips_full_framebuffer_readback(unchanged, overview.is_some())
+        && overview.is_none()
+        && paint
+            .as_ref()
+            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
+    {
+        // The pixels already on the scanout are the scene. A workspace-switch
+        // frame run must not upload both outputs again.
+        return PaintScanoutSample::default();
+    }
+    if let Some(patch) = overview
+        && hdr_layers.is_empty()
+        && let Some(bridge) = paint.as_mut()
+        && let Ok(composed) = bridge.composite_overview_frame(patch)
+    {
+        return present_composed_readback(scanouts, outputs, pointer, &composed, Some(patch.panel));
+    }
+    if overview.is_none()
+        && hdr_layers.is_empty()
+        && let Some(handled) = present_workspace_hold(
+            scanouts,
+            outputs,
+            paint,
+            pointer,
+            &WorkspacePresent {
+                id: workspace_id,
+                hold: workspace_hold,
+                clip: workspace_clip,
+            },
+        )
+    {
+        return handled;
+    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
@@ -1508,7 +1619,12 @@ fn render_combined_readback(
         layers: hdr_layers,
     });
     for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr);
+        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr, None);
+    }
+    if overview.is_none()
+        && let Some(id) = workspace_id
+    {
+        bridge.note_shown_workspace(id);
     }
     PaintScanoutSample {
         legacy_attempted: true,
@@ -1516,6 +1632,138 @@ fn render_combined_readback(
         scanout_us: scanout_started.elapsed().as_micros(),
         ..PaintScanoutSample::default()
     }
+}
+
+struct WorkspacePresent {
+    id: Option<u64>,
+    hold: bool,
+    clip: Option<vello::FineDamageRect>,
+}
+
+fn present_workspace_hold(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    workspace: &WorkspacePresent,
+) -> Option<PaintScanoutSample> {
+    let bridge = paint.as_mut()?;
+    let changed = workspace
+        .id
+        .is_some_and(|id| bridge.shown_workspace() != Some(id));
+    let has_snapshot = workspace
+        .id
+        .is_some_and(|id| bridge.has_workspace_snapshot(id));
+    match workspace_frame_upload(changed, has_snapshot, workspace.hold) {
+        WorkspaceUpload::Skip => Some(PaintScanoutSample::default()),
+        WorkspaceUpload::Clip => Some(present_workspace_clip(
+            scanouts, outputs, bridge, pointer, workspace,
+        )),
+        WorkspaceUpload::Replay => {
+            let id = workspace.id?;
+            let bytes = bridge.replay_workspace(id)?;
+            Some(present_composed_readback(
+                scanouts, outputs, pointer, &bytes, None,
+            ))
+        }
+        WorkspaceUpload::Render => {
+            if changed {
+                bridge.retain_shown_workspace();
+            }
+            None
+        }
+    }
+}
+
+/// Adopt the workspace the close is returning to and upload only the clip.
+/// A missing clip, or one that meets another scanout, leaves the scanouts
+/// alone: falling through here used to flush both outputs.
+fn present_workspace_clip(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    workspace: &WorkspacePresent,
+) -> PaintScanoutSample {
+    let Some(id) = workspace.id else {
+        return PaintScanoutSample::default();
+    };
+    let Some(bytes) = bridge.replay_workspace(id) else {
+        return PaintScanoutSample::default();
+    };
+    let Some(clip) = workspace.clip else {
+        return PaintScanoutSample::default();
+    };
+    if !close_frame_spares_other_scanouts(clip, &scanout_boxes(scanouts, outputs)) {
+        return PaintScanoutSample::default();
+    }
+    present_composed_readback(scanouts, outputs, pointer, &bytes, Some(clip))
+}
+
+fn scanout_boxes(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<(i32, i32, u32, u32)> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off)
+        .map(|entry| {
+            let size = outputs
+                .iter()
+                .find(|output| output.id == entry.id)
+                .map_or_else(|| entry.scanout.size(), |output| output.size);
+            (entry.position.0, entry.position.1, size.0, size.1)
+        })
+        .collect()
+}
+
+fn present_composed_readback(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    pointer: (f64, f64),
+    rgba: &[u8],
+    damage: Option<vello::FineDamageRect>,
+) -> PaintScanoutSample {
+    let scanout_started = Instant::now();
+    let target_size = combined_geometry(outputs);
+    let (cw, ch) = (
+        usize::try_from(target_size.0).unwrap_or(0),
+        usize::try_from(target_size.1).unwrap_or(0),
+    );
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, None, damage);
+    }
+    PaintScanoutSample {
+        legacy_attempted: true,
+        scanout_us: scanout_started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    }
+}
+
+fn output_local_clip(
+    origin_x: i32,
+    origin_y: i32,
+    size: (u32, u32),
+    damage: vello::FineDamageRect,
+) -> Option<(u16, u16, u16, u16)> {
+    let x0 = i64::from(damage.x);
+    let y0 = i64::from(damage.y);
+    let x1 = x0.saturating_add(i64::from(damage.width));
+    let y1 = y0.saturating_add(i64::from(damage.height));
+    let left = i64::from(origin_x);
+    let top = i64::from(origin_y);
+    let right = left.saturating_add(i64::from(size.0));
+    let bottom = top.saturating_add(i64::from(size.1));
+    let ix0 = x0.max(left);
+    let iy0 = y0.max(top);
+    let ix1 = x1.min(right);
+    let iy1 = y1.min(bottom);
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return None;
+    }
+    Some((
+        u16::try_from(ix0.saturating_sub(left)).ok()?,
+        u16::try_from(iy0.saturating_sub(top)).ok()?,
+        u16::try_from(ix1.saturating_sub(ix0)).ok()?,
+        u16::try_from(iy1.saturating_sub(iy0)).ok()?,
+    ))
 }
 
 /// Drain one page-flip event stream per KMS device and route each completion
@@ -1592,6 +1840,7 @@ fn paint_one_scanout(
     (cw, ch): (usize, usize),
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
+    damage: Option<vello::FineDamageRect>,
 ) {
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
@@ -1681,6 +1930,11 @@ fn paint_one_scanout(
     // starts at the output, the combined frame at the scene's origin.
     let scene_origin = if copied { (sx, sy) } else { (0, 0) };
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
+    match damage.map(|rect| output_local_clip(px, py, logical_size, rect)) {
+        Some(Some(clip)) => e.scanout.set_damage_rect(Some(clip)),
+        Some(None) => return,
+        None => e.scanout.set_damage_rect(None),
+    }
     e.scanout
         .present_no_drain(local_cursor, |dst, pitch| match &encoder {
             Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
@@ -1773,6 +2027,10 @@ impl Backend for DrmBackend {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
+                workspace_id: None,
+                workspace_hold: false,
+                workspace_clip: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1798,6 +2056,10 @@ impl Backend for DrmBackend {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
+                workspace_id: frame.workspace_id,
+                workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1959,6 +2221,56 @@ impl Backend for DrmBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_overview_patch_or_unchanged_frame_skips_the_full_readback() {
+        assert!(super::skips_full_framebuffer_readback(true, false));
+        assert!(super::skips_full_framebuffer_readback(false, true));
+        assert!(!super::skips_full_framebuffer_readback(false, false));
+    }
+
+    #[test]
+    fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
+        use super::WorkspaceUpload::{Clip, Render, Replay, Skip};
+        // First visit renders. The frame run after that does not upload.
+        assert_eq!(super::workspace_frame_upload(true, false, true), Render);
+        assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
+        // The held return stays on the clip. A settled return may still replay.
+        assert_eq!(super::workspace_frame_upload(true, true, true), Clip);
+        assert_eq!(super::workspace_frame_upload(false, true, true), Skip);
+        assert_eq!(super::workspace_frame_upload(true, true, false), Replay);
+        // A settled desktop still renders when its pixels actually change.
+        assert_eq!(super::workspace_frame_upload(false, true, false), Render);
+    }
+
+    #[test]
+    fn workspace_switch_close_clip_does_not_cover_the_other_scanout() {
+        let clip = vello::FineDamageRect {
+            x: 313,
+            y: 0,
+            width: 1607,
+            height: 1080,
+        };
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
+        assert!(
+            super::close_frame_spares_other_scanouts(clip, &outputs),
+            "the content column meets the first display only"
+        );
+        let both = vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 3200,
+            height: 1080,
+        };
+        assert!(
+            !super::close_frame_spares_other_scanouts(both, &outputs),
+            "a combined clip is the two-output flush"
+        );
+        assert!(
+            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
+            "the second scanout is outside the close clip"
+        );
+    }
+
     use super::*;
 
     #[test]

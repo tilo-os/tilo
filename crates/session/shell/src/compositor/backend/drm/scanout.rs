@@ -1431,6 +1431,10 @@ pub struct DrmScanout {
     flip_queued_at: Option<std::time::Instant>,
     /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
     use_pageflip: bool,
+    /// Output-local rectangles to flush. Empty means the whole mode.
+    /// A transition that only moves the overview panel must not flush both
+    /// full scanouts: on virtio that upload is the multi-frame stall.
+    damage_clips: Vec<ClipRect>,
     width: u32,
     height: u32,
     /// Set once `dirty_framebuffer` is known to be unsupported, so we stop retrying it and use `set_crtc` to force a flush instead.
@@ -1688,6 +1692,7 @@ impl DrmScanout {
             flip_pending: false,
             flip_queued_at: None,
             use_pageflip: true,
+            damage_clips: Vec::new(),
             width,
             height,
             dirtyfb_unsupported: false,
@@ -2412,10 +2417,9 @@ impl DrmScanout {
         if self.use_pageflip {
             // Best-effort CPU→host transfer before flipping: on virtual GPUs dirty_framebuffer flushes the
             // dumb buffer into the host resource (without it a bare flip presents unreceived bytes); no-op/unsupported on real GPUs.
-            let (cw, ch) = self.clip_dims();
-            let clip = ClipRect::new(0, 0, cw, ch);
+            let clips = self.take_dirty_clips();
             if let Some(fb) = self.fb_at(idx) {
-                let _ = self.card.dirty_framebuffer(fb, &[clip]);
+                let _ = self.card.dirty_framebuffer(fb, &clips);
             }
             let _ = self.flip_to(idx);
         } else {
@@ -2489,6 +2493,31 @@ impl DrmScanout {
     }
 
     /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
+    /// Restrict the next flush to these output-local rectangles.
+    /// An empty list, or never calling this, flushes the whole mode.
+    pub fn set_damage_clips(&mut self, clips: Vec<ClipRect>) {
+        self.damage_clips = clips;
+    }
+
+    /// `None` flushes the whole mode on the next present.
+    pub fn set_damage_rect(&mut self, rect: Option<(u16, u16, u16, u16)>) {
+        self.damage_clips = match rect {
+            Some((x, y, width, height)) if width > 0 && height > 0 => {
+                vec![ClipRect::new(x, y, width, height)]
+            }
+            _ => Vec::new(),
+        };
+    }
+
+    fn take_dirty_clips(&mut self) -> Vec<ClipRect> {
+        let clips = std::mem::take(&mut self.damage_clips);
+        if !clips.is_empty() {
+            return clips;
+        }
+        let (cw, ch) = self.clip_dims();
+        vec![ClipRect::new(0, 0, cw, ch)]
+    }
+
     fn flush_dirty(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
         if self.dirtyfb_unsupported {
@@ -2500,9 +2529,8 @@ impl DrmScanout {
             self.force_flush_via_set_crtc();
             return false;
         };
-        let (cw, ch) = self.clip_dims();
-        let clip = ClipRect::new(0, 0, cw, ch);
-        if let Err(e) = self.card.dirty_framebuffer(fb, &[clip]) {
+        let clips = self.take_dirty_clips();
+        if let Err(e) = self.card.dirty_framebuffer(fb, &clips) {
             tracing::warn!("DRM scanout: dirty_framebuffer unsupported ({e}); using set_crtc");
             self.dirtyfb_unsupported = true;
             self.force_flush_via_set_crtc();

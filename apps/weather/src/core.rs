@@ -1542,7 +1542,9 @@ impl Core {
         {
             let sh =
                 RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
-            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
+            // The dragged chip's seat is an elevation shadow, so a light
+            // theme softens it and high contrast keeps the ladder's own hue.
+            scene.fill(Fill::NonZero, t, theme.tokens.elevation.e3.color, None, &sh);
             self.draw_chip(&mut PaintCtx::new(scene, t, tr, theme), chip, loc, i);
         }
     }
@@ -1602,7 +1604,7 @@ impl Core {
             chip.x1 - 14.0,
             chip.y0 + 45.0,
         );
-        Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
+        Icon::Trash.draw(scene, t, icon_r, c.on_surface(c.semantic.danger).ink);
     }
 
     fn draw_delete_dropzone(
@@ -1627,7 +1629,7 @@ impl Core {
         let dash = Stroke::new(2.0).with_dashes(0.0, [6.0, 5.0]);
         scene.stroke(&dash, t, c.semantic.danger, None, &shape);
         let icon_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };
@@ -1639,7 +1641,7 @@ impl Core {
         );
         Icon::Trash.draw_with_stroke(scene, t, icon_r, icon_color, 2.0);
         let label_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };
@@ -1679,7 +1681,7 @@ impl Core {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 80),
+            theme.tokens.elevation.e4.color,
             None,
             &RoundedRect::from_rect(panel.inset(-3.0), f64::from(theme.tokens.radii.md) + 3.0),
         );

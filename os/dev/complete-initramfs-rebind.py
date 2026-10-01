@@ -71,7 +71,7 @@ def verify_artifact(image, key):
         def entry(self, name, mode, size, stream):
             # Reuse the bounded CPIO/squashfs reader without applying unrelated
             # installed-state policy to the initramfs under construction.
-            if re.search(r'(?:^|/)(?:ext4|xfs)\.ko(?:\.(?:xz|gz|zst))?$', name):
+            if re.search(r'(?:^|/)xfs\.ko(?:\.(?:xz|gz|zst))?$', name):
                 raise ValueError('omitted filesystem driver present in rebound initramfs')
             self.entries += 1
             self.bytes += size
@@ -86,7 +86,7 @@ def verify_artifact(image, key):
     inventory = DriverInventory().initramfs(bounded(image, 512 * 1024 * 1024))
     if inventory['sha256'] != proof['initramfs_sha256']:
         raise ValueError('initramfs changed between trust and driver verification')
-    proof['omitted_kernel_drivers_verified'] = ['ext4', 'xfs']
+    proof['omitted_kernel_drivers_verified'] = ['xfs']
     return proof
 
 

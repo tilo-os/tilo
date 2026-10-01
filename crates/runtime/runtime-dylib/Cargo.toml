@@ -67,7 +67,7 @@ async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-model-gateway = { path = "../../agent/model-gateway" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 # Versioned format/network engines used by system apps. Keeping these in the
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.

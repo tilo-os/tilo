@@ -26,6 +26,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::ColorCompat;
+use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -762,24 +763,15 @@ struct TabRename {
     editor: EditableLabel,
 }
 
-/// Palette of tab colours. Stored per sheet as an index into this list.
-const TAB_PALETTE: [(u8, u8, u8); 6] = [
-    (0xe2, 0x5b, 0x5b), // red
-    (0xe0, 0x8a, 0x2a), // orange
-    (0x3f, 0xbb, 0x53), // green
-    (0x54, 0x9b, 0xf5), // blue
-    (0xb1, 0x6c, 0xf0), // purple
-    (0xe2, 0x63, 0xb0), // pink
-];
+/// How many theme-derived tab colours the picker offers. A sheet stores a
+/// slot index, not an RGB, so the underline follows the live theme.
+const TAB_PALETTE_LEN: usize = 6;
 
 /// The concrete colour for a stored tab-colour palette index. Indices wrap
-/// around the palette, so any value a peer stored resolves to a real colour.
-fn tab_palette_color(idx: u32) -> Color {
-    // `TAB_PALETTE` is a non-empty constant, so the remainder and the lookup
-    // both always land; the fallbacks keep the function total.
-    let slot = (idx as usize).checked_rem(TAB_PALETTE.len()).unwrap_or(0);
-    let (r, g, b) = TAB_PALETTE.get(slot).copied().unwrap_or((0x80, 0x80, 0x80));
-    Color::from_rgb8(r, g, b)
+/// around the theme series, so any value a peer stored resolves to a real
+/// colour after a theme change.
+fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
+    ChartPalette::from_theme(theme).categorical(idx as usize)
 }
 
 /// Inclusive count of grid indices from `lo` through `hi`. Every caller passes
@@ -3886,7 +3878,7 @@ impl SheetsApp {
         let row_h = m.menu_row_h();
         let pad = m.s2;
         let swatch = TAB_COLOUR_SWATCH;
-        let swatch_count = count_f64(TAB_PALETTE.len() + 1);
+        let swatch_count = count_f64(TAB_PALETTE_LEN + 1);
         // The panel is as wide as its widest row label (plus the row inset and
         // panel padding on each side) or the swatch strip, never narrower than
         // its classic width.
@@ -3922,7 +3914,7 @@ impl SheetsApp {
         self.tab_menu_swatches
             .push((Rect::new(cx, cy, cx + swatch, cy + swatch), None));
         cx += swatch + m.s1;
-        for i in 0..TAB_PALETTE.len() as u32 {
+        for i in 0..TAB_PALETTE_LEN as u32 {
             self.tab_menu_swatches
                 .push((Rect::new(cx, cy, cx + swatch, cy + swatch), Some(i)));
             cx += swatch + m.s1;
@@ -4458,14 +4450,7 @@ impl SheetsApp {
         let colors = &theme.tokens.colors;
         if content.starts_with('=') {
             crate::grid::draw_formula_line(
-                scene,
-                transform,
-                tr,
-                content,
-                base,
-                colors.text_primary,
-                origin,
-                None,
+                scene, transform, tr, content, base, theme, origin, None,
             );
         } else if !content.is_empty() {
             tr.draw_text(
@@ -4552,7 +4537,7 @@ impl SheetsApp {
                 .get(*idx)
                 .copied()
                 .flatten()
-                .map(tab_palette_color);
+                .map(|i| tab_palette_color(theme, i));
             let bar = tab_color.or(if active { Some(colors.accent[5]) } else { None });
             if let Some(bar_color) = bar {
                 scene.fill(
@@ -5413,7 +5398,7 @@ impl SheetsApp {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        tab_palette_color(*i),
+                        tab_palette_color(theme, *i),
                         None,
                         &shape,
                     );
@@ -5966,7 +5951,14 @@ impl Widget for SheetsApp {
 
         // The command palette floats above everything else, behind a scrim.
         if self.palette.is_open() {
-            let scrim = Color::from_rgba8(0, 0, 0, 110);
+            // Keep the previous 110/255 veil; the hue is the theme scrim
+            // so a light palette does not punch a black hole through the sheet.
+            let scrim = theme
+                .tokens
+                .colors
+                .surfaces
+                .scrim
+                .with_alpha_factor(110.0 / 255.0);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
             let (pw, ph) = self.palette.desired_size();
             let x0 = self.rect.center().x - pw / 2.0;
@@ -6535,6 +6527,15 @@ impl ui::resources::PublishesResources for SheetsApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
+        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
     }
 }
 

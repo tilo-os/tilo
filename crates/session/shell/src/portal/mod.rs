@@ -514,12 +514,22 @@ impl GrantStoreHandle {
     /// the same file doesn't append a duplicate `Capability::Filesystem`.
     ///
     /// Acquires a read lock; returns `false` if the workspace or app has no grants (default-deny, so the caller records the grant).
+    pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
+        self.filesystem_path_allows(caller, path, Verb::Read)
+    }
+
+    /// True if `caller`'s grants let it `verb` `path` (read it, or with
+    /// [`Verb::Write`] replace it).
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the read guard protects `ws`, which `ws.allows` needs through the final \
-                  call — already dropped at the earliest possible point, the function's end"
+        reason = "the read guard protects `ws`, which `ws.allows` needs through the final call"
     )]
-    pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
+    pub fn filesystem_path_allows(
+        &self,
+        caller: &PortalCaller,
+        path: &std::path::Path,
+        verb: Verb,
+    ) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree
             .desktop
@@ -535,8 +545,37 @@ impl GrantStoreHandle {
         ws.allows(
             &actor,
             &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            verb,
         )
+    }
+
+    /// The filesystem paths `caller`'s workspace grants it, in grant order.
+    pub fn granted_paths(&self, caller: &PortalCaller) -> Vec<PathBuf> {
+        let tree = self.tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+            .map(|ws| {
+                ws.app_capabilities(&caller.app_id)
+                    .into_iter()
+                    .filter_map(|capability| match &capability.scope {
+                        collab_types::caps::Scope::FsPath(path) => Some(PathBuf::from(path)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `app_id` in the workspace whose room the launcher named `room`.
+    pub fn caller_in_room(&self, room: &str, app_id: &str) -> Option<PortalCaller> {
+        let tree = self.tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == room)
+            .map(|workspace| PortalCaller::new(workspace.id, app_id))
     }
 
     /// Direct tree-handle accessor for tests needing to assert on multiple
@@ -612,7 +651,7 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    atomic_file::json::write_private(
+    tilo_files::native::atomic::json::write_private(
         path,
         &PortalConsentFile {
             always: always.clone(),
