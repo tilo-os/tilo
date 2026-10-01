@@ -234,12 +234,6 @@ pub fn init() {
     });
 }
 
-/// Whether startup diagnostics were enabled by the host at process start.
-#[inline]
-pub fn enabled() -> bool {
-    matches!(METRICS.get(), Some(Some(_)))
-}
-
 /// Record `name` at "now". Cheap when capture is disabled — `OnceLock::get()` is a single
 /// atomic load.
 #[inline]
