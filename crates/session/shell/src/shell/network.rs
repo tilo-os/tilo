@@ -10,6 +10,7 @@ mod governor_actions;
 mod hosted_topology;
 mod native_enrollment;
 mod native_ingress;
+mod relay_rooms;
 
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
@@ -1201,6 +1202,7 @@ pub struct PendingInviteSummary {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     hosted_topology: hosted_topology::State,
+    relay_rooms: relay_rooms::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1737,6 +1739,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             hosted_topology: hosted_topology::State::default(),
+            relay_rooms: relay_rooms::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
@@ -3154,8 +3157,20 @@ impl ShellNetwork {
 
     /// Cancel one exact bearer credential. A later redemption carrying its
     /// hash has no pending authority grant and is refused. Existing members
-    /// are unaffected; removing them is a separate governance action.
+    /// are unaffected; removing them is a separate governance action. An
+    /// invitation a relay issued stays pending until that relay cancels it.
     pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
+        let room = match self.pending_identity_admissions.lock() {
+            Ok(pending) => match pending.get(id) {
+                Some(invite) => invite.room,
+                None => return false,
+            },
+            Err(_) => return false,
+        };
+        if let Err(error) = self.cancel_relay_invitation(room, *id) {
+            tracing::warn!(%error, "the relay did not cancel the invitation");
+            return false;
+        }
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return false;
         };
@@ -3307,18 +3322,32 @@ impl ShellNetwork {
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
         let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-        if !tree.governs_room(ws.room)
-            || !ws.allows(
+        let governs = tree.governs_room(ws.room)
+            && ws.allows(
                 &ws.actor_for_person(&actor),
                 &crate::shell::state::ResourceRef::Workspace,
                 crate::shell::state::Verb::Invite,
-            )
-        {
-            drop(tree);
-            return Err("only a governing workspace administrator can create invitations".into());
-        }
+            );
         let ws = ws.clone();
         drop(tree);
+        let relay_room = match self.administered_room(ws.room) {
+            Some(room) => Some(room),
+            None if governs => self.share_on_home_relay(local, ws.room, &ws.name)?,
+            None => {
+                return Err(
+                    "only a governing workspace administrator can create invitations".into(),
+                );
+            }
+        };
+        if let Some(relay_room) = relay_room {
+            return self.issue_relay_invitation(
+                &relay_room,
+                role,
+                recipient_user_public_key,
+                invitee,
+                expiry_seconds_from_now,
+            );
+        }
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
@@ -4875,6 +4904,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.finish_shared_rooms();
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
@@ -6657,6 +6687,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         hosted_topology: hosted_topology::State::default(),
+        relay_rooms: relay_rooms::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
