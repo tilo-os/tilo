@@ -102,6 +102,11 @@ jobs:
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
             os/dev/guest-greeter-diagnostic.sh "$TILO_USER@127.0.0.1:/tmp/guest-greeter-diagnostic.sh"
+          sshpass -p "$TILO_PASS" scp -q -P 2222 \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            os/usr/libexec/tilo-cage-session "$TILO_USER@127.0.0.1:/tmp/tilo-cage-session"
+          ./os/dev/vm.sh ssh "chmod 0755 /tmp/tilo-cage-session"
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-pixman.log' > "$TILO_RUN/cage-pixman.log" || true
           sleep 3
