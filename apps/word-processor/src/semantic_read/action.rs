@@ -47,7 +47,10 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     let request: Request =
         serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
     if resource.kind != "tilo.rich-text"
-        || resource.id.as_str() != "word-processor.document"
+        || !matches!(
+            resource.id.as_str(),
+            "word-processor.document" | "tilo.rich-text"
+        )
         || !(1..=64).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);

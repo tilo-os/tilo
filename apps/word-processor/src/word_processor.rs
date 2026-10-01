@@ -428,12 +428,26 @@ impl WordProcessor {
         bytes: &[u8],
         format: crate::WpFormat,
     ) -> bool {
-        let Some(containers) = self.containers.clone() else {
+        let Some(action) = self.stage_replacement(state, bytes, format) else {
             return false;
         };
-        let Some(mut ids) = self.ids.clone() else {
+        if !self.apply_rich(state, action) {
             return false;
-        };
+        }
+        self.seat_after_replacement(state);
+        true
+    }
+
+    /// Check that `bytes` import as `format`, and keep any images they name.
+    /// Does not write `state`. The returned action is what Open submits.
+    pub fn stage_replacement(
+        &mut self,
+        state: &AutoCommit,
+        bytes: &[u8],
+        format: crate::WpFormat,
+    ) -> Option<crate::actions::RichTextAction> {
+        let containers = self.containers.clone()?;
+        let mut ids = self.ids.clone()?;
         // Codecs can reject malformed input after writing partial content. Stage
         // the entire replacement so a failed Open cannot delete the live body,
         // annotations, or other document state (including pending local edits).
@@ -449,23 +463,26 @@ impl WordProcessor {
         }
         let mut inputs = tilo_content::ContentInputs::new();
         if format.import(bytes, &mut dm, &mut inputs).is_err() {
-            return false;
+            return None;
         }
         // The document only names its images; keep them before the shared write.
         if let Err(error) = self.content.put_inputs(&inputs) {
             eprintln!("word-processor: could not keep the opened file's images: {error}");
-            return false;
+            return None;
         }
-        let Some(format) = Self::import_format(format) else {
-            return false;
-        };
-        let action = crate::actions::RichTextAction::ReplaceFormatted {
+        let format = Self::import_format(format)?;
+        Some(crate::actions::RichTextAction::ReplaceFormatted {
             format,
             bytes: bytes.to_vec(),
+        })
+    }
+
+    /// Move the caret to the start of the document after a replacement action
+    /// has been applied.
+    pub fn seat_after_replacement(&mut self, state: &AutoCommit) {
+        let Some(containers) = self.containers.clone() else {
+            return;
         };
-        if !self.apply_rich(state, action) {
-            return false;
-        }
         self.ids = Some(tilo_doc::model::seeded_id_gen(state, &containers));
         let blocks = tilo_doc::model::blocks_in_order(state, &containers);
         match blocks.first() {
@@ -478,7 +495,6 @@ impl WordProcessor {
             None => self.caret = Caret::default(),
         }
         self.clear_anchor();
-        true
     }
 
     fn import_format(format: crate::WpFormat) -> Option<crate::actions::ImportFormat> {

@@ -1295,6 +1295,9 @@ pub struct WordProcessorWidget {
     /// Where the document is read from: the framework's live state when
     /// hosted, the editor's own incremental reader when standalone.
     source: crate::framework::StateSource,
+    /// Test-only: treat resource lookup as framework-hosted without a live record.
+    #[cfg(test)]
+    resource_hosted: bool,
     /// The kept state changed in a sync made mid-edit, and the views have
     /// not yet been refreshed from it.
     source_unseen: bool,
@@ -1586,6 +1589,8 @@ impl WordProcessorWidget {
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
+            #[cfg(test)]
+            resource_hosted: false,
             source_unseen: false,
             copied: CopiedParts::default(),
             direct_writes: 0,
@@ -1716,8 +1721,8 @@ impl WordProcessorWidget {
     /// submit edits through its dispatcher.
     pub(crate) fn attach_framework(
         &mut self,
-        live: ui::framework::Live<tilo_document::RichText>,
-        dispatcher: ui::framework::Dispatcher<tilo_document::RichText>,
+        live: ui::framework::Live<crate::framework::Document>,
+        dispatcher: ui::framework::Dispatcher<crate::framework::Document>,
     ) {
         self.source = crate::framework::StateSource::Hosted(live);
         self.actions.attach(dispatcher);
@@ -1763,7 +1768,26 @@ impl WordProcessorWidget {
     /// Hosted by the framework, the document is a durable record: no
     /// crash-recovery copies, no separate file identity.
     pub(crate) fn hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.resource_hosted {
+            return true;
+        }
         self.source.hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_resource_hosted_for_test(&mut self) {
+        self.resource_hosted = true;
+    }
+
+    /// Where the hyperlink prompt is addressed. A hosted window does not
+    /// publish the document root, so the prompt rides the caret actions.
+    pub(crate) fn hyperlink_palette_resource(&self) -> &'static str {
+        if self.hosted() {
+            "word-processor.caret"
+        } else {
+            "word-processor.document"
+        }
     }
 
     // ---- Tilo action dispatch ------------------------------------------------
@@ -1773,13 +1797,27 @@ impl WordProcessorWidget {
     /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::RichTextAction) {
+        let _ = self.try_perform_action(state, action);
+    }
+
+    /// Submit one document action. `false` when the host refuses it, so a
+    /// caller can leave the document and caret as they were.
+    fn try_perform_action(
+        &mut self,
+        state: &mut AutoCommit,
+        action: &crate::actions::RichTextAction,
+    ) -> bool {
         let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
-        if let Err(error) = self.actions.dispatch(state, action, context) {
-            if self.actions.read_only() {
-                self.toast = Some((t("toast-view-only"), ToastKind::Error));
-                self.lifecycle.dirty = true;
+        match self.actions.dispatch(state, action, context) {
+            Ok(()) => true,
+            Err(error) => {
+                if self.actions.read_only() {
+                    self.toast = Some((t("toast-view-only"), ToastKind::Error));
+                    self.lifecycle.dirty = true;
+                }
+                eprintln!("word-processor: edit refused: {error}");
+                false
             }
-            eprintln!("word-processor: edit refused: {error}");
         }
     }
 
@@ -3427,11 +3465,17 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
             return Ok(());
         }
-        if !self.inner.replace_with_format(state, &bytes, format) {
+        let Some(action) = self.inner.stage_replacement(state, &bytes, format) else {
+            self.toast = Some((t("toast-open-failed"), ToastKind::Error));
+            self.lifecycle.dirty = true;
+            return Err(format!("could not parse {}", path.display()));
+        };
+        if !self.try_perform_action(state, &action) {
             self.toast = Some((t("toast-open-failed"), ToastKind::Error));
             self.lifecycle.dirty = true;
             return Err(format!("could not parse {}", path.display()));
         }
+        self.inner.seat_after_replacement(state);
         self.set_file(path.to_path_buf(), format);
         self.refresh_blocks(state);
         // The whole body changed; per-block caches keyed by id/text are stale.
@@ -11436,7 +11480,7 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         }
         // The framework root already publishes this document through
         // `tilo_resource::publish`. Keep only caret-bound extras.
-        if self.source.hosted() {
+        if self.hosted() {
             if let Some(resource) = self.file_choice_resource() {
                 return vec![resource];
             }
@@ -11446,6 +11490,42 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
             return crate::actions::live_presentation_resources(&ctx, doc);
         }
         Self::publish_resources(self, doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if let Some(invoker) = ui::invocation_scope::current_invoker() {
+            let tree = match invoker.participant {
+                Some(participant) => self.participant_resources(Some(&participant), doc),
+                None => Self::publish_resources(self, doc),
+            };
+            return find(&tree, id);
+        }
+        if self.participant_host {
+            return find(&Self::publish_catalogue_schema(self, doc), id);
+        }
+        if self.hosted() && id == "word-processor.document" {
+            return None;
+        }
+        if let Some(found) = find(&Self::publish_resources(self, doc), id) {
+            return Some(found);
+        }
+        if self.hosted()
+            && let Some(ctx) = self.wp_resource_ctx(doc)
+        {
+            return find(&crate::actions::live_presentation_resources(&ctx, doc), id);
+        }
+        None
     }
     fn action_directory_invocation_domain(
         &self,
@@ -12077,7 +12157,7 @@ impl WordProcessorWidget {
             ToolAction::Hyperlink => {
                 if !self.selection_blocks_cached().is_empty() {
                     self.action_palette_request = Some(tilo_actions::ActionAddress::new(
-                        "word-processor.document",
+                        self.hyperlink_palette_resource(),
                         "set-hyperlink",
                     ));
                 }

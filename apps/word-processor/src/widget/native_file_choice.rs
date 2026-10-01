@@ -195,14 +195,16 @@ impl WordProcessorWidget {
             .as_ref()
             .filter(|offer| offer.generation == generation)
             .ok_or("selected file choice is no longer current")?;
-        if use_selected
-            && !self
-                .inner
-                .replace_with_format(state, &offer.bytes, offer.format)
-        {
-            return Err(format!("could not parse {}", offer.path.display()));
-        }
-        if use_selected {
+        let selected =
+            use_selected.then(|| (offer.bytes.clone(), offer.format, offer.path.clone()));
+        if let Some((bytes, format, path)) = selected {
+            let Some(action) = self.inner.stage_replacement(state, &bytes, format) else {
+                return Err(format!("could not parse {}", path.display()));
+            };
+            if !self.try_perform_action(state, &action) {
+                return Err(format!("could not parse {}", path.display()));
+            }
+            self.inner.seat_after_replacement(state);
             self.remember_saved_document(state);
             self.save_status = DocumentSaveStatus::Clean;
             self.lifecycle.needs_commit = true;

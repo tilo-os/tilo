@@ -13,7 +13,7 @@
 
 pub mod action;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ use tilo_resource::{Delta, Demand, Doc, ModelError, Resource, SearchEntry, Touch
 use tilo_doc::model::{self, Containers, Region};
 use tilo_doc::schema::{
     BLOCK_ATTRS, BLOCK_ORDER, BLOCK_TEXT, KEY_BLOBS, KEY_BLOCKS, KEY_CHANGES, KEY_COMMENTS,
-    KEY_FOOTER, KEY_HEADER, KEY_NOTES,
+    KEY_FOOTER, KEY_HEADER, KEY_NOTES, KEY_STYLES,
 };
 use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 
@@ -254,6 +254,9 @@ pub struct RichTextState {
     notes: Rc<Vec<NoteView>>,
     comments: Rc<Vec<CommentView>>,
     changes: Rc<Vec<ChangeView>>,
+    /// Named paragraph styles (`style id → property → value`). Small: one
+    /// entry per style, not per paragraph.
+    styles: Rc<BTreeMap<String, BTreeMap<String, AttrVal>>>,
     /// Every content address the document refers to (its images and
     /// preserved package parts); the bytes live in the caller's store.
     content: Rc<BTreeSet<String>>,
@@ -272,6 +275,7 @@ impl PartialEq for RichTextState {
             && self.notes == other.notes
             && self.comments == other.comments
             && self.changes == other.changes
+            && self.styles == other.styles
             && self.content == other.content
     }
 }
@@ -401,6 +405,11 @@ impl RichTextState {
 
     pub fn changes(&self) -> &Rc<Vec<ChangeView>> {
         &self.changes
+    }
+
+    /// Named paragraph styles defined in the document.
+    pub fn styles(&self) -> &Rc<BTreeMap<String, BTreeMap<String, AttrVal>>> {
+        &self.styles
     }
 
     /// Every content address the document refers to, whether or not the
@@ -791,6 +800,7 @@ impl RichText {
             notes: Rc::new(model::materialize_notes(doc, &c)),
             comments: Rc::new(model::materialize_comments(doc, &c)),
             changes: Rc::new(model::materialize_changes(doc, &c)),
+            styles: Rc::new(model::all_styles(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
             root_path: path_to(doc, &c.root),
             containers: c,
@@ -869,6 +879,9 @@ impl RichText {
         }
         if root.key(KEY_CHANGES) != Touch::Untouched {
             state.changes = Rc::new(model::materialize_changes(doc, &c));
+        }
+        if root.key(KEY_STYLES) != Touch::Untouched {
+            state.styles = Rc::new(model::all_styles(doc, &c));
         }
         if root.key(KEY_BLOBS) != Touch::Untouched {
             state.content = Rc::new(model::referenced_content(doc, &c));

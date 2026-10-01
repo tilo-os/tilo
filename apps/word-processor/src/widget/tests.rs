@@ -5523,6 +5523,90 @@ fn bound() -> (ui::State, WordProcessorWidget) {
     (state, wp)
 }
 
+#[test]
+fn hosted_lookup_returns_a_published_child_not_the_document_root() {
+    let (state, mut wp) = bound();
+    wp.mark_resource_hosted_for_test();
+    assert!(ui::resources::resource(&wp, &state.doc, "word-processor.document").is_none());
+    let child_id = wp
+        .publish_resources(&state.doc)
+        .into_iter()
+        .find_map(|root| {
+            root.children
+                .first()
+                .map(|child| child.id.as_str().to_owned())
+        })
+        .expect("the hosted document still publishes a child");
+    assert!(
+        ui::resources::resource(&wp, &state.doc, &child_id).is_some(),
+        "a hosted child stays the published row"
+    );
+    let hosted = ui::resources::resources(&wp, &state.doc);
+    assert!(
+        hosted
+            .iter()
+            .all(|resource| resource.id.as_str() != "word-processor.document"),
+        "a hosted window does not publish a second document root"
+    );
+    let caret = hosted
+        .iter()
+        .find(|resource| resource.id.as_str() == "word-processor.caret")
+        .expect("caret edits stay addressable");
+    assert!(
+        caret.actions.iter().any(|action| action.id == "type-text"),
+        "typing is a caret action, not only a keypress"
+    );
+    assert!(
+        caret
+            .actions
+            .iter()
+            .any(|action| action.id == "place-image"),
+        "placing an image is a caret action, not only a toolbar click"
+    );
+    assert!(
+        caret
+            .actions
+            .iter()
+            .any(|action| action.id == "insert-table"),
+        "inserting a table is a caret action"
+    );
+    assert!(
+        caret.actions.iter().any(|action| action.id == "move-caret"),
+        "moving the caret is a view action"
+    );
+}
+
+#[test]
+fn hosted_hyperlink_opens_on_the_caret_not_the_document_root() {
+    let (_state, mut wp) = bound();
+    assert_eq!(wp.hyperlink_palette_resource(), "word-processor.document");
+    wp.mark_resource_hosted_for_test();
+    assert_eq!(wp.hyperlink_palette_resource(), "word-processor.caret");
+}
+
+#[test]
+fn hosted_selection_publishes_set_hyperlink_on_the_caret() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "hello");
+    wp.sync(&mut state.doc, &state.root);
+    wp.inner.caret.offset = 0;
+    wp.inner.set_anchor();
+    wp.inner.caret.offset = 5;
+    wp.mark_resource_hosted_for_test();
+    let hosted = ui::resources::resources(&wp, &state.doc);
+    let caret = hosted
+        .iter()
+        .find(|resource| resource.id.as_str() == "word-processor.caret")
+        .expect("caret actions stay addressable");
+    assert!(
+        caret
+            .actions
+            .iter()
+            .any(|action| action.id == "set-hyperlink"),
+        "a hosted selection publishes set-hyperlink on the caret"
+    );
+}
+
 /// The New menu button is in the toolbar, template menu hover paints feedback in both themes, and the
 /// keyboard selects without editing the document.
 #[test]
