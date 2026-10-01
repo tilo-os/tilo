@@ -1,3 +1,5 @@
+import {summarizeOpenTimes} from './open-times-summary.mjs';
+
 // Open every application of a built desktop bundle in headless Chromium and
 // time each open: from dispatching the desktop's `launch` command (what an
 // app button press does) to the first presented frame after it, which holds
@@ -13,10 +15,11 @@
 //              (empty HTTP cache and storage), each opening every app (default 1)
 //   --rounds   opens per app per page; round 1 is the first open (default 1)
 //   --metrics  include the runtime's frame-stage timings for each open
+//   VIEWPORT=1440x900 DPR=2 explicitly emulates a Retina desktop.
 //   --reload   then reload: how soon the restored desktop, holding every
 //              window opened, presents again
 // Prints one JSON line per open and a summary; exits non-zero when an open
-// fails or the slowest first open exceeds --budget (default 250 ms).
+// fails or any requested open exceeds --budget (default 250 ms).
 const args = process.argv.slice(2);
 const base = args.shift();
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
@@ -72,7 +75,7 @@ const open = (app, withMetrics) => `(async () => {
   const opened = after.entries.length === before + 1 && after.entries.some(e => e.route.tab === after.active?.tab && e.label);
   let stages;
   if (${withMetrics}) { stages = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false); }
-  return {ms: end - start, opened, label: after.entries.find(e => e.route.tab === after.active?.tab)?.label, stages};
+  return {ms: end - start, opened, windowsBefore: before, label: after.entries.find(e => e.route.tab === after.active?.tab)?.label, stages};
 })()`;
 
 async function page(index) {
@@ -88,6 +91,11 @@ async function page(index) {
   listeners.add(onMsg);
   await send('Runtime.enable', {}, sessionId);
   await send('Page.enable', {}, sessionId);
+  // Optional, explicit viewport for repeatable desktop/Retina acceptance.
+  if (process.env.VIEWPORT) {
+    const [width, height] = process.env.VIEWPORT.split('x').map(Number);
+    await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: Number(process.env.DPR ?? 1), mobile: false}, sessionId);
+  }
   await send('Emulation.setFocusEmulationEnabled', {enabled: true}, sessionId);
   await send('Page.addScriptToEvaluateOnNewDocument', {source: probe}, sessionId);
   await send('Page.navigate', {url: pageURL}, sessionId);
@@ -99,7 +107,7 @@ async function page(index) {
     for (let i = 0; i < 600 && !(await evaluate(sessionId, 'Boolean(globalThis.tiloMount?.navigation)')); i++) await sleep(100);
     return Math.round((await evaluate(sessionId, 'globalThis.__tiloPhases'))?.presented ?? NaN);
   };
-  const load = {page: index, desktopPresentedMs: await ready()};
+  const load = {page: index, desktopPresentedMs: await ready(), viewport: await evaluate(sessionId, '({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})')};
   console.log(JSON.stringify(load));
   const opens = [];
   for (let round = 1; round <= rounds; round++) {
@@ -107,7 +115,7 @@ async function page(index) {
       await sleep(600);
       let result;
       try { result = await evaluate(sessionId, open(app.id, metrics)); } catch (error) { result = {ms: NaN, opened: false, error: String(error.message ?? error)}; }
-      const row = {page: index, round, app: app.id, ms: Math.round(result.ms * 10) / 10, opened: result.opened, ...(result.error ? {error: result.error} : {}), ...(result.stages ? {stages: result.stages} : {})};
+      const row = {page: index, round, app: app.id, ms: Math.round(result.ms * 10) / 10, opened: result.opened, windowsBefore: result.windowsBefore, ...(result.error ? {error: result.error} : {}), ...(result.stages ? {stages: result.stages} : {})};
       opens.push(row);
       console.log(JSON.stringify(row));
     }
@@ -132,9 +140,6 @@ async function page(index) {
 
 const results = await Promise.all(Array.from({length: pages}, (_, i) => page(i + 1)));
 ws.close();
-const first = results.flatMap(r => r.opens.filter(o => o.round === 1));
-const failed = first.filter(o => !o.opened || !Number.isFinite(o.ms));
-const sorted = first.map(o => o.ms).filter(Number.isFinite).sort((a, b) => a - b);
-const quantile = q => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
-console.log(JSON.stringify({summary: {opens: first.length, failed: failed.length, p50: quantile(0.5), p90: quantile(0.9), max: sorted.at(-1), budget, errors: results.flatMap(r => r.errors).slice(0, 10)}}));
-process.exit(failed.length || !(sorted.at(-1) <= budget) ? 1 : 0);
+const summary = summarizeOpenTimes(results, budget);
+console.log(JSON.stringify({summary}));
+process.exit(summary.passed ? 0 : 1);

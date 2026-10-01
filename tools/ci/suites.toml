@@ -400,6 +400,11 @@ suites = [
 ]
 
 [[group]]
+name = "desktop-open-times"
+inputs = ["crates/browser/tilo-web-desktop/scripts/"]
+suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
+
+[[group]]
 name = "web-registry-client"
 inputs = ["crates/browser/web-registry-client/"]
 suites = [
