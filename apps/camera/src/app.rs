@@ -6203,6 +6203,12 @@ struct ToggleRowContent<'a> {
 }
 
 impl CameraApp {
+    /// The dim behind the settings sheet: the theme's scrim hue, so it
+    /// recedes into the chrome's colour family over the viewfinder.
+    fn settings_scrim(theme: &Theme) -> Color {
+        p::alpha(theme.tokens.colors.surfaces.scrim, 0.45)
+    }
+
     fn draw_settings(
         &mut self,
         scene: &mut Scene,
@@ -6216,7 +6222,7 @@ impl CameraApp {
         // Camera settings are an overlay sheet, not a full desktop pane. A
         // dim scrim backs it; tapping the scrim dismisses back to the
         // viewfinder.
-        p::fill_rect(scene, t, full, p::alpha(Color::from_rgb8(0, 0, 0), 0.45));
+        p::fill_rect(scene, t, full, Self::settings_scrim(theme));
         self.push_region(full, Action::Back);
 
         // Centred sheet — wide enough that grouped rows use the full width and
@@ -6702,6 +6708,25 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc, root)
+    }
+
+    #[test]
+    fn the_settings_scrim_takes_the_theme_hue_and_still_dims_the_viewfinder() {
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped theme resolves");
+            let scrim = CameraApp::settings_scrim(&theme);
+            let lum = ui::a11y::relative_luminance(scrim.with_alpha(1.0));
+            assert!(lum < 0.05, "{name}: settings scrim is not a dim ({lum:.3})");
+            assert!(
+                (1..255).contains(&scrim.to_rgba8().a),
+                "{name}: scrim must stay translucent"
+            );
+        }
+        assert_ne!(
+            CameraApp::settings_scrim(&Theme::named("Nord").expect("Nord")),
+            CameraApp::settings_scrim(&Theme::dark()),
+            "the scrim follows the theme rather than a fixed black"
+        );
     }
 
     fn sync_until(
