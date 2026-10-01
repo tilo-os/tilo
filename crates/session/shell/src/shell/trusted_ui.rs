@@ -211,7 +211,7 @@ mod tests {
         assert!(band.y0 > surface.y0);
         assert!(band.y1 < surface.y1);
         assert!((band.height() - thickness).abs() < 0.01);
-        assert!(seal_band(Rect::new(0.0, 0.0, 2.0, 2.0), thickness, 8.0).area() == 0.0);
+        assert_eq!(seal_band(Rect::new(0.0, 0.0, 2.0, 2.0), thickness, 8.0).area(), 0.0);
     }
 
     #[test]
@@ -240,7 +240,7 @@ mod tests {
             .copied()
             .expect("the permission prompt's seal is addressable");
         assert!(prompt.area() > 0.0);
-        assert!(with_prompt.get(PORTAL_DIALOG_TARGET).is_none());
+        assert!(!with_prompt.contains_key(PORTAL_DIALOG_TARGET));
 
         let queue = PortalDialogQueue::default();
         queue
@@ -256,11 +256,12 @@ mod tests {
         frame.host_mut().set_portal_dialog_queue(queue);
         assert!(frame.host_mut().pump_portal_dialogs());
         let with_portal = frame.widget_registry();
+        drop(frame);
         let portal = with_portal
             .get(PORTAL_DIALOG_TARGET)
             .copied()
             .expect("the portal sheet's seal is addressable");
         assert!(portal.area() > 0.0);
-        assert!(with_portal.get(PERMISSION_PROMPT_TARGET).is_some());
+        assert!(with_portal.contains_key(PERMISSION_PROMPT_TARGET));
     }
 }
