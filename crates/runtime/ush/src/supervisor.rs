@@ -55,6 +55,9 @@ pub struct SessionOptions {
     /// The host root to shadow. `/` outside tests.
     pub base: PathBuf,
     pub verbose: bool,
+    /// The terminal's shell executes in the caller's home. The `ush` CLI
+    /// leaves this off so a package runtime still sees only the store's copy.
+    pub user_home: bool,
 }
 
 impl Default for SessionOptions {
@@ -66,6 +69,7 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             base: PathBuf::from("/"),
             verbose: false,
+            user_home: false,
         }
     }
 }
@@ -120,6 +124,27 @@ pub struct Session {
     pub session_id: String,
 }
 
+/// Where `~` points, and which directory under it must stay hidden.
+///
+/// A terminal session (`user_home`) binds the caller's real home so a typed
+/// `echo ok > ~/probe` creates that file where the user can see it. The store
+/// lives under that home and holds `policy.json`, so it is covered. The `ush`
+/// CLI leaves `user_home` off and keeps the isolated copy.
+fn session_directories(
+    user_home: bool,
+    home_mountpoint: &Path,
+    store_home: PathBuf,
+    store_root: &Path,
+) -> (PathBuf, Option<PathBuf>) {
+    if !user_home {
+        return (store_home, None);
+    }
+    let masked_store = store_root
+        .starts_with(home_mountpoint)
+        .then(|| store_root.to_path_buf());
+    (home_mountpoint.to_path_buf(), masked_store)
+}
+
 impl Session {
     pub fn new(store: Store, opts: SessionOptions) -> Self {
         Self {
@@ -166,6 +191,17 @@ impl Session {
         // `/var/home/you` is real, and the base's link still resolves to it too.
         let home_mountpoint = xdg_paths::home()
             .map_or_else(|| PathBuf::from("/root"), |h| h.canonicalize().unwrap_or(h));
+        let store_root = self
+            .store
+            .root()
+            .canonicalize()
+            .unwrap_or_else(|_| self.store.root().to_path_buf());
+        let (guest_home, masked_store) = session_directories(
+            self.opts.user_home,
+            &home_mountpoint,
+            self.store.guest_home(),
+            &store_root,
+        );
 
         Ok(GuestPlan {
             profile: self.opts.profile,
@@ -173,8 +209,9 @@ impl Session {
             upper: self.layer().path().to_path_buf(),
             lower_layers: self.lower_layers(),
             workdir_root: self.store.session_dir(&self.session_id),
-            guest_home: self.store.guest_home(),
+            guest_home,
             home_mountpoint,
+            masked_store,
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             runtime_bin: runtime_binary()?,
@@ -224,7 +261,11 @@ impl Session {
         // dies at the overlay with only `Invalid argument`, far from the cause.
         crate::layer::upper_filesystem_supported(layer.path())?;
         layer.create(&self.opts.base)?;
-        seed_guest_home(&self.store.guest_home())?;
+        // Seeding writes a guest `.bashrc`. That belongs in the isolated home,
+        // never in the directory the user actually lives in.
+        if !self.opts.user_home {
+            seed_guest_home(&self.store.guest_home())?;
+        }
 
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
@@ -559,6 +600,10 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
         profile,
         base,
         term: term.unwrap_or_else(|| "xterm-256color".into()),
+        // This socket is the terminal's shell. Commands the user types,
+        // including `echo ok > ~/probe`, have to land in their home. The
+        // `ush` CLI does not set this, so package sessions stay isolated.
+        user_home: true,
         ..SessionOptions::default()
     };
     opts.command = command;
@@ -701,6 +746,9 @@ fn spawn_attached(
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
+    if session.opts.user_home {
+        cmd.arg("--user-home");
+    }
     cmd.env(crate::store::STORE_ENV, session.store.root());
     cmd.env("TERM", &session.opts.term);
     cmd.env("TILO_USH_BASE", &session.opts.base);
@@ -1016,5 +1064,25 @@ mod tests {
             // SAFETY: we own `fd` now.
             unsafe { libc::close(fd) };
         }
+    }
+
+    #[test]
+    fn a_terminal_session_uses_the_caller_home_and_covers_the_store() {
+        let home = Path::new("/var/home/you");
+        let store = Path::new("/var/home/you/.local/share/ush");
+        let (guest, mask) = session_directories(true, home, store.join("home"), store);
+        assert_eq!(guest, home);
+        assert_eq!(mask.as_deref(), Some(store));
+
+        let (guest, mask) = session_directories(false, home, PathBuf::from("/store/home"), store);
+        assert_eq!(guest, PathBuf::from("/store/home"));
+        assert!(mask.is_none());
+
+        // A store kept outside the home is already unreachable; covering a
+        // path the guest cannot see would only hide a directory they own.
+        let outside = Path::new("/var/lib/ush");
+        let (guest, mask) = session_directories(true, home, outside.join("home"), outside);
+        assert_eq!(guest, home);
+        assert!(mask.is_none());
     }
 }

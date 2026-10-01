@@ -1183,6 +1183,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,
                 filters: opts.filters,
+                scope: None,
                 reply: tx,
             });
             driver.host_mut().pump_file_picker();

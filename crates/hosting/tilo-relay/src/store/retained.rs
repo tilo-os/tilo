@@ -373,15 +373,16 @@ pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// A directory's identity and change times: adding, removing or renaming an
-/// entry changes them.
+/// An entry's identity, size and change times: writing a file, or adding,
+/// removing or renaming a directory's entries, changes them.
 #[cfg(unix)]
-fn stamp(path: &Path) -> io::Result<[i64; 6]> {
+fn stamp(path: &Path) -> io::Result<[i64; 7]> {
     use std::os::unix::fs::MetadataExt as _;
     let metadata = fs::metadata(path)?;
     Ok([
         i64::from_ne_bytes(metadata.dev().to_ne_bytes()),
         i64::from_ne_bytes(metadata.ino().to_ne_bytes()),
+        i64::from_ne_bytes(metadata.size().to_ne_bytes()),
         metadata.mtime(),
         metadata.mtime_nsec(),
         metadata.ctime(),
@@ -393,14 +394,25 @@ fn stamp(path: &Path) -> io::Result<[i64; 6]> {
 /// have not changed since: a barrier every commit repeats over the same
 /// ancestors then costs a `stat` instead of an fsync.
 pub(super) fn sync_dir_once(path: &Path) -> Result<(), StoreError> {
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-dir")?;
+    sync_once(path)
+}
+
+/// `fsync` of the file `path`, unless this process synced the same inode
+/// before and it has not been written since. Readers and collection quanta
+/// re-establish the durability of an unchanged selection this way.
+pub(super) fn sync_file_once(path: &Path) -> Result<(), StoreError> {
+    sync_once(path)
+}
+
+fn sync_once(path: &Path) -> Result<(), StoreError> {
     #[cfg(unix)]
     {
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock, PoisonError};
-        static SYNCED: OnceLock<Mutex<HashMap<PathBuf, [i64; 6]>>> = OnceLock::new();
+        static SYNCED: OnceLock<Mutex<HashMap<PathBuf, [i64; 7]>>> = OnceLock::new();
         let synced = SYNCED.get_or_init(Mutex::default);
-        #[cfg(test)]
-        super::test_barrier::check(path, "sync-dir")?;
         // Taken before the barrier: a change racing it leaves a stale stamp.
         let before = stamp(path)?;
         if synced
@@ -419,7 +431,10 @@ pub(super) fn sync_dir_once(path: &Path) -> Result<(), StoreError> {
         Ok(())
     }
     #[cfg(not(unix))]
-    sync_dir(path)
+    {
+        fs::File::open(path)?.sync_all()?;
+        Ok(())
+    }
 }
 
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
@@ -437,8 +452,8 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    atomic_file::write(path, bytes)?;
-    // atomic_file fsyncs the parent and fails when that fails. Apple's fsync
+    tilo_files::native::atomic::write(path, bytes)?;
+    // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
     // leaves the drive's cache unflushed, so there the barrier is repeated
     // with F_FULLFSYNC before destructive retirement relies on it.
     #[cfg(any(test, target_vendor = "apple"))]
@@ -518,8 +533,8 @@ impl GenerationGc {
         use super::bounded::Step;
         let limit = limit.checked()?;
         // Reestablish Task 1's mandatory barrier after reopen and before every quantum.
-        fs::File::open(self.lineage.join("CURRENT"))?.sync_all()?;
-        sync_dir(&self.lineage)?;
+        sync_file_once(&self.lineage.join("CURRENT"))?;
+        sync_dir_once(&self.lineage)?;
         let active = current(&self.lineage)?.ok_or_else(|| invalid("missing CURRENT during GC"))?;
         for _ in 0..limit.record_entries() {
             if let Some((path, entries)) = &mut self.child {
@@ -566,7 +581,7 @@ impl GenerationGc {
                 }
                 self.entries.advance();
             } else {
-                sync_dir(&self.lineage)?;
+                sync_dir_once(&self.lineage)?;
                 return Ok(Step::Done(()));
             }
         }
@@ -1762,8 +1777,8 @@ pub(super) mod tests {
             ));
         }
         assert!(matches!(build.phase, RetainPhase::Commit));
-        let failed = atomic_file::test_support::with_failure(
-            atomic_file::test_support::Checkpoint::BeforePublish,
+        let failed = tilo_files::native::atomic::test_support::with_failure(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             || build.step(WorkLimit::default()),
         );
         assert!(failed.is_err());

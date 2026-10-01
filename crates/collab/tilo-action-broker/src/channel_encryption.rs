@@ -844,7 +844,7 @@ fn save_requests(
     requests: &BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
 ) -> std::io::Result<()> {
     let bytes = postcard::to_allocvec(requests).map_err(std::io::Error::other)?;
-    atomic_file::write_private(path, &bytes)
+    tilo_files::native::atomic::write_private(path, &bytes)
 }
 
 /// Channel ids of the `*.{extension}` files in `dir`.

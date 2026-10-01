@@ -72,7 +72,6 @@ pub struct RelayClient {
     workspace_scope: Option<InteractiveWorkspaceScope>,
     own_device: [u8; 32],
     action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
-    agent_reads_v1: bool,
     action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
     /// Owns the authenticated pump's transport lifetime, independently of the
     /// canonical state/private channels and their certification rules.
@@ -127,7 +126,13 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::Position { workspace_id, .. }
         | Envelope::CompactVolunteer { workspace_id }
         | Envelope::CompactRequest { workspace_id, .. }
-        | Envelope::Compacted { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        | Envelope::Compacted { workspace_id, .. }
+        | Envelope::VoiceCall { workspace_id, .. }
+        | Envelope::VoiceCallResult { workspace_id, .. }
+        | Envelope::VoiceJoin { workspace_id, .. }
+        | Envelope::VoiceGranted { workspace_id, .. }
+        | Envelope::VoiceRefused { workspace_id, .. }
+        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } => false,
     }
@@ -226,20 +231,20 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 
 #[derive(Clone, Copy)]
 enum RelayWireProtocol {
-    TiloAgentReadsV1,
+    TiloV2,
     TiloV1,
 }
 
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
-            Self::TiloAgentReadsV1 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
+            Self::TiloV2 => tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
             Self::TiloV1 => ALPN,
         }
     }
 
     fn is_v2(self) -> bool {
-        matches!(self, Self::TiloAgentReadsV1)
+        matches!(self, Self::TiloV2)
     }
 }
 
@@ -684,7 +689,7 @@ impl RelayClient {
                 signer: &own_sk,
                 revocations,
             },
-            RelayWireProtocol::TiloAgentReadsV1,
+            RelayWireProtocol::TiloV2,
         )
         .await
     }
@@ -729,7 +734,7 @@ impl RelayClient {
                 signer: &own_sk,
                 revocations,
             },
-            RelayWireProtocol::TiloAgentReadsV1,
+            RelayWireProtocol::TiloV2,
         )
         .await
     }
@@ -942,7 +947,6 @@ impl RelayClient {
         // Install the verified interactive scope before exposing the client.
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
-        client.agent_reads_v1 = matches!(protocol, RelayWireProtocol::TiloAgentReadsV1);
         Ok(client)
     }
 
@@ -966,7 +970,6 @@ impl RelayClient {
             workspace_scope: None,
             own_device,
             action_outbound: channels.action_outbound,
-            agent_reads_v1: false,
             action_inbound: Arc::new(AsyncMutex::new(channels.action_inbound)),
             carrier,
         }
@@ -1016,24 +1019,12 @@ impl RelayClient {
         Ok(())
     }
 
-    /// Whether this exact authenticated carrier negotiated disposable agent reads.
-    pub fn supports_agent_reads_v1(&self) -> bool {
-        self.agent_reads_v1
-    }
-
     /// Queue one private v2 frame. A v1 session reports unavailable explicitly.
     /// State continues to use `send` and `recv`, sharing a single wire reader.
     ///
     /// # Errors
     /// Returns an error on v1, invalid/oversized frames, or bounded backpressure.
     pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
-        if !self.agent_reads_v1
-            && matches!(&frame, EnvelopeV2::Directed(action) if matches!(action.message, tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadV1 {..} | tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadResultV1 {..}))
-        {
-            return Err(ClientError::Codec(
-                "agent reads protocol not negotiated".into(),
-            ));
-        }
         let tx = self
             .action_outbound
             .as_ref()
@@ -2226,26 +2217,6 @@ mod session_carrier_tests {
             Err(ClientError::Codec(_))
         ));
         assert!(state_only.client.recv_action().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn agent_read_cannot_enter_a_session_without_negotiated_support() {
-        let fixture = fixture(true);
-        let frame = EnvelopeV2::Directed(tilo_delivery_protocol::peer_actions::DirectedAction {
-            room: uuid::Uuid::from_u128(1),
-            request_id: uuid::Uuid::from_u128(2),
-            source: [30; 32],
-            target: [40; 32],
-            message: tilo_delivery_protocol::peer_actions::ActionMessage::AgentReadV1 {
-                host: uuid::Uuid::from_u128(3),
-                invocation: uuid::Uuid::from_u128(4),
-                request: tilo_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
-            },
-        });
-        assert!(
-            fixture.client.send_action(frame).is_err(),
-            "private routing alone is not read negotiation"
-        );
     }
 
     #[tokio::test]
