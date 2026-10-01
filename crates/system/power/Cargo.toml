@@ -15,7 +15,7 @@ path = "src/lib.rs"
 [features]
 default = ["service"]
 service = [
-    "dep:tilo-atomic-file",
+    "dep:tilo-files",
     "dep:bounded-command",
     "dep:futures-util",
     "dep:serde",
@@ -43,7 +43,7 @@ serde_json = { version = "1.0", optional = true }
 # One owner for ~/.config/tilo/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
 settings-store = { version = "0.1.0", path = "../../../crates/system/settings-store", optional = true }
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"], optional = true }

@@ -292,7 +292,6 @@ struct SessionCtx<'a> {
     own_device_public_key: &'a [u8; 32],
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     v2: bool,
-    agent_reads_v1: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     live_bridge: Option<&'a LiveBridge>,
@@ -402,7 +401,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, false, false).await
+    run_peer_version(peer, connection, read, write, ctx, false).await
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -422,7 +421,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, false, false, closed).await
+    run_peer_stream(peer, read, write, ctx, false, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -432,22 +431,12 @@ pub(crate) async fn run_peer_version<R, W>(
     write: W,
     ctx: PeerContext,
     v2: bool,
-    agent_reads_v1: bool,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(
-        peer,
-        read,
-        write,
-        ctx,
-        v2,
-        agent_reads_v1,
-        connection.closed(),
-    )
-    .await
+    run_peer_stream(peer, read, write, ctx, v2, connection.closed()).await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -465,7 +454,6 @@ async fn run_peer_stream<R, W>(
     mut write: W,
     ctx: PeerContext,
     v2: bool,
-    agent_reads_v1: bool,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -519,7 +507,6 @@ where
         own_device_public_key: &own_device_public_key,
         app_serving: app_serving.as_ref(),
         v2,
-        agent_reads_v1,
         private_tx: &private_tx,
         revocations: &revocations,
         live_bridge: live_bridge.as_ref(),
@@ -549,8 +536,12 @@ where
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
+                // Prefer an already-readable inbound frame over the periodic
+                // membership audit. After a live revoke the audit and a refused
+                // delta can become ready together; the delta must win so the
+                // peer still receives NotAuthorised rather than a bare close.
                 tokio::select! {
-                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    biased;
                     frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
                     () = lag.wake.notified() => { catching_up = true; continue; }
                     // A lagging room resumes once everything already queued
@@ -564,6 +555,7 @@ where
                         catching_up = !lag.is_empty();
                         match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
                     }
+                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
                 }
             };
             match frame {
@@ -1774,6 +1766,9 @@ async fn handle_envelope(
             handle_compaction(peer, session, subscribed, env).await;
             Ok(None)
         }
+        env @ (Envelope::VoiceCall { .. }
+        | Envelope::VoiceJoin { .. }
+        | Envelope::VoiceLeave { .. }) => handle_voice(peer, session, subscribed, env).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -1785,7 +1780,10 @@ async fn handle_envelope(
         | Envelope::Committed { .. }
         | Envelope::CommitRefused { .. }
         | Envelope::LiveMember { .. }
-        | Envelope::Position { .. } => Ok(None),
+        | Envelope::Position { .. }
+        | Envelope::VoiceCallResult { .. }
+        | Envelope::VoiceGranted { .. }
+        | Envelope::VoiceRefused { .. } => Ok(None),
     }
 }
 
@@ -4292,6 +4290,31 @@ struct AdmittedState {
     /// The durable host order it took; 0 until then, or when unpublished.
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
+/// Admit `envelope`, authored by this host's own device, through the
+/// workspace's ordered persistence owner, as a device's commit is admitted.
+/// Resolves with its host order once it is durable and published.
+pub(crate) async fn admit_host_state(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    metrics: Arc<crate::metrics::Metrics>,
+) -> Result<u64, String> {
+    let admitted = Box::pin(enqueue_state_inner(
+        workspace,
+        envelope,
+        None,
+        crate::auth::PeerRole::Device,
+        metrics,
+        false,
+    ))
+    .await
+    .map_err(|error| error.to_string())?;
+    admitted
+        .completion
+        .await
+        .map_err(|_| "the workspace owner stopped before the commit was durable".to_owned())?
+        .map_err(|error| error.to_string())?;
+    Ok(admitted.sequence.load(std::sync::atomic::Ordering::SeqCst))
+}
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
     envelope: Envelope,
@@ -4959,6 +4982,13 @@ async fn handle_delta(
         ));
     }
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        // A live revoke already pushed NotAuthorised and dropped this
+        // subscriber; a follow-up write must close rather than refuse twice.
+        if !current_session(&*ws.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "workspace membership changed".into(),
@@ -4972,7 +5002,19 @@ async fn handle_delta(
         .compactor
         .zip(observed)
         .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
+    let governor = ws.lock().await.governor_tap.clone().and_then(|tap| {
+        let Envelope::Delta { delta, .. } = &env else {
+            return None;
+        };
+        match crate::coedit::CoeditPayload::decode(delta)? {
+            crate::coedit::CoeditPayload::Checkpoint { body, .. }
+            | crate::coedit::CoeditPayload::RetainedDelta { body, .. } => Some((tap, body)),
+        }
+    });
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    if let Some((tap, body)) = governor {
+        let _ = tap.try_send((peer.device_public_key, body));
+    }
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
     }
@@ -5222,6 +5264,90 @@ async fn handle_live_join(
     Ok(None)
 }
 
+/// Handle a call envelope for a subscribed workspace whose room this relay
+/// governs; see [`crate::rooms`].
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn handle_voice(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let workspace_id = match &env {
+        Envelope::VoiceCall { workspace_id, .. }
+        | Envelope::VoiceJoin { workspace_id, .. }
+        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id,
+        _ => return Ok(None),
+    };
+    let authority = if subscribed.contains(&workspace_id) {
+        let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+        match ws {
+            Some(ws) => ws.lock().await.room_authority.clone(),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let rooms = authority
+        .as_ref()
+        .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())));
+    let refusal = "calls require a subscription to a room this host governs";
+    Ok(match env {
+        Envelope::VoiceCall {
+            request, operation, ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => rooms.voice_call(room, peer, &operation).await,
+                None => Err(refusal.into()),
+            };
+            Some(Envelope::VoiceCallResult {
+                workspace_id,
+                request,
+                result,
+            })
+        }
+        Envelope::VoiceJoin {
+            call,
+            participation,
+            ..
+        } => {
+            let result = match &rooms {
+                Some((rooms, room)) => {
+                    rooms
+                        .voice_join(room, peer, call, participation, session.outbound.clone())
+                        .await
+                }
+                None => Err(refusal.into()),
+            };
+            Some(match result {
+                Ok(grant) => Envelope::VoiceGranted {
+                    workspace_id,
+                    grant: Box::new(grant),
+                },
+                Err(reason) => Envelope::VoiceRefused {
+                    workspace_id,
+                    call,
+                    reason,
+                },
+            })
+        }
+        Envelope::VoiceLeave {
+            call,
+            participation,
+            ..
+        } => {
+            if let Some((rooms, _)) = &rooms {
+                rooms.voice_leave(peer, call, participation);
+            }
+            None
+        }
+        _ => None,
+    })
+}
+
 /// Handle `LiveLeave`.
 #[allow(
     clippy::significant_drop_tightening,
@@ -5314,6 +5440,11 @@ async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        if !current_session(&*workspace.lock().await, peer, session.outbound) {
+            return Err(PeerError::Protocol(
+                "subscriber authorization changed".into(),
+            ));
+        }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
             reason: "workspace membership changed".into(),
@@ -5744,7 +5875,6 @@ mod autobind_tests {
 pub(crate) struct ActionTarget {
     broker_host: Option<uuid::Uuid>,
     broker_protocol: bool,
-    agent_reads_v1: bool,
     room: uuid::Uuid,
     peer: AuthenticatedPeer,
     state_tx: mpsc::Sender<Envelope>,
@@ -5796,6 +5926,17 @@ fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedP
     // allows a Subscribe to enrol an owner device, never bypasses this check.
     wr.membership.contains(&peer.device_public_key)
         || wr.admitted_users.contains(&peer.user_public_key)
+}
+
+fn unavailable_target(
+    wr: &crate::workspace::WorkspaceRuntime,
+    target: &[u8; 32],
+) -> UnavailableReason {
+    if wr.membership.contains(target) {
+        UnavailableReason::Offline
+    } else {
+        UnavailableReason::NotAuthorised
+    }
 }
 
 fn current_session(
@@ -5876,7 +6017,6 @@ async fn handle_private(
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
-                    agent_reads_v1: session.agent_reads_v1,
                     room,
                     peer: peer.clone(),
                     state_tx: session.outbound.clone(),
@@ -6006,36 +6146,6 @@ impl Drop for DeliveryAuthorizationTrace<'_> {
     }
 }
 
-fn agent_read_route_allowed(
-    action: &DirectedAction,
-    source: &ActionTarget,
-    target: &ActionTarget,
-) -> bool {
-    match &action.message {
-        ActionMessage::AgentReadV1 { host, .. } => {
-            source.agent_reads_v1
-                && target.agent_reads_v1
-                && source.broker_protocol
-                && target.broker_protocol
-                && target.broker_host == Some(*host)
-        }
-        ActionMessage::AgentReadResultV1 { host, binding, .. } => {
-            source.agent_reads_v1
-                && target.agent_reads_v1
-                && source.broker_protocol
-                && target.broker_protocol
-                && source.broker_host == Some(*host)
-                && binding.agent.room == action.room.to_string()
-                && binding.agent.device == hex::encode(action.target)
-        }
-        _ => true,
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
 async fn route_private(
     action: &DirectedAction,
     peer: &AuthenticatedPeer,
@@ -6079,7 +6189,7 @@ async fn route_private(
         return Ok(Some(U::NotAuthorised));
     }
     let Some(sub) = wr.subscribers.get(&action.target) else {
-        return Ok(Some(U::Offline));
+        return Ok(Some(unavailable_target(&wr, &action.target)));
     };
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
@@ -6114,11 +6224,8 @@ async fn route_private(
         return Ok(Some(U::UnsupportedPeer));
     }
     // Checked above under the same membership read; keep the same refusal.
-    let Some(source) = wr.action_targets.get(&peer.device_public_key) else {
+    if !wr.action_targets.contains_key(&peer.device_public_key) {
         return Ok(Some(U::NotAuthorised));
-    };
-    if !agent_read_route_allowed(action, source, target) {
-        return Ok(Some(U::UnsupportedPeer));
     }
     private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
@@ -6273,17 +6380,11 @@ async fn authorize_delivery(
         );
     }
     // Both were checked above under the same membership read.
-    let Some(source) = wr.action_targets.get(&delivery.source.device_public_key) else {
+    if !wr
+        .action_targets
+        .contains_key(&delivery.source.device_public_key)
+    {
         return trace.reject("delivery_rejected_source_action_target", U::NotAuthorised);
-    };
-    let Some(target) = wr.action_targets.get(&recipient.device_public_key) else {
-        return trace.reject(
-            "delivery_rejected_recipient_action_target",
-            U::NotAuthorised,
-        );
-    };
-    if !agent_read_route_allowed(&delivery.action, source, target) {
-        return trace.reject("delivery_rejected_agent_read_protocol", U::UnsupportedPeer);
     }
     drop(wr);
     trace.success();
@@ -7337,7 +7438,6 @@ mod private_transport_tests {
                 compactor: None,
             },
             true,
-            false,
             std::future::pending::<()>(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
@@ -8220,7 +8320,6 @@ mod private_transport_tests {
             server_write,
             ctx,
             true,
-            false,
             std::future::pending::<()>(),
         ));
         let mut reader = SessionReader::new(replies, true);
@@ -8339,7 +8438,6 @@ mod private_transport_tests {
                 write,
                 ctx,
                 true,
-                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -8677,7 +8775,6 @@ mod private_transport_tests {
                     compactor: None,
                 },
                 true,
-                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -8956,7 +9053,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: false,
-            agent_reads_v1: false,
             private_tx: &private,
             revocations: &revocations,
             live_bridge: None,
@@ -9149,7 +9245,6 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
-                    agent_reads_v1: false,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -9178,7 +9273,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9276,7 +9370,6 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
-                    agent_reads_v1: false,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -9305,7 +9398,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9448,7 +9540,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &source_disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &source_private,
             revocations: &revocations,
             live_bridge: None,
@@ -9594,15 +9685,10 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
-        Box::pin(bounded_private_queue_for_room_namespace(false)).await;
+        Box::pin(bounded_private_queue_for_room_namespace()).await;
     }
 
-    #[tokio::test]
-    async fn agent_read_queued_delivery_rechecks_protocol_host_and_replacement() {
-        Box::pin(bounded_private_queue_for_room_namespace(true)).await;
-    }
-
-    async fn bounded_private_queue_for_room_namespace(agent_read: bool) {
+    async fn bounded_private_queue_for_room_namespace() {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, a_key) = certified_device(&root, user.public_key, "a");
         let (b, _) = certified_device(&root, user.public_key, "b");
@@ -9639,7 +9725,6 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
-                    agent_reads_v1: agent_read,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -9668,7 +9753,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
-            agent_reads_v1: agent_read,
             private_tx: &ap,
             revocations: &revocations,
             live_bridge: None,
@@ -9684,101 +9768,6 @@ mod private_transport_tests {
             disconnect: &recipient_disconnect,
             ..session
         };
-        if agent_read {
-            let host = uuid::Uuid::from_u128(40);
-            handle_private(EnvelopeV2::EnableBrokerClient { room }, &a, &session)
-                .await
-                .unwrap();
-            handle_private(EnvelopeV2::RegisterBroker { room, host }, &b, &receiver)
-                .await
-                .unwrap();
-            let read = DirectedAction {
-                room,
-                request_id: uuid::Uuid::from_u128(41),
-                source: a.device_public_key,
-                target: b.device_public_key,
-                message: ActionMessage::AgentReadV1 {
-                    host,
-                    invocation: uuid::Uuid::from_u128(42),
-                    request: tilo_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
-                },
-            };
-            assert_eq!(route_private(&read, &a, &session).await.unwrap(), None);
-            let PrivateOutbound::Delivery(delivery) = bpr.recv().await.unwrap() else {
-                panic!("read not queued")
-            };
-            assert_eq!(authorize_delivery(&delivery, &b, &receiver).await, Ok(()));
-            for device in [a.device_public_key, b.device_public_key] {
-                wr.lock()
-                    .await
-                    .action_targets
-                    .get_mut(&device)
-                    .unwrap()
-                    .agent_reads_v1 = false;
-                let mut wire = Vec::new();
-                write_private_delivery(&delivery, &b, &receiver, &mut wire)
-                    .await
-                    .unwrap();
-                assert!(wire.is_empty());
-                assert!(matches!(
-                    apr.recv().await,
-                    Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
-                        reason: UnavailableReason::UnsupportedPeer,
-                        ..
-                    }))
-                ));
-                wr.lock()
-                    .await
-                    .action_targets
-                    .get_mut(&device)
-                    .unwrap()
-                    .agent_reads_v1 = true;
-            }
-            wr.lock()
-                .await
-                .action_targets
-                .get_mut(&b.device_public_key)
-                .unwrap()
-                .broker_host = Some(uuid::Uuid::from_u128(43));
-            assert_eq!(
-                authorize_delivery(&delivery, &b, &receiver).await,
-                Err(UnavailableReason::UnsupportedPeer)
-            );
-            wr.lock()
-                .await
-                .action_targets
-                .get_mut(&b.device_public_key)
-                .unwrap()
-                .broker_host = Some(host);
-            let (replacement, _rx) = mpsc::channel(2);
-            wr.lock().await.add_subscriber(Subscriber {
-                device_public_key: b.device_public_key,
-                role: b.role,
-                tx: replacement,
-                disconnect: recipient_disconnect.clone(),
-            });
-            let mut wire = Vec::new();
-            write_private_delivery(&delivery, &b, &receiver, &mut wire)
-                .await
-                .unwrap();
-            assert!(wire.is_empty());
-            assert!(matches!(
-                apr.recv().await,
-                Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
-                    reason: UnavailableReason::NotAuthorised,
-                    ..
-                }))
-            ));
-            assert!(
-                wr.lock()
-                    .await
-                    .store
-                    .load_pending(&b.device_public_key)
-                    .unwrap()
-                    .is_empty()
-            );
-            return;
-        }
         let action = DirectedAction {
             room,
             request_id: uuid::Uuid::from_u128(8),
@@ -10135,7 +10124,6 @@ mod private_transport_tests {
             trust_policy: &trust,
             disconnect: &bdis,
             v2: false,
-            agent_reads_v1: false,
             private_tx: &ptx,
             revocations: &revocations,
             live_bridge: None,

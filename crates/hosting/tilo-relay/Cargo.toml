@@ -67,7 +67,6 @@ path = "src/home_peer_control.rs"
 [dependencies]
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -162,7 +161,7 @@ tokio = { workspace = true, features = ["full"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
@@ -178,7 +177,7 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }

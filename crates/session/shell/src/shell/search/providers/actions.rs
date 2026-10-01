@@ -72,6 +72,12 @@ const IDENTITY_CONNECT_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+const LANGUAGE_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "language",
+    ParamType::Text,
+    "BCP 47 tag or name: en-US, de-DE, English, or German.",
+)];
+
 const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "id",
@@ -197,7 +203,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
         }
-        "notifications.dnd.toggle" => {
+        "notifications.dnd.toggle"
+        | "appearance.theme.dark"
+        | "appearance.theme.light"
+        | "appearance.high-contrast"
+        | "appearance.language" => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -818,6 +828,45 @@ fn request_window_shortcut(
     active_workspace_id(st)?;
     st.request_shortcut_action(action);
     Ok(())
+}
+
+fn persist_appearance(
+    st: &mut ChromeState,
+    values: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ActionError> {
+    settings_store::update_section("appearance", values)
+        .map_err(|err| ActionError::Refused(err.to_string()))?;
+    crate::shell::i18n::apply_configured_locale();
+    st.note_appearance_change();
+    Ok(())
+}
+
+fn set_theme(st: &mut ChromeState, theme: &str, high_contrast: bool) -> Result<(), ActionError> {
+    let mut values = serde_json::Map::new();
+    values.insert("theme".into(), serde_json::Value::String(theme.into()));
+    values.insert(
+        "high_contrast".into(),
+        serde_json::Value::Bool(high_contrast),
+    );
+    persist_appearance(st, values)
+}
+
+fn set_language(st: &mut ChromeState, requested: &str) -> Result<(), ActionError> {
+    let language = match requested.trim() {
+        "en" | "en-US" | "english" | "English" => "en-US",
+        "de" | "de-DE" | "german" | "German" | "deutsch" | "Deutsch" => "de-DE",
+        other => {
+            return Err(ActionError::Refused(format!(
+                "{other:?} is not a language this desktop has"
+            )));
+        }
+    };
+    let mut values = serde_json::Map::new();
+    values.insert(
+        "language".into(),
+        serde_json::Value::String(language.into()),
+    );
+    persist_appearance(st, values)
 }
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
@@ -1719,6 +1768,39 @@ impl Action {
                 Ok(())
             },
         ),
+        chrome(
+            "appearance.theme.dark",
+            "search-action-appearance-theme-dark",
+            "search-action-appearance-theme-dark-subtitle",
+            |st, _| set_theme(st, "dark", false),
+        ),
+        chrome(
+            "appearance.theme.light",
+            "search-action-appearance-theme-light",
+            "search-action-appearance-theme-light-subtitle",
+            |st, _| set_theme(st, "light", false),
+        ),
+        chrome(
+            "appearance.high-contrast",
+            "search-action-appearance-high-contrast",
+            "search-action-appearance-high-contrast-subtitle",
+            |st, _| set_theme(st, "dark", true),
+        ),
+        Action {
+            id: "appearance.language",
+            label: "search-action-appearance-language",
+            subtitle: "search-action-appearance-language-subtitle",
+            params: LANGUAGE_PARAMS,
+            apply: |st, args| {
+                let language = args.text("language").unwrap_or_default();
+                if language.trim().is_empty() {
+                    return Err(ActionError::Refused(
+                        "a language is required; nothing was changed".into(),
+                    ));
+                }
+                set_language(st, language)
+            },
+        },
         // The first exported action that changes a document rather than
         // the chrome around one, and so the first told *what* to write.
         Action {
@@ -3739,6 +3821,151 @@ mod tests {
                 assert!(!copy.trim().is_empty(), "{key} resolves to nothing");
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_and_language_actions_are_searchable_and_write_the_settings_store() {
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let query = |needle: &str| {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let id_of = |needle: &str, want: &str| {
+            query(needle)
+                .into_iter()
+                .find(|row| row.id == want)
+                .unwrap_or_else(|| panic!("{needle:?} must find {want}"))
+                .id
+        };
+        assert_eq!(
+            id_of("dark theme", "appearance.theme.dark"),
+            "appearance.theme.dark"
+        );
+        assert_eq!(
+            id_of("light theme", "appearance.theme.light"),
+            "appearance.theme.light"
+        );
+        assert_eq!(
+            id_of("high contrast", "appearance.high-contrast"),
+            "appearance.high-contrast"
+        );
+        assert_eq!(
+            id_of("language", "appearance.language"),
+            "appearance.language"
+        );
+
+        invoke_action(&query("dark theme"), "appearance.theme.dark", &chrome);
+        assert!(
+            chrome.borrow().appearance_generation > 0,
+            "theme actions must wake the live frame, not only write the store"
+        );
+        let appearance = settings_store::load_section("appearance");
+        assert_eq!(
+            appearance.get("theme").and_then(serde_json::Value::as_str),
+            Some("dark")
+        );
+        assert_eq!(
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+
+        invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
+        let appearance = settings_store::load_section("appearance");
+        assert_eq!(
+            appearance
+                .get("high_contrast")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        let language = query("language")
+            .into_iter()
+            .find(|row| row.id == "appearance.language")
+            .expect("language action");
+        let args = ActionArgs::bind(
+            &language.params,
+            [(
+                "language".into(),
+                crate::shell::search::action_api::ArgValue::Text("German".into()),
+            )],
+        )
+        .expect("language arguments");
+        let mut document = AutoCommit::new();
+        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+        assert_eq!(
+            settings_store::str_at(&settings_store::load(), "appearance", "language"),
+            Some("de-DE")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn language_action_switches_the_live_catalogue() {
+        struct RestoreLocale;
+        impl Drop for RestoreLocale {
+            fn drop(&mut self) {
+                ui::i18n::I18nManager::set_locale("en-US");
+            }
+        }
+        let config = tempfile::tempdir().expect("isolated settings");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        let _restore = RestoreLocale;
+
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let language = {
+            let state = chrome.borrow();
+            let doc = AutoCommit::new();
+            provider
+                .query(SearchContext {
+                    needle: "language",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "appearance.language")
+                .expect("language action")
+        };
+        let args = ActionArgs::bind(
+            &language.params,
+            [(
+                "language".into(),
+                crate::shell::search::action_api::ArgValue::Text("German".into()),
+            )],
+        )
+        .expect("language arguments");
+        let mut document = AutoCommit::new();
+        (language.on_open)(&mut document, &automerge::ROOT, &chrome, &args).unwrap();
+
+        assert_eq!(
+            settings_store::str_at(&settings_store::load(), "appearance", "language"),
+            Some("de-DE")
+        );
+        assert_eq!(
+            crate::shell::i18n::current_locale(),
+            "de-DE",
+            "writing the store without selecting the live catalogue leaves chrome English"
+        );
+        assert_eq!(t("tab-closed-undo"), "Rückgängig");
+        assert_eq!(t("search-action-appearance-language"), "Sprache festlegen");
     }
 
     #[test]

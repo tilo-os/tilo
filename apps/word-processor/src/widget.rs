@@ -3498,11 +3498,13 @@ impl WordProcessorWidget {
                     if let Some(scope) = scope {
                         scope.check()?;
                     }
-                    atomic_file::write_preserving_target(path, &bytes).map_err(|e| {
-                        eprintln!("word-processor: could not write {}: {e}", path.display());
-                        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
-                        format!("could not write {}: {e}", path.display())
-                    })?;
+                    tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
+                        |e| {
+                            eprintln!("word-processor: could not write {}: {e}", path.display());
+                            self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                            format!("could not write {}: {e}", path.display())
+                        },
+                    )?;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
                 Err(e) => {

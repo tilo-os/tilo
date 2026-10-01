@@ -1114,6 +1114,33 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
         );
     }
 
+    /// Super+S with no pointer still summons: a headless or first-frame
+    /// session has no `last_cursor`, and treating that as "nowhere" made
+    /// the chord a no-op the VM check could not distinguish from a miss.
+    fn super_s_without_a_pointer_summons_to_the_display_centre() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(
+            h.host.pointer_position().is_none(),
+            "the fixture has not seen a cursor"
+        );
+        assert!(
+            pump(&mut h, &key_press(Key::Character("s".into())), sup),
+            "Super+S is handled without a pointer"
+        );
+        let at = h
+            .chrome
+            .borrow()
+            .wheel_summon()
+            .expect("Super+S summons even before a cursor has moved");
+        let centre = h.host.rect.center();
+        assert!(
+            (at.x - centre.x).abs() < 1.0 && (at.y - centre.y).abs() < 1.0,
+            "no-pointer summon lands at the display centre, got {at:?} expected {centre:?}"
+        );
+        assert!(h.host.wheel_summoned());
+    }
+
     fn super_p_opens_the_display_sheet_and_escape_closes_it() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
@@ -1302,6 +1329,7 @@ fn super_chords_open_their_surfaces_once_and_escape_dismisses_the_wheel_first() 
     }
 
     super_s_summons_the_wheel_to_the_pointer_and_toggles_back();
+    super_s_without_a_pointer_summons_to_the_display_centre();
     super_p_opens_the_display_sheet_and_escape_closes_it();
     super_l_requests_the_compositor_lock_once();
     typed_session_actions_run_through_the_power_flyouts_executor();
@@ -1597,6 +1625,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             accept_label: None,
             current_name: Some("before".to_string()),
             filters: Vec::new(),
+            scope: None,
             reply,
         });
         assert!(h.host.pump_file_picker());

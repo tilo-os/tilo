@@ -1062,7 +1062,7 @@ fn io_error(error: std::io::Error) -> MlsAuthorityError {
     MlsAuthorityError::Persistence(error.to_string())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MlsAuthorityError> {
-    atomic_file::write_with_mode(path, bytes, 0o600).map_err(io_error)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).map_err(io_error)
 }
 
 #[allow(
