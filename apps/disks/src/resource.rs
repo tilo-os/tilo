@@ -68,6 +68,10 @@ pub struct DisksState {
     pub tab: String,
     pub pending: String,
     pub status: String,
+    /// Whether this surface may run privileged block-device jobs. Not document
+    /// state: the widget sets it before publish, and a bare read uses the
+    /// process `DISKS_LIVE` flag.
+    pub live: bool,
 }
 
 /// The storage-devices resource.
@@ -96,6 +100,7 @@ impl Resource for Disks {
             tab: DisksDoc::tab(doc),
             pending: DisksDoc::pending(doc),
             status: DisksDoc::status(doc),
+            live: live_disk_access(),
         })
     }
 
@@ -158,7 +163,7 @@ impl Resource for Disks {
     }
 
     fn children(state: &DisksState) -> Vec<PublishedResource> {
-        topology_children(state, live_disk_access())
+        topology_children(state, state.live)
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -427,6 +432,13 @@ mod tests {
             "{part_ids:?}"
         );
 
+        let mut fresh = DisksApp::new();
+        let mut empty = AutoCommit::new();
+        fresh.sync(&mut empty, &ui::automerge::ROOT);
+        assert!(DisksDoc::topology_json(&empty).is_some());
+        assert_eq!(DisksDoc::tab(&empty), "overview");
+        assert_eq!(DisksDoc::selected(&empty), 0);
+
         let mut app = DisksApp::new();
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
@@ -441,6 +453,12 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "disks").is_none());
+        assert!(
+            ui::resources::resource(&app, &seeded, "disk:nvme0n1")
+                .is_some_and(|disk| disk.actions.iter().any(|action| action.id == "select")),
+            "a hosted drive stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras.is_empty(),
