@@ -144,6 +144,9 @@ pub struct FramePaint {
     pub revision: u64,
     pub previous_revision: Option<u64>,
     pub damage_regions: Option<Vec<FineDamageRect>>,
+    /// Set while the overview is fading. The multi-output presenter composites
+    /// this panel over the previous desktop instead of readback of both outputs.
+    pub(crate) overview_patch: Option<crate::shell::overlay_host::OverviewFastPatch>,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -158,6 +161,7 @@ impl FramePaint {
             revision: 0,
             previous_revision: None,
             damage_regions: None,
+            overview_patch: None,
             hdr_layers: Vec::new(),
         }
     }
@@ -177,6 +181,7 @@ impl FramePaint {
         self.revision = 0;
         self.damage_regions = None;
         self.previous_revision = None;
+        self.overview_patch = None;
     }
 }
 
@@ -1577,11 +1582,13 @@ impl FrameBuilder {
             global_filter,
             revision,
         });
+        let overview_patch = self.host.take_overview_fast_patch();
         FramePaint {
             scene,
             revision,
             previous_revision,
             damage_regions,
+            overview_patch,
             hdr_layers,
         }
     }
@@ -1606,7 +1613,10 @@ impl FrameBuilder {
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
-            return None;
+            // Proven identical to the previous frame. `None` means "no
+            // authority, redraw everything"; an empty list means the pixels
+            // already on screen are still correct.
+            return Some(Vec::new());
         }
         let mut regions = Vec::with_capacity(2);
         if topbar_changed {
@@ -5193,6 +5203,23 @@ mod tests {
         workspace_switch_requests_frames_before_draw();
         compositor_paint_run_is_not_host_demand();
         latch_asks_the_compositor_for_eight_paints();
+    }
+
+    #[test]
+    fn an_unchanged_frame_reports_empty_damage() {
+        let mut frame = FrameBuilder::new((800, 600));
+        frame.relayout();
+        let first = frame.paint_with_damage();
+        assert!(
+            first.damage_regions.is_none(),
+            "the first frame has no predecessor to retain"
+        );
+        let second = frame.paint_with_damage();
+        assert_eq!(
+            second.damage_regions.as_deref(),
+            Some(&[][..]),
+            "an identical frame must not request another full upload"
+        );
     }
 
     /// Look up a widget's rect by its *last* path segment
