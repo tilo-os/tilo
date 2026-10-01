@@ -1,7 +1,7 @@
 # Theme escape hatches in app and shell production code.
 # Format: <path relative to repository root> <pattern> <count>
 # This is a ratchet, not approval: counts may only move down.
-apps/camera/src/app.rs literal_color 6
+apps/camera/src/app.rs literal_color 1
 apps/chat/src/paint.rs white_or_black 4
 apps/chat/src/render_call.rs literal_color 3
 apps/chat/src/render_call.rs white_or_black 3
@@ -33,7 +33,7 @@ apps/music/src/app/render.rs white_or_black 7
 apps/music/src/art.rs white_or_black 3
 apps/notes/src/shots.rs literal_color 0
 apps/pdf-viewer/src/app_draw.rs white_or_black 0
-apps/pdf-viewer/src/render.rs literal_color 11
+apps/pdf-viewer/src/render.rs literal_color 10
 apps/pdf-viewer/src/render.rs white_or_black 3
 apps/remote/src/app.rs literal_color 1
 apps/remote/src/app.rs white_or_black 1
@@ -49,14 +49,14 @@ apps/terminal/src/main_body.rs literal_color 3
 apps/themes/src/customizer.rs literal_color 1
 apps/totp/src/add_panel.rs white_or_black 2
 apps/totp/src/ring.rs white_or_black 1
-apps/tube/src/contrast.rs white_or_black 3
+apps/tube/src/contrast.rs white_or_black 1
 apps/tube/src/screens.rs literal_color 4
 apps/tube/src/screens.rs white_or_black 5
 apps/tube/src/widgets/image_box.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs white_or_black 1
-apps/tube/src/widgets/thumbnail.rs literal_color 8
-apps/tube/src/widgets/thumbnail.rs white_or_black 3
+apps/tube/src/widgets/thumbnail.rs literal_color 0
+apps/tube/src/widgets/thumbnail.rs white_or_black 1
 apps/video-editor/src/app/bin_paint.rs white_or_black 1
 apps/video-editor/src/app/paint.rs white_or_black 1
 apps/video-editor/src/app/preview_paint.rs white_or_black 7
