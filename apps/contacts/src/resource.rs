@@ -294,6 +294,7 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "contacts.book").is_none());
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
