@@ -10512,13 +10512,11 @@ pub fn run() {
             && !client_changed
             && configured_after_dispatch == 0
             && !capture_ready
+            && foreign::release_idle_frame_callbacks(&mut state)
+            && let Err(err) = display.flush_clients()
         {
-            if foreign::release_idle_frame_callbacks(&mut state) {
-                if let Err(err) = display.flush_clients() {
-                    eprintln!("tilo compositor: idle frame callback flush error: {err}");
-                    break;
-                }
-            }
+            eprintln!("tilo compositor: idle frame callback flush error: {err}");
+            break;
         }
         let client_pump_needed = client_followup_needed(
             clients_dispatched,
