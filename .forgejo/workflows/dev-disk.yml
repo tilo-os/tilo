@@ -58,7 +58,7 @@ on:
         required: false
         default: "auto"
       validate_greeter:
-        description: "After native boot proof, require a stable graphical greeter and report guest DRM state. For targeted KVM display diagnostics."
+        description: "Diagnostic only: require a stable graphical greeter and report guest DRM state; skip disk publication."
         required: false
         default: "false"
 
@@ -537,6 +537,7 @@ jobs:
       # inspect the installed disk even if slow CI TCG cannot reach greetd.
       # The normal dev-disk manifest is still published only after boot proof.
       - name: Publish unvalidated installed disk candidate
+        if: github.event.inputs.validate_greeter != 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
@@ -566,6 +567,11 @@ jobs:
             echo '::error::boot validation requires usable native KVM; dispatch validate_boot=false for an unvalidated disk candidate'
             exit 1
           }
+          # Diagnostic runs need failure evidence quickly, not the 20-minute
+          # fallback intended for unusually slow ordinary disk validations.
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            export TILO_BOOT_WAIT_ATTEMPTS=120
+          fi
           # Boot a throwaway overlay so the published disk is never first-booted.
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
@@ -603,7 +609,7 @@ jobs:
       # This architecture publishes on its own; another lane of the same tag
       # adds its child to the index and its own manifest whenever it lands.
       - name: Publish this architecture's dev image and disk
-        if: needs.plan.outputs.validate_boot == 'true'
+        if: needs.plan.outputs.validate_boot == 'true' && github.event.inputs.validate_greeter != 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
