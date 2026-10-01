@@ -13,12 +13,21 @@ restore() {
 }
 trap restore EXIT
 
+cat >/tmp/tilo-child-status.sh <<'SH'
+#!/usr/bin/env bash
+/usr/bin/tilo-greeter
+status=$?
+echo "TILO_GREETER_EXIT=$status"
+exit "$status"
+SH
+chmod 0755 /tmp/tilo-child-status.sh
+
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-client-pixman wrapper softpipe-gl sigill-shim; do
+for variant in child-status; do
   log="/tmp/tilo-cage-${variant}.log"
   child='/usr/bin/tilo-greeter'
   case "$variant" in
@@ -30,7 +39,7 @@ for variant in stock pixman legacy-drm pixman-legacy-drm sleep-client sleep-clie
     sleep-client-pixman) extra='WLR_RENDERER=pixman '; child='/usr/bin/sleep 15';;
     wrapper) extra='';;
     softpipe-gl) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 WGPU_BACKEND=gl GALLIUM_DRIVER=softpipe ';;
-    sigill-shim) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 LD_PRELOAD=/tmp/tilo-sigill-probe.so ';;
+    child-status) extra='WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 '; child='/tmp/tilo-child-status.sh';;
   esac
   python3 - "$config" "$original" "$log" "$extra" "$child" <<'PY'
 from pathlib import Path
@@ -64,7 +73,7 @@ PY
   echo "::group::guest cage diagnostic: $variant"
   if test -s "$log"; then
     echo "log lines: $(wc -l < "$log")"
-    grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|modesetting|renderer|started|exited|TILO_SIGILL_PROCESS' "$log" | tail -n 50 | cut -c 1-320 || true
+    grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|modesetting|renderer|started|exited|TILO_GREETER_EXIT|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
     echo 'last 20 lines:'
     tail -n 20 "$log" | cut -c 1-320
   else
