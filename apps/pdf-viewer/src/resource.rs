@@ -209,6 +209,42 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    fn published_pages_carry_duplicate_and_delete() {
+        let markup = PdfMarkup {
+            pages: vec![
+                crate::doc::PagePlanEntry {
+                    id: "a".into(),
+                    source_page: 1,
+                    imported: None,
+                    rotation: 0,
+                },
+                crate::doc::PagePlanEntry {
+                    id: "b".into(),
+                    source_page: 2,
+                    imported: None,
+                    rotation: 0,
+                },
+            ],
+            ..PdfMarkup::default()
+        };
+        let published =
+            ui::tilo_resource::publish::<PdfViewer>("pdf.document:sample", "PDF", &markup);
+        let page = published
+            .children
+            .iter()
+            .find(|child| child.kind == "pdf.page")
+            .expect("published page");
+        let ids: Vec<&str> = page
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in ["open", "duplicate", "delete", "move-down", "rotate-cw"] {
+            assert!(ids.contains(&id), "{ids:?}");
+        }
+    }
+
+    #[test]
     fn hosted_resources_keep_find_hits_without_document_root() {
         let published = ui::tilo_resource::publish::<PdfViewer>(
             "pdf.document:sample",
@@ -289,6 +325,23 @@ mod tests {
         );
         assert_eq!(extras.len(), 1, "hosted returns the find slice alone");
         assert_eq!(extras[0].kind, "pdf.search");
+        let directory = app
+            .action_directory_resource_page(&state.doc, &[], 32)
+            .expect("directory page");
+        assert!(
+            directory
+                .resources
+                .iter()
+                .all(|resource| resource.kind != "pdf.document"),
+            "hosted directory must not republish pdf.document: {:?}",
+            directory
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(directory.resources.len(), 1);
+        assert_eq!(directory.resources[0].id, extras[0].id);
         assert_eq!(
             extras[0].id, standalone_find.id,
             "hosted find tree matches the standalone nested slice"
@@ -315,6 +368,13 @@ mod tests {
         assert!(
             app.resources(&state.doc).is_empty(),
             "hosted publishes no extras when find has no query"
+        );
+        let directory = app
+            .action_directory_resource_page(&state.doc, &[], 32)
+            .expect("directory page");
+        assert!(
+            directory.resources.is_empty(),
+            "hosted directory publishes no document when find has no query"
         );
     }
 }

@@ -1484,6 +1484,76 @@ fn page_resource_id(doc_id: &str, page_id: &str) -> String {
     format!("pdf.page:{doc_id}:{page_id}")
 }
 
+fn published_page_resource(
+    page: &PagePlanEntry,
+    index: usize,
+    pages: &[PagePlanEntry],
+) -> Resource {
+    let page_number = index.saturating_add(1);
+    let page_count = pages.len();
+    let mut resource = Resource::new(
+        format!("pdf.page:{}", page.id),
+        "pdf.page",
+        format!("Page {page_number}"),
+    )
+    .with_action(operation(
+        "open",
+        "Go to page",
+        OperationKind::View,
+        PdfOperation::GoToPage { page: page_number },
+    ));
+    if let Some(spec) = encode_spec(
+        "duplicate",
+        "Duplicate page",
+        &duplicate_page_plan_action(page),
+    ) {
+        resource = resource.with_action(spec.reversible());
+    }
+    if page_count > 1
+        && let Some(spec) = encode_spec("delete", "Delete page", &delete_page_plan_action(&page.id))
+    {
+        resource = resource.with_action(spec.destructive().reversible());
+    }
+    if page_number > 1
+        && let Some(spec) = encode_spec(
+            "move-up",
+            "Move page up",
+            &move_page_plan_action(
+                &page.id,
+                page_number
+                    .checked_sub(3)
+                    .and_then(|index| pages.get(index))
+                    .map(|page| page.id.as_str()),
+            ),
+        )
+    {
+        resource = resource.with_action(spec.reversible());
+    }
+    if page_number < page_count {
+        let after = pages.get(page_number).map(|page| page.id.as_str());
+        if let Some(spec) = encode_spec(
+            "move-down",
+            "Move page down",
+            &move_page_plan_action(&page.id, after),
+        ) {
+            resource = resource.with_action(spec.reversible());
+        }
+    }
+    for (id, label, turn) in [
+        ("rotate-cw", "Rotate page clockwise", 90),
+        ("rotate-ccw", "Rotate page counter-clockwise", 270),
+    ] {
+        if let Some(spec) = encode_spec(
+            id,
+            label,
+            &rotate_page_action(&page.id, page.rotation.saturating_add(turn)),
+        ) {
+            resource = resource.with_action(spec.reversible());
+        }
+    }
+    resource
+}
+
 fn page_resource(ctx: &PdfResourceCtx, page: usize, page_id: &str) -> Resource {
     let source_page = ctx.page_sources.get(page - 1).copied().unwrap_or(page);
     let entry = PagePlanEntry {
@@ -1640,32 +1710,80 @@ fn contextual_pages(ctx: &PdfResourceCtx) -> impl Iterator<Item = (usize, &str)>
 pub(crate) fn markup_children(state: &crate::resource::PdfMarkup) -> Vec<Resource> {
     let mut children = Vec::new();
     for (index, page) in state.pages.iter().enumerate().take(64) {
-        children.push(Resource::new(
-            format!("pdf.page:{}", page.id),
-            "pdf.page",
-            format!("Page {}", index.saturating_add(1)),
-        ));
+        children.push(published_page_resource(page, index, &state.pages));
     }
-    for anno in state.annotations.iter().take(64) {
-        children.push(Resource::new(
+    for anno in state.annotations.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let mut res = Resource::new(
             format!("pdf.annotation:{}", anno.id),
             "pdf.annotation",
-            format!("Annotation on page {}", anno.page.saturating_add(1)),
+            anno_label(anno),
+        );
+        res = res.with_action(operation(
+            "open",
+            "Go to annotation",
+            OperationKind::View,
+            PdfOperation::GoToPage { page: anno.page },
         ));
-    }
-    for comment in state.comments.iter().take(64) {
-        children.push(Resource::new(
-            format!("pdf.comment:{}", comment.id),
-            "pdf.comment",
-            comment.author.clone(),
+        let aid = anno.id.clone();
+        res = res.with_action(ActionSpec::prompted(
+            "change-color",
+            "Change colour",
+            "Colour",
+            "yellow, green, pink, blue, purple",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                encode(&set_annotation_color_action(
+                    &aid,
+                    Swatch::parse(name.trim()),
+                ))
+            },
         ));
+        if let Some(spec) = encode_spec(
+            "delete",
+            "Delete annotation",
+            &delete_annotation_action(&anno.id),
+        ) {
+            res = res.with_action(spec);
+        }
+        for comment in state
+            .comments
+            .iter()
+            .filter(|comment| comment.anno_id.as_deref() == Some(anno.id.as_str()))
+        {
+            res = res.with_child(comment_resource(comment, &comment.author));
+        }
+        children.push(res);
     }
-    for signature in state.signatures.iter().take(32) {
-        children.push(Resource::new(
+    for comment in state
+        .comments
+        .iter()
+        .filter(|comment| comment.anno_id.is_none())
+        .take(CONTEXTUAL_CHILD_LIMIT)
+    {
+        children.push(comment_resource(comment, &comment.author));
+    }
+    for signature in state.signatures.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let mut resource = Resource::new(
             format!("pdf.signature:{}", signature.id),
             "pdf.signature",
-            signature.signer.clone(),
+            format!("Signature by {} · p.{}", signature.signer, signature.page),
+        );
+        if let Some(spec) = encode_spec(
+            "delete",
+            "Delete signature",
+            &delete_signature_action(&signature.id),
+        ) {
+            resource = resource.with_action(spec);
+        }
+        resource = resource.with_action(operation(
+            "open",
+            "Go to signature",
+            OperationKind::View,
+            PdfOperation::GoToPage {
+                page: signature.page,
+            },
         ));
+        children.push(resource);
     }
     children
 }
@@ -1812,9 +1930,34 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         &ctx.title,
         &state,
     );
-    // Page, outline, annotation, and search rows are the live document. The
-    // markup stubs from `children` do not carry their operations.
-    root.children.clear();
+    // Published page rows already carry open, duplicate, delete, move, and
+    // rotate. Keep the window around the current page. A live page the
+    // document has not published yet is added beside them.
+    let window: Vec<(usize, &str)> = contextual_pages(ctx).collect();
+    let window_ids: std::collections::HashSet<&str> =
+        window.iter().map(|(_, page_id)| *page_id).collect();
+    root.children.retain(|child| {
+        if child.kind != "pdf.page" {
+            return true;
+        }
+        let Some(page_id) = child.id.as_str().strip_prefix("pdf.page:") else {
+            return false;
+        };
+        let bare = page_id.rsplit(':').next().unwrap_or(page_id);
+        window_ids.contains(bare)
+    });
+    let published_page_ids: std::collections::HashSet<String> = root
+        .children
+        .iter()
+        .filter(|child| child.kind == "pdf.page")
+        .filter_map(|child| {
+            child
+                .id
+                .as_str()
+                .strip_prefix("pdf.page:")
+                .map(|page_id| page_id.rsplit(':').next().unwrap_or(page_id).to_string())
+        })
+        .collect();
     for action in &mut root.actions {
         if action.id == "previous-page" && ctx.page <= 1 {
             let current = action.clone();
@@ -1825,7 +1968,10 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             *action = current.unavailable("last_page", "Already at the last page");
         }
     }
-    for (page, page_id) in contextual_pages(ctx) {
+    for (page, page_id) in window {
+        if published_page_ids.contains(page_id) {
+            continue;
+        }
         root = root.with_child(page_resource(ctx, page, page_id));
     }
 
@@ -1901,91 +2047,6 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         },
     ));
 
-    let annotations = PdfDoc::list_annotations(doc);
-    let comments = PdfDoc::list_comments(doc);
-
-    // Each annotation → a resource owning the comments pinned to it.
-    for a in annotations.iter().take(CONTEXTUAL_CHILD_LIMIT) {
-        let mut res = Resource::new(
-            format!("pdf.annotation:{}", a.id),
-            "pdf.annotation",
-            anno_label(a),
-        );
-        res = res.with_action(operation(
-            "open",
-            "Go to annotation",
-            OperationKind::View,
-            PdfOperation::GoToPage { page: a.page },
-        ));
-
-        let aid = a.id.clone();
-        res = res.with_action(ActionSpec::prompted(
-            "change-color",
-            "Change colour",
-            "Colour",
-            "yellow, green, pink, blue, purple",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                encode(&set_annotation_color_action(
-                    &aid,
-                    Swatch::parse(name.trim()),
-                ))
-            },
-        ));
-        if let Some(spec) = encode_spec(
-            "delete",
-            "Delete annotation",
-            &delete_annotation_action(&a.id),
-        ) {
-            res = res.with_action(spec);
-        }
-
-        for c in comments
-            .iter()
-            .filter(|c| c.anno_id.as_deref() == Some(a.id.as_str()))
-        {
-            res = res.with_child(comment_resource(c, &ctx.author));
-        }
-        root = root.with_child(res);
-    }
-
-    // Free comments (pinned to no annotation) hang directly off the document.
-    for c in comments
-        .iter()
-        .filter(|c| c.anno_id.is_none())
-        .take(CONTEXTUAL_CHILD_LIMIT)
-    {
-        root = root.with_child(comment_resource(c, &ctx.author));
-    }
-
-    for signature in PdfDoc::list_signatures(doc)
-        .into_iter()
-        .take(CONTEXTUAL_CHILD_LIMIT)
-    {
-        let label = format!("Signature by {} · p.{}", signature.signer, signature.page);
-        let mut resource = Resource::new(
-            format!("pdf.signature:{}", signature.id),
-            "pdf.signature",
-            label,
-        );
-        if let Some(spec) = encode_spec(
-            "delete",
-            "Delete signature",
-            &delete_signature_action(&signature.id),
-        ) {
-            resource = resource.with_action(spec);
-        }
-        resource = resource.with_action(operation(
-            "open",
-            "Go to signature",
-            OperationKind::View,
-            PdfOperation::GoToPage {
-                page: signature.page,
-            },
-        ));
-        root = root.with_child(resource);
-    }
-
     vec![root]
 }
 
@@ -1997,6 +2058,18 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
     clippy::too_many_lines,
     reason = "one exhaustive stable-id resolver makes stale resource refusal auditable"
 )]
+fn find_pdf(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_pdf(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
     let root_id = format!("pdf.document:{}", ctx.doc_id);
     if id == root_id {
@@ -2004,11 +2077,42 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
     }
     let page_prefix = format!("pdf.page:{}:", ctx.doc_id);
     if let Some(page_id) = id.strip_prefix(&page_prefix) {
-        return ctx
+        let index = ctx
             .page_ids
             .iter()
-            .position(|candidate| candidate == page_id)
-            .map(|index| page_resource(ctx, index + 1, page_id));
+            .position(|candidate| candidate == page_id)?;
+        let contextual = page_resource(ctx, index + 1, page_id);
+        let Some(mut published) = provide_resources(ctx, doc)
+            .into_iter()
+            .next()
+            .and_then(|root| {
+                root.children.into_iter().find(|child| {
+                    child.kind == "pdf.page"
+                        && child
+                            .id
+                            .as_str()
+                            .strip_prefix("pdf.page:")
+                            .is_some_and(|bare| bare.rsplit(':').next().unwrap_or(bare) == page_id)
+                })
+            })
+        else {
+            return Some(contextual);
+        };
+        // Keep the address the caller used. Document actions stay the
+        // published page's; views the published page lacks are added.
+        published.id = contextual.id;
+        published.label = contextual.label;
+        for action in contextual.actions {
+            if !published.actions.iter().any(|have| have.id == action.id) {
+                published.actions.push(action);
+            }
+        }
+        return Some(published);
+    }
+    if id.starts_with("pdf.annotation:") || id.starts_with("pdf.comment:") {
+        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
+            return Some(found);
+        }
     }
     if let Some(raw) = id.strip_prefix("pdf.annotation:") {
         return PdfDoc::list_annotations(doc)
@@ -2059,6 +2163,9 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
             .map(|comment| comment_resource(&comment, &ctx.author));
     }
     if let Some(raw) = id.strip_prefix("pdf.reply:") {
+        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
+            return Some(found);
+        }
         let (comment_id, reply_id) = raw.split_once(':')?;
         return PdfDoc::list_comments(doc)
             .into_iter()
@@ -2072,6 +2179,9 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
             });
     }
     if let Some(raw) = id.strip_prefix("pdf.signature:") {
+        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
+            return Some(found);
+        }
         return PdfDoc::list_signatures(doc)
             .into_iter()
             .find(|signature| signature.id == raw)
@@ -2100,6 +2210,9 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
     }
     let outline_prefix = format!("pdf.outline:{}:", ctx.doc_id);
     if id.strip_prefix(&outline_prefix).is_some() {
+        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
+            return Some(found);
+        }
         return ctx.outline.iter().enumerate().find_map(|(index, _)| {
             (outline_resource_id(ctx, index).as_deref() == Some(id))
                 .then(|| outline_resource(ctx, index))
@@ -2108,6 +2221,9 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
     }
     let search_prefix = format!("pdf.search-result:{}:", ctx.doc_id);
     if let Some(raw) = id.strip_prefix(&search_prefix) {
+        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
+            return Some(found);
+        }
         let mut parts = raw.split(':');
         let token = parts.next()?;
         let index = parts.next()?;
@@ -2396,11 +2512,26 @@ mod tests {
                 .is_ok(),
             "page-plan actions use the same registry as all other shared PDF mutations"
         );
-        assert!(
-            document
-                .children
+        let outline = document
+            .children
+            .iter()
+            .find(|r| r.kind == "pdf.outline-item")
+            .expect("an outline item on the published document");
+        let resolved = app
+            .publish_resource(&state.doc, outline.id.as_str())
+            .expect("an eager outline item resolves");
+        assert_eq!(
+            resolved
+                .actions
                 .iter()
-                .any(|r| r.kind == "pdf.outline-item")
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            outline
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            "an eager outline item is the published row"
         );
         assert!(document.children.iter().any(|r| r.kind == "pdf.signature"));
 
