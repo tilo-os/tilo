@@ -743,7 +743,7 @@ impl SnippetsApp {
                 // A screenshot fixture may arrive with a local starter set.
                 // The hosted app never writes that around the resource action.
                 for s in self.library.snippets.clone() {
-                    SnippetsDoc::upsert(doc, &s);
+                    self.perform_action(doc, &SnippetsAction::CreateSnippet { snippet: s });
                 }
             } else {
                 // A peer is already sharing — adopt their library.
@@ -1534,6 +1534,21 @@ impl ui::search::capability::SearchSource for SnippetsApp {
 }
 
 impl SnippetsApp {
+    fn find_published(
+        resource: &tilo_actions::Resource,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        for child in &resource.children {
+            if let Some(found) = Self::find_published(child, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     pub(crate) fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
         let state = <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
@@ -1560,13 +1575,19 @@ impl ui::resources::PublishesResources for SnippetsApp {
         vec![self.published_library(doc)]
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::actions::live_folder_resources(&self.snippets_resource_ctx())
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
+        if self.is_hosted() && id == "snippets.library" {
+            return None;
         }
-        if id == "snippets.library" {
-            return Some(self.published_library(doc));
+        if let Some(found) = Self::find_published(&self.published_library(doc), id) {
+            return Some(found);
+        }
+        if self.is_hosted()
+            && let Some(found) =
+                crate::actions::live_folder_resources(&self.snippets_resource_ctx())
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+        {
+            return Some(found);
         }
         if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
             let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
@@ -3115,6 +3136,10 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             assert_eq!(SnippetsDoc::list(&doc).len(), app.library_len_for_test());
+            let recorded = app
+                .last_dispatched_for_test()
+                .expect("starter snippets are created by an action");
+            assert!(String::from_utf8_lossy(&recorded.payload).contains("CreateSnippet"));
         }
     }
 
