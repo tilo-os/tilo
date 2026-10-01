@@ -34,8 +34,8 @@ class TransformTests(unittest.TestCase):
             self.assertNotIn('--volume', args)
             self.assertNotIn('/bin/sh', args)
             self.assertEqual(args[args.index('--omit') + 1].split(), sorted(transform.OMITTED_MODULES))
-            self.assertEqual(args[args.index('--omit-drivers') + 1].split(), ['ext4', 'xfs'])
-            self.assertNotIn('--add-drivers', args)
+            self.assertEqual(args[args.index('--omit-drivers') + 1].split(), ['xfs'])
+            self.assertEqual(args[args.index('--add-drivers') + 1].split(), ['ext4'])
             self.assertEqual(args[args.index('--compress') + 1], 'zstd')
         with self.subTest(phase="lenovo_83ed_omits_unrelated_gpu_drivers_only"):
             board = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
@@ -43,13 +43,13 @@ class TransformTests(unittest.TestCase):
             generic = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
                                                  'generic')
             self.assertEqual(board[board.index('--omit-drivers') + 1].split(),
-                             ['amdgpu', 'ext4', 'nouveau', 'xe', 'xfs'])
+                             ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertEqual(generic[generic.index('--omit-drivers') + 1].split(),
-                             ['ext4', 'xfs'])
+                             ['xfs'])
             self.assertEqual(transform.omitted_drivers('lenovo-83ed'),
-                             ['amdgpu', 'ext4', 'nouveau', 'xe', 'xfs'])
+                             ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertNotIn('msm', transform.omitted_drivers('lenovo-83ed'))
-            self.assertNotIn('--add-drivers', board)
+            self.assertEqual(board[board.index('--add-drivers') + 1].split(), ['ext4'])
         with self.subTest(phase="all_required_module_evidence"):
             log = '\n'.join('dracut[I]: Including module: ' + name for name in transform.REQUIRED_MODULES)
             self.assertIn(b'tilo-rollback', transform.module_evidence(log))

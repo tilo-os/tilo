@@ -22,7 +22,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # the key custody.
 tilo-secret-vault = { version = "0.1.0", path = "../secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

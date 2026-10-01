@@ -202,7 +202,7 @@ crates/sdk/ui-core/src/widget/empty_state.rs pixel_const 2
 crates/sdk/ui-core/src/widget/file_picker.rs pixel_const 12
 crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3
 crates/sdk/ui-core/src/widget/gauge.rs pixel_const 1
-crates/sdk/ui-core/src/widget/group_row.rs pixel_const 3
+crates/sdk/ui-core/src/widget/group_row.rs pixel_const 4
 crates/sdk/ui-core/src/widget/history_scrubber.rs pixel_const 18
 crates/sdk/ui-core/src/widget/icon_grid.rs pixel_const 3
 crates/sdk/ui-core/src/widget/identity_flow/pair_device.rs pixel_const 1

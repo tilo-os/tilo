@@ -76,17 +76,17 @@ impl Store for FileStore {
         preflight_storage(next)?;
         let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
         serde_json::to_writer_pretty(&mut bytes, next).map_err(|e| e.to_string())?;
-        match atomic_file::replace(
+        match tilo_files::native::atomic::replace(
             &self.path,
             &bytes.into_inner(),
-            atomic_file::Privacy::OwnerOnly,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
         ) {
             Ok(()) => {
                 install();
                 Ok(())
             }
             Err(error) => {
-                if error.state() != atomic_file::PublicationState::NotPublished {
+                if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
                     self.uncertain.write().extend(next.rooms());
                     self.healthy.store(false, Ordering::Release);
                 }

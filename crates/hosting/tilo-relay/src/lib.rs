@@ -102,6 +102,8 @@ mod persistence;
 pub mod position;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rooms;
 mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;

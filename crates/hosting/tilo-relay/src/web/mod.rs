@@ -98,6 +98,8 @@ struct Web {
     live: LiveRelay,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
+    /// What `/session/finish` advertises.
+    features: u64,
 }
 
 impl Relay {
@@ -166,9 +168,16 @@ impl Relay {
                 certificate_sha256: identity.pinned_sha256.clone(),
             },
             allowed_origins: config.allowed_origins,
+            features: self.web_features(),
         });
         let mut tasks = vec![tasks_bridge];
-        tasks.push(tokio::spawn(web.live.clone().serve(endpoint)));
+        let live = web.live.clone();
+        tasks.push(
+            match self.voice_carrier(&config.tls, addr, identity.pinned_sha256.clone()) {
+                Some(voice) => tokio::spawn(live.serve_with_voice(endpoint, voice)),
+                None => tokio::spawn(live.serve(endpoint)),
+            },
+        );
         tasks.push(tokio::spawn({
             async move {
                 let mut observe = tokio::time::interval(live::OBSERVATION);
@@ -202,6 +211,52 @@ impl Relay {
             plain_origin,
             tasks,
         })
+    }
+}
+
+impl Relay {
+    /// What `/session/finish` advertises: calls only where rooms are governed.
+    fn web_features(&self) -> u64 {
+        let voice = if self.rooms().is_some() {
+            protocol::FEATURE_VOICE
+        } else {
+            0
+        };
+        protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION | voice
+    }
+
+    /// The voice carrier of the calls in this relay's rooms, served beside
+    /// the live carrier on the listener at `addr`; `None` when it governs no
+    /// rooms.
+    fn voice_carrier(
+        &self,
+        tls: &TlsSource,
+        addr: SocketAddr,
+        pinned_sha256: Option<String>,
+    ) -> Option<tilo_moq::relay::Relay> {
+        let rooms = self.rooms()?;
+        // Grants name the host a device dials: the certificate's name when
+        // the listener is bound to every address.
+        let host = match tls {
+            TlsSource::Development { hosts, .. } => hosts.first().cloned(),
+            TlsSource::Managed { domain } => Some(domain.clone()),
+            TlsSource::Files { .. } => None,
+        }
+        .filter(|_| addr.ip().is_unspecified())
+        .unwrap_or_else(|| addr.ip().to_string());
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
+        };
+        Some(rooms.voice_carrier(
+            format!(
+                "https://{host}:{}{}",
+                addr.port(),
+                tilo_moq::relay::VOICE_PATH
+            ),
+            pinned_sha256.into_iter().collect(),
+        ))
     }
 }
 
@@ -531,15 +586,10 @@ async fn route(
             let grant = sessions
                 .finish(&finish.handshake, &finish.ack2)
                 .map_err(|error| session_status(&error))?;
-            Ok(
-                match protocol::encode_grant(
-                    &grant,
-                    protocol::FEATURE_RESUME | protocol::FEATURE_COMPACTION,
-                ) {
-                    Ok(bytes) => reply(StatusCode::OK, bytes),
-                    Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
-                },
-            )
+            Ok(match protocol::encode_grant(&grant, web.features) {
+                Ok(bytes) => reply(StatusCode::OK, bytes),
+                Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+            })
         }
         "/send" => {
             let session = authed()?;
