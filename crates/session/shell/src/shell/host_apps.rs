@@ -504,7 +504,7 @@ pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, Laun
     require_host_execution()?;
     let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = launcher::resolve_launcher_bin()?;
-    let desktops = vec![crate::compositor::session_env::CURRENT_DESKTOP.to_string()];
+    let desktops = desktop_entry::scan::current_desktops();
     let scan = desktop_entry::autostart::scan_autostart(
         &desktop_entry::autostart::autostart_dirs(),
         &desktops,

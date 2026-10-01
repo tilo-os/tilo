@@ -94,6 +94,44 @@ printf '%s\t%s\n' "$out/$manifest" "$package/$manifest" \
   "$out/$manifest.sha256" "$package/$manifest.sha256" > "$uploads"
 "$repo/tools/upload_immutable_packages.sh" "$uploads"
 echo "::notice::UNVALIDATED installed disk checkpoint: $package/$manifest"
+
+# Main also keeps a durable copy per board and architecture, which candidate
+# retention never prunes: tilo-vm-disk-latest/<arch>[-<variant>], replaced by
+# each newer main disk and never by one from an older commit (main builds
+# overlap). A failure here leaves the checkpoint above published.
+publish_latest() {
+  local target="${ARCH}${variant:+-$variant}"
+  local latest="${TILO_PACKAGE_PUBLIC_BASE_URL%/}/tilo-vm-disk-latest/$target"
+  local auth=(-H "Authorization: token $TILO_PACKAGE_TOKEN")
+  local current ahead code
+  current=$(curl -fsS "$latest/$manifest" 2>/dev/null | jq -r '.sourceRevision // empty' 2>/dev/null || true)
+  if [[ -n $current && $current != "$SOURCE_REVISION" ]]; then
+    ahead=$(curl -fsS "${auth[@]}" \
+      "${GITHUB_SERVER_URL:?}/api/v1/repos/${GITHUB_REPOSITORY:?}/compare/$SOURCE_REVISION...$current" \
+      | jq -er '.total_commits') || return 1
+    if [[ $ahead != 0 ]]; then
+      echo "::notice::$latest holds $current, which is not an ancestor of $SOURCE_REVISION; leaving it"
+      return 0
+    fi
+  fi
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "${auth[@]}" "$latest")
+  [[ $code == 204 || $code == 404 ]] || return 1
+  mkdir -p "$out/latest"
+  jq --arg base "$latest" '.files |= map(.url = ($base + "/" + .file))' "$out/$manifest" > "$out/latest/$manifest"
+  (cd "$out/latest" && sha256sum "$manifest" > "$manifest.sha256")
+  : > "$uploads"
+  while read -r file; do
+    if [[ $file == "$disk" ]]; then path=$SOURCE_DISK; else path="$out/$file"; fi
+    printf '%s\t%s\n' "$path" "$latest/$file" "$out/$file.sha256" "$latest/$file.sha256" >> "$uploads"
+  done < <(jq -r '.files[].file' "$out/$manifest")
+  printf '%s\t%s\n' "$out/latest/$manifest" "$latest/$manifest" \
+    "$out/latest/$manifest.sha256" "$latest/$manifest.sha256" >> "$uploads"
+  TILO_PACKAGE_UPLOAD_WORKERS=2 "$repo/tools/upload_immutable_packages.sh" "$uploads" || return 1
+  echo "::notice::durable disk for $target: $latest/$disk"
+}
+if [[ ${GITHUB_REF:-} == refs/heads/main ]]; then
+  publish_latest || echo "::warning::could not update tilo-vm-disk-latest/${ARCH}${variant:+-$variant}"
+fi
 echo "::notice::disk SHA-256: $disk_sha; bytes: $disk_bytes; source: $SOURCE_REVISION; tooling: $DISK_TOOLING_REVISION"
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
   {

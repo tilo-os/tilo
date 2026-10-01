@@ -904,24 +904,6 @@ const fn chrome(
 impl Action {
     const ALL: &'static [Action] = &[
         chrome(
-            "shortcut-help.toggle",
-            "search-action-shortcut-help-toggle",
-            "search-action-shortcut-help-toggle-subtitle",
-            |st, _| {
-                st.overlays.shortcut_help = !st.overlays.shortcut_help;
-                Ok(())
-            },
-        ),
-        chrome(
-            "desktop-tour.open",
-            "search-action-desktop-tour-open",
-            "search-action-desktop-tour-open-subtitle",
-            |st, _| {
-                st.overlays.desktop_tour = true;
-                Ok(())
-            },
-        ),
-        chrome(
             "overview.toggle",
             "search-action-overview-toggle",
             "search-action-overview-toggle-subtitle",
@@ -1847,6 +1829,27 @@ impl Action {
                 Ok(())
             },
         },
+        // Last: an English "open" on a German desktop matches every *.open
+        // id at the same score, so declaration order is the only tiebreak.
+        // The tour and the help overlay must not win that race.
+        chrome(
+            "shortcut-help.toggle",
+            "search-action-shortcut-help-toggle",
+            "search-action-shortcut-help-toggle-subtitle",
+            |st, _| {
+                st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                Ok(())
+            },
+        ),
+        chrome(
+            "desktop-tour.open",
+            "search-action-desktop-tour-open",
+            "search-action-desktop-tour-open-subtitle",
+            |st, _| {
+                st.overlays.desktop_tour = true;
+                Ok(())
+            },
+        ),
     ];
 }
 
@@ -3494,6 +3497,43 @@ mod tests {
             });
             assert!(out.iter().any(|r| r.id == "settings.open"));
         }
+    }
+
+    #[test]
+    fn typing_open_on_a_german_desktop_does_not_prefer_the_tour() {
+        crate::shell::i18n::ensure();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            needle: "open",
+            wanted: &[ResourceKind::Action],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert!(
+            !out.is_empty(),
+            "an English 'open' still finds the *.open addresses"
+        );
+        assert_ne!(
+            out[0].id,
+            "desktop-tour.open",
+            "equal id-scores must not put the tour first; got {:?}",
+            out.iter()
+                .take(5)
+                .map(|r| (&r.id, r.score))
+                .collect::<Vec<_>>()
+        );
+        let tour = out.iter().position(|r| r.id == "desktop-tour.open");
+        let settings = out.iter().position(|r| r.id == "settings.open");
+        assert!(
+            settings.is_some() && tour.is_some() && settings < tour,
+            "settings.open ({settings:?}) should outrank the tour ({tour:?})"
+        );
     }
 
     /// Every offered action resolves by its address, however many are
