@@ -1768,7 +1768,8 @@ async fn handle_envelope(
         }
         env @ (Envelope::VoiceCall { .. }
         | Envelope::VoiceJoin { .. }
-        | Envelope::VoiceLeave { .. }) => handle_voice(peer, session, subscribed, env).await,
+        | Envelope::VoiceLeave { .. }
+        | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }
@@ -1783,7 +1784,8 @@ async fn handle_envelope(
         | Envelope::Position { .. }
         | Envelope::VoiceCallResult { .. }
         | Envelope::VoiceGranted { .. }
-        | Envelope::VoiceRefused { .. } => Ok(None),
+        | Envelope::VoiceRefused { .. }
+        | Envelope::VoiceCallList { .. } => Ok(None),
     }
 }
 
@@ -5279,7 +5281,8 @@ async fn handle_voice(
     let workspace_id = match &env {
         Envelope::VoiceCall { workspace_id, .. }
         | Envelope::VoiceJoin { workspace_id, .. }
-        | Envelope::VoiceLeave { workspace_id, .. } => *workspace_id,
+        | Envelope::VoiceLeave { workspace_id, .. }
+        | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
     let authority = if subscribed.contains(&workspace_id) {
@@ -5344,6 +5347,13 @@ async fn handle_voice(
             }
             None
         }
+        Envelope::VoiceCalls { .. } => Some(Envelope::VoiceCallList {
+            workspace_id,
+            result: match &rooms {
+                Some((rooms, room)) => rooms.voice_calls(room, peer).await,
+                None => Err(refusal.into()),
+            },
+        }),
         _ => None,
     })
 }
