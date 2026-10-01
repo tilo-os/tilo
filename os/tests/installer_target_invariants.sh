@@ -561,6 +561,30 @@ else
   bad "guided alongside can mutate storage outside its reviewed free extent"
 fi
 
+# bootc#1929: with two ESPs, stock bootc can write the first (Windows) ESP
+# even though the installer mounted a different Tilo ESP under /target.
+if python3 - "$backend" "$repo_root/os/dev/build-custom-installer.sh" <<'PY'
+from pathlib import Path
+import sys
+
+backend = Path(sys.argv[1]).read_text()
+builder = Path(sys.argv[2]).read_text()
+guard = backend.index('ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside')
+mutation = backend.index('GUIDED_RESULT="$(', guard)
+assert guard < mutation
+assert '&& [ "$(' in backend[guard:mutation]
+assert 'alongside install requires the pinned mounted-ESP bootc helper' in backend[guard:mutation]
+assert backend.count('"${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}"') == 2
+assert '--entrypoint /run/tilo-bootc-alongside' in backend
+assert '0002-select-mounted-esp.patch' in builder
+assert 'rootfs/usr/libexec/tilo-bootc-alongside' in builder
+PY
+then
+  ok "alongside install selects a mounted-ESP bootc before any GPT mutation"
+else
+  bad "alongside install could run unpatched bootc against Windows ESP"
+fi
+
 # root=tilo-auto boots exactly one Tilo root per disk: both alongside paths
 # refuse to leave a second one, and a staged installer's root is a distinct type.
 if grep -Fq 'already holds a Tilo root partition' "$guided_partitioner" \

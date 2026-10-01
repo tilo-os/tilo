@@ -111,8 +111,9 @@ pub use context::{
     ParticipantId,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DiscoveryScope,
-    ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DOCUMENT_READ_TAG,
+    DiscoveryScope, ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec,
+    RetryPolicy, RiskLevel,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;

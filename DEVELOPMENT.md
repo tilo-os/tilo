@@ -42,7 +42,8 @@ main also moves `tilo-vm:main-ci` to its newest dev images.
 and a `release` dispatch of main.
 
 To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
+full commit SHA, `base_image` to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
 `tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
 not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
@@ -67,10 +68,14 @@ installs the flashable disk:
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
-disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
-from the firmware boot menu:
+The moving tag moves once the aarch64 lane has sealed and pushed the image; the
+board job then installs the disk from it.
+On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+Lenovo, written to a USB drive or its internal disk and booted from the firmware
+boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
+root grows on first boot):
 
 ```sh
 curl -fLO <disk URL from the job summary>
@@ -82,7 +87,7 @@ The installed system follows the moving tag, so later builds of main arrive with
 ```sh
 sudo bootc upgrade && sudo systemctl reboot
 # or one particular build:
-sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
 
 ## Routine delivery workflow

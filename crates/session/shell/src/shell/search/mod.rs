@@ -1123,7 +1123,7 @@ impl SearchRegistry {
             && args.wanted_kinds.is_empty()
             && args.scope != SearchScope::ActiveApp
         {
-            return jump_back_in(&self.query(args));
+            return jump_back_in(self, args);
         }
         system::group(self.query(args), row_budget)
     }
@@ -1136,11 +1136,17 @@ const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
 const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
     ["room.activity.open", "peer.invite", "shortcut-help.toggle"];
 
+const JUMP_BACK_IN_ACTIONS_PROVIDER: &str = "actions";
+
 /// The palette before anything is typed: windows to go back to, apps, and a
 /// few ways in. It is never the full inventory, and never offers a row that
 /// changes something: close, move and revoke need their verb typed. Agents
 /// still enumerate everything through [`SearchRegistry::query_exhaustive`].
-fn jump_back_in(rows: &[SearchResult]) -> Vec<KindGroup> {
+///
+/// Interactive search is one bounded page, so late catalogue rows (help,
+/// the tour) are not on that page. Suggestions are fetched by exact id.
+fn jump_back_in(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindGroup> {
+    let rows = registry.query(args);
     let windows = rows
         .iter()
         .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))
@@ -1156,11 +1162,7 @@ fn jump_back_in(rows: &[SearchResult]) -> Vec<KindGroup> {
         .collect::<Vec<_>>();
     let suggestions = JUMP_BACK_IN_SUGGESTIONS
         .iter()
-        .filter_map(|id| {
-            rows.iter()
-                .find(|row| row.kind == ResourceKind::Action && row.id == *id)
-        })
-        .cloned()
+        .filter_map(|id| registry.resolve(JUMP_BACK_IN_ACTIONS_PROVIDER, id, args))
         .collect::<Vec<_>>();
     [
         (ResourceKind::Tab, windows),

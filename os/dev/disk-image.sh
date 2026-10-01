@@ -24,8 +24,11 @@
 #                            install without first importing IMAGE locally
 #     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
 #                            create the account on first boot, never in this step
-#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
-#                            instead of the image's /usr/bin/bootc
+#     --bootc-helper FILE     execute this bootc (an ELF for this host's
+#                            architecture) instead of the image's /usr/bin/bootc
+#     --reseal-uki            with a helper built from Containerfile.bootc-helper:
+#                            let install rewrite a stale composefs= seal to
+#                            its own digest and print it (bootc#2334)
 #     --offline-target-dir DIR
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
@@ -115,6 +118,7 @@ RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
+RESEAL_UKI=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
@@ -141,6 +145,7 @@ while [ $# -gt 0 ]; do
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
+    --reseal-uki) RESEAL_UKI=1 ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
@@ -228,20 +233,24 @@ if [ -n "$BOOTC_HELPER" ]; then
   [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
     || die "--bootc-helper must name an executable regular, non-symlink file"
   python3 - "$BOOTC_HELPER" <<'PY' \
-    || die "--bootc-helper must be an ARM64 ELF executable"
+    || die "--bootc-helper must be an ELF executable for $(uname -m)"
+import platform
 import struct
 import sys
+
+MACHINES = {"aarch64": 183, "x86_64": 62}
 
 with open(sys.argv[1], "rb") as source:
     header = source.read(20)
 if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
     raise SystemExit(1)
 byteorder = "<" if header[5] == 1 else ">"
-if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+if struct.unpack_from(byteorder + "H", header, 18)[0] != MACHINES.get(platform.machine()):
     raise SystemExit(1)
 PY
   BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
 fi
+[ "$RESEAL_UKI" = 0 ] || [ -n "$BOOTC_HELPER" ] || die "--reseal-uki needs --bootc-helper"
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
   podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
@@ -429,6 +438,12 @@ mkdir -p "$OUTDIR"
 # Absolute, because Podman binds this directory into the installer container.
 # A relative source would resolve against Podman's current working directory.
 OUTDIR="$(cd "$OUTDIR" && pwd)"
+# DrvFs is 9p inside WSL. Its raw loop-backed image can allocate the entire
+# logical disk on Windows before qemu-img has a chance to make a sparse qcow2.
+# Build on WSL's native ext4 filesystem, then export only the final qcow2.
+if [ "$(stat -f -c %T "$OUTDIR")" = v9fs ]; then
+  die "disk image output $OUTDIR is on a 9p filesystem; use a native Linux filesystem for the raw build, then export the qcow2"
+fi
 RAW="$OUTDIR/disk.raw"
 QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
@@ -483,7 +498,7 @@ start_registry() {
   fi
   # Someone else's registry already listening (the composefs spike leaves one on
   # :5000) is fine to push to — one local registry is as good as another.
-  if curl -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
+  if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
     msg "reusing the registry already listening on :$want" >&2
     echo "localhost:$want"; return
   fi
@@ -494,10 +509,10 @@ start_registry() {
         continue
       }
     for _ in $(seq 1 30); do
-      curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
+      curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
       sleep 1
     done
-    if curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
+    if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
       msg "started a registry on :$port for the install source" >&2
       echo "localhost:$port"; return
     fi
@@ -718,7 +733,10 @@ if [ -n "$BOOTC_HELPER" ]; then
   run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
     --entrypoint /run/tilo-installer-bootc)
   bootc_argv=()
-  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+  msg "using explicit bootc helper $BOOTC_HELPER"
+  if [ "$RESEAL_UKI" = 1 ]; then
+    run_args+=(-e BOOTC_INSTALL_RESEAL_UKI=1)
+  fi
 fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
@@ -751,6 +769,15 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   Full log: $LOG"
   fi
   die "bootc install failed; full log: $LOG"
+fi
+
+# A composefs repository whose objects carry no fs-verity still boots, but its
+# first `bootc upgrade` fails with EIO ("lower file ... has no fs-verity
+# digest"). bootc installs such a repository without a word when the kernel it
+# runs on lacks fs-verity, so check every object here.
+if [ "$COMPOSEFS" = yes ]; then
+  sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
+    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs CONFIG_FS_VERITY for $ROOTFS"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------

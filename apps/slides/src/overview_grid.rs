@@ -3,7 +3,7 @@
 use std::cell::Cell;
 
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -214,12 +214,12 @@ impl OverviewGrid {
     ) {
         let (transform, colors, palette) =
             (ctx.transform, &ctx.theme.tokens.colors, assets.palette);
-        chrome::fill_round(
+        ui::surface::shadow(
             ctx.scene,
             transform,
-            (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
+            rect,
             8.0,
-            render::with_alpha(Color::BLACK, 60),
+            &ctx.theme.tokens.elevation.e2,
         );
         render::draw_slide(ctx, assets, slide, rect, 8.0);
         let (scene, text) = (&mut *ctx.scene, &mut *ctx.text);

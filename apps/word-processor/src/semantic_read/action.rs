@@ -119,7 +119,8 @@ pub fn spec() -> ActionSpec {
             schema: result_schema().clone(),
         },
         ..ActionContract::view()
-    });
+    })
+    .reads_document();
     crate::actions::continuation::pure(
         spec,
         "qualified-read-parameter-protocol.v1",

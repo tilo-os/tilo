@@ -16,7 +16,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1417,7 +1417,7 @@ impl GitClientApp {
                 &self.model.head,
                 &draw::PillStyle {
                     size: 14.0,
-                    fg: Color::WHITE,
+                    fg: c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
                     bg: theme.accent_primary,
                     edge: draw::PillEdge::Bare,
                 },
@@ -1503,7 +1503,11 @@ impl GitClientApp {
             if active {
                 ctx.fill_round(trect, 7.0, theme.accent_primary);
             }
-            let fg = if active { Color::WHITE } else { c.text_dim };
+            let fg = if active {
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                c.text_dim
+            };
             let shown = ctx.text.elide_to_width_weighted(
                 label,
                 13.0,
@@ -1553,7 +1557,11 @@ impl GitClientApp {
         ctx.fill_round(active_rect, 7.0, theme.accent_primary);
         for (i, label) in ["Unified", "Split"].iter().enumerate() {
             let active = (i == 0) == unified_active;
-            let fg = if active { Color::WHITE } else { c.text_dim };
+            let fg = if active {
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                c.text_dim
+            };
             let cx = seg.x0 + half * i as f64;
             let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
             let label_y =
@@ -1581,7 +1589,11 @@ impl GitClientApp {
         } else {
             draw::card(ctx, hl, 9.0, c.surfaces.base);
         }
-        let hlfg = if on { Color::WHITE } else { c.text_dim };
+        let hlfg = if on {
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+        } else {
+            c.text_dim
+        };
         let label = "Syntax";
         let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
         let label_y = draw::centered_top(ctx.text, label, 12.0, TextWeight::Medium, y, control_h);
@@ -1618,7 +1630,11 @@ impl GitClientApp {
         } else {
             draw::card(ctx, btn, 8.0, c.surfaces.base);
         }
-        let fg = if open { Color::WHITE } else { c.text_dim };
+        let fg = if open {
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+        } else {
+            c.text_dim
+        };
         // Three 2px bars at a 6px pitch, centred as a block in the button.
         let inset = 8.0;
         let x0 = btn.x0 + inset;
@@ -1671,7 +1687,13 @@ impl GitClientApp {
         if reveal <= 0.001 {
             return;
         }
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.86) as f32);
+        let scrim = ctx
+            .theme
+            .tokens
+            .colors
+            .surfaces
+            .scrim
+            .with_alpha_factor((reveal * 0.86) as f32);
         ctx.scene.fill(
             Fill::NonZero,
             ctx.transform,

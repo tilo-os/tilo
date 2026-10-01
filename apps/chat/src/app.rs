@@ -2979,8 +2979,9 @@ impl Collaborative for ChatApp {
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
-                self.native_voice.complete(*request_id, result);
-                self.project_native_voice();
+                if self.native_voice.complete(*request_id, result) {
+                    self.project_native_voice();
+                }
             }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
                 Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {

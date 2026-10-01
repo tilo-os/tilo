@@ -4241,6 +4241,11 @@ impl MusicApp {
         let btn = Rect::new(cx - bw / 2.0, yy, cx + bw / 2.0, yy + bh);
         let hover = self.push_hit(btn, Action::Nav(View::Search));
         ctx.fill_round(btn, bh / 2.0, if hover { c.accent_hover } else { c.accent });
+        let ink = ctx
+            .theme
+            .tokens
+            .colors
+            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         let gx = btn.center().x - group / 2.0;
         icon::draw(
             ctx.scene,
@@ -4248,12 +4253,12 @@ impl MusicApp {
             Icon::Search,
             Point::new(gx + 9.0, btn.center().y),
             16.0,
-            Color::WHITE,
+            ink,
         );
         ctx.text(
             label,
             &TextStyle::new(15.0).with_weight(TextWeight::Semibold),
-            Color::WHITE,
+            ink,
             Point::new(gx + 28.0, vy(btn.y0, bh, 15.0)),
             None,
         );
@@ -6655,25 +6660,26 @@ impl MusicApp {
             &Circle::new(Point::new(banner.x1 - 40.0, banner.y1), 80.0),
         );
         ctx.scene.pop_layer();
+        let on_art = ctx.theme.tokens.colors.on_surface(base);
         icon::draw(
             ctx.scene,
             ctx.transform,
             Icon::HeartFilled,
             Point::new(banner.x0 + 50.0, banner.center().y),
             44.0,
-            Color::WHITE,
+            on_art.ink,
         );
         ctx.text(
             "Liked Songs",
             &TextStyle::new(24.0).with_weight(TextWeight::Bold),
-            Color::WHITE,
+            on_art.ink,
             Point::new(banner.x0 + 92.0, banner.y0 + 22.0),
             None,
         );
         ctx.text(
             &format!("{} songs · {}", ids.len(), ui::format::timecode(total_s)),
             &TextStyle::new(14.0),
-            Color::WHITE.multiply_alpha(0.85),
+            on_art.ink_dim,
             Point::new(banner.x0 + 92.0, banner.y0 + 54.0),
             None,
         );
@@ -7123,7 +7129,7 @@ impl MusicApp {
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
-                    Color::WHITE.multiply_alpha(0.12),
+                    ctx.theme.tokens.colors.overlay_medium,
                     None,
                     &tile,
                 );
@@ -7132,7 +7138,7 @@ impl MusicApp {
             ctx.text(
                 g,
                 &TextStyle::new(16.0).with_weight(TextWeight::Bold),
-                Color::WHITE,
+                ctx.theme.tokens.colors.on_surface(base).ink,
                 Point::new(cx + 16.0, cy + 14.0),
                 Some((tile_w - 24.0) as f32),
             );

@@ -45,7 +45,8 @@ pub mod schema_ops;
 pub mod seen;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
-    local_identity_author, participant_display_label, short_id, stable_hue,
+    author_coloured, author_for_identity, local_identity_author, participant_display_label,
+    short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};

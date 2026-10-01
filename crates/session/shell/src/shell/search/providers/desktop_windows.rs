@@ -275,6 +275,19 @@ impl SearchProvider for DesktopWindowsProvider {
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names)
     }
 
+    /// An address is looked up in the whole topology. The empty query's
+    /// first page holds [`ui::search::SearchBudget::PALETTE`] rows, fewer
+    /// than a long session has window actions, so resolving through it left
+    /// `group.close` for the focused window `unknown_action` (A07).
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let tree = ctx.chrome.tree();
+        let rows = window_rows(&tree.desktop, id);
+        drop(tree);
+        rows.into_iter()
+            .find(|row| row.id == id)
+            .map(|row| result(row, self.max_score()))
+    }
+
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let tree = ctx.chrome.tree();
         let revision = window_rows_revision(&tree.desktop);
@@ -288,9 +301,10 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
-    use crate::shell::search::{SearchRegistry, SearchScope};
+    use crate::shell::search::{SearchProvider, SearchRegistry, SearchScope};
     use crate::shell::state::{FreshId as _, Tab, TileContent, WindowGroup, WindowWidth};
     use automerge::{AutoCommit, ROOT};
+    use tilo_desktop::search::window_row_tile;
 
     fn fixture() -> (Chrome, AutoCommit) {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
@@ -742,6 +756,10 @@ mod tests {
         );
         assert!(rows.iter().any(|row| row.id == "room.activity.open"));
         assert!(
+            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
+            "help stays on the empty palette even when it is last in the catalogue"
+        );
+        assert!(
             groups
                 .iter()
                 .all(|group| group.total == group.results.len())
@@ -785,6 +803,123 @@ mod tests {
                     .count()
                     == 40,
             "agents still enumerate every action and app"
+        );
+    }
+
+    #[test]
+    fn every_window_row_resolves_to_the_tile_whose_face_it_wears() {
+        let (chrome, _doc) = fixture();
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let rows = window_rows(&tree.desktop, "");
+        assert!(
+            !rows.is_empty(),
+            "the fixture must offer window rows to resolve"
+        );
+        for row in &rows {
+            let tile = window_row_tile(&tree.desktop, &row.id)
+                .unwrap_or_else(|| panic!("{} must resolve to the tile it wears", row.id));
+            let app = match tile {
+                TileContent::Foreign { app_id, .. }
+                | TileContent::LocalApp { app_id, .. }
+                | TileContent::PeerWindow { app_id, .. } => app_id.as_str(),
+                other => panic!("{} wore a tile with no app face: {other:?}", row.id),
+            };
+            let expected = if row.id.contains(":100:2") || row.id == "group.close:100" {
+                "com.openai.ChatGPT"
+            } else if row.id.contains(":100:1")
+                || row.id.contains(":200:3")
+                || row.id == "group.close:200"
+            {
+                "com.google.Chrome"
+            } else {
+                panic!("unexpected window row {}", row.id);
+            };
+            assert_eq!(
+                app, expected,
+                "{} must wear the same face as its tab or group",
+                row.id
+            );
+        }
+        assert!(
+            window_row_tile(&tree.desktop, "tab.focus:100:1").is_some(),
+            "an address still resolves when it is not in this listing"
+        );
+        assert!(
+            window_row_tile(&tree.desktop, "no-such-row").is_none(),
+            "an unknown address has no face"
+        );
+        drop(tree);
+    }
+
+    fn many_groups(count: usize, focused: u64) -> (Chrome, AutoCommit) {
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].strips[0].window_groups = (1..=count)
+            .map(|i| {
+                let gid = u64::try_from(i).unwrap_or(1);
+                WindowGroup {
+                    id: gid,
+                    tabs: vec![Tab {
+                        id: gid,
+                        title: format!("Win {i}"),
+                        tile: TileContent::Foreign {
+                            app_id: format!("app.{i}"),
+                            surface_id: 500_u64.saturating_add(gid),
+                        },
+                    }],
+                    active_tab: gid,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }
+            })
+            .collect();
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        tree.desktop.set_active_group(strip, focused);
+        tree.seed_doc_from_cache();
+        (ChromeState::new(tree), AutoCommit::new())
+    }
+
+    #[test]
+    fn invoke_resolves_the_focused_groups_close_when_the_listing_is_truncated() {
+        let count = crate::shell::search::SearchBudget::PALETTE.max_results;
+        let focused = u64::try_from(count).unwrap_or(1);
+        let (chrome, doc) = many_groups(count, focused);
+        let id = format!("group.close:{focused}");
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build_for_resource(
+                &registry(),
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, &id),
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &ROOT,
+                &AllVisible,
+            )
+        };
+        assert!(
+            catalog
+                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, &id))
+                .is_some(),
+            "A07 invoke uses build_for_resource, not the PALETTE page"
+        );
+        let state = chrome.borrow();
+        let page = DesktopWindowsProvider::new().query_page(
+            crate::shell::search::SearchContext {
+                needle: "",
+                wanted: KINDS.as_slice(),
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            None,
+            crate::shell::search::SearchBudget::PALETTE,
+        );
+        assert!(
+            page.results.iter().any(|row| row.id == id),
+            "the focused group's close stays on the empty page: {:?}",
+            page.results.iter().map(|row| &row.id).collect::<Vec<_>>()
         );
     }
 }

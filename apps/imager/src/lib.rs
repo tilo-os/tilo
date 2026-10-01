@@ -110,6 +110,7 @@ pub mod app;
 pub mod customize;
 pub mod doc;
 mod export_dialog;
+pub mod handoff;
 mod host;
 pub mod model;
 pub mod probe;
@@ -119,6 +120,7 @@ pub mod release;
 pub mod resource;
 pub mod setup;
 pub mod write;
+pub mod write_setup;
 
 /// The imager's spacing rhythm (HIG §7b): the same relationship always gets
 /// the same step, and every step is a token of `Spacing::BASE` — the

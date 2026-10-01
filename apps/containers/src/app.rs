@@ -39,7 +39,7 @@ use ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::Key;
 
@@ -2575,7 +2575,7 @@ impl Widget for ContainersApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::from_rgba8(0, 0, 0, 128),
+                ui::paint::with_alpha(c.surfaces.scrim, 128),
                 None,
                 &r,
             );

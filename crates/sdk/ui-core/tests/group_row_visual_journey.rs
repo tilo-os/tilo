@@ -226,11 +226,11 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 )]
 #[test]
 fn group_row_maximize_and_reorder_paint_visibly() {
-    // Case `group_row_maximized_paints_distinct_pixels_and_hides_siblings`.
+    // Case `group_row_maximized_paints_distinct_pixels_and_fades_siblings`.
     // Verified by checking the maximized group's stored rect absorbs the
-    // row's full inner width while the siblings' collapse to zero.
+    // row's full inner width while fading siblings keep their tiled width.
     {
-        fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
+        fn group_row_maximized_paints_distinct_pixels_and_fades_siblings() {
             let (w, h) = (960u32, 220u32);
             let Some(mut renderer) = try_new_renderer(w, h) else {
                 eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
@@ -263,14 +263,17 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             let r0 = row.groups[0].get_rect();
             let r1 = row.groups[1].get_rect();
             let r2 = row.groups[2].get_rect();
+            // Maximize fades siblings on the fast curve; they keep their last
+            // tiled width as ghosts instead of collapsing to a degenerate rect
+            // (see group_row::maximize_fades_siblings_on_the_fast_curve_*).
             assert!(
-                r0.width() <= 0.5,
-                "left sibling must collapse to zero width when peer is maximized; got {}",
+                r0.width() > 1.0,
+                "left sibling must keep its tiled width while fading; got {}",
                 r0.width(),
             );
             assert!(
-                r2.width() <= 0.5,
-                "right sibling must collapse to zero width when peer is maximized; got {}",
+                r2.width() > 1.0,
+                "right sibling must keep its tiled width while fading; got {}",
                 r2.width(),
             );
             let row_w = row.get_rect().width();
@@ -281,7 +284,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 row_w,
             );
         }
-        group_row_maximized_paints_distinct_pixels_and_hides_siblings();
+        group_row_maximized_paints_distinct_pixels_and_fades_siblings();
     }
 
     // Case `group_row_reorder_drop_indicator_is_visible_mid_drag`.

@@ -398,8 +398,10 @@ fn write_portable_markdown_export_scoped(
     scope: Option<&ResourceEffectScope>,
 ) -> Result<(), String> {
     if root.is_none() && canonical_assets.is_empty() {
-        return file_effect(scope, || atomic_file::write(destination, markdown))?
-            .map_err(|error| error.to_string());
+        return file_effect(scope, || {
+            tilo_files::native::atomic::write(destination, markdown)
+        })?
+        .map_err(|error| error.to_string());
     }
     let source = std::str::from_utf8(markdown).map_err(|_| "export is not UTF-8".to_string())?;
     let stem = destination
@@ -464,8 +466,10 @@ fn write_portable_markdown_export_scoped(
             file_effect(scope, || crate::files::create_dir_all(&folder))?
                 .map_err(|error| error.to_string())?;
             let name = available_export_asset_name(&folder, &source_name, &bytes, scope)?;
-            file_effect(scope, || atomic_file::write(&folder.join(&name), &bytes))?
-                .map_err(|error| error.to_string())?;
+            file_effect(scope, || {
+                tilo_files::native::atomic::write(&folder.join(&name), &bytes)
+            })?
+            .map_err(|error| error.to_string())?;
             copied.insert(source_name, name.clone());
             name
         };
@@ -474,8 +478,10 @@ fn write_portable_markdown_export_scoped(
             "{indent}![{alt}]({folder_name}/{exported_name}){newline}"
         );
     }
-    file_effect(scope, || atomic_file::write(destination, output.as_bytes()))?
-        .map_err(|error| error.to_string())
+    file_effect(scope, || {
+        tilo_files::native::atomic::write(destination, output.as_bytes())
+    })?
+    .map_err(|error| error.to_string())
 }
 
 fn read_image_asset(source: &std::path::Path) -> Result<(Vec<u8>, &'static str), String> {
@@ -509,8 +515,10 @@ fn import_image_asset_scoped(
     file_effect(scope, || crate::files::create_dir_all(&assets))?
         .map_err(|error| error.to_string())?;
     let name = format!("{}.{}", uuid::Uuid::new_v4(), extension);
-    file_effect(scope, || atomic_file::write(&assets.join(&name), &bytes))?
-        .map_err(|error| error.to_string())?;
+    file_effect(scope, || {
+        tilo_files::native::atomic::write(&assets.join(&name), &bytes)
+    })?
+    .map_err(|error| error.to_string())?;
     Ok(format!("../assets/{name}"))
 }
 fn load_image(

@@ -455,7 +455,7 @@ impl EndpointEditor {
                 return;
             }
             let card = Rect::new(field.x0, top, field.x1, top + 34.0);
-            draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+            draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
             self.hits.push((card, EndpointHit::Consume));
             draw::text(
                 scene,
@@ -481,7 +481,7 @@ impl EndpointEditor {
             field.x1,
             top + pad * 2.0 + count as f64 * row_pitch - row_gap,
         );
-        draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
+        draw::card(scene, transform, theme, card, 12.0, colors.surfaces.raised);
         self.hits.push((card, EndpointHit::Consume));
         let scale = text.text_scale();
         let name_h = ui::text_metrics::line_height_px(13.0, scale);
