@@ -19110,8 +19110,7 @@ impl ShellOverlayHost {
     fn overview_output_rect(&self) -> Rect {
         self.focused_output()
             .or_else(|| self.primary_output())
-            .map(|output| output.rect())
-            .unwrap_or(self.rect)
+            .map_or(self.rect, |output| output.rect())
     }
 
     fn overview_panel_cache_key(&self, reduce_motion: bool) -> OverviewPanelCacheKey {
