@@ -8,10 +8,11 @@ bundle is 325 MB.
 ## Budget
 
 `tools/web/wasm-size-budget.toml` holds the module
-(`pkg/tilo_browser_runtime_bg.wasm`) to its measured size;
-`tools/web/wasm_size_ratchet.py measure desktop OUT` fails when it grows past
-the budget and asks for a lower budget when it shrinks by more than 1%, and
-the app-sdk workflow refuses a budget larger than the base revision's. The
+(`pkg/tilo_browser_runtime_bg.wasm`) to a budget: a measurement plus 1%
+headroom, rounded up to 64 KiB. `tools/web/wasm_size_ratchet.py measure
+desktop OUT` fails when it grows past the budget and asks for a lower budget
+when it shrinks well below it, and the app-sdk workflow refuses a budget
+larger than the base revision's unless the change records a rebaseline. The
 transfer sizes below were measured once with gzip -9 and brotli -q 11.
 
 | 17 apps, 2026-09-26 | raw | gzip -9 | brotli -q 11 |
