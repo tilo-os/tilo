@@ -113,6 +113,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
             self.assertIn("sparse-checkout-cone-mode: false", checkout)
             for file in (
                 "disk-image.sh",
+                "check-composefs-verity.py",
                 "export-direct-boot-bundle.sh",
                 "hold-loop-partition-nodes.py",
                 "private_disk_image.py",

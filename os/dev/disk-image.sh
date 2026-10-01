@@ -771,6 +771,15 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   die "bootc install failed; full log: $LOG"
 fi
 
+# A composefs repository whose objects carry no fs-verity still boots, but its
+# first `bootc upgrade` fails with EIO ("lower file ... has no fs-verity
+# digest"). bootc installs such a repository without a word when the kernel it
+# runs on lacks fs-verity, so check every object here.
+if [ "$COMPOSEFS" = yes ]; then
+  sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
+    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs CONFIG_FS_VERITY for $ROOTFS"
+fi
+
 # --- bib's customizations.user, replaced --------------------------------------
 # useradd is run inside the image, against the installed system's /etc and /var
 # bind-mounted in — so it uses the image's own shadow-utils configuration and
