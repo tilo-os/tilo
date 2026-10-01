@@ -511,6 +511,18 @@ pub(crate) fn document_bound_actions(model: &MapModel) -> Vec<ActionSpec> {
     actions
 }
 
+fn find_maps(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_maps(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Collaborative children for [`tilo_resource::publish`]: history, saved
 /// places, active route/transit, offline regions, and plan settings.
 pub(crate) fn document_children(model: &MapModel) -> Vec<Resource> {
@@ -567,6 +579,9 @@ impl crate::app::MapsApp {
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(found) = find_maps(&provide_resources(doc), id) {
+            return Some(found);
+        }
         let model = MapsDoc::load(doc)?;
         if id == "maps.workspace" {
             return provide_resources(doc).into_iter().next();
@@ -881,6 +896,27 @@ mod tests {
             }
 
             let app = crate::app::MapsApp::offline();
+            let published_place = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "maps.place:place-0")
+                .expect("the first saved place is on the published page");
+            let looked_up = app
+                .publish_resource(&doc, "maps.place:place-0")
+                .expect("an eager saved place resolves");
+            assert_eq!(
+                looked_up
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                published_place
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "an eager saved place is the published row"
+            );
             assert!(
                 app.publish_resource(&doc, "maps.place:place-19").is_some(),
                 "an omitted saved place remains exactly addressable"
