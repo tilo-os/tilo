@@ -70,23 +70,76 @@ for policy in \
   grep -Fqx "$policy" "$recipient_unit"
 done
 # Host units keep the mount-namespace sandbox. A tilo-vm slot cannot remount
-# /dev/mqueue; that path is a drop-in shipped only in os/dev-image.
+# /dev/mqueue; that path is a drop-in shipped only in os/dev-image. Empty
+# assignments do not unset these keys (systemd ignores them as invalid), so
+# the drop-in must assign the boolean false.
 dropin_root="$repo/os/dev-image/usr/lib/systemd/user"
 for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
-  grep -Fqx 'ProtectSystem=strict' "$repo/os/usr/lib/systemd/user/$unit"
+  prod="$repo/os/usr/lib/systemd/user/$unit"
+  for kept in \
+    'ProtectSystem=strict' \
+    'ProtectHome=read-only' \
+    'ProtectKernelTunables=yes' \
+    'ProtectKernelModules=yes' \
+    'ProtectKernelLogs=yes'; do
+    grep -Fqx "$kept" "$prod" || {
+      echo "$unit lost production sandbox directive $kept" >&2
+      exit 1
+    }
+  done
   dropin="$dropin_root/$unit.d/10-nested-user-namespace.conf"
   test -f "$dropin" || {
     echo "missing nested-session drop-in for $unit" >&2
     exit 1
   }
-  for unset in ProtectSystem= ProtectHome= ProtectKernelTunables= ProtectKernelModules= ProtectKernelLogs=; do
-    grep -Fqx "$unset" "$dropin"
+  for off in \
+    ProtectSystem=false \
+    ProtectHome=false \
+    ProtectKernelTunables=false \
+    ProtectKernelModules=false \
+    ProtectKernelLogs=false; do
+    grep -Fqx "$off" "$dropin" || {
+      echo "$dropin does not turn off $off" >&2
+      exit 1
+    }
   done
+  if grep -Eq '^(ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs)=$' "$dropin"; then
+    echo "$dropin still uses an empty Protect* assignment" >&2
+    exit 1
+  fi
 done
 if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/Containerfile" "$repo/os/usr" >/dev/null; then
   echo 'nested-session drop-in leaked into the production image' >&2
   exit 1
 fi
+command -v systemd-analyze >/dev/null || {
+  echo 'systemd-analyze is required to prove the nested drop-in parses' >&2
+  exit 1
+}
+(
+  verify_root=$(mktemp -d)
+  trap 'rm -rf "$verify_root"' EXIT
+  mkdir -p "$verify_root/etc" "$verify_root/usr/lib/systemd/system"
+  printf 'NAME=Test\nID=test\nVERSION_ID=1\n' >"$verify_root/etc/os-release"
+  printf 'NAME=Test\nID=test\nVERSION_ID=1\n' >"$verify_root/usr/lib/os-release"
+  for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+    cp "$repo/os/usr/lib/systemd/user/$unit" "$verify_root/usr/lib/systemd/system/$unit"
+    mkdir -p "$verify_root/usr/lib/systemd/system/$unit.d"
+    cp "$dropin_root/$unit.d/10-nested-user-namespace.conf" \
+      "$verify_root/usr/lib/systemd/system/$unit.d/"
+  done
+  verify_log=$(mktemp)
+  systemd-analyze --root="$verify_root" verify \
+    tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service \
+    >"$verify_log" 2>&1 || true
+  if grep -F 'Failed to parse Protect' "$verify_log"; then
+    echo 'systemd-analyze rejected a nested-session Protect* drop-in' >&2
+    cat "$verify_log" >&2
+    rm -f "$verify_log"
+    exit 1
+  fi
+  rm -f "$verify_log"
+)
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \

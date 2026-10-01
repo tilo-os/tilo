@@ -267,6 +267,74 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
 }
 
 #[test]
+#[serial_test::serial(process_env)]
+fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
+    // The Settings sandbox clears the environment, so `XDG_CURRENT_DESKTOP`
+    // is unset and the Settings portal is not granted. The runner still
+    // re-applies that unset host reading after every session-file change.
+    // U02 samples the centre of that window: it stays on the dark raised
+    // surface unless the session document wins.
+    let session = tempfile::tempdir().expect("session settings");
+    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
+    let session_file = session.path().join("settings.json");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("XDG_CURRENT_DESKTOP")
+        .set("XDG_CONFIG_HOME", app_xdg.path())
+        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_raised = app.theme.tokens.colors.surfaces.raised;
+    let dark_y = crate::a11y::relative_luminance(dark_raised);
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "the session file change must be noticed"
+    );
+    // Production re-applies the host reading on that same tick. With no
+    // portal, the reading is the unset scheme, which is painted as dark.
+    let _ = app.apply_host_appearance(crate::host_appearance::HostAppearance::default());
+
+    let raised = app.theme.tokens.colors.surfaces.raised;
+    let light_y = crate::a11y::relative_luminance(raised);
+    assert_ne!(
+        raised, dark_raised,
+        "Settings must not keep the previous raised surface after the session file changes"
+    );
+    assert!(
+        (light_y - dark_y).abs() > 0.15,
+        "the sampled Settings surface must change luminance (light {light_y:.3}, dark {dark_y:.3})"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+    assert!(
+        crate::host_appearance::Source::start().is_none(),
+        "the session document owns appearance; the unset host portal must not start"
+    );
+}
+
+#[test]
 fn prepared_presentation_replaces_effective_factors_across_runners_and_setters() {
     for theme_scale in [0.5, 1.0, 1.5, 2.0] {
         for native in [true, false] {
