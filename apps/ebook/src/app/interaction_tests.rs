@@ -1216,15 +1216,34 @@ fn schemes_are_listed_created_and_applied() {
             "white ink for maximum contrast",
         );
 
-        // Dark tint → a neutral charcoal, NOT a brown/sepia (R ≈ B).
+        // Sepia on an OS high-contrast theme must not keep warm paper.
+        app.dispatch(Action::SetReadTheme(ReadTheme::Sepia), &mut doc);
+        app.refresh_from_doc(&doc);
+        let hc = Theme::high_contrast();
+        let forced = app.resolve_palette(&hc);
+        assert_eq!(
+            (forced.page.r(), forced.page.g(), forced.page.b()),
+            (
+                hc.tokens.colors.surfaces.raised.r(),
+                hc.tokens.colors.surfaces.raised.g(),
+                hc.tokens.colors.surfaces.raised.b()
+            ),
+            "high contrast reaches the page even when the reader tint is sepia"
+        );
+
+        // Dark tint → the OS theme's raised surface, not a hardcoded charcoal.
         app.dispatch(Action::SetReadTheme(ReadTheme::Dark), &mut doc);
         app.refresh_from_doc(&doc);
         let dark = app.resolve_palette(&theme);
         assert!(dark.dark);
-        let warm = i32::from(dark.page.r()) - i32::from(dark.page.b());
-        assert!(
-            (0..=8).contains(&warm),
-            "dark page is a neutral charcoal, not brown (Δrb={warm})"
+        assert_eq!(
+            (dark.page.r(), dark.page.g(), dark.page.b()),
+            (
+                theme.tokens.colors.surfaces.raised.r(),
+                theme.tokens.colors.surfaces.raised.g(),
+                theme.tokens.colors.surfaces.raised.b()
+            ),
+            "dark page tracks the OS raised surface"
         );
 
         // A custom scheme's page colour drives the reading view directly.

@@ -15464,6 +15464,7 @@ name = "tilo-joined-room"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "channel-crypto",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
