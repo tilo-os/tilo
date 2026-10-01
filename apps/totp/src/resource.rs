@@ -3,12 +3,12 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, OperationKind};
+use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    TOTP_ACTION_TYPE, TotpAction, account_resource_id, provide_contextual_resources, register,
+    TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view, register,
 };
 use crate::app::AuthenticatorApp;
 use crate::doc::AuthDoc;
@@ -39,11 +39,7 @@ impl Resource for Totp {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        provide_contextual_resources(&[])
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+        vec![add_account_view()]
     }
 
     fn children(state: &Vec<Account>) -> Vec<tilo_actions::Resource> {
@@ -102,6 +98,8 @@ impl ResourceSurface<Totp> for AuthenticatorApp {
 pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<Totp>>,
+    #[cfg(test)]
+    test_hosted: bool,
 }
 
 impl Default for ActionSink {
@@ -109,6 +107,8 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            #[cfg(test)]
+            test_hosted: false,
         }
     }
 }
@@ -119,7 +119,17 @@ impl ActionSink {
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.test_hosted {
+            return true;
+        }
         self.framework.is_some()
+    }
+
+    /// Mark the sink hosted without a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.test_hosted = true;
     }
 
     pub(crate) fn dispatch_with_context(

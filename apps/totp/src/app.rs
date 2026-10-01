@@ -1780,17 +1780,39 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
             &accounts,
         );
         let ordered = self.vault.ordered();
+        for child in &mut root.children {
+            if child.kind != "totp.account" {
+                continue;
+            }
+            let Some(raw) = child.id.as_str().strip_prefix("totp.account:") else {
+                continue;
+            };
+            let ready = raw.parse::<crate::model::AccountId>().is_ok_and(|id| {
+                ordered
+                    .iter()
+                    .find(|account| account.id == id)
+                    .is_some_and(crate::model::Account::secret_is_valid)
+            });
+            crate::actions::overlay_local_secret(child, ready);
+        }
+        let published: std::collections::HashSet<String> = root
+            .children
+            .iter()
+            .map(|child| child.id.as_str().to_owned())
+            .collect();
         let count = ordered.len();
-        root.children.retain(|child| child.kind != "totp.account");
-        root.children
-            .extend(ordered.iter().enumerate().map(|(index, account)| {
-                crate::actions::provide_account_resource(
-                    account,
-                    index,
-                    count,
-                    account.secret_is_valid(),
-                )
-            }));
+        for (index, account) in ordered.iter().enumerate() {
+            let id = crate::actions::account_resource_id(account.id);
+            if published.contains(id.as_str()) {
+                continue;
+            }
+            root.children.push(crate::actions::provide_account_resource(
+                account,
+                index,
+                count,
+                account.secret_is_valid(),
+            ));
+        }
         if self.persistence_pending {
             root = root.with_action(crate::actions::retry_persist_operation());
         }
@@ -1809,6 +1831,38 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
             return self.resources(doc).pop();
         }
         let raw_id = id.strip_prefix("totp.account:")?;
+        if self.actions.is_hosted() {
+            let accounts = <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc)
+                .unwrap_or_default();
+            let root = ui::tilo_resource::publish::<crate::resource::Totp>(
+                "totp.vault",
+                "Accounts",
+                &accounts,
+            );
+            if let Some(mut child) = root
+                .children
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+            {
+                let ready = raw_id
+                    .parse::<crate::model::AccountId>()
+                    .is_ok_and(|account_id| {
+                        self.vault
+                            .ordered()
+                            .iter()
+                            .find(|account| account.id == account_id)
+                            .is_some_and(crate::model::Account::secret_is_valid)
+                    });
+                crate::actions::overlay_local_secret(&mut child, ready);
+                return Some(child);
+            }
+        } else if let Some(found) = self.resources(doc).into_iter().find_map(|root| {
+            root.children
+                .into_iter()
+                .find(|child| child.id.as_str() == id)
+        }) {
+            return Some(found);
+        }
         let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
         let ordered = self.vault.ordered();
         let index = ordered
@@ -2312,6 +2366,43 @@ mod tests {
                 "the empty state names the unmatched query, got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn hosted_account_lookup_returns_the_published_account() {
+        let (mut app, state) = app_with_state();
+        let id = app.vault.ordered()[0].id;
+        let address = crate::actions::account_resource_id(id);
+        let standalone = ui::resources::resource(&app, &state.doc, &address)
+            .expect("standalone account resolves");
+        app.actions.mark_hosted_for_test();
+        let hosted = ui::resources::resource(&app, &state.doc, &address)
+            .expect("hosted account resolves from the document");
+        assert_eq!(hosted.kind, "totp.account");
+        assert_eq!(
+            hosted
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            standalone
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            "a hosted account is the published row"
+        );
+        assert_eq!(
+            hosted
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.badge.as_deref()),
+            standalone
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.badge.as_deref()),
+            "the local secret still marks the published account"
+        );
     }
 
     /// Adding through the panel and attaching a missing local secret to the same id.
