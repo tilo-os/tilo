@@ -424,7 +424,7 @@ impl DeviceFleetStore {
         let path = self.path(&fleet.identity_id);
         let bytes = serde_json::to_vec_pretty(fleet)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_creating_parent(&path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
 
     fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {

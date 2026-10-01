@@ -144,6 +144,9 @@ pub struct FramePaint {
     pub revision: u64,
     pub previous_revision: Option<u64>,
     pub damage_regions: Option<Vec<FineDamageRect>>,
+    /// Set while the overview is fading. The multi-output presenter composites
+    /// this panel over the previous desktop instead of readback of both outputs.
+    pub(crate) overview_patch: Option<crate::shell::overlay_host::OverviewFastPatch>,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -158,6 +161,7 @@ impl FramePaint {
             revision: 0,
             previous_revision: None,
             damage_regions: None,
+            overview_patch: None,
             hdr_layers: Vec::new(),
         }
     }
@@ -177,6 +181,7 @@ impl FramePaint {
         self.revision = 0;
         self.damage_regions = None;
         self.previous_revision = None;
+        self.overview_patch = None;
     }
 }
 
@@ -1577,11 +1582,13 @@ impl FrameBuilder {
             global_filter,
             revision,
         });
+        let overview_patch = self.host.take_overview_fast_patch();
         FramePaint {
             scene,
             revision,
             previous_revision,
             damage_regions,
+            overview_patch,
             hdr_layers,
         }
     }
@@ -1606,7 +1613,10 @@ impl FrameBuilder {
         let topbar_changed = !previous.topbar.encoding_eq(&current.topbar);
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         if !topbar_changed && !quick_settings_changed {
-            return None;
+            // Proven identical to the previous frame. `None` means "no
+            // authority, redraw everything"; an empty list means the pixels
+            // already on screen are still correct.
+            return Some(Vec::new());
         }
         let mut regions = Vec::with_capacity(2);
         if topbar_changed {
@@ -2990,6 +3000,12 @@ impl FrameBuilder {
         {
             return false;
         }
+        // Super+Shift+Enter is DetachTab (W08). Super+Space is search.
+        // Only unmodified Space/Enter belong on the live Terminal first.
+        let mods = modifiers.state();
+        if mods.super_key() || mods.shift_key() {
+            return false;
+        }
         let Some((&id, &widget)) = self
             .node_map
             .iter()
@@ -3097,6 +3113,8 @@ impl FrameBuilder {
                 event.logical_key,
                 Key::Named(NamedKey::Enter | NamedKey::Space)
             )
+            && !modifiers.state().super_key()
+            && !modifiers.state().shift_key()
             && let Some(focused) = *focus
             && let Some(widget) = self.node_map.get(&focused).copied()
         {
@@ -4598,6 +4616,150 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one production-path case keeps chrome focus, PTY probe, and group split visible"
+    )]
+    fn super_shift_enter_splits_the_tab_instead_of_reaching_the_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        // W08: Super+Shift+Enter is DetachTab. Offering unmodified Space/Enter
+        // to the Terminal before chrome must not also swallow this chord.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(fb.host_mut().focus_window_on_strip(strip, group, tab));
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
+            let name = unsafe { (**widget).name() };
+            (name == "TopBarChrome").then_some(*id)
+        });
+        let chrome_id = chrome_id.expect("production chrome must mount the top bar");
+        fb.set_native_focus(&mut focus, Some(chrome_id));
+        assert_eq!(
+            fb.widget_name(focus.expect("top bar must take keyboard focus")),
+            Some("TopBarChrome"),
+            "chrome holds focus, as on the VM path"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let groups_before = {
+            let chrome = fb.chrome();
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
+        };
+        let tabs_before = {
+            let chrome = fb.chrome();
+            chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| {
+                    ws.strips
+                        .iter()
+                        .flat_map(|s| s.window_groups.iter())
+                        .find(|candidate| candidate.id == group)
+                })
+                .map_or(0, |g| g.tabs.len())
+        };
+        let mut doc = AutoCommit::new();
+        let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+        assert!(
+            fb.dispatch_event(
+                &key_press(Key::Named(NamedKey::Enter)),
+                &chord,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ),
+            "Super+Shift+Enter must be consumed as the split-tab chord"
+        );
+        fb.relayout();
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"",
+            "Super+Shift+Enter must not be delivered to the PTY"
+        );
+        let groups_after = {
+            let chrome = fb.chrome();
+            chrome.tree().desktop.active_workspace().map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .map(|s| s.window_groups.len())
+                    .sum::<usize>()
+            })
+        };
+        let tabs_after = {
+            let chrome = fb.chrome();
+            chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .and_then(|ws| {
+                    ws.strips
+                        .iter()
+                        .flat_map(|s| s.window_groups.iter())
+                        .find(|candidate| candidate.id == group)
+                })
+                .map_or(0, |g| g.tabs.len())
+        };
+        assert_eq!(
+            groups_after,
+            groups_before + 1,
+            "Super+Shift+Enter must split the tab into a new group"
+        );
+        assert_eq!(
+            tabs_after,
+            tabs_before.saturating_sub(1),
+            "the source group must keep the remaining tabs"
+        );
+    }
+
+    #[test]
     fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
         fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
             let (mut fb, _identity_dir) = onboarding_frame();
@@ -5010,8 +5172,54 @@ mod tests {
             );
         }
 
+        fn compositor_paint_run_is_not_host_demand() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| st.request_transition_paints(8));
+            assert_eq!(fb.chrome().transition_paints_remaining(), 8);
+            assert!(
+                !fb.needs_animation_frame(),
+                "the compositor paint run must not keep the host asking after the crossfade; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn latch_asks_the_compositor_for_eight_paints() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            fb.host_mut().latch_overview_transition();
+            assert_eq!(
+                fb.chrome().transition_paints_remaining(),
+                8,
+                "overview must keep the compositor painting until eight frames have run"
+            );
+        }
+
         overview_toggle_requests_frames_before_draw();
         workspace_switch_requests_frames_before_draw();
+        compositor_paint_run_is_not_host_demand();
+        latch_asks_the_compositor_for_eight_paints();
+    }
+
+    #[test]
+    fn an_unchanged_frame_reports_empty_damage() {
+        let mut frame = FrameBuilder::new((800, 600));
+        frame.relayout();
+        let first = frame.paint_with_damage();
+        assert!(
+            first.damage_regions.is_none(),
+            "the first frame has no predecessor to retain"
+        );
+        let second = frame.paint_with_damage();
+        assert_eq!(
+            second.damage_regions.as_deref(),
+            Some(&[][..]),
+            "an identical frame must not request another full upload"
+        );
     }
 
     /// Look up a widget's rect by its *last* path segment

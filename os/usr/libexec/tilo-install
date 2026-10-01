@@ -375,7 +375,23 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
   die "expected disk identity contains control characters"
 fi
 
+ALONGSIDE_BOOTC_PODMAN_ARGS=()
+ALONGSIDE_BOOTC_COMMAND=(bootc)
 if [ "$ALONGSIDE" -eq 1 ]; then
+  # Upstream bootc may choose the first ESP on the disk rather than the one
+  # mounted at target /boot/efi. Check the corrected installer binary before
+  # guided partition creation, formatting, or any other disk mutation.
+  ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside
+  [ -f "$ALONGSIDE_BOOTC" ] && [ ! -L "$ALONGSIDE_BOOTC" ] \
+    && [ -x "$ALONGSIDE_BOOTC" ] \
+    && [ "$(stat -c '%u:%g' "$ALONGSIDE_BOOTC")" = 0:0 ] \
+    && [ "$("$ALONGSIDE_BOOTC" --version)" = 'bootc 1.16.13' ] \
+    || die "alongside install requires the pinned mounted-ESP bootc helper"
+  # The pinned binary must be executable in the container; Podman may inherit
+  # a noexec source mount from the sealed installer when :exec is omitted.
+  ALONGSIDE_BOOTC_PODMAN_ARGS=(-v "$ALONGSIDE_BOOTC:/run/tilo-bootc-alongside:ro,exec" \
+    --entrypoint /run/tilo-bootc-alongside)
+  ALONGSIDE_BOOTC_COMMAND=()
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     [ -z "$ROOT_PARTITION$BOOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
@@ -916,9 +932,20 @@ promote_target_uki() {
     --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
   TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
-  TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
-    /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
-    || die "target boot bundle failed authority/prediction verification"
+  # The on-demand unsigned development medium has no PCR prediction. Permit
+  # its passphrase-only self-install solely inside the disposable scenario VM
+  # with the named proof port. A physical install and every offline signed
+  # target still require the exact authority/prediction preflight.
+  if [ -f /usr/share/tilo/unverified-vm-install ] \
+     && [ "${REQUIRE_TPM_PREDICTION:-0}" -eq 0 ] \
+     && [ -c /dev/virtio-ports/org.tilo.vm-install-proof ] \
+     && systemd-detect-virt --vm --quiet; then
+    log "development VM: unverified target boot bundle permitted for passphrase install"
+  else
+    TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
+      /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
+      || die "target boot bundle failed authority/prediction verification"
+  fi
   mapfile -t target_digests < <(/usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" |
     tr ' ' '\n' | sed -n 's/^composefs=//p')
   [ "${#target_digests[@]}" -eq 1 ] && [[ "${target_digests[0]}" =~ ^[0-9a-f]{128}$ ]] \
@@ -1175,9 +1202,10 @@ if [ "$ENCRYPT" -eq 1 ]; then
     -v /var/lib/containers:/var/lib/containers \
     -v /dev:/dev \
     -v "$ENC_MNT:/target" \
-    --security-opt label=type:unconfined_t \
+    --security-opt label=disable \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
     "$LOCAL_IMG" \
-    bootc install to-filesystem \
+    "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --composefs-backend \
       --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
@@ -1211,8 +1239,9 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   trap cleanup_alongside EXIT
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
-    -v "$ALONGSIDE_MNT:/target" --security-opt label=type:unconfined_t \
-    "$LOCAL_IMG" bootc install to-filesystem \
+    -v "$ALONGSIDE_MNT:/target" --security-opt label=disable \
+    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
+    "$LOCAL_IMG" "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete tilo.install --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize /target
@@ -1666,7 +1695,11 @@ if [ -n "$VM_INSTALL_PROOF" ]; then
   # target was closed. The dedicated virtio port carries no installer logs
   # or secrets. The host must compare the image identity to its signed CI pin.
   proof_version=V1
-  [ "$OFFLINE_TARGET" -eq 0 ] || proof_version=V2
+  if [ "$OFFLINE_TARGET" -ne 0 ]; then
+    proof_version=V2
+  elif python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1]))["schema"] != "tilo.vm-install-image-proof.v3")' "$VM_INSTALL_PROOF"; then
+    proof_version=V3
+  fi
   proof_line="TILO_VM_INSTALL_PROOF_${proof_version}=$(cat "$VM_INSTALL_PROOF")"
   [ -c "$VM_INSTALL_PROOF_PORT" ] \
     && printf '%s\n' "$proof_line" > "$VM_INSTALL_PROOF_PORT" \

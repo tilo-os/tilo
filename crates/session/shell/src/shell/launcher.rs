@@ -1217,7 +1217,7 @@ pub fn write_trusted_identities_projection(
     let final_path = trusted_identities_dir()
         .join(room.to_string())
         .join(TRUSTED_IDENTITIES_FILE);
-    atomic_file::write_private(&final_path, &bytes)?;
+    tilo_files::native::atomic::write_private(&final_path, &bytes)?;
     Ok(final_path)
 }
 
@@ -5265,6 +5265,177 @@ mod tests {
             "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wine_session_with_a_second_x11_window() -> crate::shell::state::WorkspaceTree {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let mut groups = Vec::new();
+        for i in 1..=20u64 {
+            groups.push(WindowGroup {
+                id: i,
+                tabs: vec![Tab {
+                    id: 1_000_u64.saturating_add(i),
+                    title: format!("Notes {i}"),
+                    tile: TileContent::LocalApp {
+                        app_id: "so.tilo.notes".into(),
+                        label: format!("Notes {i}"),
+                        note: String::new(),
+                    },
+                }],
+                active_tab: 1_000_u64.saturating_add(i),
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        }
+        for (group_id, tab_id, title, app_id, surface) in [
+            (9_001, 9_101, "Wine File", "wineboot.exe", 501),
+            (9_002, 9_102, "Wine Mono Installer", "control.exe", 502),
+        ] {
+            groups.push(WindowGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: title.into(),
+                    tile: TileContent::Foreign {
+                        app_id: app_id.into(),
+                        surface_id: surface,
+                    },
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        }
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        tree.desktop.workspaces[0].strips[0].window_groups = groups;
+        // Focus a Tilo window, not either X11 group. A07's installer took
+        // focus; the original Wine File group is the one closed first.
+        tree.desktop.set_active_group(strip, 1);
+        tree.seed_doc_from_cache();
+        tree
+    }
+
+    #[cfg(target_os = "linux")]
+    fn group_close_is_visible(
+        chrome: &crate::shell::chrome_state::Chrome,
+        registry: &crate::shell::search::SearchRegistry,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> bool {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use automerge::ROOT;
+        let state = chrome.borrow();
+        ActionCatalog::build_for_resource(
+            registry,
+            &ResourceRef::new("desktop-windows", id),
+            SearchScope::All,
+            None,
+            &state,
+            doc,
+            &ROOT,
+            &AllVisible,
+        )
+        .select(&ResourceRef::new("desktop-windows", id))
+        .is_some()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn invoke_group_close(
+        chrome: &crate::shell::chrome_state::Chrome,
+        registry: &crate::shell::search::SearchRegistry,
+        doc: &mut automerge::AutoCommit,
+        id: &str,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use automerge::ROOT;
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build_for_resource(
+                registry,
+                &ResourceRef::new("desktop-windows", id),
+                SearchScope::All,
+                None,
+                &state,
+                doc,
+                &ROOT,
+                &AllVisible,
+            )
+        };
+        catalog
+            .select(&ResourceRef::new("desktop-windows", id))
+            .unwrap_or_else(|| panic!("{id} must stay a visible action"))
+            .invoke(doc, &ROOT, chrome, [])
+            .unwrap_or_else(|err| panic!("{id} failed: {err}"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn a_second_x11_window_stays_group_close_addressable() {
+        use std::rc::Rc;
+
+        use automerge::{AutoCommit, ROOT};
+
+        use crate::shell::search::providers::DesktopWindowsProvider;
+        use crate::shell::search::{SearchProvider, SearchRegistry};
+
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome =
+            crate::shell::chrome_state::ChromeState::new(wine_session_with_a_second_x11_window());
+        let mut doc = AutoCommit::new();
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(DesktopWindowsProvider::new()));
+        let wine = "group.close:9001";
+        let mono = "group.close:9002";
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, wine),
+            "exact group.close resolves the unfocused Wine File group"
+        );
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, mono),
+            "exact group.close resolves the other X11 group past the palette page"
+        );
+        {
+            let state = chrome.borrow();
+            let page = DesktopWindowsProvider::new().query_page(
+                crate::shell::search::SearchContext {
+                    needle: "",
+                    wanted: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &ROOT,
+                },
+                None,
+                crate::shell::search::SearchBudget::PALETTE,
+            );
+            assert!(
+                !page
+                    .results
+                    .iter()
+                    .any(|row| row.id == mono || row.id == wine),
+                "the empty palette page truncates both X11 closes: {:?}",
+                page.results.iter().map(|row| &row.id).collect::<Vec<_>>()
+            );
+        }
+        invoke_group_close(&chrome, &registry, &mut doc, wine);
+        assert!(
+            process_is_live(standin.pid()) && process_is_live(standin.descendant()),
+            "Wine Mono's window is still open, so the wine-winefile launch stays"
+        );
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, mono),
+            "group.close of the remaining X11 group stays in the catalogue"
+        );
+        invoke_group_close(&chrome, &registry, &mut doc, mono);
+        tilo_test_env::wait_until("the launch exits after its last X11 window closes", || {
+            !process_is_live(standin.pid()) && !process_is_live(standin.descendant())
+        });
     }
 
     #[test]
