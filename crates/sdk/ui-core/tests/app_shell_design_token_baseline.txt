@@ -1,7 +1,7 @@
 # Theme escape hatches in app and shell production code.
 # Format: <path relative to repository root> <pattern> <count>
 # This is a ratchet, not approval: counts may only move down.
-apps/camera/src/app.rs literal_color 6
+apps/camera/src/app.rs literal_color 5
 apps/chat/src/paint.rs white_or_black 4
 apps/chat/src/render_call.rs literal_color 3
 apps/chat/src/render_call.rs white_or_black 3
