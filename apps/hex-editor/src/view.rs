@@ -2340,6 +2340,24 @@ impl ui::resources::PublishesResources for HexView {
         }
         self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.hosted && id == "hex_editor.document" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
+    }
 }
 
 impl HexView {
