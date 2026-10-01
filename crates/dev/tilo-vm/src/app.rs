@@ -2972,22 +2972,24 @@ impl App {
         // bootc stages the new BLS options before shutdown, in
         // entries.staged. If the kernel did not change, that entry correctly
         // reuses the previous deployment's kernel and initrd directory.
-        let base = field("linux ").and_then(|path| path.strip_suffix("vmlinuz"));
+        let base = field("linux ")
+            .and_then(|path| path.strip_suffix("vmlinuz"))
+            .ok_or_else(|| CliError::Config {
+                path: path.into(),
+                detail: "BLS kernel and initrd do not match the staged deployment".into(),
+            })?;
         let kernel_verity = base
-            .and_then(|base| base.strip_prefix("/EFI/Linux/bootc_composefs-"))
+            .strip_prefix("/EFI/Linux/bootc_composefs-")
             .and_then(|hash| hash.strip_suffix('/'));
         let valid_kernel = kernel_verity.is_some_and(|hash| {
             hash.len() == 128 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
         });
-        if !valid_kernel
-            || !base.is_some_and(|base| field("initrd ") == Some(format!("{base}initrd").as_str()))
-        {
+        if !valid_kernel || field("initrd ") != Some(format!("{base}initrd").as_str()) {
             return Err(CliError::Config {
                 path: path.into(),
                 detail: "BLS kernel and initrd do not match the staged deployment".into(),
             });
         }
-        let base = base.expect("validated BLS kernel path");
         let options = field("options ")
             .filter(|s| {
                 s.split_whitespace().any(|arg| arg == "root=tilo-auto")
