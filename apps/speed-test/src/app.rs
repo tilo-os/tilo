@@ -836,6 +836,30 @@ impl ui::resources::PublishesResources for SpeedTestApp {
         root.children.extend(self.live_run_extra());
         vec![root]
     }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.hosted && id == "speed-test:root" {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
+            "speed-test:root",
+            "Internet speed test",
+            &crate::resource::SpeedTestState,
+        );
+        root.children.extend(self.live_run_extra());
+        find(&[root], id)
+    }
 }
 
 impl SpeedTestApp {
@@ -1198,6 +1222,14 @@ mod tests {
         registry: ui::tilo_actions::ActionRegistry::new(),
         resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
         palette: ["Run speed test", "Change test region"],
+    }
+
+    #[test]
+    fn hosted_lookup_keeps_the_run_and_not_the_root() {
+        let mut app = SpeedTestApp::new();
+        app.mark_hosted_for_test();
+        let doc = AutoCommit::new();
+        assert!(ui::resources::resource(&app, &doc, "speed-test:root").is_none());
     }
 
     /// Neither the wide metadata row nor the stacked dial touches the primary action.
