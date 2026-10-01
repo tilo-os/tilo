@@ -328,11 +328,12 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
 }
 
 /// A client may ask for its next frame on a commit that brings no buffer
-/// (a configure ack, a title). Nothing on screen changes, so an idle loop
-/// never paints and never releases the callback, and a FIFO swapchain
-/// waiting on it froze the app until some input made the shell paint.
+/// (a configure ack, a title). Nothing on screen changes. Releasing the
+/// callback used to require a full present, so an idle app that asked
+/// again kept the shell building frames. The callback has to fire or a
+/// FIFO swapchain waits forever; it fires here without a present.
 #[test]
-fn a_frame_asked_for_without_a_buffer_still_needs_a_paint() {
+fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
     let mut h = Harness::new();
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
@@ -366,9 +367,15 @@ fn a_frame_asked_for_without_a_buffer_still_needs_a_paint() {
     h.pump();
     assert!(
         shell::shell::foreign::frame_callbacks_waiting(&h.state),
-        "frame 2's callback came without a buffer and still needs a paint to fire"
+        "frame 2's callback came without a buffer"
     );
-    shell::shell::foreign::release_frame_throttle(&mut h.state);
+    assert!(
+        shell::shell::foreign::release_idle_frame_callbacks(&mut h.state),
+        "an unchanged commit releases its callback without a present"
+    );
     h.pump_until("frame 2's callback", |c| c.frames_done.contains(&2));
-    assert!(!shell::shell::foreign::frame_callbacks_waiting(&h.state));
+    assert!(
+        !shell::shell::foreign::frame_callbacks_waiting(&h.state),
+        "the idle release fired the callback"
+    );
 }
