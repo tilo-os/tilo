@@ -2547,7 +2547,9 @@ jobs:
             *) echo '::error::no installed-desktop display was selected'; exit 1 ;;
           esac
           ./os/dev/vm.sh wait
-          ./os/dev/vm.sh login "$TILO_USER" "$TILO_PASS"
+          # The disk holds one account, so the greeter shows its personal
+          # form: the account is chosen and the passcode field has focus.
+          ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then
               break
