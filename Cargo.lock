@@ -15165,6 +15165,7 @@ dependencies = [
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-resource",
  "tilo-ui",
  "tilo-vello",
@@ -15219,11 +15220,24 @@ dependencies = [
 name = "tilo-desktop-surface"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "collab-types",
+ "fluent",
  "serde",
  "serde_json",
+ "taffy",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-clock",
+ "tilo-automerge-fork",
+ "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-desktop-search",
+ "tilo-resource",
  "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "uuid",
  "workspace-hack",
 ]
 

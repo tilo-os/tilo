@@ -22,6 +22,7 @@ uuid.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-surface = { path = "../desktop-surface" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The emoji picker's catalogue, search, skin tones and recents.

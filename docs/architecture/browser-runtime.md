@@ -1052,6 +1052,21 @@ host running the portable toolkit can present:
   (page: `desktop_apply_tree`): the next update pass rebuilds the rows by
   tab id, moving surviving tabs' running content and closing removed tabs'
   applications.
+- Workspace Activity, the notification models and their Fluent catalogue live
+  in `desktop-surface`; `tilo-desktop` reexports their native paths. Hosts
+  install a `HistorySource` for Catch up, Explore and Replay. The browser
+  reads the certified room's retained desktop document (or its profile's
+  persisted Automerge log) and detached histories of the records its windows
+  show. It retains author/time attribution and device-private seen frontiers;
+  opening the pane does not mutate the live documents. Navigation publishes
+  `inSurface` when the shared pane draws the view.
+- Browser application notices use `AppNotifier` and the shared banner stack
+  and centre. Expired and dismissed banners enter real retained history;
+  the browser saves that bounded history through its profile's durable store.
+  The native history format preserves age and app attribution across reloads
+  while dropping actions whose sender belonged to the previous session.
+  `notification-center` opens/closes it through the navigation API, whose
+  `notifications` snapshot reports active and retained counts.
 - Hosts supply tab contents through `TileSource`. The browser
   (`tilo-browser-runtime/src/desktop.rs`) maps `TileContent::LocalApp
   {app_id}` to a registered `ApplicationDefinition` and mounts it with
