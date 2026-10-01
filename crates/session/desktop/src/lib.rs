@@ -22,12 +22,9 @@ pub mod backdrop;
 pub mod chrome;
 pub mod collaborators;
 pub mod composition;
-pub mod drill_in;
 pub mod emoji_picker;
-pub mod i18n;
 pub mod intents;
 pub mod launchpad;
-pub mod notifications;
 pub mod overview;
 pub mod peer_join_toast;
 pub mod records;
@@ -40,5 +37,10 @@ pub mod topbar;
 pub mod window_switcher;
 pub mod workspace_settings;
 
-extern crate self as tilo_desktop;
-pub mod activity;
+// The workspace history pane, the notification stack and centre, the
+// drill-in list and the desktop's catalogue are portable: they live with the
+// desktop surface, which the browser builds too.
+pub use tilo_desktop_surface::{activity, drill_in, i18n, notifications};
+
+#[cfg(test)]
+mod i18n_copy_lint_tests;
