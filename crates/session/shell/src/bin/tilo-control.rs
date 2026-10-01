@@ -102,6 +102,7 @@ enum Command {
         provider: String,
         id: String,
         args_json: Option<String>,
+        device: Option<String>,
     },
     ActionsStatus {
         invocation_id: u64,
@@ -330,8 +331,15 @@ fn parse_actions_command<'a>(
                 ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
             })?;
             let mut args_json = None;
+            let mut device = None;
             while let Some(flag) = iter.next() {
                 match flag.as_str() {
+                    "--device" => {
+                        let id = iter.next().ok_or_else(|| {
+                            ParseError::Usage("--device requires an enrolled device id".to_string())
+                        })?;
+                        device = Some(id.clone());
+                    }
                     "--args-json" => {
                         let json = iter.next().ok_or_else(|| {
                             ParseError::Usage("--args-json requires a JSON object".to_string())
@@ -358,6 +366,7 @@ fn parse_actions_command<'a>(
                 provider: provider.clone(),
                 id: id.clone(),
                 args_json,
+                device,
             })
         }
         "status" | "cancel" => {
@@ -512,6 +521,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             provider,
             id,
             args_json,
+            device,
         } => {
             let args = args_json
                 .as_deref()
@@ -519,7 +529,20 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
                 .transpose()
                 .map_err(|error| ParseError::Usage(format!("invalid action arguments: {error}")))?
                 .unwrap_or_else(|| serde_json::json!({}));
-            json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args })
+            let mut value =
+                json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args });
+            if let Some(device) = device {
+                let Some(object) = value.as_object_mut() else {
+                    return Err(ParseError::Usage(
+                        "action invocation payload is not an object".into(),
+                    ));
+                };
+                object.insert(
+                    "device".to_string(),
+                    serde_json::Value::String(device.clone()),
+                );
+            }
+            value
         }
         Command::ActionsStatus { invocation_id } => {
             json!({ "op": "actions_status", "invocation_id": invocation_id })
@@ -733,8 +756,9 @@ fn print_usage() {
          \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
          \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything)\n\
-         \x20 actions invoke PROVIDER ID [--args-json OBJECT]\n\
-         \x20                               run one typed action without synthetic input\n\
+         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
+         \x20                               run one typed action without synthetic input;\n\
+         \x20                               --device sends resource/action to that enrolled device\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
@@ -941,6 +965,7 @@ mod tests {
                     provider: "app-actions".into(),
                     id: "peer-address".into(),
                     args_json: Some(r#"{"count":2,"force":true}"#.into()),
+                    device: None,
                 },
             ),
             // Receipt ids parse for both status and cancel.
@@ -1102,6 +1127,7 @@ mod tests {
             provider: "app-actions".into(),
             id: "7-resource-action".into(),
             args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
+            device: None,
         });
         assert_eq!(value["op"], "actions_invoke");
         assert_eq!(value["args"]["resource"], "notes.note:42");

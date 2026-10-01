@@ -48,6 +48,9 @@ impl LiveStore {
         if let Some(id) = store_target {
             inner.open_catalogue_item(id);
         }
+        // First presented frame is the catalogue chrome ("Loading apps…"),
+        // not a cleared swapchain. The worker is already in flight.
+        inner.set_worker_busy(true);
         Self {
             inner,
             worker: StoreWorker::spawn(opened_ref, search_index),

@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 LINT = "too_many_arguments"
-SKIPPED_DIRS = {".git", "target", "vendor", "node_modules"}
+SKIPPED_DIRS = {".git", ".claude", "target", "vendor", "node_modules"}
 ATTRIBUTE = re.compile(r"#!?\[")
 SILENCING = re.compile(r"\b(?:allow|expect)\s*\(")
 

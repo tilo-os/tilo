@@ -277,6 +277,19 @@ impl WindowPreviews {
             .fold(0, usize::saturating_add)
     }
 
+    /// Order-independent identity of the stored pixels, so a panel cache
+    /// rebuilds when a preview arrives and stays put while it does not.
+    pub fn content_fingerprint(&self) -> u64 {
+        let mut fingerprint = u64::try_from(self.previews.len()).unwrap_or(u64::MAX);
+        for (tab, preview) in &self.previews {
+            fingerprint ^= tab.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ preview.stamp.unwrap_or(0)
+                ^ (u64::from(preview.width) << 32)
+                ^ u64::from(preview.height);
+        }
+        fingerprint
+    }
+
     /// Previews changed since the last paint.
     pub fn changed(&self) -> bool {
         self.changed

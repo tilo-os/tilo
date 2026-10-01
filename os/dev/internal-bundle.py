@@ -91,7 +91,7 @@ FALLBACK_LOADERS = {'x86_64': '/EFI/BOOT/BOOTX64.EFI', 'aarch64': '/EFI/BOOT/BOO
 STAGING_PLACEHOLDERS = ('EFI/tilo-staging/handoff.json', 'EFI/tilo-staging/record.json')
 STAGING_PLACEHOLDER_BYTES = 64 * 1024
 # The live command line: flags and exact values. tilo.generation (dense
-# positive integer) and at most two known consoles are checked apart.
+# positive integer) and at most three known consoles are checked apart.
 LIVE_FLAGS = frozenset({'rw', 'quiet', 'splash', 'slab_nomerge', 'plymouth.ignore-serial-consoles',
                         'tilo.install'})
 LIVE_VALUES = {'root': 'tilo-auto', 'rd.luks.options': 'tpm2-device=auto,fido2-device=auto',
@@ -208,7 +208,7 @@ def validate_cmdline(cmdline, digest):
     names = [token.split('=', 1)[0] for token in tokens]
     require(all(names.count(name) == 1 for name in names if name != 'console'), 'duplicate kernel argument')
     consoles = [token for token in tokens if token.startswith('console=')]
-    require(len(set(consoles)) == len(consoles) and len(consoles) <= 2, 'duplicate console argument')
+    require(len(set(consoles)) == len(consoles) and len(consoles) <= 3, 'duplicate console argument')
     require('root=' + LIVE_VALUES['root'] in tokens and 'composefs=' + digest in tokens
             and 'tilo.install' in tokens, 'missing or mismatched measured boot binding')
     allowed_values = dict(LIVE_VALUES, composefs=digest)
@@ -218,7 +218,7 @@ def validate_cmdline(cmdline, digest):
         name, separator, value = token.partition('=')
         if name == 'tilo.generation' and re.fullmatch(r'[1-9][0-9]{0,9}', value):
             continue
-        if name == 'console' and value in ('tty0', 'ttyS0,115200'):
+        if name == 'console' and value in ('tty0', 'ttyAMA0,115200', 'ttyS0,115200'):
             continue
         require(separator and name in allowed_values and value == allowed_values[name],
                 'unrecognized command-line binding')

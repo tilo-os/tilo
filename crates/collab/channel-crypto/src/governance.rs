@@ -487,7 +487,8 @@ impl GovernanceJournal {
         };
         let bytes = postcard::to_allocvec(state)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600).map_err(Error::Io)
+        tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o600)
+            .map_err(Error::Io)
     }
 }
 

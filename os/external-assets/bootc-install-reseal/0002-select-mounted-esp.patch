@@ -1,0 +1,99 @@
+diff --git a/crates/lib/src/bootc_composefs/boot.rs b/crates/lib/src/bootc_composefs/boot.rs
+index 72ff812..8e209c5 100644
+--- a/crates/lib/src/bootc_composefs/boot.rs
++++ b/crates/lib/src/bootc_composefs/boot.rs
+@@ -704,8 +704,7 @@ pub(crate) fn setup_composefs_bls_boot(
+                 }
+             }
+ 
+-            // Locate ESP partition device by walking up to the root disk(s)
+-            let esp_part = root_setup.device_info.find_first_colocated_esp()?;
++            let esp_part = esp_for_install(root_setup)?;
+ 
+             (
+                 root_setup.physical_root_path.clone(),
+@@ -1281,8 +1280,7 @@ pub(crate) fn setup_composefs_uki_boot(
+         BootSetupType::Setup((root_setup, state, postfetch)) => {
+             state.require_no_kargs_for_uki()?;
+ 
+-            // Locate ESP partition device by walking up to the root disk(s)
+-            let esp_part = root_setup.device_info.find_first_colocated_esp()?;
++            let esp_part = esp_for_install(root_setup)?;
+ 
+             (
+                 root_setup.physical_root_path.clone(),
+@@ -1390,6 +1388,45 @@ pub(crate) fn setup_composefs_uki_boot(
+     Ok(boot_digest)
+ }
+ 
++/// Use the ESP that the to-filesystem caller mounted under its target. Merely
++/// choosing the first ESP on the root disk can write an unrelated operating
++/// system's boot partition when the disk has more than one ESP.
++fn esp_for_install(root_setup: &RootSetup) -> Result<bootc_blockdev::Device> {
++    if root_setup.target_root_path.is_none() {
++        return root_setup.device_info.find_first_colocated_esp();
++    }
++
++    let esp_dir = root_setup
++        .physical_root
++        .open_dir("boot/efi")
++        .context("Opening target /boot/efi")?;
++    if esp_dir.is_mountpoint(".")? != Some(true) {
++        bail!("Target /boot/efi must be a separate mounted ESP");
++    }
++    let selected =
++        bootc_blockdev::list_dev_by_dir(&esp_dir).context("Identifying mounted target ESP")?;
++    if !selected
++        .parttype
++        .as_deref()
++        .is_some_and(|t| t.eq_ignore_ascii_case(bootc_blockdev::ESP))
++        || selected.partuuid.as_deref().is_none_or(str::is_empty)
++    {
++        bail!("Target /boot/efi is not a GPT EFI System Partition");
++    }
++    let root_disks = root_setup.device_info.find_all_roots()?;
++    let esp_disks = selected.find_all_roots()?;
++    if !esp_disks.iter().any(|esp_disk| {
++        esp_disk.maj_min.as_ref().is_some_and(|id| {
++            root_disks
++                .iter()
++                .any(|root_disk| root_disk.maj_min.as_ref() == Some(id))
++        })
++    }) {
++        bail!("Mounted target ESP is not on a disk backing the target root");
++    }
++    Ok(selected)
++}
++
+ /// A composefs image attached to a temporary directory with the ESP and a
+ /// tmpfs mounted inside it, ready for bootloader installation.
+ ///
+@@ -1435,17 +1472,9 @@ impl MountedImageRoot {
+     #[context("Preparing image root for bootloader installation")]
+     pub(crate) fn new(
+         composefs_mnt_fd: std::os::fd::OwnedFd,
+-        device: &bootc_blockdev::Device,
++        root_setup: &RootSetup,
+     ) -> Result<Self> {
+-        let roots = device.find_all_roots()?;
+-        let mut esp_part = None;
+-        for root in &roots {
+-            if let Some(esp) = root.find_partition_of_esp_optional()? {
+-                esp_part = Some(esp);
+-                break;
+-            }
+-        }
+-        let esp_part = esp_part.ok_or_else(|| anyhow!("ESP partition not found"))?;
++        let esp_part = esp_for_install(root_setup)?;
+ 
+         // Attach the detached composefs fsmount fd to a real tmpdir path so
+         // that mount(2) and bootctl --root can work with it.
+@@ -1625,7 +1654,7 @@ pub(crate) async fn setup_composefs_boot(
+     let composefs_mnt_fd = repo
+         .mount(&id.to_hex())
+         .context("Failed to mount composefs image")?;
+-    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, &root_setup.device_info)?;
++    let mounted_root = MountedImageRoot::new(composefs_mnt_fd, root_setup)?;
+ 
+     let postfetch = PostFetchState::new(state, mounted_root.dir())?;
+ 

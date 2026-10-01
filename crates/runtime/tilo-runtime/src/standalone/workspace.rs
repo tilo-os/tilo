@@ -113,7 +113,7 @@ impl ProfileWorkspace {
         };
         let bytes = serde_json::to_vec_pretty(&*tree).map_err(io::Error::other)?;
         drop(tree);
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
     }
 
     /// Whether this host governs the tree: it keeps its own file, rather
@@ -155,7 +155,7 @@ impl ProfileWorkspace {
         let result = change(&mut tree)?;
         let saved = serde_json::to_vec_pretty(&*tree)
             .map_err(io::Error::other)
-            .and_then(|bytes| atomic_file::write_with_mode(path, &bytes, 0o600));
+            .and_then(|bytes| tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600));
         if let Err(error) = saved {
             *tree = before;
             drop(tree);

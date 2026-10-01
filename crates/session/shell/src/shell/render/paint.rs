@@ -1628,6 +1628,13 @@ pub struct VelloDrmBridge {
     /// compositor's normal cadence would otherwise queue one more llvmpipe frame every tick.
     recovery_not_before: Option<Instant>,
     recovery_backoff: Duration,
+    /// Desktop pixels from before the current overview fade. Composite the
+    /// panel over this instead of rendering both outputs again.
+    overview_base: Vec<u8>,
+    overview_generation: u64,
+    /// Fixed-size renderer for the overview panel. Created once so a fade
+    /// does not compile pipelines on the first animated frame.
+    panel_renderer: Option<ui::offscreen::OffscreenRenderer>,
     /// Narrow fault injection for the tracked-swizzle cleanup test. It is absent from ordinary
     /// binaries and shortens only the test's mapped source view after GPU completion.
     #[cfg(test)]
@@ -1703,9 +1710,100 @@ impl VelloDrmBridge {
             xrgb_history_epoch: Some(1),
             recovery_not_before: None,
             recovery_backoff: RECOVERY_BACKOFF_INITIAL,
+            overview_base: Vec::new(),
+            overview_generation: 0,
+            panel_renderer: None,
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
+    }
+
+    /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
+    pub fn has_complete_readback(&self) -> bool {
+        let (width, height) = self.target.size;
+        let needed = usize::try_from(width)
+            .unwrap_or(0)
+            .saturating_mul(usize::try_from(height).unwrap_or(0))
+            .saturating_mul(4);
+        needed > 0 && self.readback.len() == needed
+    }
+
+    /// Panel-sized overview frame over the desktop image captured before this fade.
+    ///
+    /// # Errors
+    /// The panel is larger than the fixed fast target, or no desktop image exists yet.
+    /// Callers fall back to a full readback.
+    pub(crate) fn composite_overview_frame(
+        &mut self,
+        patch: &crate::shell::overlay_host::OverviewFastPatch,
+    ) -> Result<Vec<u8>, BridgeError> {
+        const EDGE: u32 = 1024;
+        if patch.panel.width == 0
+            || patch.panel.height == 0
+            || patch.panel.width > EDGE
+            || patch.panel.height > EDGE
+        {
+            return Err(BridgeError::InvalidSize(format!(
+                "overview panel {}x{} exceeds the fast target",
+                patch.panel.width, patch.panel.height
+            )));
+        }
+        let generation_matches = self.overview_generation == patch.generation;
+        let base_matches = self.overview_base.len() == self.readback.len();
+        let base_ready = generation_matches && base_matches && self.has_complete_readback();
+        if !base_ready {
+            if !self.has_complete_readback() {
+                return Err(BridgeError::InvalidSize(
+                    "no desktop image to composite the overview over".to_owned(),
+                ));
+            }
+            self.overview_base.clone_from(&self.readback);
+            self.overview_generation = patch.generation;
+        }
+        let mut frame = self.overview_base.clone();
+        let stride = self.target.size.0;
+        blend_scrim_rect(&mut frame, stride, patch.panel, patch.scrim);
+        if patch.draw_panel {
+            let panel = self.render_overview_panel(&patch.panel_scene, patch.panel_size)?;
+            blit_straight(&mut frame, stride, patch.panel, &panel, patch.panel_size);
+        }
+        Ok(frame)
+    }
+
+    fn render_overview_panel(
+        &mut self,
+        scene: &Scene,
+        size: (u32, u32),
+    ) -> Result<Vec<u8>, BridgeError> {
+        const EDGE: u32 = 1024;
+        if self.panel_renderer.is_none() {
+            self.panel_renderer = Some(
+                ui::offscreen::OffscreenRenderer::try_new(EDGE, EDGE).map_err(|error| {
+                    BridgeError::Render(format!("overview panel renderer: {error}"))
+                })?,
+            );
+        }
+        let Some(renderer) = self.panel_renderer.as_mut() else {
+            return Err(BridgeError::Render(
+                "overview panel renderer missing".to_owned(),
+            ));
+        };
+        let panel_pixels = renderer.render_rgba_resilient(scene);
+        let stride = usize::try_from(renderer.width).unwrap_or(0);
+        let width = usize::try_from(size.0).unwrap_or(0);
+        let height = usize::try_from(size.1).unwrap_or(0);
+        if stride < width || panel_pixels.len() < stride.saturating_mul(height).saturating_mul(4) {
+            return Err(BridgeError::InvalidSize(
+                "overview panel render is smaller than the clip".to_owned(),
+            ));
+        }
+        let mut cropped = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4));
+        for row in 0..height {
+            let start = row.saturating_mul(stride).saturating_mul(4);
+            let end = start.saturating_add(width.saturating_mul(4));
+            cropped.extend_from_slice(panel_pixels.get(start..end).unwrap_or_default());
+        }
+        Ok(cropped)
     }
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
@@ -2175,6 +2273,11 @@ impl VelloDrmBridge {
 
         if self.readback.len() == needed {
             self.mark_retained_complete(None);
+        }
+        // Compile the panel renderer on a full frame, not on the first
+        // overview sample. A fade must not pay pipeline creation.
+        if self.panel_renderer.is_none() {
+            self.panel_renderer = ui::offscreen::OffscreenRenderer::try_new(1024, 1024).ok();
         }
 
         Ok(&self.readback)
@@ -7727,5 +7830,136 @@ mod tests {
             adapter.max_storage_buffer_binding_size
         );
         assert_eq!(device.max_buffer_size, adapter.max_buffer_size);
+    }
+}
+
+fn src_over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
+    let [sr, sg, sb, sa_byte] = src;
+    let [dr, dg, db, _] = dst;
+    let sa = u32::from(sa_byte);
+    let inv = 255u32.saturating_sub(sa);
+    let mix = |source: u8, behind: u8| -> u8 {
+        let mixed = u32::from(source)
+            .saturating_mul(sa)
+            .saturating_add(u32::from(behind).saturating_mul(inv));
+        u8::try_from(mixed.saturating_div(255)).unwrap_or(255)
+    };
+    [mix(sr, dr), mix(sg, dg), mix(sb, db), 255]
+}
+
+fn blend_scrim_rect(
+    pixels: &mut [u8],
+    stride_px: u32,
+    rect: vello::FineDamageRect,
+    scrim: [u8; 4],
+) {
+    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
+    let x = usize::try_from(rect.x).unwrap_or(0);
+    let y = usize::try_from(rect.y).unwrap_or(0);
+    let width = usize::try_from(rect.width).unwrap_or(0);
+    let height = usize::try_from(rect.height).unwrap_or(0);
+    let [sr, sg, sb, sa_byte] = scrim;
+    let sa = u32::from(sa_byte);
+    if sa == 0 || stride == 0 {
+        return;
+    }
+    for row in y..y.saturating_add(height) {
+        for col in x..x.saturating_add(width) {
+            let at = row
+                .saturating_mul(stride)
+                .saturating_add(col.saturating_mul(4));
+            let Some(pixel) = pixels.get(at..at.saturating_add(4)) else {
+                continue;
+            };
+            let Ok(existing) = <[u8; 4]>::try_from(pixel) else {
+                continue;
+            };
+            let mixed = src_over([sr, sg, sb, sa_byte], existing);
+            if let Some(slot) = pixels.get_mut(at..at.saturating_add(4)) {
+                slot.copy_from_slice(&mixed);
+            }
+        }
+    }
+}
+
+fn blit_straight(
+    destination: &mut [u8],
+    stride_px: u32,
+    rect: vello::FineDamageRect,
+    source: &[u8],
+    source_size: (u32, u32),
+) {
+    let stride = usize::try_from(stride_px).unwrap_or(0).saturating_mul(4);
+    let src_stride = usize::try_from(source_size.0)
+        .unwrap_or(0)
+        .saturating_mul(4);
+    let x = usize::try_from(rect.x).unwrap_or(0);
+    let y = usize::try_from(rect.y).unwrap_or(0);
+    let width = usize::try_from(source_size.0.min(rect.width)).unwrap_or(0);
+    let height = usize::try_from(source_size.1.min(rect.height)).unwrap_or(0);
+    for row in 0..height {
+        for col in 0..width {
+            let src_at = row
+                .saturating_mul(src_stride)
+                .saturating_add(col.saturating_mul(4));
+            let dst_at = (y.saturating_add(row))
+                .saturating_mul(stride)
+                .saturating_add((x.saturating_add(col)).saturating_mul(4));
+            let Some(src) = source.get(src_at..src_at.saturating_add(4)) else {
+                continue;
+            };
+            let Some(dst) = destination.get_mut(dst_at..dst_at.saturating_add(4)) else {
+                continue;
+            };
+            let Ok(src_px) = <[u8; 4]>::try_from(src) else {
+                continue;
+            };
+            let Ok(dst_px) = <[u8; 4]>::try_from(&dst[..]) else {
+                continue;
+            };
+            let mixed = src_over(src_px, dst_px);
+            dst.copy_from_slice(&mixed);
+        }
+    }
+}
+
+#[cfg(test)]
+mod overview_composite {
+    use super::{blend_scrim_rect, blit_straight};
+
+    #[test]
+    fn scrim_and_panel_stay_inside_the_clip() {
+        let mut pixels = vec![0u8; 8 * 4 * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&[10, 20, 30, 255]);
+        }
+        blend_scrim_rect(
+            &mut pixels,
+            8,
+            vello::FineDamageRect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1,
+            },
+            [0, 0, 0, 255],
+        );
+        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
+        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[0, 0, 0, 255]);
+        let panel = [255u8, 0, 0, 255];
+        blit_straight(
+            &mut pixels,
+            8,
+            vello::FineDamageRect {
+                x: 1,
+                y: 1,
+                width: 1,
+                height: 1,
+            },
+            &panel,
+            (1, 1),
+        );
+        assert_eq!(&pixels[(8 + 1) * 4..(8 + 1) * 4 + 4], &[255, 0, 0, 255]);
+        assert_eq!(&pixels[(8 + 2) * 4..(8 + 2) * 4 + 4], &[0, 0, 0, 255]);
     }
 }

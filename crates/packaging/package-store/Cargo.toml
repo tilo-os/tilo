@@ -21,7 +21,7 @@ default = []
 dev-overrides = []
 store = [
     "dep:tilo-advisory-lock",
-    "dep:tilo-atomic-file",
+    "dep:tilo-files",
     "dep:bytes",
     "dep:tilo-fs",
     "dep:iroh-blobs",
@@ -41,7 +41,7 @@ toml.workspace = true
 
 # The store's exclusive lock across processes.
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock", optional = true }
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 bytes = { workspace = true, optional = true }
 # The content store. Only its portable content plane is used here; the
 # filesystem daemon stays out of the dependency graph.
