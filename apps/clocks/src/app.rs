@@ -978,6 +978,7 @@ fn surface(
 pub struct ClocksApp {
     inner: Element,
     state: ui::LocalState<ClockState>,
+    pub(crate) actions: crate::resource::ActionSink,
     hosted: bool,
     generation: u64,
     last_saved: String,
@@ -1074,6 +1075,7 @@ impl ClocksApp {
         Self {
             inner: surface(&mode, &state, &notice, &validation_error),
             state,
+            actions: crate::resource::ActionSink::default(),
             hosted: false,
             generation: 0,
             last_saved: String::new(),
@@ -1380,8 +1382,22 @@ impl ClocksApp {
     }
 }
 
+impl ui::undo::CommittedActions for ClocksApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for ClocksApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
@@ -1554,8 +1570,15 @@ impl ClocksApp {
     }
 
     /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
     }
 
     pub(crate) fn timer_count(&self) -> usize {
