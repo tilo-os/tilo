@@ -1107,7 +1107,7 @@ impl FileView {
         }
         let Some(ctx) = self.thumbs.clone() else {
             if grid {
-                self.draw_type_badge(scene, transform, tr, rect, entry);
+                self.draw_type_badge(scene, transform, tr, theme, rect, entry);
             } else {
                 self.draw_glyph(scene, transform, rect, entry, glyph_color);
             }
@@ -1138,7 +1138,7 @@ impl FileView {
         }
         // No real preview (yet): a badge in grid, a compact glyph in the list.
         if grid {
-            self.draw_type_badge(scene, transform, tr, rect, entry);
+            self.draw_type_badge(scene, transform, tr, theme, rect, entry);
         } else {
             self.draw_glyph(scene, transform, rect, entry, glyph_color);
         }
@@ -1172,11 +1172,12 @@ impl FileView {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         rect: Rect,
         entry: &Entry,
     ) {
         let category = category_for_path(&entry.path);
-        let tint = category_tint(category);
+        let tint = category_tint(theme, category);
         let radius = 8.0 * self.scale;
         let card = RoundedRect::from_rect(rect, radius);
         // Soft category-tinted fill with a crisp tinted edge. Selection is a
@@ -1892,26 +1893,25 @@ fn ext_label(path: &std::path::Path) -> String {
     }
 }
 
-/// A stable, mid-tone accent per file category for the type badge. Chosen to
-/// stay legible on both light and dark surfaces (the badge fills a translucent
-/// tint of it and draws the glyph + extension in the full colour).
-fn category_tint(cat: FileCategory) -> Color {
-    let [r, g, b] = match cat {
-        FileCategory::Image => [0x3B, 0xA7, 0x76],
-        FileCategory::Video => [0x8B, 0x5C, 0xF6],
-        FileCategory::Audio => [0xE0, 0x55, 0x9A],
-        FileCategory::Pdf => [0xE5, 0x48, 0x4D],
-        FileCategory::Ebook => [0xD0, 0x8A, 0x2E],
-        FileCategory::Document => [0x3E, 0x7B, 0xEA],
-        FileCategory::Spreadsheet => [0x2F, 0xA3, 0x6B],
-        FileCategory::Presentation => [0xE8, 0x70, 0x3A],
-        FileCategory::Archive => [0xB0, 0x7B, 0x3E],
-        FileCategory::Code => [0x2A, 0xA0, 0xB4],
-        FileCategory::Text => [0x7A, 0x82, 0x90],
-        FileCategory::Font => [0x7C, 0x6C, 0xF0],
-        FileCategory::Unknown => [0x8A, 0x93, 0xA0],
+/// A file-type badge colour grown from the theme accent's categorical series,
+/// then stepped until it clears non-text contrast on the window ground. The
+/// series is six long, so later kinds share a slot with an earlier one; high
+/// contrast retints every slot because the series is grown from the accent.
+fn category_tint(theme: &Theme, cat: FileCategory) -> Color {
+    let slot = match cat {
+        FileCategory::Image | FileCategory::Archive => 0,
+        FileCategory::Video | FileCategory::Audio => 1,
+        FileCategory::Document | FileCategory::Ebook | FileCategory::Text => 2,
+        FileCategory::Spreadsheet | FileCategory::Presentation => 3,
+        FileCategory::Pdf | FileCategory::Unknown => 4,
+        FileCategory::Code | FileCategory::Font => 5,
     };
-    Color::from_rgba8(r, g, b, 255)
+    let c = &theme.tokens.colors;
+    c.ink_on(
+        c.surfaces.base,
+        c.categorical(slot),
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
 }
 
 /// Trim `text` with an ellipsis until it fits `max_w`.
@@ -1953,6 +1953,22 @@ mod tests {
     use super::*;
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
+
+    #[test]
+    fn category_badges_follow_the_theme() {
+        let dark = Theme::dark();
+        let contrast = Theme::high_contrast();
+        assert_ne!(
+            category_tint(&dark, FileCategory::Pdf),
+            category_tint(&contrast, FileCategory::Pdf),
+            "file-type badges grow from the accent, so high contrast retints them"
+        );
+        assert_ne!(
+            category_tint(&dark, FileCategory::Pdf),
+            category_tint(&dark, FileCategory::Image),
+            "different kinds keep different slots of the series"
+        );
+    }
 
     fn dev() -> winit::event::DeviceId {
         unsafe { std::mem::zeroed() }
