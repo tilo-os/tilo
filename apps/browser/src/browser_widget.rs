@@ -830,9 +830,11 @@ pub struct BrowserWidget {
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
-    /// Framework-hosted surfaces leave the palette tree to
-    /// `tilo_resource::publish`; standalone keeps the contextual builder.
-    framework_hosted: bool,
+    /// Framework dispatcher when hosted; local action host otherwise.
+    /// Bookmarks and preferences are [`BrowserAction`]s on this sink.
+    actions: crate::resource::ActionSink,
+    /// Hosted bookmark and preference edits, applied on the next sync.
+    pending_library_edits: ui::LocalState<Vec<BrowserAction>>,
     initial_url: String,
     session_url: String,
     session_first_commit: bool,
@@ -990,6 +992,18 @@ pub struct BrowserWidget {
     fact_label_w: Option<f32>,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
+}
+
+/// A library remove queued before the document is in hand still tombstones
+/// the tags the document actually holds.
+fn bookmark_remove_with_observed_tags(doc: &AutoCommit, action: BrowserAction) -> BrowserAction {
+    match action {
+        BrowserAction::RemoveBookmark { url, observed_tags } if observed_tags.is_empty() => {
+            let observed_tags = crate::actions::observed_bookmark_tags(doc, &url);
+            BrowserAction::RemoveBookmark { url, observed_tags }
+        }
+        other => other,
+    }
 }
 
 impl BrowserWidget {
@@ -1263,7 +1277,8 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
-            framework_hosted: false,
+            actions: crate::resource::ActionSink::default(),
+            pending_library_edits: ui::LocalState::new(Vec::new()),
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
             daily: crate::daily_controls::DailyControls::default(),
@@ -1374,9 +1389,18 @@ impl BrowserWidget {
     }
 
     /// Mark this browser as a framework-hosted surface so
-    /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    /// [`Widget::resources`] defers the document root to `tilo_resource::publish`.
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.framework_hosted = hosted;
+        self.actions.set_hosted(hosted);
+    }
+
+    /// Attach the framework dispatcher. Hosted bookmark and preference edits
+    /// then go through [`Dispatcher::apply_now_with`](ui::framework::Dispatcher::apply_now_with).
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Browser>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     #[allow(
@@ -1384,7 +1408,83 @@ impl BrowserWidget {
         reason = "called from this crate's tests; dependents compile the library without cfg(test)"
     )]
     pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.framework_hosted
+        self.actions.is_hosted()
+    }
+
+    /// Submit one bookmark or preference edit. Hosted surfaces with a
+    /// dispatcher use `apply_now_with`; standalone uses the local action host.
+    pub(crate) fn submit_library_action(&mut self, doc: &mut AutoCommit, action: &BrowserAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            BROWSER_ACTION_TYPE,
+            action,
+            crate::actions::history_context(action),
+        );
+    }
+
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
+    pub(crate) fn last_library_action(&self) -> Option<&EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    fn enqueue_library_action(&self, action: BrowserAction) {
+        self.pending_library_edits
+            .update(|queue| queue.push(action));
+    }
+
+    fn flush_library_edits(&mut self, doc: &mut AutoCommit) {
+        let waiting = self.pending_library_edits.with(|queue| !queue.is_empty());
+        if !waiting {
+            return;
+        }
+        let mut pending = Vec::new();
+        let taken = self
+            .pending_library_edits
+            .try_update(|queue| pending.append(queue));
+        if !taken {
+            return;
+        }
+        for action in pending {
+            let action = bookmark_remove_with_observed_tags(doc, action);
+            self.submit_library_action(doc, &action);
+        }
+    }
+
+    /// Add the current page, unless it is already bookmarked. Removal stays
+    /// on the library row; the toolbar action is the add.
+    fn page_bookmark_action(&self) -> Option<BrowserAction> {
+        if self.current_uri.trim().is_empty() || self.bookmarks.contains(&self.current_uri) {
+            return None;
+        }
+        Some(BrowserAction::AddBookmark {
+            url: self.current_uri.clone(),
+            title: self.title.clone(),
+            tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+        })
+    }
+
+    /// Standalone keeps the published binding. Hosted document edits queue a
+    /// [`BrowserAction`] for the action sink instead of a second resource tree.
+    fn route_document_button(
+        &self,
+        button: ui::widget::Button,
+        resource: &str,
+        action_id: &str,
+        hosted_action: Option<BrowserAction>,
+    ) -> ui::widget::Button {
+        if !self.is_framework_hosted() {
+            return self.bind_button(button, resource, action_id);
+        }
+        let Some(action) = hosted_action else {
+            return button;
+        };
+        let edits = self.pending_library_edits.clone();
+        button.on_effect(move || {
+            edits.update(|queue| queue.push(action.clone()));
+        })
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -2128,6 +2228,7 @@ impl BrowserWidget {
             clear_history: self.unit_binding("browser.history", "clear"),
             clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
             close: self.unit_binding("browser", "show-page"),
+            document_edits: Some(self.pending_library_edits.clone()),
         }
     }
 
@@ -2732,7 +2833,12 @@ impl BrowserWidget {
         } else {
             "Bookmark this page"
         };
-        let bookmark_btn = self.bind_button(
+        let hosted_bookmark = if self.is_framework_hosted() {
+            self.page_bookmark_action()
+        } else {
+            None
+        };
+        let bookmark_btn = self.route_document_button(
             Button::new("browser.bookmark", "", None)
                 .with_icon(Icon::Star)
                 .with_accessible_name(bookmark_label)
@@ -2741,6 +2847,7 @@ impl BrowserWidget {
                 .with_size(nav_btn.0, nav_btn.1),
             "browser.page",
             "bookmark",
+            hosted_bookmark,
         );
         let (library_resource, library_action) = if self.show_library {
             ("browser", "show-page")
@@ -3258,13 +3365,18 @@ impl BrowserWidget {
                         &resource_id,
                         "open",
                     );
-                    let remove = self.bind_button(
+                    let remove = self.route_document_button(
                         Button::new(&remove_control_id, "Remove", None)
                             .with_accessible_name(&format!("Remove bookmark {}", entry.title))
                             .tooltip("Remove bookmark")
                             .with_size(if large_text { 150.0 } else { 96.0 }, action_height),
                         &resource_id,
                         "remove",
+                        self.is_framework_hosted()
+                            .then(|| BrowserAction::RemoveBookmark {
+                                url: entry.url.clone(),
+                                observed_tags: entry.tags.clone(),
+                            }),
                     );
                     let row_content: Box<dyn Widget> = if self.compact_chrome && large_text {
                         Box::new(
@@ -4476,7 +4588,13 @@ impl BrowserWidget {
                 WKey::Character(c) if c == "-" => Some(Action::Zoom(-1)),
                 WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
                 WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
-                    self.queue_unit_operation("browser.page", "bookmark");
+                    if self.is_framework_hosted() {
+                        if let Some(action) = self.page_bookmark_action() {
+                            self.enqueue_library_action(action);
+                        }
+                    } else {
+                        self.queue_unit_operation("browser.page", "bookmark");
+                    }
                     return true;
                 }
                 _ => None,
@@ -5031,6 +5149,7 @@ impl Widget for BrowserWidget {
         self.apply_engine_events();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
+        self.flush_library_edits(state);
         let heads = state.get_heads();
         if self.projected_heads.as_ref() != Some(&heads) {
             self.sync_settings_from_document(state, path);
@@ -5852,7 +5971,7 @@ impl ui::resources::PublishesResources for BrowserWidget {
         // via tilo_resource::publish. Live extras (find-in-page session, load
         // progress) are not resource actions today, so there is nothing left
         // to add beside that door.
-        if self.framework_hosted {
+        if self.is_framework_hosted() {
             return Vec::new();
         }
         const MATERIALIZED_LIMIT: usize = 100;
@@ -6416,7 +6535,7 @@ impl ui::resources::PublishesResources for BrowserWidget {
             }
             None
         }
-        if self.framework_hosted {
+        if self.is_framework_hosted() {
             if id == "browser" {
                 return None;
             }
