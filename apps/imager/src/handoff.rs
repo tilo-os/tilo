@@ -97,22 +97,30 @@ pub fn apply_setup_handoff(
         if label.is_empty() {
             return Err("A device name is required to enroll this machine's identity.".into());
         }
-        let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/personal-rooms.json"));
-        tilo_identity_host::provisioning::enroll_from_local_identity(
-            &tilo_identity_host::provisioning::JoinedDeviceLayout {
-                target_root: root,
-                username: profile.user.username.trim(),
-                local_identity_dir: local.identity_dir,
-                local_system: local.system,
-                local_home_peers: local.home_peers,
-                local_rooms: &rooms,
-            },
-            &profile.user.full_name,
-            label,
-            now_ns(),
-        )
-        .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
+                .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/personal-rooms.json"));
+            tilo_identity_host::provisioning::enroll_from_local_identity(
+                &tilo_identity_host::provisioning::JoinedDeviceLayout {
+                    target_root: root,
+                    username: profile.user.username.trim(),
+                    local_identity_dir: local.identity_dir,
+                    local_system: local.system,
+                    local_home_peers: local.home_peers,
+                    local_rooms: &rooms,
+                },
+                &profile.user.full_name,
+                label,
+                now_ns(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (root, local, label);
+            return Err("Identity enrollment from a Windows host is not supported yet.".into());
+        }
     }
     Ok(())
 }
@@ -385,6 +393,7 @@ fn walkdir(root: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// Default locations for this machine's identity material.
+#[cfg(unix)]
 pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     use std::sync::OnceLock;
     static SYSTEM: OnceLock<tilo_user_identity::IdentityPaths> = OnceLock::new();
@@ -412,6 +421,22 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
     })
 }
 
+#[cfg(not(unix))]
+pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
+    use std::sync::OnceLock;
+    static SYSTEM: OnceLock<tilo_user_identity::IdentityPaths> = OnceLock::new();
+    static IDENTITY_DIR: OnceLock<PathBuf> = OnceLock::new();
+    static HOME_PEERS: OnceLock<PathBuf> = OnceLock::new();
+    let root = std::env::temp_dir().join("tilo-imager");
+    Ok(LocalIdentity {
+        identity_dir: IDENTITY_DIR.get_or_init(|| root.join("identity")),
+        system: SYSTEM
+            .get_or_init(|| tilo_user_identity::IdentityPaths::under(root.join("system"))),
+        home_peers: HOME_PEERS.get_or_init(|| root.join("home-peers.json")),
+    })
+}
+
+#[cfg(unix)]
 fn dirs_fallback() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
@@ -421,6 +446,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn handoff_writes_wifi_and_a_certified_device_without_the_root_secret() {
         let local_dir = tempfile::tempdir().unwrap();
         let identity_dir = local_dir.path().join("identity");
