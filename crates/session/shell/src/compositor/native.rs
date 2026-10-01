@@ -364,6 +364,15 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// A `wl_surface.frame` on a commit that did not change the tree, the
+/// layout, or an animation is not a present. Release it on its own.
+/// While locked the desktop is not shown, and the callback stays until a
+/// real lock or unlock frame, as it did before idle apps stopped driving
+/// cadence.
+fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
+    !locked && !content_changed
+}
+
 /// Whether the next park must keep the frame deadline for a pending frame.
 /// While the bounded presenter is full, an already-due frame deadline would
 /// make every park a zero timeout and spin the loop until a frame retires;
@@ -9647,7 +9656,11 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due || foreign::frame_callbacks_waiting(&state),
+            // A client frame callback is not a present. A configure ack or a
+            // title carries one and changes no pixels; painting to release
+            // it kept the shell busy while apps sat still. The callback is
+            // fired below when this tick will not build a frame.
+            apps: apps_changed || widget_deadline_due,
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -9688,6 +9701,13 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        // Nothing new to show. Release a waiting client callback without
+        // layout or present so a FIFO swapchain is not stuck, and so an
+        // idle desktop does not build a frame for a commit that changed
+        // neither the tree, the layout, nor an animation.
+        if release_idle_client_callback(session.is_locked(), content_changed) {
+            foreign::release_idle_frame_callbacks(&mut state);
+        }
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -11124,6 +11144,19 @@ mod tests {
         assert!(
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
+        );
+        // Phase `an_idle_frame_callback_does_not_present`.
+        assert!(
+            release_idle_client_callback(false, false),
+            "a callback with no tree, layout, or animation change is released without a frame"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
+        );
+        assert!(
+            !release_idle_client_callback(true, false),
+            "a locked session does not answer hidden clients with an idle release"
         );
         // Phase `available_presenter_keeps_overdue_work_immediate`.
         {
