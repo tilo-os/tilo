@@ -1928,16 +1928,10 @@ impl AppHandler {
                 );
             }
         }
-        if !crate::render_thread::retry::submit_redraw_frame(
+        if crate::render_thread::retry::submit_redraw_frame(
             full_redraw_required,
             !damage_regions.is_empty(),
         ) {
-            // The callback that woke this redraw changed no pixels. Presenting
-            // would commit a new buffer and a new frame callback, and the
-            // shell would paint that echo while the desktop sat still.
-            scene.reset();
-            render.buffers.unprepare((scene, damage_regions));
-        } else {
             let req = RenderRequest::Frame {
                 cpu_frame_id: app
                     .profiler
@@ -2035,6 +2029,12 @@ impl AppHandler {
                     t_send_us,
                 );
             }
+        } else {
+            // The callback that woke this redraw changed no pixels. Presenting
+            // would commit a new buffer and a new frame callback, and the
+            // shell would paint that echo while the desktop sat still.
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
         }
 
         if needs_followup_redraw {
