@@ -3539,6 +3539,9 @@ impl ui::resources::PublishesResources for CameraApp {
         self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::resource::CAMERA_RESOURCE_ID {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
