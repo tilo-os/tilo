@@ -532,6 +532,9 @@ pub struct ShellOverlayHost {
     /// One-shot driver so a workspace switch requests a run of frames
     /// instead of painting once and idling (W16). Settles with the curve.
     workspace_switch: ui::Transition,
+    /// Wall-clock end of that frame run. Draw must not clear it: snapping
+    /// the curve let the close flush both scanouts on every remaining paint.
+    workspace_switch_until: Option<Instant>,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -1466,7 +1469,7 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
-                workspace_switch: self.workspace_switch.is_animating(now),
+                workspace_switch: self.workspace_switch_holding_at(now),
                 quick_settings: self.qs_transition.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
@@ -2013,6 +2016,7 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
+            workspace_switch_until: None,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_px: (
@@ -3056,20 +3060,40 @@ impl ShellOverlayHost {
     /// Whether the workspace-switch frame run is still in flight.
     /// Intermediate frames must not upload the desktop again.
     pub(crate) fn workspace_switch_holding(&self) -> bool {
-        self.workspace_switch.is_animating(Instant::now())
+        self.workspace_switch_holding_at(Instant::now())
+    }
+
+    fn workspace_switch_holding_at(&self, now: Instant) -> bool {
+        self.workspace_switch_until.is_some_and(|until| now < until)
+            || self.workspace_switch.is_animating(now)
+    }
+
+    /// Content column of the first display. The close paints its frame run
+    /// here; the rect stops at the next display so the other scanout is not
+    /// part of the upload.
+    pub(crate) fn workspace_switch_clip(&self) -> Option<vello::FineDamageRect> {
+        if !self.workspace_switch_holding() {
+            return None;
+        }
+        let primary = self.outputs.first()?;
+        let clearance = workspace_rail_clearance_for_viewport(primary.height.max(1.0));
+        let next_left = self.outputs.get(1).map(|output| output.scene.x0);
+        let x0 = primary.scene.x0 + clearance;
+        let x1 = next_left.unwrap_or(primary.scene.x1).min(primary.scene.x1);
+        scene_damage_rect(Rect::new(x0, primary.scene.y0, x1, primary.scene.y1))
     }
 
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
-    /// second slide implementation. Draw snaps this when motion is reduced.
+    /// second slide implementation. Reduced motion still runs the frames:
+    /// snapping the curve made the close flush both scanouts.
     /// Call on the chord, not only from `update`: demand is sampled first.
     pub(crate) fn start_workspace_switch_frames(&mut self) {
+        let duration = Duration::from_millis(WORKSPACE_SWITCH_MS);
         self.workspace_switch = ui::Transition::closed();
-        self.workspace_switch.set_open(
-            true,
-            Duration::from_millis(WORKSPACE_SWITCH_MS),
-            ui::Curve::EaseOut,
-        );
+        self.workspace_switch
+            .set_open(true, duration, ui::Curve::EaseOut);
+        self.workspace_switch_until = Instant::now().checked_add(duration);
         self.request_compositor_transition_paints();
     }
 
@@ -18358,7 +18382,7 @@ impl ShellOverlayHost {
             ("root-transition", self.transition_started.and(next_frame)),
             (
                 "workspace-switch",
-                next_frame.filter(|_| self.workspace_switch.is_animating(now)),
+                next_frame.filter(|_| self.workspace_switch_holding_at(now)),
             ),
         ]
     }
@@ -18453,7 +18477,7 @@ impl ShellOverlayHost {
             .and_then(|chrome| chrome.borrow().osd)
             .is_some_and(|osd| osd.needs_animation_frame_at(now));
         self.transition_started.is_some()
-            || self.workspace_switch.is_animating(now)
+            || self.workspace_switch_holding_at(now)
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
@@ -18908,10 +18932,6 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if theme.reduce_motion {
-            self.workspace_switch
-                .set_open(true, Duration::ZERO, ui::Curve::EaseOut);
-        }
         self.draw_real_peers(scene, transform, text_renderer, theme, presence);
 
         // Sidebar wheel: above desktop content, below every overlay
