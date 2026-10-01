@@ -746,7 +746,7 @@ def make_plan(
     check_rows = []
     for arch, runner in runners.items():
         for shard in balance(selected, packages, effective_shards, test_seconds):
-            check_rows.append({**shard, "arch": arch, "runner": runner})
+            check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
     # Test shards cover the tested packages and scoped readers, split by
     # recorded test time. Packages too heavy to share a job get their own
     # shards, which start first; the rest balance around them.
@@ -769,7 +769,9 @@ def make_plan(
         scoped_names = sorted(scoped_tests.keys() & shard_names)
         scoped = [{"package": name, "test": scoped_tests[name].test,
                    "filter": scoped_tests[name].filter} for name in scoped_names]
-        return {**shard, "arch": arch, "runner": runner,
+        # check_runner: a pull request runs its own check.yml against this
+        # planner from the merged tree; older branches' check.yml reads it.
+        return {**shard, "arch": arch, "runner": runner, "check_runner": runner,
                 "test_packages": " ".join(f"-p {name}" for name in test_names),
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 
