@@ -34,6 +34,22 @@ static void on_sigill(int signal_number, siginfo_t *info, void *context) {
     _exit(132);
 }
 
+/* The greeter's graphics libraries replace the signal disposition after
+ * loading. Keep the probe installed during this disposable diagnostic. */
+int sigaction(int number, const struct sigaction *action, struct sigaction *previous) {
+    static int (*next)(int, const struct sigaction *, struct sigaction *);
+    if (!next) next = dlsym(RTLD_NEXT, "sigaction");
+    if (number == SIGILL && action) {
+        static const char marker[] = "TILO_SIGILL_HANDLER_INTERCEPTED\n";
+        write(STDERR_FILENO, marker, sizeof(marker) - 1);
+        struct sigaction probe = *action;
+        probe.sa_sigaction = on_sigill;
+        probe.sa_flags |= SA_SIGINFO;
+        return next(number, &probe, previous);
+    }
+    return next(number, action, previous);
+}
+
 __attribute__((constructor)) static void install_sigill_probe(void) {
     static const char loaded[] = "TILO_SIGILL_PROBE_LOADED\n";
     write(STDERR_FILENO, loaded, sizeof(loaded) - 1);
