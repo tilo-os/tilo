@@ -2764,13 +2764,19 @@ impl ui::resources::PublishesResources for DbClientApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self)
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id)
-                .or_else(|| self.search_index.resource(id));
+        if self.is_hosted() && id == "database" {
+            return None;
         }
         self.publish_resource(doc, id)
+            .or_else(|| {
+                self.is_hosted()
+                    .then(|| {
+                        crate::resource::live_extras(self)
+                            .into_iter()
+                            .find(|resource| resource.id.as_str() == id)
+                    })
+                    .flatten()
+            })
             .or_else(|| self.search_index.resource(id))
     }
 }
