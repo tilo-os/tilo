@@ -2184,10 +2184,13 @@ jobs:
             --label "org.opencontainers.image.base.child.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
             --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,rewrite-timestamp=true" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+          # No rewrite-timestamp above: the board builds take this image's
+          # layers from this builder, and rewritten ones would be different
+          # blobs, every one of which the boards would push again.
           board_pids=()
           for board in $(jq -r '.[]?' <<< "${BOARDS:-[]}"); do
             name="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-$board"
