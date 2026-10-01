@@ -2067,6 +2067,7 @@ COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
+COPY --chmod=0755 os/usr/libexec/tilo-cage-session /usr/libexec/tilo-cage-session
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth, and starts /

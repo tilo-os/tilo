@@ -1124,20 +1124,22 @@ impl Pipeline {
 
         // Encode the source with the production encoder — same code
         // path SharedFlatpakSession uses.
-        let nalus = self
+        let units = self
             .send_encoder
             .encode(src)
             .map_err(|e| format!("send_encoder.encode: {e:?}"))?;
         self.sent_frames = self.sent_frames.saturating_add(1);
 
-        // Push the full per-frame NAL blob as a single shim payload — the
+        // Push each frame's full NAL blob as a single shim payload — the
         // throttle sees per-frame granularity, matching how a real streaming
         // path bundles keyframe SPS+PPS+IDR together. Splitting into
         // individual NALs would let the throttle pace within a frame,
         // understating real burst behaviour.
         let now = Instant::now();
-        let size = nalus.len() as u64;
-        self.shim.push(now, size, nalus);
+        for unit in units {
+            let size = unit.data.len() as u64;
+            self.shim.push(now, size, unit.data);
+        }
 
         // Drain everything the shim has decided is ready, feeding each
         // frame's access unit into the decoder in emitted order. Units
@@ -1177,11 +1179,13 @@ impl Pipeline {
             .compose(src, self.last_decoded.as_deref(), &footer);
 
         // Encode the composite via the second encoder and mux it.
-        let composite_nalus = self
+        let composite_units = self
             .composite_encoder
             .encode(composite_rgba)
             .map_err(|e| format!("composite_encoder.encode: {e:?}"))?;
-        self.muxer.write_access_unit(&composite_nalus)?;
+        for unit in composite_units {
+            self.muxer.write_access_unit(&unit.data)?;
+        }
 
         Ok(now.elapsed())
     }
@@ -1271,7 +1275,15 @@ fn main() -> Result<(), String> {
     let shim_stats = pipeline.shim.stats();
     let started = pipeline.started;
 
-    // Finish the MP4 (writes its trailer).
+    // Mux the composite frames still in the encoder, then finish the MP4
+    // (writes its trailer).
+    let tail = pipeline
+        .composite_encoder
+        .finish()
+        .map_err(|e| format!("composite_encoder.finish: {e:?}"))?;
+    for unit in tail {
+        pipeline.muxer.write_access_unit(&unit.data)?;
+    }
     pipeline.muxer.finish()?;
 
     let total_wall = started.elapsed();

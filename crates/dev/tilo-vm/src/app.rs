@@ -2941,7 +2941,9 @@ impl App {
         let bls = self.vm_sh(
             vm,
             endpoint,
-            &format!("grep -l -F 'composefs={verity}' /boot/loader/entries/*.conf"),
+            &format!(
+                "grep -l -F 'composefs={verity}' /boot/loader/entries.staged/*.conf /boot/loader/entries/*.conf 2>/dev/null"
+            ),
         )?;
         let mut paths = bls.stdout.lines();
         let path = paths
@@ -2949,7 +2951,8 @@ impl App {
             .filter(|path| {
                 bls.success
                     && paths.next().is_none()
-                    && path.starts_with("/boot/loader/entries/")
+                    && (path.starts_with("/boot/loader/entries.staged/")
+                        || path.starts_with("/boot/loader/entries/"))
                     && path
                         .rsplit_once('.')
                         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("conf"))
@@ -2966,10 +2969,22 @@ impl App {
                 .lines()
                 .find_map(|line| line.strip_prefix(prefix).map(str::trim))
         };
-        let base = format!("/EFI/Linux/bootc_composefs-{verity}/");
-        if field("linux ") != Some(format!("{base}vmlinuz").as_str())
-            || field("initrd ") != Some(format!("{base}initrd").as_str())
-        {
+        // bootc stages the new BLS options before shutdown, in
+        // entries.staged. If the kernel did not change, that entry correctly
+        // reuses the previous deployment's kernel and initrd directory.
+        let base = field("linux ")
+            .and_then(|path| path.strip_suffix("vmlinuz"))
+            .ok_or_else(|| CliError::Config {
+                path: path.into(),
+                detail: "BLS kernel and initrd do not match the staged deployment".into(),
+            })?;
+        let kernel_verity = base
+            .strip_prefix("/EFI/Linux/bootc_composefs-")
+            .and_then(|hash| hash.strip_suffix('/'));
+        let valid_kernel = kernel_verity.is_some_and(|hash| {
+            hash.len() == 128 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        if !valid_kernel || field("initrd ") != Some(format!("{base}initrd").as_str()) {
             return Err(CliError::Config {
                 path: path.into(),
                 detail: "BLS kernel and initrd do not match the staged deployment".into(),

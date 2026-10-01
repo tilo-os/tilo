@@ -67,13 +67,15 @@ containerfile="$repo/os/Containerfile"
 # cache.
 # tilo-esp-write and its unit, the only writer of the read-only ESP, are
 # deliberate additions.
+# The virtio-only Cage session wrapper is installed as a single executable;
+# physical GPU sessions still use the ordinary greeter command.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=e17ce8194539352f9f6fcb1f8ffc7f853ff99b0f46f2bf2be93cde60712ea0b6
+expected_contract=ac3a205ea1c8fb16b404e853af9a86f6d58dc33eeb5718c5c7e13badcf5917e0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -111,9 +113,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
 # Pinning the unpacked base's directory times to the epoch adds one RUN.
-# Keep the current 150-instruction bound exact and reviewed.
-[ "$instructions" -le 150 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 150)" >&2
+# The single virtio Cage wrapper COPY brings the reviewed rootfs to 151.
+[ "$instructions" -le 151 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 151)" >&2
   exit 1
 }
 

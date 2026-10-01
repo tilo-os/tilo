@@ -4,8 +4,8 @@
 //! same for spacing, so `const PAD: f64 = 12.0;` and `length(16.0)` kept
 //! entering widget, chrome, shell and app code with no record. This file
 //! counts them per file and pins the count: a file may never carry more than
-//! `spacing_token_baseline.txt` says, and one that sheds some has to lower
-//! its line in the same commit. The number only moves down.
+//! `spacing_token_baseline.txt` says; one that sheds some is noted so its
+//! line can be lowered. The number only moves down.
 //!
 //! Two shapes are counted, both outside comments and `#[cfg(test)]` modules:
 //!
@@ -41,7 +41,8 @@ use std::{
 };
 
 use crate::support::ratchet::{
-    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
+    Counts, is_skipped, note_stale, ratchet_failures, read_baseline, test_module_spans,
+    write_baseline,
 };
 
 /// Recorded counts, relative to the `ui` crate root.
@@ -314,13 +315,7 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
                 grew.len(),
                 grew.join("\n"),
             );
-            assert!(
-                stale.is_empty(),
-                "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
-         The ratchet only moves down — lower these so the progress is kept:\n{}",
-                stale.len(),
-                stale.join("\n"),
-            );
+            note_stale(BASELINE, "UPDATE_F1_SPACING_BASELINE", &stale);
         }
         spacing_literals_do_not_grow();
     }

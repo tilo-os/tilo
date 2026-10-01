@@ -50,7 +50,13 @@ not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
 disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
 (`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
 and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
-systemctl reboot` moves it to main's newest dev image.
+systemctl reboot` moves it to main's newest dev image. The newest such disk from
+main stays at a fixed URL, which retention never prunes:
+
+```sh
+curl -fLO https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2
+curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2.sha256 | sha256sum -c -
+```
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
@@ -77,8 +83,13 @@ Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):
 
+The newest disk per board stays at a fixed URL, which retention never prunes
+(`<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`):
+
 ```sh
-curl -fLO <disk URL from the job summary>
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/aarch64-<board>
+curl -fLO "$base/tilo-vm-candidate-aarch64.qcow2"
+curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
 sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
 ```
 
