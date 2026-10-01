@@ -20,6 +20,7 @@
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
+//! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //!
 //! Routes after the handshake carry the session token in
