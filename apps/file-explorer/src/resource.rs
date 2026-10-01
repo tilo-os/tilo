@@ -183,6 +183,14 @@ mod tests {
 
         widget.set_framework_hosted(true);
         assert!(widget.is_framework_hosted());
+        let folder_id = crate::search_provider::folder_resource_id(directory.path());
+        assert!(ui::resources::resource(&widget, &doc, &folder_id).is_none());
+        let place_id = place_children[0].id.as_str().to_owned();
+        assert!(
+            ui::resources::resource(&widget, &doc, &place_id)
+                .is_some_and(|place| place.actions.iter().any(|action| action.id == "open")),
+            "a hosted place stays the published row"
+        );
         let extras = widget.resources(&doc);
         assert!(
             extras.iter().all(|r| r.kind != "files.folder"),

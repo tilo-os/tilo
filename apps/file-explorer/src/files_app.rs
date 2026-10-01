@@ -428,7 +428,7 @@ pub(crate) fn published_template_resources() -> Vec<Resource> {
 
 /// Favourites snapshot for Resource publish when the widget is not the door.
 pub(crate) fn load_published_places() -> Vec<favorites::Favorite> {
-    let Some(home) = xdg_paths::home() else {
+    let Some(home) = tilo_paths::home() else {
         return Vec::new();
     };
     let dirs = favorites::UserDirs::from_system();
@@ -6902,10 +6902,10 @@ impl FileExplorerWidget {
 }
 
 impl FileExplorerWidget {
-    /// The small, stable root exposed to the broker directory.  Listing a
-    /// folder may entail hundreds of thousands of entries, so entries,
-    /// templates, places, and remote projections stay behind their retained
-    /// search providers rather than being copied into this root page.
+    /// The small, stable root exposed to the broker directory. A folder listing
+    /// may be huge, so entry rows stay bounded. Session favorites come first.
+    /// A place [`tilo_resource::publish`] already listed stays when this session
+    /// does not already have that place.
     fn published_folder(&self, doc: &automerge::AutoCommit) -> Resource {
         let live = self.action_directory_folder_root();
         let mut folder = ui::tilo_resource::publish::<crate::resource::FileExplorer>(
@@ -6924,6 +6924,16 @@ impl FileExplorerWidget {
                 folder.actions.push(action);
             }
         }
+        let published = std::mem::take(&mut folder.children);
+        let mut templates = Vec::new();
+        let mut published_places = Vec::new();
+        for child in published {
+            if child.kind == "files.template" {
+                templates.push(child);
+            } else if child.kind == "files.place" {
+                published_places.push(child);
+            }
+        }
         folder.children = live.children;
         if self.error.is_some() {
             folder
@@ -6934,9 +6944,10 @@ impl FileExplorerWidget {
                 ));
         }
         if !self.is_trash_view() {
-            for mut template in published_template_resources() {
+            let can_create = self.current_path.is_dir();
+            for template in &mut templates {
                 if let Some(action) = template.actions.first_mut() {
-                    action.contract.availability = if self.current_path.is_dir() {
+                    action.contract.availability = if can_create {
                         Availability::Available
                     } else {
                         Availability::Unavailable {
@@ -6945,12 +6956,22 @@ impl FileExplorerWidget {
                         }
                     };
                 }
-                folder.children.push(template);
             }
+            folder.children.extend(templates);
         }
         folder
             .children
             .extend(published_place_resources(&self.favs.borrow().favorites));
+        let listed: std::collections::HashSet<String> = folder
+            .children
+            .iter()
+            .map(|child| child.id.as_str().to_string())
+            .collect();
+        for place in published_places {
+            if !listed.contains(place.id.as_str()) {
+                folder.children.push(place);
+            }
+        }
         folder.children.extend(self.live_remote_account_resources());
         folder.children.extend(self.live_entry_resources());
         folder
@@ -8900,14 +8921,33 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
     /// actual folder while preserving canonical action equivalence for Places,
     /// remote accounts, and late collaborative records.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
-        (id == crate::search_provider::folder_resource_id(&self.current_path))
-            .then(|| self.published_folder(doc))
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .find(|entry| Self::entry_resource_id(entry) == id)
-                    .map(|entry| self.entry_resource(entry))
-            })
+        fn find(resource: &Resource, id: &str) -> Option<Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            for child in &resource.children {
+                if let Some(found) = find(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let folder = self.published_folder(doc);
+        if let Some(found) = find(&folder, id) {
+            if self.framework_hosted && found.id == folder.id {
+                return None;
+            }
+            return Some(found);
+        }
+        if !self.framework_hosted
+            && id == crate::search_provider::folder_resource_id(&self.current_path)
+        {
+            return Some(self.published_folder(doc));
+        }
+        self.entries
+            .iter()
+            .find(|entry| Self::entry_resource_id(entry) == id)
+            .map(|entry| self.entry_resource(entry))
             .or_else(|| {
                 self.places_search
                     .resource(id)
