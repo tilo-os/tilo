@@ -1,23 +1,27 @@
-# bootc for dev board disk installs: v1.16.13, the image's own release, with
-# os/external-assets/bootc-install-reseal/0001-install-reseal-uki.patch, so
-# that `bootc install` with BOOTC_INSTALL_RESEAL_UKI=1 writes the UKI with the
-# composefs digest it computed instead of refusing a UKI sealed with another
-# one (bootc#2334). The disk installs in one pass and prints the digest, which
-# os/dev/build-image.sh then reseals the image with. Only the disk installer
-# runs it (os/dev/disk-image.sh --bootc-helper); no image ships it.
+# bootc for sealing dev board images: v1.16.13, the image's own release, with
+# the patches in os/external-assets/bootc-install-reseal/:
+#   0001: `bootc install` with BOOTC_INSTALL_RESEAL_UKI=1 writes the UKI with
+#         the composefs digest it computed instead of refusing a UKI sealed
+#         with another one (bootc#2334), and prints it
+#         (os/dev/disk-image.sh --reseal-uki).
+#   0002: `bootc container compute-composefs-digest-from-storage` reads a
+#         transport-qualified reference such as docker://, so the board build
+#         computes the digest install will compute from the pushed layers
+#         (os/Containerfile.board, cfs-digest).
+# No image ships it.
 ARG BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 FROM ${BUILD_IMAGE} AS build
 ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SHA256=99c03054ded60c043a41f73b076b0dc137bc3518579c6cf98cf460556f86f641
-COPY os/external-assets/bootc-install-reseal/0001-install-reseal-uki.patch /patches/
+COPY os/external-assets/bootc-install-reseal/*.patch /patches/
 RUN dnf install -y ostree-devel patch \
     && dnf clean all \
     && curl -fsSL "https://github.com/bootc-dev/bootc/archive/refs/tags/v${BOOTC_VERSION}.tar.gz" -o /bootc.tar.gz \
     && echo "${BOOTC_SHA256}  /bootc.tar.gz" | sha256sum -c - \
     && tar -xzf /bootc.tar.gz -C / \
     && cd "/bootc-${BOOTC_VERSION}" \
-    && patch -p1 < /patches/0001-install-reseal-uki.patch \
+    && for p in /patches/*.patch; do patch -p1 < "$p"; done \
     && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --locked --release -p bootc \
     && install -D -m 0755 target/release/bootc /out/bootc \
     && /out/bootc --version
