@@ -152,6 +152,9 @@ pub struct FramePaint {
     pub(crate) workspace_id: Option<u64>,
     /// The workspace-switch frame run. Intermediate frames must not upload.
     pub(crate) workspace_hold: bool,
+    /// Content column of the first display while that run is in flight.
+    /// The close stays inside it instead of flushing every scanout.
+    pub(crate) workspace_clip: Option<FineDamageRect>,
     /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
@@ -169,6 +172,7 @@ impl FramePaint {
             overview_patch: None,
             workspace_id: None,
             workspace_hold: false,
+            workspace_clip: None,
             hdr_layers: Vec::new(),
         }
     }
@@ -1592,6 +1596,7 @@ impl FrameBuilder {
         let overview_patch = self.host.take_overview_fast_patch();
         let workspace_id = Some(self.chrome.borrow().tree().desktop.active.raw());
         let workspace_hold = self.host.workspace_switch_holding();
+        let workspace_clip = self.host.workspace_switch_clip();
         FramePaint {
             scene,
             revision,
@@ -1600,6 +1605,7 @@ impl FrameBuilder {
             overview_patch,
             workspace_id,
             workspace_hold,
+            workspace_clip,
             hdr_layers,
         }
     }
@@ -5259,6 +5265,58 @@ mod tests {
         compositor_paint_run_is_not_host_demand();
         latch_asks_the_compositor_for_eight_paints();
         both_directions_hold_the_scanout();
+    }
+
+    #[test]
+    fn workspace_switch_close_paints_intermediate_frames_on_the_clip() {
+        use crate::shell::output_scene::OutputGeometry;
+
+        let mut fb = FrameBuilder::new((3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        let mut switched = false;
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(1);
+        });
+        assert!(switched, "the demo tree has a second workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let open = fb.paint_with_damage();
+        assert!(open.workspace_hold);
+        for _ in 0..8 {
+            let frame = fb.paint_with_damage();
+            assert!(
+                frame.workspace_hold,
+                "the open keeps a run of frames without idling"
+            );
+        }
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(-1);
+        });
+        assert!(switched, "switching back moves to the previous workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        for index in 0..8 {
+            let frame = fb.paint_with_damage();
+            assert!(
+                frame.workspace_hold,
+                "close frame {index} is still in the frame run"
+            );
+            let clip = frame
+                .workspace_clip
+                .expect("the close paints on the workspace clip");
+            let right = clip.x.saturating_add(clip.width);
+            assert!(
+                right <= 1920,
+                "close frame {index} stays on the first display (clip ends at {right})"
+            );
+            assert!(
+                clip.width < 1920,
+                "close frame {index} is the content column ({} px), not a scanout",
+                clip.width
+            );
+        }
     }
 
     #[test]
