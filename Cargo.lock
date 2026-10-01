@@ -14283,6 +14283,7 @@ dependencies = [
  "portable-pty",
  "runtime-dylib",
  "runtime-portal",
+ "serde",
  "serde_json",
  "serial_test",
  "taffy",
