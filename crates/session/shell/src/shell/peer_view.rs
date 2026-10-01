@@ -719,7 +719,9 @@ mod tests {
     /// Cisco binary needed.
     fn vp9_unit(width: u32, height: u32) -> Vec<u8> {
         let mut enc = VideoEncoder::new(StreamCodec::Vp9, width, height, 30).expect("VP9 encoder");
-        enc.encode(&gradient_frame(width, height)).expect("encode")
+        let mut units = enc.encode(&gradient_frame(width, height)).expect("encode");
+        units.extend(enc.finish().expect("finish"));
+        units.swap_remove(0).data
     }
 
     fn vp9_view(metrics: PeerSurfaceMetrics) -> PeerView {

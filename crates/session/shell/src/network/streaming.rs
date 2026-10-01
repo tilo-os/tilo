@@ -223,12 +223,14 @@ impl ShareRegistry {
     }
 }
 
-/// Outcome of a single `encode_tick` call; `Encoded` carries the NALU
-/// bytes, the rest are distinct no-bytes reasons for metrics (skipped vs. throttled).
+/// Outcome of a single `encode_tick` call; `Encoded` carries every access
+/// unit the encoder finished, the rest are distinct no-bytes reasons for
+/// metrics (skipped vs. throttled).
 #[derive(Debug)]
 pub enum EncodeTickOutcome {
-    /// A frame was encoded; carries the NALU payload.
-    Encoded(Vec<u8>),
+    /// A frame was encoded; carries the finished units in order (possibly
+    /// none yet, or an earlier frame's late unit with this one).
+    Encoded(Vec<media::EncodedUnit>),
     /// The throttle rejected this tick (last encode was less than the configured interval ago); no frame fetched.
     Throttled,
     /// The throttle was open but no new frame is staged — no commit since the previous take, or readback failed and emptied the tracker slot.
@@ -258,9 +260,9 @@ where
         return EncodeTickOutcome::NoFrame;
     };
     match encoder.encode(&rgba) {
-        Ok(nalus) => {
+        Ok(units) => {
             throttle.mark_encoded(now);
-            EncodeTickOutcome::Encoded(nalus)
+            EncodeTickOutcome::Encoded(units)
         }
         Err(err) => EncodeTickOutcome::EncodeFailed(err),
     }
@@ -438,10 +440,11 @@ mod tests {
             let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
                 tracker.take_latest(SURFACE).map(|frame| frame.rgba)
             });
-            let nalus = match outcome {
-                EncodeTickOutcome::Encoded(b) => b,
+            let units = match outcome {
+                EncodeTickOutcome::Encoded(units) => units,
                 other => panic!("expected Encoded, got {other:?}"),
             };
+            let nalus = &units.first().expect("the first frame's unit").data;
             assert!(!nalus.is_empty(), "encoder produced empty bitstream");
 
             // Tracker slot was drained — a second tick must report NoFrame (no new commit since the take).
@@ -458,7 +461,7 @@ mod tests {
 
             // Decode + PSNR check against the same floor as the gradient test.
             let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
-            let frame = decoder.decode(&nalus).expect("decoder yields a frame");
+            let frame = decoder.decode(nalus).expect("decoder yields a frame");
             assert_eq!(frame.width, W);
             assert_eq!(frame.height, H);
 
