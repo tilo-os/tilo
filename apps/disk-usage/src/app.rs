@@ -80,6 +80,7 @@ pub struct DiskUsageApp {
     scan_cancellation: Option<ScanCancellation>,
     picker_rx: Option<ui::portal::PortalChannel>,
     shot_mode: bool,
+    pub(crate) actions: crate::resource::ActionSink,
     hosted: bool,
 }
 
@@ -122,6 +123,7 @@ impl DiskUsageApp {
             scan_cancellation: None,
             picker_rx: None,
             shot_mode: false,
+            actions: crate::resource::ActionSink::default(),
             hosted: false,
         }
     }
@@ -363,7 +365,10 @@ impl DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
@@ -396,7 +401,7 @@ impl Widget for DiskUsageApp {
             if let Some(message) = result.error.clone() {
                 self.view = View::Error(result.path, message);
             } else {
-                DiskUsageDoc::remember(state, &result.path);
+                self.remember_scanned(state, &result.path);
                 self.set_result(result);
             }
             return true;
@@ -890,6 +895,17 @@ impl Widget for DiskUsageApp {
     }
 }
 
+impl ui::undo::CommittedActions for DiskUsageApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
+        // Hosted remembers are applied by the framework dispatcher, which
+        // records its own undo bracket. Standalone stays on the local host.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl DiskUsageApp {
     pub(crate) fn mark_framework_hosted(&mut self) {
         self.hosted = true;
@@ -899,8 +915,40 @@ impl DiskUsageApp {
         self.hosted
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Submit the shared recent-directory projection. Hosted edits use the
+    /// framework dispatcher; standalone, `--shots`, and unit tests use the
+    /// local action host.
+    pub(crate) fn remember_scanned(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let action = crate::resource::DiskUsageAction::Remember {
+            path: path.to_string_lossy().into_owned(),
+        };
+        let context = ui::tilo_actions::ActionContext::for_action(
+            <crate::resource::DiskUsageShell as ui::framework::ResourceApp>::ID,
+            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::LABEL,
+            &action,
+        );
+        self.actions.dispatch_with_context(
+            doc,
+            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::ACTION_TYPE,
+            &action,
+            context,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     pub(crate) fn in_analysis(&self) -> bool {
