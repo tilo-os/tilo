@@ -4478,8 +4478,10 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
             invalidate_app_cache();
-            // Seed the baseline without `installed_apps`, which would arm the
-            // real watch and let its event for the rewrite race this test.
+            // Seed and re-read through `record_app_read` only. `installed_apps`
+            // arms the real watch; earlier helpers (or a dropped tempdir) can
+            // leave that watch firing `expire_watched_app_cache` mid-read and
+            // falsely fail the uncontested memoisation assert below.
             record_app_read(
                 APP_CACHE_EPOCH.load(Ordering::Acquire),
                 &read_installed_apps().unwrap(),
@@ -4497,7 +4499,9 @@ mod tests {
             record_app_read(read_epoch, &raced);
             let raced_generation = gui_apps_generation();
             let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
-            let reread = installed_apps().unwrap();
+            let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
+            let reread = read_installed_apps().unwrap();
+            record_app_read(reread_epoch, &reread);
             let reread_generation = gui_apps_generation();
             let fresh = lock(&APP_CACHE).as_ref().unwrap().1.is_some();
             env.remove("TILO_APPS_DATA_DIR");
@@ -4604,8 +4608,8 @@ mod tests {
             assert!(second > first);
         }
 
-        unchanged_app_cache_refresh_preserves_search_generation();
         raced_app_cache_refresh_keeps_its_read_as_the_baseline();
+        unchanged_app_cache_refresh_preserves_search_generation();
         enumeration_reads_the_registry_and_flags_gui_apps();
         installed_continuity_lookup_reads_signed_manifest_contract();
         display_name_title_cases_the_trailing_component();
