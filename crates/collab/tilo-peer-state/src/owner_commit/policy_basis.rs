@@ -25,3 +25,21 @@ impl PrivatePolicyBasis {
         self.expiries.iter().copied().find(|at| *at > unix_seconds)
     }
 }
+
+/// The canonical owner of `peer`'s room.
+///
+/// # Errors
+///
+/// Returns an error if room governance is missing or malformed.
+pub fn canonical_owner(peer: &crate::StatePeer) -> Result<String, String> {
+    peer.legacy_canonical_owner()
+}
+/// Opaque policy identity. Deliberately excludes aggregate generation, room
+/// heads, document coverage and runtime task/output progress.
+///
+/// # Errors
+///
+/// Returns an error if room governance is missing or malformed.
+pub fn governance_revision(peer: &crate::StatePeer) -> Result<String, String> {
+    peer.legacy_governance_revision()
+}

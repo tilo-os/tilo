@@ -1199,7 +1199,7 @@ disk would hold if the machine lost power at that instant *after* all
 completed writes. Programs that are crash-safe on one machine are built to
 recover from exactly that. That includes git (objects before refs, lockfile
 plus rename), SQLite (journal or WAL), and any program that uses the
-write-temp-fsync-rename pattern (`crates/system/atomic-file`).
+write-temp-fsync-rename pattern (`tilo_files::native::atomic`).
 
 **Guarantee V3: ordered application.** A peer applies one device's changesets
 in epoch order, and each changeset only after its causal context (other
@@ -1831,7 +1831,7 @@ device is clean and does not rewrite the index (tested,
 | `fs` `record_transaction.rs`, `transaction_coordinator.rs` | multi-record atomicity | also carries changesets and Record Store transactions |
 | `fs` `conflict.rs`, `conflict_merge.rs`, `checked_restore.rs`, `history_read.rs` | conflicts, merge, restore | policy by body type (§11) |
 | `fs` `rich_metadata.rs`, `thumbs.rs`, `smart.rs`, `smart_monitor.rs`, `clock.rs`, `caps_file.rs` | metadata, thumbnails, prediction gates, clock, live ACL file | limits raised; working sets added |
-| `fs` `durable_backup.rs`, `crates/system/atomic-file` | crash-safe small files | only for security stores |
+| `fs` `durable_backup.rs`, `tilo_files::native::atomic` | crash-safe small files | only for security stores |
 | `crates/collab/collab-types` | `SignedOp`, validator, roles, `FileBindingV1`, MLS | `MAX_DOCUMENT_MUTATION_BYTES` stops governing durable state |
 | `crates/collab/actions`, `channel-crypto`, `tilo-user-identity` | actions, crypto, identity | unchanged |
 | `crates/sdk/ui-core` `state/` (`UndoLog`, `DocumentFrontier`), `history_source/`, `history_mode/`, `action_host.rs` | undo, history UI, action door | a `HistorySource` over all kinds |

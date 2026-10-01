@@ -974,8 +974,8 @@ impl WindowGroup {
         self.bar.take_activation()
     }
 
-    /// The bar's `active_id` is the authoritative copy (the shell's
-    /// per-frame harvest mirrors it into the persisted tree), so a
+    /// The bar's `active_id` is the authoritative copy (the shell
+    /// flushes it into the persisted tree after input), so a
     /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
         if !self.bar.tabs().iter().any(|t| t.id == id) {

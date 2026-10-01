@@ -79,6 +79,10 @@ pub enum ImagerOperation {
     Cancel,
     Status,
     ExportConfig,
+    /// Host-local Wi-Fi passphrase for the next write. Never collaborative.
+    SetWifiPsk {
+        value: String,
+    },
 }
 
 pub fn encode_operation(operation: &ImagerOperation) -> EncodedAction {
@@ -291,6 +295,13 @@ pub enum ImagerAction {
     SetKeyboard { value: String },
     /// Set the installed system's filesystem.
     SetFilesystem { filesystem: Filesystem },
+    /// Set the Wi-Fi network name the new machine joins. The passphrase is
+    /// entered on this machine and is not part of the action.
+    SetWifiSsid { value: String },
+    /// Set the name of the device identity created for the target.
+    SetDeviceLabel { value: String },
+    /// Enroll the setup machine's person onto the target as a new device.
+    SetEnrollLocalIdentity { on: bool },
 }
 
 impl Action for ImagerAction {
@@ -334,6 +345,15 @@ impl Action for ImagerAction {
             }
             ImagerAction::SetFilesystem { filesystem } => {
                 ImagerDoc::set_profile_filesystem(doc, *filesystem);
+            }
+            ImagerAction::SetWifiSsid { value } => {
+                ImagerDoc::set_profile_text(doc, "wifi_ssid", value);
+            }
+            ImagerAction::SetDeviceLabel { value } => {
+                ImagerDoc::set_profile_text(doc, "device_label", value);
+            }
+            ImagerAction::SetEnrollLocalIdentity { on } => {
+                ImagerDoc::set_profile_enroll_local_identity(doc, *on);
             }
         }
         Ok(())
@@ -492,6 +512,71 @@ fn with_identity_fields(mut res: Resource) -> Resource {
     res
 }
 
+/// Wi-Fi and enrollment applied by this machine onto a written Tilo disk image.
+fn with_write_setup_fields(mut res: Resource) -> Resource {
+    res = res.with_action(
+        ActionSpec::prompted(
+            "wifi-ssid",
+            "Set Wi-Fi network",
+            "Wi-Fi network",
+            "",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetWifiSsid {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted_operation(
+            "wifi-psk",
+            "Set Wi-Fi password",
+            "Wi-Fi password",
+            "",
+            OperationKind::Effect,
+            IMAGER_OPERATION_TYPE,
+            |text| {
+                encode_operation(&ImagerOperation::SetWifiPsk {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "device-label",
+            "Set device name",
+            "Device name",
+            "",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                encode(&ImagerAction::SetDeviceLabel {
+                    value: text.to_string(),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res = res.with_action(
+        ActionSpec::prompted(
+            "enroll-identity",
+            "Enroll this machine's identity",
+            "Enroll (yes or no)",
+            "no",
+            ExecutionLocus::ClientLocal,
+            |text| {
+                let on = matches!(text.trim(), "yes" | "true" | "1");
+                encode(&ImagerAction::SetEnrollLocalIdentity { on })
+            },
+        )
+        .with_contract(profile_contract()),
+    );
+    res
+}
+
 fn with_filesystem(res: Resource, profile: &InstallProfile) -> Resource {
     let current = profile.filesystem;
     res.with_action(
@@ -512,9 +597,9 @@ fn with_filesystem(res: Resource, profile: &InstallProfile) -> Resource {
 }
 
 /// The applied, non-secret install-profile fields exported as Ctrl+K actions on
-/// an open customizable image. This list intentionally mirrors
-/// `InstallProfile::to_media_profile_json`: never advertise a host-side choice
-/// that the live installer cannot consume.
+/// an open customizable image. Media-profile fields are what the live installer
+/// consumes. Wi-Fi, device name, and identity enrollment live on
+/// [`provide_write_setup`] and are applied onto the installed root after write.
 pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
     let label = if source_label.trim().is_empty() {
         "Tilo install options".to_string()
@@ -531,6 +616,21 @@ pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Re
     let res = with_filesystem(with_identity_fields(res), profile);
 
     vec![res]
+}
+
+/// Wi-Fi and identity enrollment applied by this machine during the write.
+pub fn provide_write_setup(source_label: &str) -> Vec<Resource> {
+    let label = if source_label.trim().is_empty() {
+        "Setup on write".to_string()
+    } else {
+        format!("Setup on write: {source_label}")
+    };
+    let res = Resource::new(
+        format!("imager.write-setup:{source_label}"),
+        "imager.write-setup",
+        label,
+    );
+    vec![with_write_setup_fields(res)]
 }
 
 fn source_resource(source: &Source) -> Resource {
@@ -587,6 +687,11 @@ pub fn plan_resources(
             })
     }) {
         resources.extend(provide_resources(&source.name, profile));
+        // Official images also offer on-write Wi-Fi / enrollment; the media
+        // profile stays secret-free and never carries the passphrase or key.
+        resources.extend(provide_write_setup(&source.name));
+    } else if let Some(source) = source {
+        resources.extend(provide_write_setup(&source.name));
     }
 
     let target_children = targets
@@ -855,18 +960,37 @@ mod tests {
             );
         }
 
-        // Phase `plain_iso_publishes_no_resources`.
-        // A plain ISO stays a first-class source resource, but never publishes a
-        // Tilo customization resource it cannot apply.
+        // Phase `plain_iso_publishes_write_setup_not_media_profile`.
+        // A plain ISO stays a first-class source resource. It never publishes a
+        // media customization resource, but it does publish on-write Wi-Fi /
+        // enrollment for a disk image flash.
         {
             use crate::app::ImagerApp;
             let mut app = ImagerApp::new();
             let mut doc = seeded();
             app.sync(&mut doc, &automerge::ROOT);
-            // Seeded source is an installable Tilo image → it publishes.
-            assert!(!ResourceProvider::resources(&app, &doc).is_empty());
+            // Seeded source is an installable Tilo image → customization and
+            // on-write Wi-Fi / enrollment are both published.
+            {
+                let resources = ResourceProvider::resources(&app, &doc);
+                assert!(
+                    resources
+                        .iter()
+                        .any(|resource| resource.kind == "imager.customization"),
+                    "official image publishes media customization"
+                );
+                let setup = resources
+                    .iter()
+                    .find(|resource| resource.kind == "imager.write-setup")
+                    .expect("official image publishes write setup");
+                let ids: Vec<&str> = setup.actions.iter().map(|a| a.id.as_str()).collect();
+                assert_eq!(
+                    ids,
+                    vec!["wifi-ssid", "wifi-psk", "device-label", "enroll-identity"]
+                );
+            }
 
-            // Switch to a plain, non-installable ISO → nothing to customize.
+            // Switch to a plain, non-installable ISO → write setup, not media profile.
             let iso = Source {
                 kind: SourceKind::IsoFile,
                 path: "/home/user/plain.iso".into(),
@@ -892,6 +1016,15 @@ mod tests {
                     .iter()
                     .any(|resource| resource.kind == "imager.customization")
             );
+            let setup = resources
+                .iter()
+                .find(|resource| resource.kind == "imager.write-setup")
+                .expect("disk image publishes write setup");
+            let ids: Vec<&str> = setup.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                vec!["wifi-ssid", "wifi-psk", "device-label", "enroll-identity"]
+            );
         }
 
         // Phase `palette_does_not_advertise_untransported_choices`.
@@ -907,6 +1040,9 @@ mod tests {
             assert!(!ids.contains(&"install-mode"));
             assert!(!ids.contains(&"encrypt"));
             assert!(!ids.contains(&"autologin"));
+            assert!(!ids.contains(&"wifi-ssid"));
+            assert!(!ids.contains(&"wifi-psk"));
+            assert!(!ids.contains(&"enroll-identity"));
         }
     }
 

@@ -49,6 +49,10 @@ on:
         description: "Space-separated disk formats: qcow2 (UTM, libvirt), vhdx (Hyper-V)."
         required: false
         default: "qcow2"
+      rootfs:
+        description: "Filesystem for this development VM disk: btrfs (default) or ext4. Does not rebuild or change the source OS image."
+        required: false
+        default: "btrfs"
       validate_boot:
         description: "auto: native boot proof for signed bases, candidate only for tilo-ci; true requires usable KVM; false publishes only an unvalidated candidate."
         required: false
@@ -501,6 +505,7 @@ jobs:
           TILO_RUN: /var/tmp/tilo-vm-vm-${{ matrix.arch }}
           TILO_TARGET_IMGREF: registry.tilo.so/tilo/tilo-vm:${{ needs.plan.outputs.tag }}
           TILO_DISK_SIZE: 64G
+          TILO_DISK_ROOTFS: ${{ github.event.inputs.rootfs }}
           TILO_QCOW2_COMPRESS: "1"
         run: |
           set -euo pipefail

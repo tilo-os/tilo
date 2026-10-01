@@ -151,14 +151,14 @@ impl PermissionStoreBackend {
 impl PermissionStoreData {
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = atomic_file::json::load_or_default(&path);
+        let state = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             state: Arc::new(Mutex::new(state)),
             path: Arc::new(path),
         }
     }
     fn commit(&self, state: &StoreFile) -> zbus::fdo::Result<()> {
-        atomic_file::json::write_private(&self.path, state)
+        tilo_files::native::atomic::json::write_private(&self.path, state)
             .map_err(|e| failed(&format!("cannot commit permission store: {e}")))
     }
 

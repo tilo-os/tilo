@@ -389,7 +389,7 @@ mod tests {
         }
     }
 
-    /// The browser decoder (`web/legacy-windows.test.mjs`) pins the same bytes.
+    /// The frame layout is fixed: these bytes are the wire contract.
     #[test]
     fn a_chunk_encodes_to_its_pinned_bytes() {
         let chunk = Frame::Chunk {

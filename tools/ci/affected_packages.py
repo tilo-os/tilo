@@ -72,6 +72,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.py": "tools/tests/test_ci_recorded_test_time.py",
@@ -217,11 +218,8 @@ TEST_SHARD_APART = (
     frozenset({"tilo-fs", "fs-native", "private-fs"}),
     frozenset({
         "tilo-action-broker",
-        "tilo-cloud-host",
-        "tilo-device-host",
         "tilo-peer-state",
         "tilo-relay",
-        "tilo-workspace-host",
     }),
 )
 
@@ -604,7 +602,14 @@ def make_plan(
     suite_manifest: path_suites.Manifest | None = None,
     all_suites: bool = False,
     test_seconds: dict[str, int] | None = None,
+    only: dict | None = None,
 ) -> dict:
+    """Plan the check jobs for `changes`.
+
+    `only` narrows a re-check: {"packages": ..., "suites": ...} that the base
+    branch changed since the last green run of the same pull request. Every
+    other package and suite gave the same result on that run.
+    """
     packages, by_dir = package_maps(metadata, root)
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
                        if path in changes}
@@ -688,6 +693,9 @@ def make_plan(
         or (recipe_present and path == "os/Containerfile.builder")
         for path in changes
     )
+    # Packages whose own inputs or dependencies the changes reach, without the
+    # contract packages every plan adds.
+    reached: set[str] = set()
     if pin_only:
         selected = set()
         reason = "snapshot pins only; the pins job verifies their signatures and provenance"
@@ -707,6 +715,7 @@ def make_plan(
         full = True
     else:
         selected = closure(seeds | checked, reverse)
+        reached = selected | readers
         selected.update(ALWAYS_PACKAGES & packages.keys())
         selected.update(readers)
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
@@ -728,6 +737,10 @@ def make_plan(
         dependants, deferred_dependants = direct_dependants_within_budget(
             seeds, reverse, packages, tested)
         tested |= dependants & selected
+    if only is not None:
+        selected &= set(only["packages"])
+        tested &= selected
+        reason += "; re-check limited to what the base branch changed since the last green run"
     scoped_tests = {name: scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
     shard_limit = (shard_count if force_full else
@@ -777,6 +790,8 @@ def make_plan(
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
               if suite_manifest is not None and not pin_only else [])
+    if only is not None:
+        suites = [suite for suite in suites if suite in set(only["suites"])]
     android = sorted(android_apps(packages) & selected)
     wasm = sorted(browser_crates(packages) & selected)
     examples = example_apps(packages, root)
@@ -807,6 +822,7 @@ def make_plan(
         "selected_count": len(selected),
         "workspace_count": len(packages),
         "selected": sorted(selected),
+        "reached": sorted(reached if not full else selected),
         "tested": sorted(tested),
         # Packages that only read a changed file through a scoped input; the
         # test job runs just the tests that read it.
@@ -859,6 +875,25 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"test_shard_count={plan['test_shard_count']}\n")
 
 
+def recheck_scope(root: Path, metadata: dict, tested_base: str, base: str,
+                  suite_manifest) -> dict | None:
+    """Packages and suites whose inputs changed between two base commits, or None for all.
+
+    A pull request green on `tested_base` gives the same result on `base` for
+    every package and suite the base's own changes do not reach. None when the
+    old base is not an ancestor, or the change reaches the whole workspace.
+    """
+    if subprocess.run(["git", "merge-base", "--is-ancestor", tested_base, base],
+                      cwd=root, capture_output=True).returncode:
+        return None
+    changes = changed_files(root, tested_base, base)
+    delta = make_plan(metadata, root, changes, 1, suite_manifest=suite_manifest,
+                      resolved_inputs=resolve_manifest_inputs(root, tested_base, base, metadata, changes))
+    if delta["full"]:
+        return None
+    return {"packages": set(delta["reached"]), "suites": set(delta["suites"])}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", help="base commit/ref (defaults to HEAD^)")
@@ -878,6 +913,9 @@ def main() -> int:
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
     parser.add_argument("--changes", type=Path, help="read changed paths instead of invoking git")
+    parser.add_argument("--recheck-from",
+                        help="re-check of a pull request that was green on this older base commit: "
+                             "limit the plan to what the base changed since (--base is the new base)")
     args = parser.parse_args()
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
@@ -892,6 +930,10 @@ def main() -> int:
         resolve_manifest_inputs(root, args.base, args.head, metadata, changes)
         if args.changes is None and not args.full else {}
     )
+    suite_manifest = path_suites.load(root)
+    only = None
+    if args.recheck_from:
+        only = recheck_scope(root, metadata, args.recheck_from, args.base, suite_manifest)
     plan = make_plan(
         metadata,
         root,
@@ -901,9 +943,10 @@ def main() -> int:
         builder_only_external_assets=builder_only_external_assets,
         allow_security_skip=args.allow_security_skip,
         resolved_inputs=resolved_inputs,
-        suite_manifest=path_suites.load(root),
+        suite_manifest=suite_manifest,
         all_suites=args.all_suites,
         test_seconds=recorded_test_seconds(),
+        only=only,
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:

@@ -28,7 +28,7 @@ path = "src/lib.rs"
 tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 getrandom.workspace = true
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "time"] }
@@ -38,7 +38,7 @@ wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = [
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
 
 [target.'cfg(unix)'.dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 serde_bytes.workspace = true
 serde_json.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde"] }
@@ -53,7 +53,7 @@ tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 rand_core.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["test-support"] }
 tempfile.workspace = true
 # Reproduces malformed `secret_bytes` records written by an earlier identity
 # ceremony, so the loader rejects those records.
