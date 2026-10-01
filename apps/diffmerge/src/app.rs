@@ -1662,12 +1662,18 @@ impl ui::resources::PublishesResources for DiffMergeApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "diffmerge.workspace" {
+            return None;
+        }
+        if let Some(found) = self.publish_resource(doc, id) {
+            return Some(found);
+        }
         if self.is_hosted() {
             return crate::resource::live_extras(self)
                 .into_iter()
                 .find(|resource| resource.id.as_str() == id);
         }
-        self.publish_resource(doc, id)
+        None
     }
 }
 
