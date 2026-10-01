@@ -3217,6 +3217,64 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "window_width_spring",
+            description: "An opening window grows its slot from zero, a committed resize \
+                      springs to the new width, and Super+W collapses the last \
+                      frame while the slot closes.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6101,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(333),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-before-open"),
+                Action::OpenWindow {
+                    app_id: "org.example.new",
+                    surface_id: 6102,
+                },
+                // Placement gives a new group the default fraction; retarget
+                // the in-flight 0→width spring to a third so the slot stays
+                // on screen next to its neighbours (and so a new input keeps
+                // the current velocity).
+                Action::SetWindowWidths(333),
+                Action::Snapshot("02-open-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-open",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-open-settled"),
+                Action::SetWindowWidths(500),
+                Action::Snapshot("04-resize-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-resize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-resize-settled"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("w".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::SnapshotSequence {
+                    prefix: "06-close",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("07-close-settled"),
+            ],
+        },
+
+        Scenario {
             name: "window_open_into_tabbed_group",
             description: "Open a window from inside the default four-tab group; it becomes \
                       the tab right of the selected one.",
