@@ -46,10 +46,12 @@ toolkit = ["dep:ui"]
 net = ["dep:tilo-net"]
 
 [dev-dependencies]
+tilo-automerge-isolate.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true

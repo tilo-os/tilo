@@ -415,7 +415,7 @@ impl PersonalDefaults {
         let mut body =
             serde_json::to_vec_pretty(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?;
         body.push(b'\n');
-        atomic_file::write_creating_parent(path, &body)
+        tilo_files::native::atomic::write_creating_parent(path, &body)
             .map_err(|e| DefaultAppError::Persist(e.to_string()))
     }
 }

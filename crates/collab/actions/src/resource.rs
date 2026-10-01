@@ -1246,6 +1246,17 @@ impl ActionSpec {
         self
     }
 
+    /// Declare this read-only action as the one that answers, with no
+    /// arguments, the first page of the app's open document. Recorded as
+    /// [`DOCUMENT_READ_TAG`](crate::DOCUMENT_READ_TAG), so a caller that just
+    /// opened a file finds it in the directory. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
+    #[must_use]
+    pub fn reads_document(mut self) -> Self {
+        push_tag(&mut self.contract, crate::contract::DOCUMENT_READ_TAG);
+        self
+    }
+
     /// Whether this action is offered only to programmatic callers. See
     /// [`programmatic`](Self::programmatic).
     pub fn is_programmatic(&self) -> bool {

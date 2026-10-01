@@ -104,9 +104,9 @@ pub(super) async fn restart_after_offline_snapshot(
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 2);
 
     // Retire completed enrollment service custody, then reopen the same state
-    // file. The real governor SessionOwner is moved, never cloned/reconstructed.
+    // file. The governor is moved, never cloned or reconstructed.
     receiving_custody.lock().unwrap().take();
-    let (mut governor, _service) = authority.lock().unwrap().take().unwrap();
+    let mut governor = authority.lock().unwrap().take().unwrap();
     drop(owner);
     let path = directory.path().join("state.json");
     let mut tree = crate::shell::persist::load_tree_from(&path).unwrap();
@@ -147,7 +147,6 @@ pub(super) async fn restart_after_offline_snapshot(
         "restored projection must wait for genuine current governor freshness"
     );
 
-    let dispatcher = tilo_workspace_host::host::CheckpointRefreshTestOwner::new(&governor);
     let (mailbox, mut requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
     relay.install_sync_refresh(topic, mailbox).await.unwrap();
     let (commands, actor) = crate::network::actor::Actor::spawn_reporting_addrs(
@@ -193,7 +192,7 @@ pub(super) async fn restart_after_offline_snapshot(
     )
     .await
     .unwrap();
-    dispatcher.execute(&mut governor, request).await.unwrap();
+    refresh_on_request(&mut governor, request).await.unwrap();
     let fresh = publish_committed(&governor, publisher);
     admit_exact(&mut received, &commands, identity, &fresh).await;
     assert!(
@@ -256,28 +255,49 @@ pub(super) async fn restart_after_offline_snapshot(
     let _ = actor.await;
 }
 
+/// The governor's answer to the relay's authenticated checkpoint request: a
+/// member that may still read the room gets a freshly signed checkpoint.
+async fn refresh_on_request(
+    governor: &mut TestGovernor,
+    request: tilo_relay::peer::sync_refresh::Request,
+) -> Result<(), String> {
+    request
+        .execute(|workspace, certificate| {
+            if workspace != governor.workspace_id() {
+                return Err("checkpoint refresh owner is unavailable".into());
+            }
+            let peer = governor.peer();
+            peer.permissions(certificate.device_public_key, SystemTime::now())?;
+            if !peer.certificates().contains(certificate) {
+                return Err("checkpoint refresh certificate is no longer current".into());
+            }
+            governor.refresh_checkpoint()
+        })
+        .await
+}
+
 fn publish_committed(
-    owner: &SessionOwner,
+    owner: &TestGovernor,
     publisher: &tilo_relay::RelayCoeditSession,
 ) -> Vec<Vec<u8>> {
     let mut sent = Vec::new();
-    for entry in owner.outgoing().iter() {
-        let message: NeighbourMsg = postcard::from_bytes(entry.bytes).unwrap();
+    for (bytes, kind) in owner.outgoing() {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         let (channel, _) = tilo_peer_state::transport::retention(
             &message,
-            entry.kind == tilo_peer_state::transport::Retention::Checkpoint,
+            kind == tilo_peer_state::transport::Retention::Checkpoint,
         )
         .unwrap();
-        match entry.kind {
+        match kind {
             tilo_peer_state::transport::Retention::Checkpoint => {
-                publisher.publish_checkpoint(channel, entry.bytes.to_vec())
+                publisher.publish_checkpoint(channel, bytes.to_vec())
             }
             tilo_peer_state::transport::Retention::Delta => {
-                publisher.publish_retained_delta(channel, entry.bytes.to_vec())
+                publisher.publish_retained_delta(channel, bytes.to_vec())
             }
         }
         .unwrap();
-        sent.push(entry.bytes.to_vec());
+        sent.push(bytes.to_vec());
     }
     sent
 }

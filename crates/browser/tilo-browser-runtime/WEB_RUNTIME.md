@@ -434,9 +434,6 @@ agent.invokeAction(replyId, 'set-work', {state: 'done', did: 'Add note',
   same `SetAgentWork` a delivered agent task writes, read back as `work`.
   Chat's timeline does not draw the work yet; a page shows it itself.
 
-`chat.html` in the dev output mounts both side by side; "Agent: answer new
-messages" replies to what the person wrote since the last answer.
-
 ## Loading from a registry
 
 The registry client (`crates/browser/web-registry-client`) verifies the
