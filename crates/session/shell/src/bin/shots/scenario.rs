@@ -3181,6 +3181,46 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "window_maximize_restore_spring",
+            description: "Super+M springs the focused group between its tiled rect and the \
+                      work area; a second Super+M restores from the current position.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::OpenWindow {
+                    app_id: "org.example.right",
+                    surface_id: 6201,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(500),
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(4),
+                Action::Snapshot("01-tiled"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("02-maximize-000"),
+                Action::SnapshotSequence {
+                    prefix: "02-maximize",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("03-maximized"),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("m".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Snapshot("04-restore-000"),
+                Action::SnapshotSequence {
+                    prefix: "04-restore",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::Wait(PLACEMENT_SETTLE_FRAMES),
+                Action::Snapshot("05-restored"),
+            ],
+        },
+        Scenario {
             name: "window_maximize_sibling_fade",
             description: "Super+M fades neighbour windows on the fast curve instead of \
                       collapsing them, then Super+M again fades them back in.",
