@@ -88,7 +88,7 @@ jobs:
           if [ ! -e /dev/loop-control ]; then
             mount -t devtmpfs devtmpfs /dev
             mkdir -p /dev/pts /dev/shm
-            mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
           test -c /dev/loop-control
