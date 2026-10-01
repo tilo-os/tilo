@@ -87,6 +87,19 @@ python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image registry.tilo.so/tilo/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
 
+If all three Tilo partitions were allocated in an earlier session but the
+reviewed request or realized plan was lost, recover them read-only from the
+live seven-partition GPT before starting the VM scenario:
+
+```text
+python os/dev/allocate-windows-direct-final-install.py recover --root-gib 45 --request-output recovered-request.json --plan-output realized-plan.json
+```
+
+`recover` independently reads the physical GPT, reconstructs the original
+Windows-only geometry in memory, and requires it to reproduce the exact live
+ESP, boot, and root extents through the normal allocation validator. It never
+shrinks, creates, or formats a partition.
+
 The Lenovo `receipt` and `execute` commands additionally require the same
 eight arguments: `--board-medium-identity`, `--board-ci-guest-proof`,
 `--generic-ci-image` (pinned generic multiarch index),
