@@ -2,7 +2,9 @@
 Description=Run the Tilo security audit after background services settle
 
 [Timer]
-OnBootSec=15s
+# Every boot is audited, but after startup has finished: a run during boot
+# holds startup open and competes with the login path.
+OnBootSec=2min
 OnUnitInactiveSec=1h
 AccuracySec=1m
 Unit=tilo-security-audit.service
