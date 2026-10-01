@@ -7858,6 +7858,8 @@ impl ShellOverlayHost {
             FilterText {
                 all_label: t("search-filter-all"),
                 all_name: t("host-a11y-filter-all"),
+                more_label: t("search-filter-more"),
+                more_name: t("host-a11y-filter-more"),
                 filters_name: t("host-a11y-search-filters"),
                 kinds_name: t("host-a11y-result-kinds"),
                 scopes_name: t("host-a11y-search-scope"),
@@ -12760,6 +12762,11 @@ impl ShellOverlayHost {
                 return true;
             }
         }
+        // Overflow kinds sit in the More menu below the band. That
+        // menu is still a filter action, not a click-away.
+        if self.search_filters.hit(p).is_some() {
+            return false;
+        }
         if !self.palette.get_rect().contains(p) {
             self.palette_visible = false;
             self.palette.close();
@@ -15372,6 +15379,12 @@ impl ShellOverlayHost {
                     self.last_search_query.clear(); // force a refresh
                     self.refresh_search_results(state, ctx.path);
                 }
+                *ctx.handled = true;
+                return true;
+            }
+            let more_hit = self.search_filters.search_more_hit_rect();
+            if more_hit.area() > 0.0 && more_hit.contains(p) {
+                self.search_filters.more_open = !self.search_filters.more_open;
                 *ctx.handled = true;
                 return true;
             }

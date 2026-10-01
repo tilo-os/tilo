@@ -833,7 +833,12 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
 
         let kinds = h.host.search_registry.registered_kinds();
-        assert_eq!(kinds_group.children.len(), kinds.len() + 1);
+        let more_painted = h.host.search_filters.search_more_rect.area() > 0.0;
+        assert_eq!(
+            kinds_group.children.len(),
+            kinds.len() + 1 + usize::from(more_painted),
+            "All, every kind, and More when the row overflowed"
+        );
         let all = &kinds_group.children[0];
         assert_eq!(all.role, Role::ToggleButton);
         assert_eq!(all.name.as_deref(), Some("Filter: All"));
@@ -877,6 +882,14 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 "a chip must not publish the bare kind label — a window title may share it"
             );
             assert_eq!(chip.state.checked, Some(false));
+            let pill = h.host.search_filters.search_chip_rects[i];
+            if pill.area() <= 0.0 {
+                assert!(
+                    chip.state.hidden,
+                    "a kind behind More stays named but hidden until More opens"
+                );
+                continue;
+            }
             let target = chip
                 .bounds
                 .map(ui::AccessBounds::to_rect)
@@ -887,9 +900,8 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 "chip {i} carries its pointer target"
             );
             assert!(
-                pill_inside_target(h.host.search_filters.search_chip_rects[i], target),
-                "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
-                h.host.search_filters.search_chip_rects[i]
+                pill_inside_target(pill, target),
+                "chip {i}'s target {target:?} must wrap its pill {pill:?} to the {floor} px floor"
             );
             assert_eq!(
                 h.host
@@ -903,6 +915,14 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 ),
                 "chip {i} carries a single-segment address: {:?}",
                 chip.action_target
+            );
+        }
+        if more_painted {
+            let more = kinds_group.children.last().expect("More is last");
+            assert_eq!(more.name.as_deref(), Some("Filter: More"));
+            assert_eq!(
+                more.bounds.map(ui::AccessBounds::to_rect),
+                Some(h.host.search_filters.search_more_hit_rect())
             );
         }
 
@@ -1115,9 +1135,16 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             h.host.search_filters.search_all_chip_hit_rect(),
         )];
         for i in 0..h.host.search_filters.search_chip_rects.len() {
+            let pill = h.host.search_filters.search_chip_rects[i];
+            if pill.area() <= 0.0 {
+                continue;
+            }
+            targets.push((pill, h.host.search_filters.search_chip_hit_rect(i)));
+        }
+        if h.host.search_filters.search_more_rect.area() > 0.0 {
             targets.push((
-                h.host.search_filters.search_chip_rects[i],
-                h.host.search_filters.search_chip_hit_rect(i),
+                h.host.search_filters.search_more_rect,
+                h.host.search_filters.search_more_hit_rect(),
             ));
         }
         for idx in 0..h.host.search_scope_list().len() {
@@ -1235,6 +1262,10 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             );
         }
         assert!(h.host.palette.get_rect().y1 <= 684.0);
+        assert!(
+            h.host.search_filters.search_more_rect.area() > 0.0,
+            "2× text on a compact card must keep leftover kinds behind More"
+        );
         let size = theme.tokens.typography.scale.xs / tr.text_scale();
         for (kind, rect) in h
             .host
@@ -1243,6 +1274,9 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             .iter()
             .zip(&h.host.search_filters.search_chip_rects)
         {
+            if rect.area() <= 0.0 {
+                continue;
+            }
             let (w, height) = tr.measure(&kind.localized_label(), size, None);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
@@ -1304,6 +1338,23 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
                     .map(crate::shell::search::ResourceKindText::localized_label)
                     .zip(rects.iter().copied()),
             );
+            if painted.iter().any(|(_, r)| r.area() <= 0.0) {
+                assert!(
+                    h.host.search_filters.search_more_rect.area() > 0.0,
+                    "at {vw}x{vh} leftover kinds must sit behind More"
+                );
+                h.host.search_filters.more_open = true;
+                settle(&mut h, vw, vh);
+                let opened = &h.host.search_filters.search_chip_rects;
+                assert!(
+                    opened.iter().all(|r| r.area() > 0.0),
+                    "at {vw}x{vh} every kind is clickable once More is open"
+                );
+            }
+            let painted: Vec<(String, Rect)> = painted
+                .into_iter()
+                .filter(|(_, r)| r.area() > 0.0)
+                .collect();
             for (label, r) in &painted {
                 assert!(
                     r.area() > 0.0,
@@ -1364,12 +1415,29 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             h.host.active_kind_filter.is_empty(),
             "the palette starts unfiltered"
         );
+        if h.host
+            .search_filters
+            .search_chip_rects
+            .last()
+            .is_some_and(|rect| rect.area() <= 0.0)
+        {
+            let more = h.host.search_filters.search_more_rect;
+            assert!(more.area() > 0.0, "the last kind is reached through More");
+            pump(&mut h, &cursor_moved_at(more.center()));
+            pump(&mut h, &left_button_pressed());
+            h.host.search_filters.more_open = true;
+            settle(&mut h, vw, vh);
+        }
         let target = *h
             .host
             .search_filters
             .search_chip_rects
             .last()
             .expect("the last kind must have been painted");
+        assert!(
+            target.area() > 0.0,
+            "opening More must give the last kind a clickable rect"
+        );
         pump(&mut h, &cursor_moved_at(target.center()));
         pump(&mut h, &left_button_pressed());
 
@@ -1431,15 +1499,27 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        settle(&mut h, 1600.0, 900.0);
 
         assert!(
             h.host.active_kind_filter.is_empty(),
             "the palette starts unfiltered"
         );
+        if !h
+            .host
+            .search_filters
+            .search_chip_rects
+            .iter()
+            .any(|rect| rect.area() > 0.0)
+        {
+            h.host.search_filters.more_open = true;
+            settle(&mut h, 1600.0, 900.0);
+        }
         paint_then_click(&mut h, |host| {
             host.search_filters
                 .search_chip_rects
-                .first()
+                .iter()
+                .find(|rect| rect.area() > 0.0)
                 .copied()
                 .expect("the chip strip must have painted at least one chip")
                 .center()
@@ -1485,6 +1565,7 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         h.host.active_kind_filter = app_kind_filter();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        settle(&mut h, 1600.0, 900.0);
 
         let host_chip = h
             .host
@@ -1493,6 +1574,15 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
             .iter()
             .position(|kind| *kind == ResourceKind::HostApplication)
             .expect("Host Apps chip is registered");
+        if h.host
+            .search_filters
+            .search_chip_rects
+            .get(host_chip)
+            .is_some_and(|rect| rect.area() <= 0.0)
+        {
+            h.host.search_filters.more_open = true;
+            settle(&mut h, 1600.0, 900.0);
+        }
         paint_then_click(&mut h, |host| {
             host.search_filters.search_chip_rects[host_chip].center()
         });

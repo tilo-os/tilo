@@ -515,6 +515,7 @@ host-search-in-resource-fallback = resource
 host-search-scope-app = { $title } app
 host-json-arguments = JSON arguments: {"{"}{ $names }{"}"}
 host-a11y-filter-all = Filter: All
+host-a11y-filter-more = Filter: More
 host-a11y-filter-kind = Filter: { $kind }
 host-a11y-scope = Scope: { $scope }
 host-a11y-search-filters = Search filters
@@ -811,6 +812,7 @@ follow-stop = Stop
 
 # Search filter chips
 search-filter-all = All
+search-filter-more = More
 
 # Quick Settings: devices and media rows
 qs-devices-mic-other = Microphone · record from here
