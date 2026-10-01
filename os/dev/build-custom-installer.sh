@@ -21,6 +21,7 @@
 #        --image-only (stop at the unsigned installer layer, before disk/signing)
 #        --dev-login (local diagnostics only; requires TILO_INSTALLER_DEV_PASSWORD)
 #        --compact-ext4 (VM-only validation: fixed 40 GiB ext4 live root)
+# Environment: TILO_INSTALLER_ROOTFS=btrfs|ext4 selects the full-size live root.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Several native build tools ignore Cargo's target directory and create
@@ -53,6 +54,10 @@ for a in "$@"; do
 done
 
 [ "$BINARY_MODES" -le 1 ] || die "choose only one installer binary source"
+case "${TILO_INSTALLER_ROOTFS:-btrfs}" in
+  btrfs|ext4) ;;
+  *) die "TILO_INSTALLER_ROOTFS must be btrfs or ext4" ;;
+esac
 [ "$COMPACT_EXT4" = 0 ] || [ "$IMAGE_ONLY" = 0 ] \
   || die "--compact-ext4 requires disk creation; remove --image-only"
 
@@ -204,7 +209,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   root_gib=$((root_gib + offline_gib * 2 + 4))
   msg "   reserving 2x ${offline_gib}G for OCI target transport/import plus 4G slack in live /var"
 fi
-rootfs=btrfs
+rootfs="${TILO_INSTALLER_ROOTFS:-btrfs}"
 if [ "$COMPACT_EXT4" = 1 ]; then
   [ "$image_bytes" -le $((18 * gib)) ] \
     || die "--compact-ext4 needs 2x OCI image bytes plus 4 GiB slack within 40 GiB; image is $(numfmt --to=iec-i --suffix=B "$image_bytes"). Use the default growing layout."
