@@ -5949,6 +5949,49 @@ impl CameraApp {
         }
     }
 
+    fn draw_scan_panel_empty(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let cx = panel.center().x;
+        let cy = panel.y0 + 120.0;
+        p::icon(
+            scene,
+            t,
+            "scan",
+            Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0),
+            p::alpha(hud_ink(theme), 0.45),
+            1.8,
+        );
+        // The second line follows the first's measured height (13 → 16.25
+        // + 3.75 gap = the authored 20 px pitch at 1×) instead of a fixed
+        // offset that 200% lines painted through.
+        let title = "No codes scanned yet";
+        let title_top = cy + 28.0;
+        let title_h = p::text_h(tr, title, 13.0);
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            title_top,
+            title,
+            13.0,
+            p::alpha(hud_ink(theme), 0.7),
+        );
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            title_top + title_h + 3.75,
+            "Scanned codes show up here",
+            11.5,
+            p::alpha(hud_ink(theme), 0.5),
+        );
+    }
+
     fn draw_scan_panel(
         &self,
         scene: &mut Scene,
@@ -5979,40 +6022,7 @@ impl CameraApp {
         );
 
         if self.scans.is_empty() {
-            let cx = panel.center().x;
-            let cy = panel.y0 + 120.0;
-            p::icon(
-                scene,
-                t,
-                "scan",
-                Rect::new(cx - 18.0, cy - 18.0, cx + 18.0, cy + 18.0),
-                p::alpha(hud_ink(theme), 0.45),
-                1.8,
-            );
-            // The second line follows the first's measured height (13 → 16.25
-            // + 3.75 gap = the authored 20 px pitch at 1×) instead of a fixed
-            // offset that 200% lines painted through.
-            let title = "No codes scanned yet";
-            let title_top = cy + 28.0;
-            let title_h = p::text_h(tr, title, 13.0);
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                title_top,
-                title,
-                13.0,
-                p::alpha(hud_ink(theme), 0.7),
-            );
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                title_top + title_h + 3.75,
-                "Scanned codes show up here",
-                11.5,
-                p::alpha(hud_ink(theme), 0.5),
-            );
+            Self::draw_scan_panel_empty(scene, t, tr, theme, panel);
             return;
         }
 
