@@ -107,12 +107,12 @@ jobs:
             sleep 1
           done
           [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
-          cc -shared -fPIC -O2 -Wall -Wextra -o "$TILO_RUN/tilo-sigill-probe.so" \
-            os/dev/greeter-sigill-probe.c -ldl
+          cc -O2 -Wall -Wextra -o "$TILO_RUN/tilo-greeter-ptrace-probe" \
+            os/dev/greeter-ptrace-probe.c
           sshpass -p "$TILO_PASS" scp -q -P 2222 \
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-            os/dev/guest-greeter-diagnostic.sh "$TILO_RUN/tilo-sigill-probe.so" \
+            os/dev/guest-greeter-diagnostic.sh "$TILO_RUN/tilo-greeter-ptrace-probe" \
             "$TILO_USER@127.0.0.1:/tmp/"
           ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' env GREETER_RENDER_VARIANT=$RENDERER_VARIANT bash /tmp/guest-greeter-diagnostic.sh"
           ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-diagnostic.log' > "$TILO_RUN/cage-diagnostic.log" || true
