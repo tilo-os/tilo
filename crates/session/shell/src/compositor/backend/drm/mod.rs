@@ -1075,7 +1075,6 @@ fn paint_scanouts(
         scene,
         damage,
         hdr_layers,
-        overview: _,
         ..
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {

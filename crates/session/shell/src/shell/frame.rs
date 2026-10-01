@@ -5126,6 +5126,36 @@ mod tests {
         super_f_on_a_tilo_group_covers_the_wheel();
     }
 
+    fn both_directions_hold_the_scanout() {
+        let mut fb = FrameBuilder::new((3200, 1080));
+        let _ = fb.paint_settled();
+        let mut switched = false;
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(1);
+        });
+        assert!(switched, "the demo tree has a second workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let forward = fb.paint_with_damage();
+        assert!(
+            forward.workspace_hold,
+            "switching away holds the scanouts instead of uploading both"
+        );
+        let held = fb.paint_with_damage();
+        assert!(held.workspace_hold);
+        assert_eq!(held.workspace_id, forward.workspace_id);
+        fb.with_chrome(|st| {
+            switched = st.switch_workspace(-1);
+        });
+        assert!(switched, "switching back moves to the previous workspace");
+        fb.host_mut().start_workspace_switch_frames();
+        let back = fb.paint_with_damage();
+        assert!(
+            back.workspace_hold,
+            "switching back holds the scanouts instead of uploading both"
+        );
+        assert_ne!(back.workspace_id, forward.workspace_id);
+    }
+
     #[test]
     fn overview_and_workspace_switch_request_a_run_of_frames() {
         fn overview_toggle_requests_frames_before_draw() {
@@ -5208,36 +5238,6 @@ mod tests {
                 8,
                 "overview must keep the compositor painting until eight frames have run"
             );
-        }
-
-        fn both_directions_hold_the_scanout() {
-            let mut fb = FrameBuilder::new((3200, 1080));
-            let _ = fb.paint_settled();
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(1);
-            });
-            assert!(switched, "the demo tree has a second workspace");
-            fb.host_mut().start_workspace_switch_frames();
-            let forward = fb.paint_with_damage();
-            assert!(
-                forward.workspace_hold,
-                "switching away holds the scanouts instead of uploading both"
-            );
-            let held = fb.paint_with_damage();
-            assert!(held.workspace_hold);
-            assert_eq!(held.workspace_id, forward.workspace_id);
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(-1);
-            });
-            assert!(switched, "switching back moves to the previous workspace");
-            fb.host_mut().start_workspace_switch_frames();
-            let back = fb.paint_with_damage();
-            assert!(
-                back.workspace_hold,
-                "switching back holds the scanouts instead of uploading both"
-            );
-            assert_ne!(back.workspace_id, forward.workspace_id);
         }
 
         overview_toggle_requests_frames_before_draw();
