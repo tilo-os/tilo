@@ -5001,6 +5001,10 @@ impl ui::resources::PublishesResources for NotesApp {
         if id == "notes.pending-import" {
             return self.pending_import_resource();
         }
+        // The framework root already owns the notebook door.
+        if self.actions.is_hosted() && id == "notes.notebook" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
