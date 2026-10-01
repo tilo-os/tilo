@@ -2629,6 +2629,27 @@ impl CapnpBrokerState {
         );
     }
 
+    /// When the next pending invocation can expire. `None` while nothing is
+    /// in flight, so the accept loop parks instead of waking every 100 ms.
+    fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
+        let pending = self.pending_invocations.lock().ok()?;
+        pending
+            .values()
+            .filter_map(|invocation| {
+                let idle_at = invocation
+                    .last_activity
+                    .checked_add(Self::INVOCATION_IDLE_TIMEOUT)?;
+                let cancel_at = invocation
+                    .cancellation_requested_at
+                    .and_then(|requested| requested.checked_add(Self::CANCELLATION_GRACE));
+                Some(match cancel_at {
+                    Some(cancel) if cancel < idle_at => cancel,
+                    _ => idle_at,
+                })
+            })
+            .min()
+    }
+
     fn expire_stale_invocations_at(
         &self,
         now: std::time::Instant,
@@ -9843,13 +9864,19 @@ pub(super) fn spawn_configured(
                     if quit.load(Ordering::Relaxed) {
                         break;
                     }
+                    let deadline = state.next_invocation_deadline();
                     let stream = tokio::select! {
                         biased;
-                        () = tokio::time::sleep(Duration::from_millis(100)) => {
-                            // This cadence is also the broker's lifecycle
-                            // watchdog. Expiration must not depend on a caller
-                            // polling status: completion waiters deserve a
-                            // terminal answer even after an app goes silent.
+                        () = tokio::time::sleep(
+                            deadline
+                                .unwrap_or_else(std::time::Instant::now)
+                                .saturating_duration_since(std::time::Instant::now()),
+                        ), if deadline.is_some() => {
+                            // Expiration must not depend on a caller polling
+                            // status: completion waiters deserve a terminal
+                            // answer even after an app goes silent. With
+                            // nothing in flight the branch is disabled and
+                            // the thread parks on accept.
                             state.expire_stale_invocations();
                             continue;
                         },
