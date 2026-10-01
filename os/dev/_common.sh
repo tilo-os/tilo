@@ -195,6 +195,21 @@ tilo_image_source_time() {
 #           from a script that exists. The build's RUN containers are not what
 #           SELinux protects the host from; the image's own labels are unchanged.
 TILO_PODMAN_BUILD_FLAGS=(--jobs "${TILO_PODMAN_BUILD_JOBS:-4}" --security-opt label=disable)
+# An x86 builder with registered qemu-user can produce the aarch64 board image.
+# The flag is absent when the machine already is that architecture, so a native
+# ARM build is unchanged.
+if [ -n "${TILO_BUILD_ARCH:-}" ] && [ "$TILO_BUILD_ARCH" != "$(uname -m)" ]; then
+  case "$TILO_BUILD_ARCH" in
+    aarch64) _tilo_platform=linux/arm64 ;;
+    x86_64) _tilo_platform=linux/amd64 ;;
+    *) echo "TILO_BUILD_ARCH must be x86_64 or aarch64, not $TILO_BUILD_ARCH" >&2; exit 1 ;;
+  esac
+  case " ${TILO_PODMAN_BUILD_FLAGS[*]} " in
+    *" $_tilo_platform "*) ;;
+    *) TILO_PODMAN_BUILD_FLAGS+=(--platform "$_tilo_platform") ;;
+  esac
+  unset _tilo_platform
+fi
 
 # Parallel cargo jobs for an in-image compile: a CPU per job, as far as memory
 # holds out at $1 GiB a job; 8 when memory cannot be read.

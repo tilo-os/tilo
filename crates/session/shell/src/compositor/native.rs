@@ -364,6 +364,15 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// A `wl_surface.frame` on a commit that did not change the tree, the
+/// layout, or an animation is not a present. Release it on its own.
+/// While locked the desktop is not shown, and the callback stays until a
+/// real lock or unlock frame, as it did before idle apps stopped driving
+/// cadence.
+fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
+    !locked && !content_changed
+}
+
 /// Whether the next park must keep the frame deadline for a pending frame.
 /// While the bounded presenter is full, an already-due frame deadline would
 /// make every park a zero timeout and spin the loop until a frame retires;
@@ -1651,7 +1660,8 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
-    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+    match tilo_files::native::atomic::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600)
+    {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
             eprintln!("tilo compositor: publishing {}: {e}", path.display());
@@ -3247,7 +3257,21 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -5474,6 +5498,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
@@ -7482,6 +7507,9 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
@@ -8391,6 +8419,17 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
+            // Input/display reload above does not re-theme. An appearance
+            // write must rebuild chrome on this tick and wake tiled apps so
+            // they paint the new Theme instead of keeping the last buffer.
+            frame_builder
+                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
+            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+            }
+            force_first_paint = true;
             let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
@@ -9538,7 +9577,10 @@ pub fn run() {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animation_demand = frame_builder.animation_demand();
-        let animating = animation_demand.any();
+        // Host demand clears when the crossfade settles (e2e). Keep
+        // painting until this many compositor frames have actually run (W16).
+        let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
+        let animating = animation_demand.any() || transition_run;
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -9614,6 +9656,10 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
+            // A client frame callback is not a present. A configure ack or a
+            // title carries one and changes no pixels; painting to release
+            // it kept the shell busy while apps sat still. The callback is
+            // fired below when this tick will not build a frame.
             apps: apps_changed || widget_deadline_due,
             peers: peers_moved,
             presentation: presentation_frame_changed,
@@ -9655,6 +9701,13 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        // Nothing new to show. Release a waiting client callback without
+        // layout or present so a FIFO swapchain is not stuck, and so an
+        // idle desktop does not build a frame for a commit that changed
+        // neither the tree, the layout, nor an animation.
+        if release_idle_client_callback(session.is_locked(), content_changed) {
+            foreign::release_idle_frame_callbacks(&mut state);
+        }
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -9663,6 +9716,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -9743,6 +9804,9 @@ pub fn run() {
         }
 
         if should_paint {
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
@@ -10538,7 +10602,8 @@ pub fn run() {
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
-            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+            && let Err(e) =
+                tilo_files::native::atomic::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
@@ -11079,6 +11144,19 @@ mod tests {
         assert!(
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
+        );
+        // Phase `an_idle_frame_callback_does_not_present`.
+        assert!(
+            release_idle_client_callback(false, false),
+            "a callback with no tree, layout, or animation change is released without a frame"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
+        );
+        assert!(
+            !release_idle_client_callback(true, false),
+            "a locked session does not answer hidden clients with an idle release"
         );
         // Phase `available_presenter_keeps_overdue_work_immediate`.
         {
@@ -12547,7 +12625,8 @@ mod tests {
             let path = session_display_path(Some(dir.clone().into_os_string()))
                 .expect("absolute temp dir yields a path");
             std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-            atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            tilo_files::native::atomic::write_with_mode(&path, b"wayland-7", 0o600)
+                .expect("write display file");
 
             let read = std::fs::read_to_string(&path).expect("read back");
             assert_eq!(read, "wayland-7");
@@ -13702,29 +13781,43 @@ fn apply_shell_gesture(
         }
         _ => {}
     }
-    frame_builder.with_chrome(|st| match action {
+    match action {
         GestureAction::SwitchStrip(dir) => {
-            st.switch_strip(dir);
+            frame_builder.with_chrome(|st| {
+                st.switch_strip(dir);
+            });
         }
         GestureAction::SwitchWorkspace(dir) => {
-            st.switch_workspace(dir);
+            let mut switched = false;
+            frame_builder.with_chrome(|st| {
+                switched = st.switch_workspace(dir);
+            });
+            if switched {
+                frame_builder.host_mut().start_workspace_switch_frames();
+            }
+        }
+        GestureAction::ShowOverview => {
+            frame_builder.with_chrome(|st| {
+                if !st.overlays.overview {
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
+        }
+        GestureAction::HideOverview => {
+            frame_builder.with_chrome(|st| {
+                if st.overlays.overview {
+                    st.overlays.overview = false;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
         GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
-        GestureAction::ShowOverview => {
-            if !st.overlays.overview {
-                st.overlays.overview = true;
-                st.bump();
-            }
-        }
-        GestureAction::HideOverview => {
-            if st.overlays.overview {
-                st.overlays.overview = false;
-                st.bump();
-            }
-        }
-    });
+    }
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it

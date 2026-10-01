@@ -201,6 +201,22 @@ pub fn sandbox_env() -> Vec<(String, String)> {
     ]
 }
 
+/// Where the session `settings.json` is visible after [`push_session_settings_bind`].
+pub const SANDBOX_SESSION_SETTINGS: &str = "/run/tilo/app/.config/tilo/settings.json";
+
+/// Overlay the session `~/.config/tilo` tree on the remapped XDG path so
+/// Settings reads and writes the same document the compositor watches.
+/// Writers replace `settings.json` by rename, so the containing directory
+/// is bound, not the file inode.
+pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Path) {
+    argv.push("--bind".to_string());
+    argv.push(host_tilo_config.display().to_string());
+    argv.push(format!("{SANDBOX_APP_DIR}/.config/tilo"));
+    argv.push("--setenv".to_string());
+    argv.push("TILO_SESSION_SETTINGS".to_string());
+    argv.push(SANDBOX_SESSION_SETTINGS.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +341,22 @@ mod tests {
                 argv.windows(3)
                     .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
                 "HOME must point inside the app dir: {argv:?}"
+            );
+        }
+        // Phase `settings_session_store_overlays_the_remapped_xdg_path`.
+        {
+            let mut argv = Vec::new();
+            push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
+            assert_eq!(
+                argv,
+                vec![
+                    "--bind",
+                    "/home/ada/.config/tilo",
+                    "/run/tilo/app/.config/tilo",
+                    "--setenv",
+                    "TILO_SESSION_SETTINGS",
+                    SANDBOX_SESSION_SETTINGS,
+                ]
             );
         }
         // Phase `preparing_the_directory_creates_the_xdg_tree`.

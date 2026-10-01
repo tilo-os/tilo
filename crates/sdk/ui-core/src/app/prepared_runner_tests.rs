@@ -152,6 +152,189 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
 }
 
 #[test]
+#[serial_test::serial(process_env)]
+fn configured_theme_file_change_rethemes_an_open_app() {
+    let config = tempfile::tempdir().expect("isolated appearance store");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_bg = app.theme.bg_app;
+    let dark_name = app.theme.name.clone();
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "an appearance file write must retheme the next tick"
+    );
+    let light_bg = app.theme.bg_app;
+    assert_ne!(
+        (light_bg, app.theme.name.as_str()),
+        (dark_bg, dark_name.as_str()),
+        "light and dark app chrome must not share colours"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn settings_file_write_rethemes_the_sampled_app_surface() {
+    // U02 samples the open Settings window after writing the session
+    // settings file. Sandbox XDG is a private tree; the session document
+    // is the one the compositor watches. A write that leaves this surface
+    // on the old theme is the failure.
+    let session = tempfile::tempdir().expect("session settings");
+    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
+    let session_file = session.path().join("settings.json");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", app_xdg.path())
+        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+        assert_eq!(
+            settings_store::settings_path().as_deref(),
+            Some(session_file.as_path()),
+            "the write must land on the session document, not the remapped XDG copy"
+        );
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_bg = app.theme.bg_app;
+    let dark_y = crate::a11y::relative_luminance(dark_bg);
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "a session-file theme write must retheme the next tick"
+    );
+    let light_bg = app.theme.bg_app;
+    let light_y = crate::a11y::relative_luminance(light_bg);
+    assert_ne!(
+        (light_bg, app.theme.name.as_str()),
+        (dark_bg, Theme::dark().name.as_str()),
+        "sampled app chrome must not stay on the old theme after a settings-file write"
+    );
+    assert!(
+        (light_y - dark_y).abs() > 0.15,
+        "light and dark sampled surfaces must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+    assert!(
+        !app_xdg.path().join("tilo/settings.json").exists(),
+        "the remapped XDG copy must stay unused"
+    );
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
+    // The Settings sandbox clears the environment, so `XDG_CURRENT_DESKTOP`
+    // is unset and the Settings portal is not granted. The runner still
+    // re-applies that unset host reading after every session-file change.
+    // U02 samples the centre of that window: it stays on the dark raised
+    // surface unless the session document wins.
+    let session = tempfile::tempdir().expect("session settings");
+    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
+    let session_file = session.path().join("settings.json");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("XDG_CURRENT_DESKTOP")
+        .set("XDG_CONFIG_HOME", app_xdg.path())
+        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_raised = app.theme.tokens.colors.surfaces.raised;
+    let dark_y = crate::a11y::relative_luminance(dark_raised);
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "the session file change must be noticed"
+    );
+    // Production re-applies the host reading on that same tick. With no
+    // portal, the reading is the unset scheme, which is painted as dark.
+    let _ = app.apply_host_appearance(crate::host_appearance::HostAppearance::default());
+
+    let raised = app.theme.tokens.colors.surfaces.raised;
+    let light_y = crate::a11y::relative_luminance(raised);
+    assert_ne!(
+        raised, dark_raised,
+        "Settings must not keep the previous raised surface after the session file changes"
+    );
+    assert!(
+        (light_y - dark_y).abs() > 0.15,
+        "the sampled Settings surface must change luminance (light {light_y:.3}, dark {dark_y:.3})"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+    assert!(
+        crate::host_appearance::Source::start().is_none(),
+        "the session document owns appearance; the unset host portal must not start"
+    );
+}
+
+#[test]
 fn prepared_presentation_replaces_effective_factors_across_runners_and_setters() {
     for theme_scale in [0.5, 1.0, 1.5, 2.0] {
         for native in [true, false] {

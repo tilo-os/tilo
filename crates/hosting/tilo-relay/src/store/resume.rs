@@ -26,6 +26,27 @@ pub(crate) const MAX_RESUME_ENTRIES: u64 = 1 << 20;
 /// Logs kept per device: the one each recent subscription started or forked.
 const RETAINED_LOGS: usize = 4;
 
+/// A fresh resume log id: a creation stamp that strictly increases within
+/// this process, big-endian so the hex file names sort by it, then random
+/// bytes.
+fn new_log_id() -> [u8; 16] {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+        });
+    let stamp = LAST
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            Some(now.max(last.saturating_add(1)))
+        })
+        .map_or(now, |last| now.max(last.saturating_add(1)));
+    let mut log: [u8; 16] = rand::random();
+    log[..8].copy_from_slice(&stamp.to_be_bytes());
+    log
+}
+
 /// The digest a resume log records for a delivered frame: the frame's
 /// canonical transport encoding.
 pub(crate) fn frame_digest(frame: &crate::transport::Envelope) -> Option<[u8; 32]> {
@@ -51,7 +72,7 @@ impl WorkspaceStore {
         let scratch = self
             .root
             .join(format!(".{GENERATION_FILE}-{}", hex::encode(minted)));
-        atomic_file::write(&scratch, &minted)?;
+        tilo_files::native::atomic::write(&scratch, &minted)?;
         let linked = fs::hard_link(&scratch, &path);
         let _ = fs::remove_file(&scratch);
         match linked {
@@ -81,14 +102,16 @@ impl WorkspaceStore {
     /// Returns an error if the log directory can't be prepared.
     pub fn start_resume(&self, device: &[u8; 32]) -> Result<[u8; 16], StoreError> {
         fs::create_dir_all(self.resume_dir(device))?;
-        let log: [u8; 16] = rand::random();
+        let log = new_log_id();
         fs::File::create(self.resume_path(device, &log))?;
         self.prune_resume(device, &[log]);
         Ok(log)
     }
 
     /// Remove `device`'s logs beyond the newest [`RETAINED_LOGS`], never one
-    /// of `keep`.
+    /// of `keep`. Newest is by log id, which [`new_log_id`] orders by
+    /// creation: file times can tie within a filesystem's timestamp
+    /// granularity.
     fn prune_resume(&self, device: &[u8; 32], keep: &[[u8; 16]]) {
         let Ok(entries) = fs::read_dir(self.resume_dir(device)) else {
             return;
@@ -97,19 +120,13 @@ impl WorkspaceStore {
             .iter()
             .map(|log| self.resume_path(device, log))
             .collect();
-        let mut others: Vec<(std::time::SystemTime, PathBuf)> = entries
+        let mut others: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| !keep.contains(path))
-            .map(|path| {
-                let modified = fs::metadata(&path)
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(std::time::UNIX_EPOCH);
-                (modified, path)
-            })
             .collect();
-        others.sort_unstable_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-        for (_, path) in others
+        others.sort_unstable_by(|a, b| b.file_name().cmp(&a.file_name()));
+        for path in others
             .into_iter()
             .skip(RETAINED_LOGS.saturating_sub(keep.len()))
         {
@@ -178,7 +195,7 @@ impl WorkspaceStore {
         else {
             return Ok(None);
         };
-        let fork: [u8; 16] = rand::random();
+        let fork = new_log_id();
         fs::write(self.resume_path(device, &fork), held)?;
         self.prune_resume(device, &[*log, fork]);
         Ok(Some(fork))
@@ -288,8 +305,7 @@ mod tests {
             store.load_resume(&device, &resumed, 2).unwrap().unwrap(),
             HashSet::from([[1; 32], [2; 32]])
         );
-        // With four retained logs, a new session must not evict this
-        // position before the late subscription can use it.
+        assert!(store.fork_resume(&device, &log, 2).unwrap().is_some());
         store.start_resume(&device).unwrap();
         assert!(
             store.load_resume(&device, &resumed, 2).unwrap().is_some(),

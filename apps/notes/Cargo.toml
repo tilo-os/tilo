@@ -32,7 +32,6 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 # Single-writer custody of a notebook directory.
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
 tilo-app-state = { path = "../../crates/system/app-state" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

@@ -452,8 +452,8 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
 }
 
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    atomic_file::write(path, bytes)?;
-    // atomic_file fsyncs the parent and fails when that fails. Apple's fsync
+    tilo_files::native::atomic::write(path, bytes)?;
+    // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
     // leaves the drive's cache unflushed, so there the barrier is repeated
     // with F_FULLFSYNC before destructive retirement relies on it.
     #[cfg(any(test, target_vendor = "apple"))]
@@ -1777,8 +1777,8 @@ pub(super) mod tests {
             ));
         }
         assert!(matches!(build.phase, RetainPhase::Commit));
-        let failed = atomic_file::test_support::with_failure(
-            atomic_file::test_support::Checkpoint::BeforePublish,
+        let failed = tilo_files::native::atomic::test_support::with_failure(
+            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             || build.step(WorkLimit::default()),
         );
         assert!(failed.is_err());
