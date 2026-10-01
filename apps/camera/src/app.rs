@@ -465,7 +465,6 @@ pub struct CameraApp {
     regions: Vec<(Rect, Action)>,
     active_touch: Option<TouchTarget>,
     dirty: bool,
-    initialized: bool,
 
     /// Framework-owned action dispatch: brackets the undo boundary, encodes and
     /// dispatches each action, and remembers the last one so a test can prove a
@@ -595,7 +594,6 @@ impl CameraApp {
             regions: Vec::new(),
             active_touch: None,
             dirty: true,
-            initialized: false,
             actions: crate::resource::ActionSink::default(),
             search_provider: crate::search::CameraSearchProvider::new(),
             photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
@@ -2769,15 +2767,8 @@ impl Widget for CameraApp {
         self.poll_document_job();
         self.poll_document_export();
         self.poll_scan_image_picker();
-        if !self.initialized {
-            // An empty record already reads as Photo / Back / default settings.
-            // Writing those defaults is a phantom history entry when the
-            // framework owns the document.
-            if !self.actions.is_hosted() {
-                doc::init_defaults(state, path, self.initial_screen);
-            }
-            self.initialized = true;
-        }
+        // An empty record already reads as Photo / Back / default settings.
+        // Writing those defaults would be a phantom history entry.
         self.poll_countdown();
         while let Some(result) = self.worker.try_recv() {
             let terminal = result.invocation.filter(|invocation| {
@@ -6866,6 +6857,20 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc, root)
+    }
+
+    /// A fresh camera record stays empty. Readers still report Photo, the back
+    /// camera, and default settings.
+    #[test]
+    fn a_fresh_camera_record_stays_empty_until_a_capture_action() {
+        let (_app, doc, root) = sample_app();
+        assert!(
+            !doc::is_seeded(&doc, &root),
+            "default preferences are not written into a new record"
+        );
+        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Photo);
+        assert_eq!(doc::read_facing(&doc, &root), Facing::Back);
+        assert_eq!(doc::read_settings(&doc, &root), Settings::default());
     }
 
     #[test]
