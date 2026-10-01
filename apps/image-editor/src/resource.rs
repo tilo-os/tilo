@@ -336,6 +336,16 @@ mod tests {
 
         app.set_framework_hosted(true);
         assert!(app.is_framework_hosted());
+        assert!(ui::resources::resource(&app, &state.doc, PROJECT_RESOURCE_ID).is_none());
+        assert!(
+            ui::resources::resource(
+                &app,
+                &state.doc,
+                &crate::actions::adjustment_resource_id("exposure-1"),
+            )
+            .is_some(),
+            "a hosted adjustment stays the published row"
+        );
         let extras = app.resources(&state.doc);
         assert!(
             extras.is_empty(),

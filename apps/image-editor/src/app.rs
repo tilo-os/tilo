@@ -1305,14 +1305,7 @@ impl ImageEditorApp {
         );
     }
     /// The toolbar and empty-state buttons, which the app holds rather than
-    /// exposing as children; the host reaches their actions through these.
-    fn retained_buttons(&self) -> Vec<&Button> {
-        self.toolbar
-            .iter()
-            .map(|(_, button)| button)
-            .chain(std::iter::once(&self.empty_open))
-            .collect()
-    }
+    /// exposing as children. Control custody still reaches them here.
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
         self.toolbar
             .iter_mut()
@@ -3181,28 +3174,54 @@ impl ui::search::capability::SearchSource for ImageEditorApp {
 impl ui::resources::PublishesResources for ImageEditorApp {
     /// Standalone / `--shots` / unit tests publish through
     /// [`tilo_resource::publish`]. When the framework hosts the surface, that
-    /// door already owns the project. Toolbar buttons stay addressable either way.
+    /// door already owns the project. A project that matches the document is
+    /// read from the document; an edit that has not been written yet stays on
+    /// the widget so the palette still shows it.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = if self.actions.is_hosted() {
-            Vec::new()
+        if self.actions.is_hosted() {
+            return Vec::new();
+        }
+        vec![self.project_resource(doc)]
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == crate::actions::PROJECT_RESOURCE_ID {
+            return None;
+        }
+        fn find(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            for child in &resource.children {
+                if let Some(found) = find(child, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.project_resource(doc), id)
+    }
+}
+
+impl ImageEditorApp {
+    fn project_resource(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        let stored = <crate::resource::ImageEditor as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_else(|_| self.project.clone());
+        let project = if stored == self.project {
+            stored
         } else {
-            let label = if self.project.name.is_empty() {
-                "Image Editor"
-            } else {
-                self.project.name.as_str()
-            };
-            vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
-                crate::actions::PROJECT_RESOURCE_ID,
-                label,
-                &self.project,
-            )]
+            self.project.clone()
         };
-        resources.extend(
-            self.retained_buttons()
-                .into_iter()
-                .flat_map(|button| ui::resources::resources(button, doc)),
-        );
-        resources
+        let label = if project.name.is_empty() {
+            "Image Editor".to_string()
+        } else {
+            project.name.clone()
+        };
+        ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+            crate::actions::PROJECT_RESOURCE_ID,
+            &label,
+            &project,
+        )
     }
 }
 
