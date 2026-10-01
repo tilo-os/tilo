@@ -57,6 +57,10 @@ on:
         description: "auto: native boot proof for signed bases, candidate only for tilo-ci; true requires usable KVM; false publishes only an unvalidated candidate."
         required: false
         default: "auto"
+      validate_greeter:
+        description: "Diagnostic only: require a stable graphical greeter and report guest DRM state; skip disk publication."
+        required: false
+        default: "false"
 
 concurrency:
   # One request per tag, source and architecture set at a time; different
@@ -286,7 +290,7 @@ jobs:
           if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
             sudo -n mount -t devtmpfs devtmpfs /dev
             sudo -n mkdir -p /dev/pts /dev/shm
-            mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
           test -c /dev/fuse && test -c /dev/loop-control || {
@@ -430,15 +434,22 @@ jobs:
           }
           config=$(skopeo inspect "docker://$DEV_CHECKPOINT_REF")
           case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+          # The standalone disk builder labels the dev image with the index,
+          # while the OS integration lane labels it with its exact native child.
+          # Both identify the verified source above; require the name and digest
+          # to use the same form, and always bind the native child separately.
           jq -e --arg arch "$platform" --arg source "$SOURCE_REVISION" \
-            --arg base "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_index "$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
+            --arg base_child "$BASE_REPOSITORY@$BASE_CHILD_DIGEST" \
             --arg index "$BASE_INDEX_DIGEST" --arg child "$BASE_CHILD_DIGEST" \
             --arg trust "$BASE_TRUST" '
             .Architecture == $arch
             and .Labels["sh.tilo.image.flavour"] == "dev"
             and .Labels["org.opencontainers.image.revision"] == $source
-            and .Labels["org.opencontainers.image.base.name"] == $base
-            and .Labels["org.opencontainers.image.base.digest"] == $index
+            and ((.Labels["org.opencontainers.image.base.name"] == $base_index
+                  and .Labels["org.opencontainers.image.base.digest"] == $index)
+                 or (.Labels["org.opencontainers.image.base.name"] == $base_child
+                     and .Labels["org.opencontainers.image.base.digest"] == $child))
             and .Labels["org.opencontainers.image.base.child.digest"] == $child
             and .Labels["sh.tilo.dev.base-trust"] == $trust
           ' <<< "$config" >/dev/null || {
@@ -526,6 +537,7 @@ jobs:
       # inspect the installed disk even if slow CI TCG cannot reach greetd.
       # The normal dev-disk manifest is still published only after boot proof.
       - name: Publish unvalidated installed disk candidate
+        if: github.event.inputs.validate_greeter != 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
@@ -555,6 +567,11 @@ jobs:
             echo '::error::boot validation requires usable native KVM; dispatch validate_boot=false for an unvalidated disk candidate'
             exit 1
           }
+          # Diagnostic runs need failure evidence quickly, not the 20-minute
+          # fallback intended for unusually slow ordinary disk validations.
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            export TILO_BOOT_WAIT_ATTEMPTS=120
+          fi
           # Boot a throwaway overlay so the published disk is never first-booted.
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
@@ -569,6 +586,17 @@ jobs:
           ./os/dev/vm.sh boot --disk "$overlay"
           ./os/dev/vm.sh wait
           ./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"
+          if [[ '${{ github.event.inputs.validate_greeter }}' == true ]]; then
+            # `vm.sh wait` observes greetd starting, which can precede a
+            # compositor crash. The dev disk is already accessible over SSH;
+            # require the actual greeter to survive and report guest DRM state.
+            sleep 10
+            if ! ./os/dev/vm.sh ssh 'test -c /dev/dri/card0 && systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter'; then
+              ./os/dev/vm.sh ssh 'ls -l /dev/dri 2>&1; systemctl status greetd --no-pager -l; journalctl -b -u greetd --no-pager -n 40; journalctl -b -k --no-pager -n 80' || true
+              echo '::error::native KVM guest did not keep a graphical greeter'
+              exit 1
+            fi
+          fi
 
       - name: Upload failed boot framebuffer
         if: failure() && needs.plan.outputs.validate_boot == 'true'
@@ -581,7 +609,7 @@ jobs:
       # This architecture publishes on its own; another lane of the same tag
       # adds its child to the index and its own manifest whenever it lands.
       - name: Publish this architecture's dev image and disk
-        if: needs.plan.outputs.validate_boot == 'true'
+        if: needs.plan.outputs.validate_boot == 'true' && github.event.inputs.validate_greeter != 'true'
         env:
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot

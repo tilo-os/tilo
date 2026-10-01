@@ -257,18 +257,24 @@ inenv() {
 }
 
 qemu_accel_args() {
+  local kvm_cpu=host
+  case "${TILO_KVM_CPU_VARIANT:-host}" in
+    host) ;;
+    host-no-sve) kvm_cpu=host,sve=off ;;
+    *) die "TILO_KVM_CPU_VARIANT must be host or host-no-sve" ;;
+  esac
   case "$TILO_ACCEL" in
     auto)
       # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
       local probe
       printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
       if inenv "$probe"; then
-        echo "-enable-kvm -cpu host"
+        echo "-enable-kvm -cpu $kvm_cpu"
       else
         echo "-accel tcg,thread=multi -cpu max"
       fi
       ;;
-    kvm) echo "-enable-kvm -cpu host" ;;
+    kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
     *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
   esac

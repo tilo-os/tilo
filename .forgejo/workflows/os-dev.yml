@@ -16,6 +16,12 @@ name: Build / OS dev
 # carries the `os-arm64` label
 # (tools/ci/os_dev_arches.py). Main always builds both.
 on:
+  workflow_dispatch:
+    inputs:
+      arches:
+        description: 'JSON architecture list for a targeted cached dev build, for example ["aarch64"].'
+        required: false
+        default: '["x86_64","aarch64"]'
   push:
     branches: [main]
   pull_request:
@@ -61,8 +67,19 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          REQUESTED_ARCHES: ${{ github.event.inputs.arches }}
         run: |
           set -euo pipefail
+          if [[ $EVENT == workflow_dispatch ]]; then
+            arches="$(jq -ec '
+              if type == "array" and length > 0
+                 and all(.[]; . == "x86_64" or . == "aarch64")
+                 and length == (unique | length)
+              then . else error("arches must be a nonempty unique list of x86_64 or aarch64") end
+            ' <<< "$REQUESTED_ARCHES")"
+            echo "arches=$arches" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           args=(--event "$EVENT")
           if [[ $EVENT == pull_request ]]; then
             args+=(--base "$BASE" --head "$HEAD")

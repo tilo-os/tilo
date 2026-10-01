@@ -24,6 +24,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 zeroize.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
 greetd-client = { path = "../greetd-client" }
