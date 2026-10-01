@@ -2435,6 +2435,7 @@ impl CapnpBrokerState {
 
     pub(crate) fn request_stop(&self) {
         self.accepting.store(false, Ordering::Release);
+        self.local_turn.notify_one();
     }
 
     /// Hold the broker lifecycle read side for one complete shell-facade
