@@ -66,19 +66,20 @@ impl DrainPark {
         let Ok(pending) = self.pending.lock() else {
             return;
         };
-        let guard = match timeout {
+        let mut pending = match timeout {
             Some(timeout) => {
-                self.cv
+                let (pending, _) = self
+                    .cv
                     .wait_timeout_while(pending, timeout, |pending| !*pending)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0
+                    .unwrap_or_else(PoisonError::into_inner);
+                pending
             }
             None => self
                 .cv
                 .wait_while(pending, |pending| !*pending)
                 .unwrap_or_else(PoisonError::into_inner),
         };
-        let mut pending = guard;
         *pending = false;
+        drop(pending);
     }
 }
