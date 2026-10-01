@@ -35,9 +35,8 @@ impl Resource for Firewall {
     fn bound_actions(state: &FirewallConfig) -> Vec<ActionSpec> {
         // Start/stop and panic carry the current on/off. Static
         // `local_operations` cannot see that.
-        crate::actions::provide_resources(state)
+        crate::actions::toggle_specs(state)
             .into_iter()
-            .flat_map(|root| root.actions)
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
@@ -50,10 +49,7 @@ impl Resource for Firewall {
     }
 
     fn children(state: &FirewallConfig) -> Vec<tilo_actions::Resource> {
-        crate::actions::provide_resources(state)
-            .into_iter()
-            .flat_map(|root| root.children)
-            .collect()
+        crate::actions::zone_children(state)
     }
 
     fn search(state: &FirewallConfig) -> Vec<SearchEntry> {
@@ -215,6 +211,18 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &doc, "firewall.config").is_none());
+        if let Some(zone_id) = standalone.iter().find_map(|root| {
+            root.children
+                .iter()
+                .find(|child| child.kind == "firewall.zone")
+                .map(|child| child.id.as_str().to_owned())
+        }) {
+            assert!(
+                ui::resources::resource(&app, &doc, &zone_id).is_some(),
+                "a hosted zone stays the published row"
+            );
+        }
         let extras = app.resources(&doc);
         assert!(
             extras.is_empty()

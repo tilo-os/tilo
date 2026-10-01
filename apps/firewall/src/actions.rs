@@ -328,16 +328,19 @@ fn config_contract() -> ActionContract {
     clippy::missing_panics_doc,
     reason = "the only expects encode fixed primitive payloads; ActionSpec cannot fail for them"
 )]
-pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
-    let mut root = Resource::new("firewall.config", "firewall.config", "Firewall");
-
-    // Config-level: master switch + panic mode.
+/// Start/stop and panic. Labels follow the saved on/off state.
+pub(crate) fn toggle_specs(config: &FirewallConfig) -> Vec<ActionSpec> {
     let enable_label = if config.enabled {
         "Stop firewall"
     } else {
         "Start firewall"
     };
-    root = root.with_action(
+    let panic_label = if config.panic_mode {
+        "Exit panic mode"
+    } else {
+        "Enter panic mode"
+    };
+    vec![
         ActionSpec::operation(
             "toggle-enabled",
             enable_label,
@@ -357,13 +360,6 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
-    );
-    let panic_label = if config.panic_mode {
-        "Exit panic mode"
-    } else {
-        "Enter panic mode"
-    };
-    root = root.with_action(
         ActionSpec::operation(
             "toggle-panic",
             panic_label,
@@ -382,13 +378,25 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
-    );
+    ]
+}
 
-    for z in &config.zones {
-        root = root.with_child(zone_resource(config, z));
-    }
+/// Zones and their rules, children of the published firewall config.
+pub(crate) fn zone_children(config: &FirewallConfig) -> Vec<Resource> {
+    config
+        .zones
+        .iter()
+        .map(|zone| zone_resource(config, zone))
+        .collect()
+}
 
-    vec![root]
+/// The published firewall configuration.
+pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
+        "firewall.config",
+        "Firewall",
+        config,
+    )]
 }
 
 /// Build one zone's resource: make-active/set-policy/add-rule actions plus a
@@ -577,15 +585,22 @@ fn rule_resource(kind: ZoneKind, idx: usize, n: usize, r: &Rule) -> Resource {
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::FirewallApp {
-    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        // Level-triggered: recomputed each frame from the app's current config,
-        // which `sync` and every action keep reconciled with the shared
-        // document. Empty when the firewall is unavailable / has no zones —
-        // nothing to act on.
-        match self.firewall_resource_ctx() {
-            Some(config) => provide_resources(&config),
-            None => Vec::new(),
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        // Unavailable, or a live reading with no zones, publishes nothing.
+        // Once sync has written the config, that document is the door; an
+        // unsynced window still uses the firewalld reading on the widget.
+        let Some(widget) = self.firewall_resource_ctx() else {
+            return Vec::new();
+        };
+        let config = FirewallDoc::load(doc).unwrap_or(widget);
+        if config.zones.is_empty() {
+            return Vec::new();
         }
+        vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
+            "firewall.config",
+            "Firewall",
+            &config,
+        )]
     }
 }
 
