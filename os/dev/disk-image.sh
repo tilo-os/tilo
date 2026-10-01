@@ -438,6 +438,12 @@ mkdir -p "$OUTDIR"
 # Absolute, because Podman binds this directory into the installer container.
 # A relative source would resolve against Podman's current working directory.
 OUTDIR="$(cd "$OUTDIR" && pwd)"
+# DrvFs is 9p inside WSL. Its raw loop-backed image can allocate the entire
+# logical disk on Windows before qemu-img has a chance to make a sparse qcow2.
+# Build on WSL's native ext4 filesystem, then export only the final qcow2.
+if [ "$(stat -f -c %T "$OUTDIR")" = v9fs ]; then
+  die "disk image output $OUTDIR is on a 9p filesystem; use a native Linux filesystem for the raw build, then export the qcow2"
+fi
 RAW="$OUTDIR/disk.raw"
 QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
