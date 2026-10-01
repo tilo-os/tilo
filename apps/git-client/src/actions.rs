@@ -674,27 +674,52 @@ pub(crate) fn repo_label(model: &RepoModel) -> String {
 /// `--shots` pass the live model (including working-tree rows); the framework
 /// door reads the shared projection from the document.
 pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
-    let state = GitClientState {
-        settings: Settings::read_only(doc),
-        repo: model.clone(),
+    // Branches, commits, and remotes come from the document once it holds the
+    // shared projection. A caller that has not written one yet still publishes
+    // the model it passed. Working-tree Changes stay a live extra on that model.
+    let shared = SharedRepo::read(doc);
+    let state = if shared.is_some() {
+        GitClientState::from_doc(doc)
+    } else {
+        GitClientState {
+            settings: Settings::read_only(doc),
+            repo: model.clone(),
+        }
     };
-    vec![ui::tilo_resource::publish::<crate::resource::GitClient>(
-        "git_client.repo",
-        &repo_label(model),
-        &state,
-    )]
+    let label = repo_label(if shared.is_some() { &state.repo } else { model });
+    let mut root =
+        ui::tilo_resource::publish::<crate::resource::GitClient>("git_client.repo", &label, &state);
+    if shared.is_some()
+        && model.change_count() > 0
+        && !root
+            .children
+            .iter()
+            .any(|child| child.id.as_str() == "git_client.changes")
+    {
+        root.children.insert(0, changes_collection(model));
+    }
+    vec![root]
 }
 
 /// Resolve an arbitrary current repository item without building the complete
 /// hierarchy. This keeps search/history/agent addresses valid beyond the
 /// contextual caps above while rejecting stale ids after a fetch or checkout.
+fn find_git(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_git(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option<Resource> {
     let root = provide_resources(model, doc).into_iter().next()?;
-    if root.id.as_str() == id {
-        return Some(root);
-    }
-    if let Some(collection) = root.children.iter().find(|child| child.id.as_str() == id) {
-        return Some(collection.clone());
+    if let Some(found) = find_git(&root, id) {
+        return Some(found);
     }
     for change in model
         .staged

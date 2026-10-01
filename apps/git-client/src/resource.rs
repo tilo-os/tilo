@@ -267,6 +267,23 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "git_client.repo").is_none());
+        let hosted_branches = ui::resources::resource(&app, &seeded, "git_client.branches")
+            .expect("a hosted branch catalogue is the published row");
+        assert!(
+            hosted_branches
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .eq(published
+                    .children
+                    .iter()
+                    .find(|child| child.id.as_str() == "git_client.branches")
+                    .expect("published branches")
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str()))
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
