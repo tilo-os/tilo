@@ -312,6 +312,17 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, VAULT_RESOURCE_ID).is_none());
+        let item_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind.starts_with("passwords."))
+            .map(|child| child.id.as_str().to_owned())
+            .expect("standalone item");
+        assert!(
+            ui::resources::resource(&app, &seeded, &item_id).is_some(),
+            "a hosted vault item stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras

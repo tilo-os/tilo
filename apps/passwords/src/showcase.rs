@@ -5534,6 +5534,27 @@ impl ui::resources::PublishesResources for PasswordsSurface {
         }
         self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<ui::tilo_actions::Resource> {
+        if self.is_hosted() && id == crate::actions::VAULT_RESOURCE_ID {
+            return None;
+        }
+        fn find(
+            resources: &[ui::tilo_actions::Resource],
+            id: &str,
+        ) -> Option<ui::tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
+    }
 }
 
 fn origins_match(item: &SecretItem, candidate: &str) -> bool {
