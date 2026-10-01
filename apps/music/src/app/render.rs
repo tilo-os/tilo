@@ -1924,6 +1924,9 @@ impl ui::resources::PublishesResources for MusicApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "music.library" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
