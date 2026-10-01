@@ -3198,6 +3198,9 @@ jobs:
       # the UKI seal to the digest install computes instead of refusing. It
       # is built once per patch and kept in the registry.
       - name: Fetch the resealing bootc
+        # A build is a few minutes; a stalled crate fetch must not hold the
+        # board job until its own timeout.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           key="$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)"
