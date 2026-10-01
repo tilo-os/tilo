@@ -31,7 +31,7 @@ use tilo_moq::relay::Direction;
 use tilo_relay::coedit::{RelayCoeditSession, VoiceEvent};
 use tilo_relay_protocol::voice::{CallOperation, Directions, PARTICIPATION_TTL, VoiceGrant};
 
-use crate::{NativeCommittedView, NativeWorkspaceOwner};
+use crate::{NativeCommittedView, NativeFenceSubscription, NativeWorkspaceOwner};
 
 /// The voice channel a call is bound to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +86,8 @@ pub struct Participation {
     state: Mutex<State>,
     changed: tokio::sync::Notify,
     stops: Mutex<Stops>,
+    /// Keep synchronous owner fences connected to the live local resources.
+    fence: Mutex<Option<NativeFenceSubscription>>,
 }
 
 impl Participation {
@@ -158,7 +160,24 @@ impl Participation {
             }),
             changed: tokio::sync::Notify::new(),
             stops: Mutex::new(Stops::default()),
+            fence: Mutex::new(None),
         });
+        let weak = Arc::downgrade(&participation);
+        let fence =
+            participation
+                .owner
+                .observe_fences(Arc::new(move |fenced_room: RoomId, _: u64| {
+                    if fenced_room == room
+                        && let Some(participation) = weak.upgrade()
+                    {
+                        // The owner holds its continuity write lock here. Pause
+                        // local resources without reading it again; a heartbeat
+                        // ends the participation if custody no longer admits it.
+                        participation.pause();
+                        participation.changed.notify_waiters();
+                    }
+                }));
+        *participation.fence.lock() = Some(fence);
         match (phase, call) {
             (Phase::Starting(request), _) => session.voice_call(
                 request,
@@ -421,6 +440,7 @@ impl Participation {
         };
         state.generation = generation;
         state.carrier = Some(connection.scope.clone());
+        drop(state);
         Ok(Some(connection))
     }
 

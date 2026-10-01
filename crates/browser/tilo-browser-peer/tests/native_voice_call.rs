@@ -592,6 +592,28 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
         .await;
     assert!(!call.stale(), "a heartbeat keeps the carrier's scope");
     assert!(call.authorized());
+    assert_eq!(call.id(), Some(alone.participation));
+
+    // Losing local device custody fences capture and transport synchronously,
+    // before a heartbeat discovers that the participation must end.
+    let capture_stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let capture_ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = capture_stopped.clone();
+    let ended = capture_ended.clone();
+    call.set_capture_stop(Arc::new(move |terminal| {
+        stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        if terminal {
+            ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }));
+    native.owner.invalidate_identity(native.room);
+    assert_eq!(alice_carrier.status(), Status::Closed);
+    assert!(capture_stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(call.inspect_current(|_, _| Ok(())).is_err());
+    assert!(alice_carrier.enable_publication().is_err());
+    assert!(call.heartbeat(&native.session, |_| Ok(())).is_err());
+    assert!(call.live().is_err());
+    assert!(capture_ended.load(std::sync::atomic::Ordering::SeqCst));
 
     // Alice leaves: her carrier closes and Bob's roster loses her.
     call.leave(Some(&native.session));
