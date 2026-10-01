@@ -4803,7 +4803,13 @@ impl Widget for ImagerApp {
                 // "insert a drive" state — the imager never invents drives.
                 // Sample content is opt-in (`--demo` / `--shots`), which seeds
                 // the document *before* the first sync so this branch is skipped.
-                ImagerDoc::seed(state, &[]);
+                let action = crate::actions::ImagerAction::EnsureRecords;
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::IMAGER_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
+                );
             }
             if live_probe_enabled() {
                 self.targets = crate::probe::probe().unwrap_or_default();
@@ -5340,6 +5346,24 @@ impl ui::resources::PublishesResources for ImagerApp {
             return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "imager.sources" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
