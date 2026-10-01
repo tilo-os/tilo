@@ -1545,22 +1545,11 @@ fn render_combined_readback(
             .regions
             .is_some_and(<[vello::FineDamageRect]>::is_empty)
     });
-    if skips_full_framebuffer_readback(unchanged, overview.is_some())
-        && overview.is_none()
-        && paint
-            .as_ref()
-            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
+    if hdr_layers.is_empty()
+        && let Some(patch) = overview
+        && let Some(sample) = present_overview_patch(scanouts, outputs, paint, pointer, patch)
     {
-        // The pixels already on the scanout are the scene. A workspace-switch
-        // frame run must not upload both outputs again.
-        return PaintScanoutSample::default();
-    }
-    if let Some(patch) = overview
-        && hdr_layers.is_empty()
-        && let Some(bridge) = paint.as_mut()
-        && let Ok(composed) = bridge.composite_overview_frame(patch)
-    {
-        return present_composed_readback(scanouts, outputs, pointer, &composed, Some(patch.panel));
+        return sample;
     }
     if overview.is_none()
         && hdr_layers.is_empty()
@@ -1578,9 +1567,58 @@ fn render_combined_readback(
     {
         return handled;
     }
+    if overview.is_none()
+        && skips_full_framebuffer_readback(unchanged, false)
+        && paint
+            .as_ref()
+            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
+    {
+        // The pixels already on the scanout are the scene. Remember which
+        // workspace that image is, so the close can replay it instead of
+        // reading both outputs back.
+        if let Some(id) = workspace_id
+            && let Some(bridge) = paint.as_mut()
+        {
+            bridge.note_shown_workspace(id);
+        }
+        return PaintScanoutSample::default();
+    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
+    upload_combined_scene(
+        scanouts,
+        outputs,
+        bridge,
+        pointer,
+        &CombinedUpload {
+            scene,
+            hdr_layers,
+            workspace_id,
+            note_workspace: overview.is_none(),
+        },
+    )
+}
+
+struct CombinedUpload<'a> {
+    scene: &'a Scene,
+    hdr_layers: &'a [HdrLayer],
+    workspace_id: Option<u64>,
+    note_workspace: bool,
+}
+
+/// Paint the combined scene and copy it onto every powered scanout.
+fn upload_combined_scene(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    upload: &CombinedUpload<'_>,
+) -> PaintScanoutSample {
+    let scene = upload.scene;
+    let hdr_layers = upload.hdr_layers;
+    let workspace_id = upload.workspace_id;
+    let note_workspace = upload.note_workspace;
     let bridge_started = Instant::now();
     let composite = !hdr_layers.is_empty()
         && scanouts
@@ -1618,12 +1656,10 @@ fn render_combined_readback(
         scene_width: cw,
         layers: hdr_layers,
     });
-    for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr, None);
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, hdr, None);
     }
-    if overview.is_none()
-        && let Some(id) = workspace_id
-    {
+    if note_workspace && let Some(id) = workspace_id {
         bridge.note_shown_workspace(id);
     }
     PaintScanoutSample {
@@ -1676,8 +1712,8 @@ fn present_workspace_hold(
 }
 
 /// Adopt the workspace the close is returning to and upload only the clip.
-/// A missing clip, or one that meets another scanout, leaves the scanouts
-/// alone: falling through here used to flush both outputs.
+/// A clip that also meets another scanout is cut back to the first display.
+/// Leaving it whole, or skipping the upload, made a later frame flush both.
 fn present_workspace_clip(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
@@ -1688,16 +1724,67 @@ fn present_workspace_clip(
     let Some(id) = workspace.id else {
         return PaintScanoutSample::default();
     };
+    let boxes = scanout_boxes(scanouts, outputs);
+    let Some(clip) = workspace
+        .clip
+        .and_then(|clip| clip_to_primary_scanout(clip, &boxes))
+    else {
+        return PaintScanoutSample::default();
+    };
+    if !close_frame_spares_other_scanouts(clip, &boxes) {
+        return PaintScanoutSample::default();
+    }
     let Some(bytes) = bridge.replay_workspace(id) else {
         return PaintScanoutSample::default();
     };
-    let Some(clip) = workspace.clip else {
-        return PaintScanoutSample::default();
-    };
-    if !close_frame_spares_other_scanouts(clip, &scanout_boxes(scanouts, outputs)) {
-        return PaintScanoutSample::default();
-    }
     present_composed_readback(scanouts, outputs, pointer, &bytes, Some(clip))
+}
+
+/// Composite the overview fade onto the desktop already in memory.
+///
+/// `None` means there is no desktop image yet, so the caller may seed one
+/// readback. Any other result is final: a failed clip must not GPU-read both
+/// outputs in the middle of the fade.
+fn present_overview_patch(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    patch: &crate::shell::overlay_host::OverviewFastPatch,
+) -> Option<PaintScanoutSample> {
+    let bridge = paint.as_mut()?;
+    match bridge.composite_overview_frame(patch) {
+        Ok(composed) => Some(present_composed_readback(
+            scanouts,
+            outputs,
+            pointer,
+            &composed,
+            Some(patch.panel),
+        )),
+        Err(_) if bridge.has_complete_readback() => Some(PaintScanoutSample::default()),
+        Err(_) => None,
+    }
+}
+
+/// The part of `clip` that lies on the first scanout, in scene pixels.
+/// A close whose clip was the combined desktop uploads that display only.
+pub(crate) fn clip_to_primary_scanout(
+    clip: vello::FineDamageRect,
+    outputs: &[(i32, i32, u32, u32)],
+) -> Option<vello::FineDamageRect> {
+    let &(x, y, width, height) = outputs.first()?;
+    let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
+    let scene_x = i64::from(x).saturating_add(i64::from(local_x));
+    let scene_y = i64::from(y).saturating_add(i64::from(local_y));
+    if scene_x < 0 || scene_y < 0 {
+        return None;
+    }
+    Some(vello::FineDamageRect {
+        x: u32::try_from(scene_x).ok()?,
+        y: u32::try_from(scene_y).ok()?,
+        width: u32::from(local_w),
+        height: u32::from(local_h),
+    })
 }
 
 fn scanout_boxes(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<(i32, i32, u32, u32)> {
@@ -2268,6 +2355,29 @@ mod tests {
         assert!(
             super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
             "the second scanout is outside the close clip"
+        );
+    }
+
+    #[test]
+    fn a_combined_close_clip_uploads_only_the_first_display() {
+        let both = vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 3200,
+            height: 1080,
+        };
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
+        let clip = super::clip_to_primary_scanout(both, &outputs)
+            .expect("the close still has the first display");
+        assert_eq!(clip.x, 0);
+        assert_eq!(clip.width, 1920);
+        assert!(
+            super::close_frame_spares_other_scanouts(clip, &outputs),
+            "cutting the clip back to the first display leaves the other scanout alone"
+        );
+        assert!(
+            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
+            "the second scanout is outside the cut clip"
         );
     }
 
