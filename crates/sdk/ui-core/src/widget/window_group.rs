@@ -1,3 +1,4 @@
+use crate::animation::Spring;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
@@ -5,6 +6,7 @@ use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::SpringPresets;
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{AppModel, ModelPath};
@@ -125,6 +127,10 @@ pub struct WindowGroup {
     close_hover: bool,
     last_cursor: Point,
     spawned_at: Option<Instant>,
+    /// Slot width in flight. Layout reads this so an open grows from 0,
+    /// a close collapses the slot, and a resize retargets without a jump.
+    width_spring: Option<Spring>,
+    last_width_step: Option<Instant>,
     /// Set on any `draw` this group sat out because nothing in it had
     /// presented yet; drained on the first `draw` that does paint, which
     /// latches the arrival fade to the moment the window turns up rather
@@ -298,6 +304,8 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            width_spring: None,
+            last_width_step: None,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -342,6 +350,124 @@ impl WindowGroup {
 
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(crate::time::now());
+        self.arm_width_from_zero();
+    }
+
+    pub(crate) fn set_reduce_motion(&mut self, on: bool) {
+        self.reduce_motion = on;
+        if on && let Some(spring) = self.width_spring.as_mut() {
+            spring.snap(spring.target());
+        }
+    }
+
+    /// Width the strip must reserve this frame — the spring value while
+    /// a transition is in flight, otherwise the persisted fraction.
+    pub fn layout_width_px(&self) -> f64 {
+        if let Some(spring) = &self.width_spring {
+            return f64::from(spring.value()).max(0.0);
+        }
+        if self.is_closing() {
+            return 0.0;
+        }
+        self.resolved_width_px()
+    }
+
+    /// Width the slot is going to, in the same pixels as
+    /// [`Self::layout_width_px`]. A later usable-basis change does not
+    /// rewrite an in-flight target, so overflow can use this instead of
+    /// the current fraction.
+    pub fn dest_width_px(&self) -> f64 {
+        if let Some(spring) = &self.width_spring {
+            return f64::from(spring.target()).max(0.0);
+        }
+        self.layout_width_px()
+    }
+
+    /// True when the spring is still aimed at a previous usable basis.
+    pub(crate) fn width_target_is_stale(&self) -> bool {
+        self.width_spring.is_some() && (self.dest_width_px() - self.resolved_width_px()).abs() > 1.0
+    }
+
+    fn width_params() -> crate::tokens::SpringParams {
+        SpringPresets::default().heavy
+    }
+
+    fn arm_width_from_zero(&mut self) {
+        let target = px_f32(self.resolved_width_px());
+        if self.reduce_motion {
+            self.width_spring = None;
+            return;
+        }
+        let mut spring = Spring::new(0.0, Self::width_params());
+        spring.set_target(target);
+        self.width_spring = Some(spring);
+        self.last_width_step = None;
+        self.style_dirty = true;
+    }
+
+    fn retarget_width(&mut self, from: f64, to: f64) {
+        let to = px_f32(to.max(0.0));
+        if self.reduce_motion {
+            self.width_spring = None;
+            return;
+        }
+        if let Some(spring) = self.width_spring.as_mut() {
+            spring.set_target(to);
+            return;
+        }
+        let from = px_f32(from.max(0.0));
+        if (from - to).abs() < 0.5 {
+            return;
+        }
+        let mut spring = Spring::new(from, Self::width_params());
+        spring.set_target(to);
+        self.width_spring = Some(spring);
+        self.last_width_step = None;
+        self.style_dirty = true;
+    }
+
+    /// Advance the slot-width spring. Called from the row's layout pass
+    /// so neighbours see the new width in the same frame.
+    pub(crate) fn step_width_spring(&mut self) {
+        if self.close_complete() {
+            self.width_spring = None;
+            self.last_width_step = None;
+            return;
+        }
+        let Some(spring) = self.width_spring.as_mut() else {
+            return;
+        };
+        if self.reduce_motion {
+            spring.snap(spring.target());
+            if !self.is_closing() {
+                self.width_spring = None;
+            }
+            self.style_dirty = true;
+            return;
+        }
+        let now = crate::time::now();
+        // One step per wall instant: composition settle rebuilds the
+        // same frame up to eight times and must not walk the spring.
+        if self
+            .last_width_step
+            .is_some_and(|t| now.saturating_duration_since(t).is_zero())
+        {
+            return;
+        }
+        let dt = self
+            .last_width_step
+            .map(|t| now.saturating_duration_since(t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0)
+            .clamp(1.0 / 240.0, 1.0 / 20.0);
+        let before = spring.value();
+        spring.step(dt);
+        self.last_width_step = Some(now);
+        if (spring.value() - before).abs() > 0.05 {
+            self.style_dirty = true;
+        }
+        if spring.is_settled() && !self.is_closing() {
+            self.width_spring = None;
+        }
     }
 
     /// The same eased factor `draw` uses for alpha, scale and offset.
@@ -359,7 +485,12 @@ impl WindowGroup {
     }
 
     pub fn start_closing(&mut self) {
+        if self.closing_at.is_some() {
+            return;
+        }
+        let from = self.layout_width_px();
         self.closing_at = Some(crate::time::now());
+        self.retarget_width(from, 0.0);
     }
 
     pub fn is_closing(&self) -> bool {
@@ -425,6 +556,7 @@ impl WindowGroup {
     /// own drag state; follow up with [`Self::stamp_pending_width_change`]
     /// on release.
     pub fn set_width(&mut self, w: WindowWidth) {
+        let visual = self.layout_width_px();
         let before = self.width;
         match w {
             WindowWidth::Fraction(p) => {
@@ -434,13 +566,40 @@ impl WindowGroup {
         }
         if self.width != before {
             self.style_dirty = true;
+            // A group that has never been placed is still being built;
+            // snapping keeps constructors and first-layout fixtures from
+            // spending a spring settle before they can be measured.
+            if self.rect.width() > 1.0 || self.width_spring.is_some() {
+                self.retarget_width(visual, self.resolved_width_px());
+            }
         }
     }
 
     /// Converts to a fraction immediately so nothing downstream ever
-    /// stores pixels.
+    /// stores pixels. Live handle drags call this so the seam stays
+    /// welded to the pointer; a committed resize goes through
+    /// [`Self::set_width`] and springs.
     pub fn set_width_px(&mut self, px: f64) {
-        self.set_width(WindowWidth::from_px(px, self.strip_usable_px));
+        let next = WindowWidth::from_px(px, self.strip_usable_px);
+        if next == self.width {
+            return;
+        }
+        self.width = next;
+        self.width_spring = None;
+        self.last_width_step = None;
+        self.style_dirty = true;
+    }
+
+    /// Pin the slot at its persisted width. Used after [`Self::set_width`]
+    /// when the dest strip still fits the viewport, so in-flight values
+    /// cannot invent overflow.
+    pub(crate) fn snap_width_spring(&mut self) {
+        if self.width_spring.is_none() {
+            return;
+        }
+        self.width_spring = None;
+        self.last_width_step = None;
+        self.style_dirty = true;
     }
 
     pub fn stamp_pending_width_change(&mut self) {
@@ -683,6 +842,8 @@ impl WindowGroup {
             close_hover: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            width_spring: None,
+            last_width_step: None,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -1882,7 +2043,7 @@ impl Widget for WindowGroup {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             size: Size {
-                width: Dimension::length(px_f32(self.resolved_width_px())),
+                width: Dimension::length(px_f32(self.layout_width_px())),
                 height: Dimension::percent(1.0),
             },
             flex_grow: 0.0,
@@ -1949,14 +2110,22 @@ impl Widget for WindowGroup {
         // draw would just be a flicker, so nothing paints until either
         // something has drawn or the wait is long enough to say so.
         if !Widget::presented(self) && !Widget::opening(self) {
-            self.held_back = true;
-            return;
+            if self.is_closing() {
+                // A dying client must not blank the card: keep the last
+                // frame we painted while the slot collapses.
+            } else {
+                self.held_back = true;
+                return;
+            }
         }
         // The shell latches the spawn fade when it splices the group in,
         // before the app has drawn — without restarting it here the fade
         // would already have run its course against an invisible group.
-        if std::mem::take(&mut self.held_back) {
+        if std::mem::take(&mut self.held_back) && !self.is_closing() {
             self.spawned_at = (!self.reduce_motion).then(crate::time::now);
+            if !self.reduce_motion {
+                self.arm_width_from_zero();
+            }
         }
         // Close checked first (mutually exclusive with spawn in practice):
         // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
@@ -2205,6 +2374,9 @@ impl Widget for WindowGroup {
         let group_close_in_flight = self
             .closing_at
             .is_some_and(|t| t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS));
+        let width_in_flight = !self.reduce_motion
+            && !self.close_complete()
+            && self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
         // Only the *active* tab is laid out and drawn, so only its signal
         // counts — otherwise a background terminal's PTY-poll would pin
         // the whole shell at 60fps/100% CPU forever.
@@ -2217,6 +2389,7 @@ impl Widget for WindowGroup {
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight
+            || width_in_flight
             || (!self.external_navigation && self.bar.needs_animation_frame())
             || host
     }
@@ -4057,6 +4230,139 @@ mod tests {
             assert!(
                 inserted.1.spawn_in_flight(),
                 "inserting a detached tab must fire the tile-level spawn fade",
+            );
+        }
+    }
+
+    #[test]
+    fn width_spring_opens_closes_and_resizes_from_the_current_value() {
+        // Case `opening_grows_the_slot_from_zero`.
+        {
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            let target = g.resolved_width_px();
+            assert!(target > 100.0, "fixture must have a real slot to grow into");
+            g.start_spawn_animation();
+            assert!(
+                g.layout_width_px() < 1.0,
+                "an opening group reserves no width until the spring moves, got {}",
+                g.layout_width_px(),
+            );
+            assert!(
+                g.needs_animation_frame(),
+                "an in-flight width spring must pump frames",
+            );
+            let mut last = g.layout_width_px();
+            for _ in 0..8 {
+                g.step_width_spring();
+                let now = g.layout_width_px();
+                assert!(now >= last, "open must grow the slot, {last} → {now}");
+                last = now;
+            }
+            assert!(
+                last > 1.0 && last < target,
+                "after a few frames the slot is open but not yet at the target ({last} of {target})",
+            );
+        }
+
+        // Case `a_new_resize_keeps_velocity`.
+        {
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            g.start_spawn_animation();
+            for _ in 0..10 {
+                g.step_width_spring();
+            }
+            let mid = g.layout_width_px();
+            let vel_before = g
+                .width_spring
+                .as_ref()
+                .map(Spring::velocity)
+                .expect("open spring still in flight");
+            assert!(
+                vel_before > 0.0,
+                "opening must still be moving outward, vel={vel_before}",
+            );
+            g.set_width(WindowWidth::Narrow);
+            let vel_after = g
+                .width_spring
+                .as_ref()
+                .map(Spring::velocity)
+                .expect("resize retargets the same spring");
+            assert_eq!(
+                vel_after, vel_before,
+                "set_target must keep the current velocity so a new input is interruptible",
+            );
+            assert!(
+                (g.layout_width_px() - mid).abs() < 0.5,
+                "retargeting must not jump the slot, was {mid} now {}",
+                g.layout_width_px(),
+            );
+            assert!(
+                g.width_spring
+                    .as_ref()
+                    .is_some_and(|s| s.target() < px_f32(mid)),
+                "Narrow on a 1200 px strip is smaller than the mid-open width",
+            );
+        }
+
+        // Case `closing_collapses_the_slot_and_keeps_drawing`.
+        {
+            let mut g = group_opening("Files", false, false);
+            g.set_strip_usable_px(1200.0);
+            assert!(
+                !painted_anything(&mut g),
+                "precondition: an unpresented group with no opening card paints nothing",
+            );
+            let from = g.layout_width_px();
+            g.start_closing();
+            assert!(
+                (g.layout_width_px() - from).abs() < 0.5,
+                "close must start from the last reserved width, not jump to zero",
+            );
+            assert!(
+                painted_anything(&mut g),
+                "a closing group is drawn from its last frame while the slot collapses",
+            );
+            let mut last = g.layout_width_px();
+            for _ in 0..8 {
+                g.step_width_spring();
+                let now = g.layout_width_px();
+                assert!(now <= last, "close must collapse the slot, {last} → {now}");
+                last = now;
+            }
+            assert!(
+                last < from,
+                "the slot must have started to collapse ({last} from {from})",
+            );
+        }
+
+        // Case `reduced_motion_cuts_to_the_target`.
+        {
+            let mut g = make_group();
+            g.set_strip_usable_px(1200.0);
+            g.set_reduce_motion(true);
+            g.start_spawn_animation();
+            assert!(
+                (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                "reduced motion opens at the target width, no spring frames",
+            );
+            assert!(
+                g.width_spring.is_none(),
+                "reduced motion must not leave a spring ticking",
+            );
+            g.set_reduce_motion(false);
+            g.rect = Rect::new(0.0, 0.0, g.resolved_width_px(), 400.0);
+            g.set_width(WindowWidth::Narrow);
+            assert!(
+                g.width_spring.is_some(),
+                "a live resize starts a spring when motion is allowed",
+            );
+            g.set_reduce_motion(true);
+            g.step_width_spring();
+            assert!(
+                (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                "reduced motion snaps a running resize to the target",
             );
         }
     }
