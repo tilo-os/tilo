@@ -345,6 +345,8 @@ pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<Calculator>>,
     last: Option<EncodedAction>,
+    #[cfg(test)]
+    test_hosted: bool,
 }
 
 impl ActionSink {
@@ -353,7 +355,16 @@ impl ActionSink {
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.test_hosted {
+            return true;
+        }
         self.framework.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.test_hosted = true;
     }
 
     pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
@@ -389,5 +400,34 @@ impl ResourceSurface<Calculator> for CalculatorApp {
 
     fn attach(&mut self, cx: SurfaceCx<Calculator>) {
         self.attach_framework(cx.dispatcher());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_actions::Action;
+
+    #[test]
+    fn hosted_history_entry_is_the_published_row() {
+        let mut doc = AutoCommit::new();
+        CalculatorAction::CommitHistory {
+            id: "h1".into(),
+            rank: 1,
+            expr: "1+1".into(),
+            result: "2".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        doc.commit();
+        let mut app = CalculatorApp::new();
+        app.mark_hosted_for_test();
+        assert!(ui::resources::resource(&app, &doc, Calculator::KIND).is_none());
+        let entry = ui::resources::resource(&app, &doc, "calculator.history_entry:h1")
+            .expect("hosted history entry");
+        assert!(
+            entry.actions.iter().any(|action| action.id == "open"),
+            "a hosted history entry stays the published row"
+        );
     }
 }
