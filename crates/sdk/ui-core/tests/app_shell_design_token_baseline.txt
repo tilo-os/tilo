@@ -22,7 +22,7 @@ apps/git-client/src/app.rs white_or_black 5
 apps/git-client/src/history.rs white_or_black 2
 apps/imager/src/app.rs white_or_black 2
 apps/mail/src/app.rs literal_color 1
-apps/mail/src/draw.rs literal_color 2
+apps/mail/src/draw.rs literal_color 0
 apps/mail/src/pane.rs white_or_black 6
 apps/maps/src/app.rs white_or_black 3
 apps/maps/src/canvas.rs literal_color 1
