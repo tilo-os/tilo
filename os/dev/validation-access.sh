@@ -174,7 +174,13 @@ cat > "$etc/systemd/system/$UNIT" <<'EOF'
 [Unit]
 Description=Validation-only SSH access for the release gate
 BindsTo=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device
-After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target
+After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target basic.target
+# Off multi-user.target's ordering: a target waits for the units it wants
+# unless they opt out, and this gate-only service would otherwise add its own
+# sysext refresh and host-key generation to the boot time the gate measures.
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=exec
