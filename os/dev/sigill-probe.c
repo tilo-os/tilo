@@ -50,6 +50,27 @@ int sigaction(int number, const struct sigaction *action, struct sigaction *prev
     return next(number, action, previous);
 }
 
+int __sigaction(int number, const struct sigaction *action, struct sigaction *previous) {
+    return sigaction(number, action, previous);
+}
+
+typedef void (*signal_handler)(int);
+signal_handler signal(int number, signal_handler requested) {
+    static signal_handler (*next)(int, signal_handler);
+    if (!next) next = dlsym(RTLD_NEXT, "signal");
+    if (number == SIGILL) {
+        static const char marker[] = "TILO_SIGILL_SIGNAL_INTERCEPTED\n";
+        write(STDERR_FILENO, marker, sizeof(marker) - 1);
+        struct sigaction probe = {0};
+        probe.sa_sigaction = on_sigill;
+        sigemptyset(&probe.sa_mask);
+        probe.sa_flags = SA_SIGINFO;
+        sigaction(number, &probe, NULL);
+        return requested;
+    }
+    return next(number, requested);
+}
+
 __attribute__((constructor)) static void install_sigill_probe(void) {
     static const char loaded[] = "TILO_SIGILL_PROBE_LOADED\n";
     write(STDERR_FILENO, loaded, sizeof(loaded) - 1);
