@@ -783,15 +783,21 @@ impl MarkTarget {
 
     fn toggle(&self, mark: InlineMark) -> EditOutcome {
         let active = self.active.get(mark.index()).copied().unwrap_or(false);
-        let value = (!active).then_some(MarkVal::Bool(true));
+        self.turn(mark, !active)
+    }
+
+    /// Turn `mark` on or off over the selection whatever it covers now, so
+    /// repeating it changes nothing.
+    fn turn(&self, mark: InlineMark, on: bool) -> EditOutcome {
+        let value = on.then_some(MarkVal::Bool(true));
         let (ranges, also_clear) = match mark.sibling() {
             None => (&self.selection_blocks, Vec::new()),
             Some(sibling) => (
                 &self.font_ranges,
-                if active {
-                    Vec::new()
-                } else {
+                if on {
                     vec![sibling.name().to_owned()]
+                } else {
+                    Vec::new()
                 },
             ),
         };
@@ -1832,7 +1838,7 @@ pub(super) fn add_operations(
                 },
             )
             .with_description(
-                "Bold/italic/underline/strike your selection (super/sub also the caret paragraph)",
+                "Flip bold/italic/underline/strike on your selection, off where it covers all of it (super/sub also the caret paragraph); set-mark with on sets it without flipping",
             ),
         ),
         "toggle-mark.v1",
@@ -1845,12 +1851,17 @@ pub(super) fn add_operations(
             ActionSpec::typed(
                 op::SET_MARK,
                 "Set text format",
-                "font, size, color or highlight",
+                "strong, em, underline, strike, super or sub with on; font, size, color or highlight with value",
                 locus(),
                 vec![
-                    ActionParam::required_owned("name", ParamType::Text, "The valued inline mark")
-                        .with_choices(VALUED_MARKS),
-                    ActionParam::required_owned(
+                    ActionParam::required_owned("name", ParamType::Text, "The inline mark")
+                        .with_choices(InlineMark::ALL.map(InlineMark::name).into_iter().chain(VALUED_MARKS)),
+                    ActionParam::optional_owned(
+                        "on",
+                        ParamType::Boolean,
+                        "strong, em, underline, strike, super, sub: true sets it, false removes it",
+                    ),
+                    ActionParam::optional_owned(
                         "value",
                         ParamType::Text,
                         "font: sans|serif|mono; size: points 6-200; color/highlight: #rrggbb",
@@ -1861,6 +1872,17 @@ pub(super) fn add_operations(
                         return refused(ContextRequirement::Caret);
                     };
                     let name = args.text("name").unwrap_or_default();
+                    if let Some(mark) = InlineMark::from_name(name) {
+                        let Some(on) = args.boolean("on") else {
+                            return invalid("on is required: true sets the mark, false removes it");
+                        };
+                        return match setter.turn(mark, on) {
+                            (actions, _) if actions.is_empty() => {
+                                refused(ContextRequirement::Selection)
+                            }
+                            outcome => single(Ok(outcome), "nothing to format"),
+                        };
+                    }
                     match mark_value(name, args.text("value").unwrap_or_default()) {
                         Ok(value) => single(Ok(setter.set(name, Some(value))), "nothing to format"),
                         Err(reason) => invalid(reason),
@@ -1868,7 +1890,7 @@ pub(super) fn add_operations(
                 },
             )
             .with_description(
-                "Set font, size, colour or highlight on your selection, or the caret paragraph",
+                "Set formatting on your selection whatever it has now: bold/italic/underline/strike on or off, or font, size, colour or highlight (super/sub and valued marks also the caret paragraph)",
             ),
         ),
         "set-mark.v1",
@@ -3532,6 +3554,65 @@ mod tests {
             refused.type_id,
             tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
+    }
+
+    #[test]
+    fn set_mark_on_keeps_bold_that_a_toggle_would_remove() {
+        let (mut state, _, ids) = writer(&["Deadline"]);
+        let view = sel((&ids[0], 0), (&ids[0], 8));
+        let (bold, _) = toggle_mark(&view, &state.doc, InlineMark::Strong).unwrap();
+        apply_all(&mut state.doc, &bold);
+        let doc = &state.doc;
+        let line = vec![Span {
+            block: ids[0].clone(),
+            start: 0,
+            end: 8,
+        }];
+        let strong = |value| {
+            encode(&set_mark_action(
+                RegionKind::Body,
+                line.clone(),
+                "strong",
+                value,
+                vec![],
+            ))
+        };
+        let set = |on| {
+            invoke(
+                &view,
+                doc,
+                op::SET_MARK,
+                serde_json::json!({"name": "strong", "on": on}),
+            )
+        };
+        assert_eq!(set(true), strong(Some(MarkVal::Bool(true))));
+        assert_eq!(
+            invoke(
+                &view,
+                doc,
+                op::TOGGLE_MARK,
+                serde_json::json!({"mark": "strong"})
+            ),
+            strong(None)
+        );
+        assert_eq!(set(false), strong(None));
+        let missing = invoke(
+            &view,
+            doc,
+            op::SET_MARK,
+            serde_json::json!({"name": "strong"}),
+        );
+        assert_eq!(
+            missing.type_id,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
+        let caret_only = invoke(
+            &at(&ids[0], 1),
+            doc,
+            op::SET_MARK,
+            serde_json::json!({"name": "em", "on": true}),
+        );
+        assert!(caret_only.payload.starts_with(b"needs-selection"));
     }
 
     #[test]

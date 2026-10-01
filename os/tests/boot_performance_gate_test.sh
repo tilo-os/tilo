@@ -362,7 +362,12 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/crates/system/fs/src/main.rs"
+# Activation may omit a pathname; an explicit path must still be this socket.
+recipient_src="$repo/crates/system/fs/src/main.rs"
+if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
+  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+  exit 1
+fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
 app_host_serve_line="$(grep -n 'transport::serve(listener, store' "$app_host_source" | cut -d: -f1)"
 if [ -z "$app_host_gc_line" ] || [ -z "$app_host_serve_line" ] \

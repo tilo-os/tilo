@@ -140,7 +140,7 @@ struct Store {
 /// permissions and cooperative child namespace. Granted user files have their
 /// own policies; admission never relocates a journal to another filesystem.
 pub struct OperationOwner {
-    storage: atomic_file::StorageDirectory,
+    storage: tilo_files::native::atomic::StorageDirectory,
     _writer: advisory_lock::FileLock,
     owner: FsOwner,
     metadata_limit: usize,
@@ -166,11 +166,12 @@ impl OperationOwner {
             return Err(FsError::StoreUnavailable);
         }
         // Duplicate only the incoming directory, never the lock-bearing writer.
-        let storage =
-            atomic_file::StorageDirectory::from_file(opened_storage.try_clone().map_err(io_error)?)
-                .map_err(io_error)?;
+        let storage = tilo_files::native::atomic::StorageDirectory::from_file(
+            opened_storage.try_clone().map_err(io_error)?,
+        )
+        .map_err(io_error)?;
         storage
-            .validate_privacy(atomic_file::Privacy::OwnerOnly)
+            .validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)
             .map_err(io_error)?;
         let directory = Dir::from_std_file(opened_storage);
         let writer = rustix::fs::openat(
@@ -277,8 +278,8 @@ impl OperationOwner {
             .publish(
                 std::ffi::OsStr::new(&final_name),
                 &bytes,
-                atomic_file::PublishMode::Replace,
-                atomic_file::Privacy::OwnerOnly,
+                tilo_files::native::atomic::PublishMode::Replace,
+                tilo_files::native::atomic::Privacy::OwnerOnly,
             )
             .map_err(FsError::Publication)
     }
@@ -361,7 +362,9 @@ impl OperationOwner {
         #[cfg(test)]
         let written = match publication_failure {
             Some((phase, fault)) if phase == checkpoint => {
-                atomic_file::test_support::with_failure(fault, || self.write(&receipt))
+                tilo_files::native::atomic::test_support::with_failure(fault, || {
+                    self.write(&receipt)
+                })
             }
             _ => self.write(&receipt),
         };
@@ -419,7 +422,7 @@ impl OperationOwner {
         };
         self.reserve_terminal_metadata(&receipt, "Admitted")?;
         if let Err(error) = self.write(&receipt) {
-            if matches!(&error, FsError::Publication(publication) if publication.state() != atomic_file::PublicationState::NotPublished)
+            if matches!(&error, FsError::Publication(publication) if publication.state() != tilo_files::native::atomic::PublicationState::NotPublished)
             {
                 store.poisoned = true;
             }
@@ -915,7 +918,7 @@ mod receipt_tests {
     }
     #[test]
     fn receipt_publication_admission_memory_disk_and_poisoning() {
-        use atomic_file::{
+        use tilo_files::native::atomic::{
             PublicationState as State,
             test_support::{Checkpoint, with_failure},
         };
@@ -973,7 +976,7 @@ mod receipt_tests {
 
     #[test]
     fn receipt_publication_commit_guard_never_owns_writer_exclusion_or_repairs_memory() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         let root = private_root();
         let owner = open(&root);
         let error = with_failure(Checkpoint::BeforeCommit, || {
@@ -1026,7 +1029,7 @@ mod receipt_tests {
 
     #[test]
     fn receipt_publication_reconciliation_failure_retains_original_phase_and_disk() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         let root = private_root();
         let owner = open(&root);
         let id = owner.admit(uuid::Uuid::nil(), 1).unwrap();
@@ -1047,7 +1050,7 @@ mod receipt_tests {
         };
         assert_eq!(
             publication.state(),
-            atomic_file::PublicationState::PublishedDurabilityUnknown
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown
         );
         drop(error);
         let reopened = open(&root);

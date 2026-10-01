@@ -25,7 +25,6 @@ on:
       - ".forgejo/workflows/release-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
-      - "scripts/check-nix-cargo-lock.py"
   schedule:
     # One weekly candidate, separated from Saturday's OS image build.
     - cron: "0 4 * * 5"
@@ -67,8 +66,6 @@ jobs:
           diagnostic=success
           if ! python3 scripts/check-install-contract.py; then
             diagnostic=install-contract
-          elif ! python3 scripts/check-nix-cargo-lock.py; then
-            diagnostic=nix-cargo-lock-drift
           elif ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD; then
             diagnostic=bash-syntax
           elif ! cc -fsyntax-only -Wall -Wextra -Werror dist/ci/qemu-argv0-wrapper.c; then

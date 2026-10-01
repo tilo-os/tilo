@@ -694,15 +694,15 @@ fn install_trust(
         ));
     }
 
-    atomic_file::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
+    tilo_files::native::atomic::write_with_mode(&trust_dir.join("root.pub"), &trusted_root, 0o600)
         .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("revocations.bin"),
         &canonical_bytes(&entries).map_err(|error| error.to_string())?,
         0o600,
     )
     .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &trust_dir.join("endorsement.bin"),
         &canonical_bytes(&endorsement).map_err(|error| error.to_string())?,
         0o600,
@@ -716,13 +716,22 @@ fn install_trust(
     let next_generation = recorded_generation
         .unwrap_or(endorsement.generation)
         .max(endorsement.generation);
-    atomic_file::write_with_mode(&generation_state, &next_generation.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(&trust_dir.join("time.state"), &now_ns.to_le_bytes(), 0o600)
-        .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &generation_state,
+        &next_generation.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(
+        &trust_dir.join("time.state"),
+        &now_ns.to_le_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     // This marker switches the update path from inert to fail-closed. Publish
     // it only after every validated artifact is durable.
-    atomic_file::write_with_mode(&required, b"armed\n", 0o600).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_with_mode(&required, b"armed\n", 0o600)
+        .map_err(|error| error.to_string())
 }
 
 fn arm(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
@@ -816,18 +825,21 @@ fn verify_common(
             ));
         }
         if expected_generation > floor || recorded.is_none() {
-            atomic_file::write_with_mode(&state, &expected_generation.to_le_bytes(), 0o600)
-                .map_err(|error| {
-                    format!("cannot record generation in {}: {error}", state.display())
-                })?;
+            tilo_files::native::atomic::write_with_mode(
+                &state,
+                &expected_generation.to_le_bytes(),
+                0o600,
+            )
+            .map_err(|error| format!("cannot record generation in {}: {error}", state.display()))?;
         }
     }
     if let Some(state) = time_state {
         let recorded = read_generation_floor(&state)?;
         if recorded.is_none_or(|floor| now_ns > floor) {
-            atomic_file::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600).map_err(
-                |error| format!("cannot record trusted time in {}: {error}", state.display()),
-            )?;
+            tilo_files::native::atomic::write_with_mode(&state, &now_ns.to_le_bytes(), 0o600)
+                .map_err(|error| {
+                    format!("cannot record trusted time in {}: {error}", state.display())
+                })?;
         }
     }
     Ok(())
@@ -997,7 +1009,7 @@ mod tests {
         {
             let temp = tempfile::tempdir().expect("temporary directory");
             let artifact = temp.path().join("root.pub");
-            atomic_file::write_with_mode(&artifact, &[7; 32], 0o600)
+            tilo_files::native::atomic::write_with_mode(&artifact, &[7; 32], 0o600)
                 .expect("private trust artifact");
             assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
 
@@ -1017,7 +1029,8 @@ mod tests {
             let marker = temp.path().join("required");
             assert!(!required_marker_is_armed(&marker).expect("absent marker"));
 
-            atomic_file::write_with_mode(&marker, b"armed\n", 0o600).expect("valid marker");
+            tilo_files::native::atomic::write_with_mode(&marker, b"armed\n", 0o600)
+                .expect("valid marker");
             assert!(required_marker_is_armed(&marker).expect("valid marker accepted"));
             let linked_parent = temp.path().join("linked-parent");
             std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
@@ -1110,7 +1123,7 @@ mod tests {
             let temp = tempfile::tempdir().expect("temporary directory");
             let state = temp.path().join("generation");
             let link = temp.path().join("generation-link");
-            atomic_file::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
+            tilo_files::native::atomic::write_with_mode(&state, &7_u64.to_le_bytes(), 0o600)
                 .expect("generation fixture");
             symlink(&state, &link).expect("generation symlink");
             assert!(read_generation_floor(&link).is_err());
@@ -1425,7 +1438,7 @@ mod tests {
             update_lock.to_str().expect("update lock"),
         ]))
         .expect("rotate an armed trust store under the update lock");
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             &trust_dir.join("generation.state"),
             &8_u64.to_le_bytes(),
             0o600,
@@ -1480,8 +1493,12 @@ mod tests {
             fs::read(&time_state_path).expect("read trusted time state"),
             50_u64.to_le_bytes()
         );
-        atomic_file::write_with_mode(&generation_state_path, &8_u64.to_le_bytes(), 0o600)
-            .expect("advance generation state");
+        tilo_files::native::atomic::write_with_mode(
+            &generation_state_path,
+            &8_u64.to_le_bytes(),
+            0o600,
+        )
+        .expect("advance generation state");
         assert!(
             verify_common(
                 arguments(&[
@@ -1501,7 +1518,7 @@ mod tests {
             .is_err(),
             "a valid older endorsement must not cross the recorded rollback floor"
         );
-        atomic_file::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
+        tilo_files::native::atomic::write_with_mode(&time_state_path, &60_u64.to_le_bytes(), 0o600)
             .expect("advance trusted-time state");
         let clock_error = verify_common(
             arguments(&[

@@ -326,3 +326,56 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
     shell::shell::foreign::release_frame_throttle(&mut h.state);
     h.pump_until("frame 4's callback", |c| c.frames_done.contains(&4));
 }
+
+/// A client may ask for its next frame on a commit that brings no buffer
+/// (a configure ack, a title). Nothing on screen changes. Releasing the
+/// callback used to require a full present, so an idle app that asked
+/// again kept the shell building frames. The callback has to fire or a
+/// FIFO swapchain waits forever; it fires here without a present.
+#[test]
+fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
+    let mut h = Harness::new();
+    let qh = h.queue.handle();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(APP_ID.into());
+    surface.commit();
+    h.pump();
+    let id = adopted_surface(&h.state);
+    shell::compositor::foreign::store()
+        .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump_until("the first configure", |c| c.configured);
+    let buffer = shm_buffer(&h);
+
+    draw(&surface, &buffer, &qh, 1);
+    h.pump();
+    shell::shell::foreign::release_frame_throttle(&mut h.state);
+    h.pump_until("frame 1's callback from a paint", |c| {
+        c.frames_done.contains(&1)
+    });
+    assert!(
+        !shell::shell::foreign::frame_callbacks_waiting(&h.state),
+        "every callback was released: an idle client asks for no paint"
+    );
+
+    surface.frame(&qh, 2);
+    surface.commit();
+    h.pump();
+    assert!(
+        shell::shell::foreign::frame_callbacks_waiting(&h.state),
+        "frame 2's callback came without a buffer"
+    );
+    assert!(
+        shell::shell::foreign::release_idle_frame_callbacks(&mut h.state),
+        "an unchanged commit releases its callback without a present"
+    );
+    h.pump_until("frame 2's callback", |c| c.frames_done.contains(&2));
+    assert!(
+        !shell::shell::foreign::frame_callbacks_waiting(&h.state),
+        "the idle release fired the callback"
+    );
+}

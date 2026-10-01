@@ -59,6 +59,11 @@ if [ -n "$desktop_payload" ]; then
     && case "$desktop_payload" in *[!0-9a-f]*) false ;; *) true ;; esac \
     || { printf 'release provenance: invalid TILO_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
 fi
+sbom_hash="${TILO_SBOM_SHA256:-}"
+if [ -n "$sbom_hash" ]; then
+  [[ "$sbom_hash" =~ ^[0-9a-f]{64}$ ]] \
+    || { printf 'release provenance: invalid TILO_SBOM_SHA256\n' >&2; exit 1; }
+fi
 release_children="${TILO_RELEASE_CHILDREN_JSON:-[]}"
 hardware_profile="${TILO_HARDWARE_PROFILE:-generic}"
 release_architecture="${TILO_RELEASE_ARCHITECTURE:-}"
@@ -112,6 +117,7 @@ jq -n \
   --argjson kernels "$kernel_refs" \
   --arg app_collection "$app_collection" \
   --arg desktop_payload "$desktop_payload" \
+  --arg sbom_hash "$sbom_hash" \
   --arg hardware_profile "$hardware_profile" \
   --arg release_architecture "$release_architecture" \
   --arg firmware_candidate "$firmware_candidate" \
@@ -165,9 +171,12 @@ jq -n \
     runDetails: {
       builder: {id: "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
-      byproducts: [{
+      byproducts: ([{
         name: "independent-rebuild",
         uri: "urn:tilo:verification:manifest-digest-equal"
-      }]
+      }] + if $sbom_hash == "" then [] else [{
+        name: "spdx-sbom",
+        uri: ("sha256:" + $sbom_hash)
+      }] end)
     }
   }' > "$out"
