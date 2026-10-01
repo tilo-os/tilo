@@ -3468,6 +3468,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        // The poll above already ran. Re-read what it published so a deadline
+        // that is still in the past does not schedule a frame-rate follow-up.
+        let scheduled_deadline = crate::close_admission::wake_deadline(
+            app.root_widget
+                .next_wake_deadline()
+                .into_iter()
+                .chain(self.touch_pointer.long_press_deadline())
+                .min(),
+            app.close_admission.save_waiting,
+            crate::time::now(),
+        );
+        let widget_still_due = !scheduled_due
+            && scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
+
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.input.tooltip_host.needs_frame();
@@ -3530,7 +3544,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
-            widget_due: scheduled_due,
+            widget_due: widget_still_due,
             animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
