@@ -184,7 +184,7 @@ pub fn load_registries() -> RegistriesFile {
         if refresh_official_pin(&mut parsed)
             && let Ok(updated) = toml::to_string_pretty(&parsed)
         {
-            let _ = atomic_file::write(&path, updated.as_bytes());
+            let _ = tilo_files::native::atomic::write(&path, updated.as_bytes());
         }
         return parsed;
     }
@@ -224,7 +224,7 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
     let text = toml::to_string_pretty(registries)?;
-    atomic_file::write_creating_parent(&path, text.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
     Ok(())
 }
 

@@ -5,6 +5,8 @@
 //!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
 //!   on macOS, the Common Item Dialogs on Windows), or with
 //!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
+//!   handed the session shell's chooser connection (a session with no
+//!   portal), `tilo_dialogs::inherited_shell_picker` in front of either;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -42,11 +44,15 @@ pub fn services(app_id: Option<&str>) -> HostServices {
 #[cfg(not(target_os = "android"))]
 pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
     // A session nobody sits at (a provider's guest) answers choosers itself.
-    let files = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+    let unattended = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
         .and_then(|directory| {
             tilo_dialogs::unattended_picker(directory.into(), services.files.clone())
-        })
+        });
+    // A session without a desktop portal draws choosers in its shell, and
+    // hands the unattended picker the ones nobody is there to answer.
+    let files = tilo_dialogs::inherited_shell_picker(unattended.clone())
+        .or(unattended)
         .unwrap_or_else(|| services.files.clone());
     HostServices {
         files,
@@ -155,6 +161,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
+        // `settings_store::SESSION_SETTINGS_ENV`. Empty is unset.
+        session_settings: path("TILO_SESSION_SETTINGS"),
     }
 }
 

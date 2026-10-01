@@ -60,6 +60,13 @@ pub struct Subscriber {
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
+    /// The in-process room authority governing this workspace, told of each
+    /// retained body a device's admitted delta carries. Bounded; a full queue
+    /// drops the notice.
+    pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
+    /// The in-process authority governing this workspace's room, if any: it
+    /// answers the room's calls.
+    pub(crate) room_authority: Option<crate::rooms::RoomAuthority>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -314,6 +321,8 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             sync_refresh: None,
+            governor_tap: None,
+            room_authority: None,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,
@@ -557,6 +566,32 @@ impl WorkspaceRuntime {
     /// Whether `device` currently holds a subscription here.
     pub fn has_subscriber(&self, device: &[u8; 32]) -> bool {
         self.subscribers.contains_key(device)
+    }
+
+    /// Tell live devices that just lost membership they are no longer
+    /// authorised, while their connection is still open. Removals publish
+    /// this before durable IO so a concurrent audit cannot close the session
+    /// without an authenticated refusal. The subscriber is then unregistered
+    /// so a follow-up write closes instead of emitting a second refusal.
+    pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
+        if removed.is_empty() {
+            return;
+        }
+        let workspace_id = self.store.workspace_id();
+        for device in removed {
+            let Some(sub) = self.subscribers.get(device) else {
+                continue;
+            };
+            let _ = sub.tx.try_send(Envelope::NotAuthorised {
+                workspace_id,
+                reason: "workspace membership changed".into(),
+            });
+        }
+        for device in removed {
+            if self.subscribers.contains_key(device) {
+                self.remove_subscriber(device);
+            }
+        }
     }
 
     /// Route a delta envelope to every subscriber that is NOT the

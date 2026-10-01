@@ -99,7 +99,8 @@ pub(crate) struct BudgetTracker {
     grow_once: bool,
     /// `grow_once` has grown.
     saturated: bool,
-    /// Tiles in the viewport last rendered, for the log only.
+    /// Tiles in the viewport last rendered: the log's floors, and the
+    /// viewport-scaled ceiling growth stops at.
     n_tiles: u32,
     /// Frames seen, for the log only.
     frame: u64,
@@ -177,13 +178,15 @@ impl BudgetTracker {
         self.grow_once = grow_once;
     }
 
-    /// Grow to cover `used`, within the total limit.
+    /// Grow to cover `used`, within what this viewport may reserve, the
+    /// device can bind and the total limit.
     fn grow(&mut self, used: &BumpAllocators) -> bool {
         if self.saturated {
             return false;
         }
         let before = self.budget;
-        self.budget.observe(used);
+        self.budget
+            .observe_within(used, &BumpBudget::ceiling_for_viewport(self.n_tiles));
         if self.grow_once && self.budget != before && self.max_total_bytes != u64::MAX {
             // The observed needs, and the ceiling's proportions for the rest,
             // scaled together to the limit.
@@ -467,12 +470,23 @@ mod tests {
         let mut tracker = BudgetTracker::new();
         tracker.set_max_total_bytes(32 << 20);
         tracker.set_grow_once(true);
-        let small = BumpAllocators { lines: 1000, ptcl: 1000, ..Default::default() };
+        let small = BumpAllocators {
+            lines: 1000,
+            ptcl: 1000,
+            ..Default::default()
+        };
         assert!(tracker.grow(&small), "the first growth reallocates");
         let grown = *tracker.budget();
         assert!(grown.size_in_bytes() <= 32 << 20);
-        assert!(grown.size_in_bytes() > 16 << 20, "it grows to the limit, not to 2x use");
-        let big = BumpAllocators { lines: 1 << 22, ptcl: 1 << 24, ..Default::default() };
+        assert!(
+            grown.size_in_bytes() > 16 << 20,
+            "it grows to the limit, not to 2x use"
+        );
+        let big = BumpAllocators {
+            lines: 1 << 22,
+            ptcl: 1 << 24,
+            ..Default::default()
+        };
         assert!(!tracker.grow(&big), "no second reallocation");
         assert_eq!(*tracker.budget(), grown);
     }
