@@ -156,9 +156,11 @@ jobs:
             channel=true
           fi
 
-          # One lane per native architecture. Adding a lane is a matter of
-          # listing it here; both use the 100 GiB disk runners the OS build uses.
-          declare -A runners=([x86_64]=runner-disk-100g [aarch64]=runner-disk-100g-arm64)
+          # The disk installer enables fs-verity on every composefs object.
+          # The disk-only runner guest kernel lacks CONFIG_FS_VERITY, so use the
+          # existing native release pool that already installs and boots the
+          # same filesystem in build-image.yml. No runner provisioning changes.
+          declare -A runners=([x86_64]=runner-release [aarch64]=runner-release-arm64)
           read -r -a requested <<< "${INPUT_ARCHITECTURES:-x86_64}"
           (( ${#requested[@]} > 0 )) || { echo '::error::no architecture requested'; exit 1; }
           include='[]'
