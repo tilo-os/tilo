@@ -86,6 +86,7 @@ pub struct SpeedTestApp {
     error: Option<String>,
     history: Vec<ResultSet>,
     shot: bool,
+    pub(crate) actions: crate::resource::ActionSink,
     hosted: bool,
 }
 
@@ -108,6 +109,7 @@ impl SpeedTestApp {
             error: None,
             history: Vec::new(),
             shot: false,
+            actions: crate::resource::ActionSink::default(),
             hosted: false,
         }
     }
@@ -268,8 +270,15 @@ impl SpeedTestApp {
         self.hosted
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
     }
 
     pub(crate) fn has_result(&self) -> bool {
@@ -321,8 +330,22 @@ impl SpeedTestApp {
     }
 }
 
+impl ui::undo::CommittedActions for SpeedTestApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for SpeedTestApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;

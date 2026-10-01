@@ -2,7 +2,7 @@
 //! is no collaborative document vocabulary.
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -85,11 +85,43 @@ impl ResourceApp for SpeedTestShell {
     }
 }
 
+/// Framework dispatcher when hosted; the local action host for standalone
+/// tests and the screenshot launcher. Results stay on this device.
+#[derive(Default)]
+pub(crate) struct ActionSink {
+    local: ui::ActionHost,
+    framework: Option<Dispatcher<SpeedTest>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<SpeedTest>) {
+        self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted || self.framework.is_some()
+    }
+
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
+        self.local.take_committed()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+}
+
 impl ResourceSurface<SpeedTest> for SpeedTestApp {
     /// Results stay on this device. An empty projection must not clear them.
     fn present(&mut self, _state: &std::rc::Rc<SpeedTestState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<SpeedTest>) {
+    fn attach(&mut self, cx: SurfaceCx<SpeedTest>) {
+        self.actions.attach(cx.dispatcher());
         self.mark_framework_hosted();
     }
 }
@@ -141,6 +173,39 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| action.id.as_str() == "stop")
+        );
+    }
+
+    #[test]
+    #[test]
+    fn attach_hosted_surface_does_not_republish_the_speed_test_root() {
+        let mut idle = SpeedTestApp::new();
+        assert!(!idle.is_framework_hosted());
+        assert!(!idle.sink_is_hosted());
+        let doc = ui::automerge::AutoCommit::new();
+        let standalone = idle.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, SpeedTest::KIND);
+
+        idle.mark_hosted_for_test();
+        assert!(idle.is_framework_hosted());
+        assert!(idle.sink_is_hosted());
+        assert!(
+            idle.resources(&doc).is_empty(),
+            "hosted attach must not republish the speed-test root"
+        );
+
+        let mut running = SpeedTestApp::demo("running");
+        running.mark_hosted_for_test();
+        let extras = running.resources(&doc);
+        assert_eq!(extras.len(), 1);
+        assert_ne!(extras[0].kind, SpeedTest::KIND);
+        assert!(
+            extras[0]
+                .actions
+                .iter()
+                .any(|action| action.id.as_str() == "stop"),
+            "an in-flight run stays on the widget"
         );
     }
 
