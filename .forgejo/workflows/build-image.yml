@@ -3288,7 +3288,10 @@ jobs:
             exit 1
           fi
 
+      # Main only: a pull request's board job installs the disk as its test,
+      # but about 6 GB per board and commit is not kept for it.
       - name: Publish the flashable disk
+        if: github.ref == 'refs/heads/main'
         env:
           ARCH: aarch64
           SOURCE_REVISION: ${{ github.sha }}
