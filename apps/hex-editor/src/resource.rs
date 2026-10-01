@@ -6,13 +6,15 @@
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use automerge::AutoCommit;
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    HEX_EDITOR_ACTION_TYPE, HexEditorAction, document_local_operations, register,
+    HEX_EDITOR_ACTION_TYPE, HexEditorAction, document_local_operations,
+    refuses_collaborative_replay, register,
 };
 use crate::view::HexView;
 
@@ -74,9 +76,109 @@ impl ResourceSurface<HexEditor> for HexView {
     /// `HexState` must not wipe an unpublished local buffer.
     fn present(&mut self, _state: &Rc<HexState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<HexEditor>) {
-        self.mark_framework_hosted();
+    fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
+        self.actions.attach(cx.dispatcher());
     }
+}
+
+/// Framework dispatcher when hosted; the local action host for standalone
+/// tests and the screenshot launcher.
+///
+/// Raw hex bytes never take the dispatcher: [`HexEditorAction::apply`] refuses
+/// collaborative replay. A document action that `apply` accepts uses
+/// [`Dispatcher::apply_now_with`] while hosted, and the local host otherwise.
+pub(crate) struct ActionSink {
+    local: ui::ActionHost,
+    framework: Option<Dispatcher<HexEditor>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
+    /// How many times a hosted replayable action reached `apply_now_with`.
+    /// Raw byte edits must leave this at zero.
+    #[cfg(test)]
+    framework_applies: u32,
+}
+
+impl Default for ActionSink {
+    fn default() -> Self {
+        Self {
+            local: ui::ActionHost::new(),
+            framework: None,
+            hosted: false,
+            #[cfg(test)]
+            framework_applies: 0,
+        }
+    }
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<HexEditor>) {
+        self.framework = Some(dispatcher);
+        self.hosted = true;
+        #[cfg(test)]
+        remember_attached(self);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted || self.framework.is_some()
+    }
+
+    /// Submit one document action. Hosted replayable edits go through the
+    /// framework dispatcher. Raw hex bytes return before that call.
+    pub(crate) fn dispatch_document(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &HexEditorAction,
+        context: ui::tilo_actions::ActionContext,
+    ) {
+        if refuses_collaborative_replay(action) {
+            return;
+        }
+        match &self.framework {
+            Some(dispatcher) => {
+                #[cfg(test)]
+                {
+                    self.framework_applies = self.framework_applies.saturating_add(1);
+                }
+                let _ = dispatcher.apply_now_with(doc, action, context);
+            }
+            None => self
+                .local
+                .dispatch_with_context(doc, HEX_EDITOR_ACTION_TYPE, action, context),
+        }
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    /// Standalone resource tests stay on the local host.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+}
+
+#[cfg(test)]
+struct AttachedDispatcher {
+    hosted: bool,
+    framework: Option<Dispatcher<HexEditor>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ATTACHED: std::cell::RefCell<Option<AttachedDispatcher>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn remember_attached(sink: &ActionSink) {
+    let shot = AttachedDispatcher {
+        hosted: sink.is_hosted(),
+        framework: sink.framework.clone(),
+    };
+    ATTACHED.with(|slot| *slot.borrow_mut() = Some(shot));
+}
+
+#[cfg(test)]
+fn take_attached_dispatcher() -> Option<AttachedDispatcher> {
+    ATTACHED.with(|slot| slot.borrow_mut().take())
 }
 
 /// Live launch through the framework host.
@@ -246,5 +348,69 @@ mod tests {
             view.has_file(),
             "empty present must keep the local file projection"
         );
+    }
+
+    #[test]
+    fn hosted_attach_retains_dispatcher_without_raw_byte_replay() {
+        let mut view = HexView::new(vec![0x00, 0x11, 0x22], "buf.bin");
+        view.model_mut().move_to(1, false);
+        let mut state = ui::State::new();
+        Widget::sync(&mut view, &mut state.doc, &state.root);
+        assert!(
+            !view.is_framework_hosted() && view.actions.framework.is_none(),
+            "standalone tests stay on the local host"
+        );
+
+        view.mark_hosted_for_test();
+        let extras = view.resources(&state.doc);
+        assert!(
+            extras.iter().all(|resource| {
+                resource.kind != HexEditor::KIND && resource.id.as_str() != "hex_editor.document"
+            }),
+            "hosted resources() must not include a second document root: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "hex_editor.cursor"),
+            "selection / cursor extras stay on the widget"
+        );
+
+        // The framework constructs the only Dispatcher a surface can hold.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _host = ui::framework::testing::HeadlessApp::<HexEditorShell>::new()
+                .expect("hex editor framework host opens");
+            let attached = take_attached_dispatcher().expect("attach retains the dispatcher");
+            assert!(attached.hosted, "is_hosted");
+            let dispatcher = attached.framework.expect("framework.is_some()");
+
+            let mut sink = ActionSink::default();
+            sink.attach(dispatcher);
+            assert!(sink.is_hosted());
+            assert!(sink.framework.is_some());
+
+            let mut doc = automerge::AutoCommit::new();
+            let context = ui::tilo_actions::ActionContext::default();
+            for action in [
+                crate::actions::insert_bytes_action(0, vec![0xAB]),
+                crate::actions::overwrite_bytes_action(0, vec![0xCD]),
+                crate::actions::delete_bytes_action(0, 1),
+            ] {
+                sink.dispatch_document(&mut doc, &action, context.clone());
+            }
+            assert_eq!(
+                sink.framework_applies, 0,
+                "raw hex bytes must not be applied through the framework dispatcher"
+            );
+            assert!(
+                doc.get_heads().is_empty(),
+                "raw bytes must not be written into the shared document"
+            );
+        }
     }
 }
