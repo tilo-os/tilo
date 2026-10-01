@@ -7487,7 +7487,7 @@ impl ui::resources::PublishesResources for VideoEditorApp {
     /// action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         // Framework [`tilo_resource::publish`] owns `video_editor.project`,
         // import/export Effects, and timeline children. Playhead/mix
         // conveniences are live presentation only — keep that same
@@ -7495,7 +7495,31 @@ impl ui::resources::PublishesResources for VideoEditorApp {
         if self.actions.is_hosted() {
             return crate::actions::live_playhead_resources(&self.video_resource_ctx());
         }
-        self.publish_resources(_doc)
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "video.project" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id).or_else(|| {
+            self.actions.is_hosted().then(|| {
+                crate::actions::live_playhead_resources(&self.video_resource_ctx())
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            })?
+        })
     }
 }
 
