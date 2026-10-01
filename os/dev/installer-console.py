@@ -4,7 +4,8 @@
 The installer and the greeter answer the tilo-control action protocol
 (actions_enumerate / actions_invoke / state_dump; crates/session/console-control)
 on the virtio-serial port os/dev/vm.sh attaches, whose host end is the Unix
-socket `vm.sh console` prints. `tilo-control --socket <path> ...` speaks the
+socket `vm.sh console` prints. Windows WHPX uses a loopback `tcp://host:port`
+socket instead. `tilo-control --socket <path> ...` speaks the
 same protocol; this stdlib-only client exists for release lanes that do not
 build the compositor's CLI, and adds what a long boot needs: waiting, a `seq`
 field so an answer to an abandoned request is never mistaken for the current
@@ -30,6 +31,7 @@ import os
 import socket
 import sys
 import time
+from urllib.parse import urlsplit
 
 _SEQ = itertools.count(1)
 
@@ -48,9 +50,16 @@ def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
     seq = f"cycle-{os.getpid()}-{next(_SEQ)}"
     payload = dict(payload, seq=seq)
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        if path.startswith("tcp://"):
+            endpoint = urlsplit(path)
+            if endpoint.hostname not in {"127.0.0.1", "localhost", "::1"} or endpoint.port is None:
+                raise Unreachable("TCP console must use a loopback host and port")
+            sock = socket.create_connection((endpoint.hostname, endpoint.port), timeout)
+        else:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             sock.connect(path)
+        with sock:
             sock.sendall(json.dumps(payload).encode() + b"\n")
             buffer = b""
             deadline = time.monotonic() + timeout
@@ -67,7 +76,7 @@ def request(path: str, payload: dict, timeout: float = 15.0) -> dict:
                         continue
                     if reply.get("seq") == seq:
                         return reply
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise Unreachable(str(error)) from error
     raise Unreachable("no answer to this request")
 

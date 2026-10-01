@@ -13,6 +13,7 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
+OPTIONAL_V2 = {"boot_modules"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -190,8 +191,13 @@ def validate_definition(data):
     if not isinstance(data, dict):
         raise ValueError("hardware definition has missing or unknown fields")
     schema = data.get("schema_version")
-    expected_fields = FIELDS if schema == 1 else FIELDS_V2 if schema == 2 else None
-    if expected_fields is None or set(data) != expected_fields:
+    if schema == 1:
+        expected_fields, optional_fields = FIELDS, set()
+    elif schema == 2:
+        expected_fields, optional_fields = FIELDS_V2, OPTIONAL_V2
+    else:
+        expected_fields, optional_fields = None, set()
+    if expected_fields is None or set(data) - (expected_fields | optional_fields) or expected_fields - set(data):
         if type(schema) is not int or schema not in (1, 2):
             raise ValueError("unsupported hardware definition schema")
         raise ValueError("hardware definition has missing or unknown fields")
@@ -231,6 +237,16 @@ def validate_definition(data):
                for destination in destinations):
             raise ValueError("system firmware must not overlap local firmware destinations")
         system_paths.add(path)
+    boot_modules = data.get("boot_modules", [])
+    if not isinstance(boot_modules, list) or len(boot_modules) > 64:
+        raise ValueError("hardware definition boot modules must be a bounded name list")
+    seen_modules = set()
+    for name in boot_modules:
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+            raise ValueError("hardware definition boot module name is invalid")
+        if name in seen_modules:
+            raise ValueError("hardware definition boot module names must be unique")
+        seen_modules.add(name)
     return data
 
 

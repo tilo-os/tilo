@@ -16,7 +16,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::shell::i18n::{t, t_args};
@@ -39,9 +39,9 @@ pub struct SystemStatus {
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed from `PipeWire`'s server security
-    /// PID to the kernel executable. Polled independently at one-second
-    /// cadence so a privacy indicator appears promptly without running
-    /// `NetworkManager` queries every second.
+    /// PID to the kernel executable. The monitor runs only while the device
+    /// graph is still changing; an idle desktop does not keep `pw-dump`
+    /// running, and it is not restarted until a frame is requested.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
@@ -134,6 +134,16 @@ pub struct StatusBridge {
     inner: Arc<Mutex<SystemStatus>>,
     /// So a second `spawn` is a no-op, not a second thread racing the first.
     polling: Arc<AtomicBool>,
+    /// Set on the rising edge of a requested frame. The privacy worker
+    /// parks on it instead of arming its own timer.
+    frame_interest: Arc<FrameInterest>,
+}
+
+#[derive(Debug, Default)]
+struct FrameInterest {
+    requested: AtomicBool,
+    lock: Mutex<()>,
+    cv: Condvar,
 }
 
 impl StatusBridge {
@@ -206,13 +216,79 @@ impl StatusBridge {
             .spawn(move || {
                 loop {
                     let bridge = media_bridge.clone();
+                    // Returns when the device graph is unchanged (the
+                    // `pw-dump --monitor` process is gone) or when PipeWire
+                    // exits. Frames requested while that watch was running
+                    // already had a chance to publish; they must not restart
+                    // the monitor by themselves.
                     let _ = os_actions::monitor_media_usage(|media| bridge.set_media(media));
-                    // PipeWire may restart during login or an update. Rebind
-                    // without spinning and without ending the shell session.
-                    std::thread::sleep(Duration::from_secs(2));
+                    bridge.acknowledge_frame_requests();
+                    let frame_requested = bridge.frame_is_requested();
+                    if privacy_watch_followup(frame_requested) == PrivacyWatchFollowup::Park {
+                        bridge.wait_for_frame_request();
+                    }
                 }
             });
     }
+
+    /// The compositor calls this on the edge from an idle loop to a
+    /// requested frame. It does not start a timer.
+    pub fn notify_frame_requested(&self) {
+        self.frame_interest.requested.store(true, Ordering::Release);
+        self.frame_interest.cv.notify_one();
+    }
+
+    fn frame_is_requested(&self) -> bool {
+        self.frame_interest.requested.load(Ordering::Acquire)
+    }
+
+    fn acknowledge_frame_requests(&self) {
+        self.frame_interest
+            .requested
+            .store(false, Ordering::Release);
+    }
+
+    fn wait_for_frame_request(&self) {
+        let mut guard = self
+            .frame_interest
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !self.frame_interest.requested.swap(false, Ordering::AcqRel) {
+            guard = self
+                .frame_interest
+                .cv
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(guard);
+    }
+}
+
+/// What the privacy worker does after `pw-dump --monitor` has stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrivacyWatchFollowup {
+    /// A frame was requested after the graph settled. Look once more.
+    Watch,
+    /// No frame is requested. Park. Do not arm a timer.
+    Park,
+}
+
+/// Recurring privacy work is scheduled only when a frame is requested.
+/// An idle compositor has nothing to draw the indicator onto, and a timer
+/// here is what kept `pw-dump` in the session after the device graph was still.
+pub(crate) fn privacy_watch_followup(frame_requested: bool) -> PrivacyWatchFollowup {
+    if frame_requested {
+        PrivacyWatchFollowup::Watch
+    } else {
+        PrivacyWatchFollowup::Park
+    }
+}
+
+/// Rising edge of "a frame is requested". Holding the request across later
+/// frames must not schedule another watch per frame.
+pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool) -> (bool, bool) {
+    (frame_requested, frame_requested && !was_requested)
 }
 
 fn spawn_change_monitor(name: &'static str, argv: &'static [&'static str], tx: Sender<()>) {
@@ -455,5 +531,36 @@ mod tests {
         });
         crate::idle_thread_probe::assert_stays_asleep(&tid, "status fallback wait");
         drop(wake_tx);
+    }
+
+    #[test]
+    fn idle_graph_stops_the_pw_dump_monitor_without_scheduling_work() {
+        let graph = r#"[{"id":1,"type":"PipeWire:Interface:Device","info":{"props":{"device.name":"alsa_card.pci"}}},{"id":2,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo"}}}]"#;
+        let mut watch = os_actions::DeviceGraphWatch::default();
+        assert_eq!(
+            watch.observe_document(graph),
+            os_actions::MonitorDisposition::Keep
+        );
+        let dump_stream = r#"[{"id":99,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pw-dump","application.name":"pw-dump"}}}]"#;
+        assert_eq!(
+            watch.observe_document(dump_stream),
+            os_actions::MonitorDisposition::Stop,
+            "the shell must not keep a pw-dump monitor running once the device graph is unchanged"
+        );
+        assert_eq!(
+            privacy_watch_followup(false),
+            PrivacyWatchFollowup::Park,
+            "the shell must not schedule recurring work while no frame is requested"
+        );
+        assert_eq!(privacy_watch_followup(true), PrivacyWatchFollowup::Watch);
+        let (open, notify) = privacy_frame_interest(false, false);
+        assert!(!open && !notify);
+        let (open, notify) = privacy_frame_interest(false, true);
+        assert!(open && notify);
+        let (_open, notify) = privacy_frame_interest(true, true);
+        assert!(
+            !notify,
+            "frames that are already requested must not schedule another watch"
+        );
     }
 }

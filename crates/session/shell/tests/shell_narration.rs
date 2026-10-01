@@ -139,6 +139,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
     {
         let mut state = chrome.borrow_mut();
         state.overlays.quick_settings = true;
+        state.quick_settings.brightness_available = true;
         state.bump();
     }
     host.force_quick_settings_settled();

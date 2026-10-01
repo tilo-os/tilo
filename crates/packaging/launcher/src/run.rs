@@ -23,8 +23,8 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
     BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING,
-    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_identity_bind,
-    resolve_service_binds_for_launch, to_service_binds,
+    ServiceError, ServiceLaunchContext, resolve_blob_bind, resolve_chooser_bind,
+    resolve_identity_bind, resolve_service_binds_for_launch, to_service_binds,
 };
 
 struct SeccompFds {
@@ -1456,6 +1456,24 @@ fn splice_app_dir(
     Ok(())
 }
 
+/// Settings remaps XDG into the app dir. Bind the session store over that
+/// path so a write to `~/.config/tilo/settings.json` is the document the
+/// open Settings window watches and paints.
+fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
+    if package_id != "so.tilo.settings" {
+        return Ok(());
+    }
+    let Some(host) = xdg_paths::xdg::config_home() else {
+        return Ok(());
+    };
+    let host = host.join("tilo");
+    std::fs::create_dir_all(&host)?;
+    let entry = pop_entry(argv)?;
+    crate::appdir::push_session_settings_bind(argv, &host);
+    argv.push(entry);
+    Ok(())
+}
+
 /// Mount Files' live room-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
@@ -2114,6 +2132,11 @@ fn run_with_context(
         {
             resolved.push(blobs);
         }
+        if let Some(chooser) =
+            resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+        {
+            resolved.push(chooser);
+        }
         resolved
     };
     let binds = to_service_binds(&resolved);
@@ -2211,6 +2234,7 @@ fn run_with_context(
         splice_tool_context(&mut argv)?;
     }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_session_settings(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -2739,6 +2763,11 @@ fn run_with_capture_spawn<T>(
     {
         resolved.push(blobs);
     }
+    if let Some(chooser) =
+        resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
+    {
+        resolved.push(chooser);
+    }
     let binds = to_service_binds(&resolved);
 
     // Seccomp baseline resolved identically to `run_with` — two paths
@@ -2789,6 +2818,7 @@ fn run_with_capture_spawn<T>(
     splice_workspace_id_bind(&mut argv, opts)?;
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_session_settings(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -3282,6 +3312,34 @@ mod app_dir_tests {
                 "the launcher must not create a path a package named"
             );
         }
+    }
+
+    #[test]
+    fn settings_binds_the_session_store_and_other_apps_do_not() {
+        let config = tempfile::tempdir().expect("session config");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+
+        let mut argv = vec!["/entry".to_string()];
+        splice_session_settings(&mut argv, "so.tilo.notes").expect("notes");
+        assert_eq!(argv, vec!["/entry".to_string()]);
+
+        splice_session_settings(&mut argv, "so.tilo.settings").expect("settings");
+        let host = config.path().join("tilo");
+        assert!(host.is_dir(), "session store directory must exist to bind");
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == host.to_string_lossy()
+                && w[2] == "/run/tilo/app/.config/tilo"),
+            "Settings must bind the session store over remapped XDG: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "TILO_SESSION_SETTINGS"
+                && w[2] == crate::appdir::SANDBOX_SESSION_SETTINGS),
+            "Settings must name the session document: {argv:?}"
+        );
+        assert_eq!(argv.last().map(String::as_str), Some("/entry"));
     }
 }
 
