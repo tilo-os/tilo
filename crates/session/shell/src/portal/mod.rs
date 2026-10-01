@@ -651,7 +651,7 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    atomic_file::json::write_private(
+    tilo_files::native::atomic::json::write_private(
         path,
         &PortalConsentFile {
             always: always.clone(),
@@ -1248,7 +1248,8 @@ pub async fn serve_with_inhibit_and_clipboard(
             clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
         ],
         clipboard_broker,
-    );
+    )
+    .with_session_wake(lifecycle.wake.clone());
     let clipboard_events = clipboard.clone();
     let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
     let shortcuts = GlobalShortcutsBackend::with_service(

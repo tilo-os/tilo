@@ -24,10 +24,10 @@ impl SelectedRead {
         };
         let selected = retained::current(&store.root.join(DIRECTORY))?;
         if let Some(path) = &selected {
-            File::open(store.root.join(DIRECTORY).join("CURRENT"))?.sync_all()?;
-            retained::sync_dir(&store.root.join(DIRECTORY))?;
-            File::open(path.join("basis.manifest"))?.sync_all()?;
-            retained::sync_dir(path)?;
+            retained::sync_file_once(&store.root.join(DIRECTORY).join("CURRENT"))?;
+            retained::sync_dir_once(&store.root.join(DIRECTORY))?;
+            retained::sync_file_once(&path.join("basis.manifest"))?;
+            retained::sync_dir_once(path)?;
         }
         Ok(Some(Self {
             root: store.root.clone(),
@@ -172,8 +172,8 @@ impl SelectedGc {
         // barrier leaves the flag clear, so retries and newly opened cursors
         // must still establish durability before retiring anything.
         if !self.selection_synced {
-            File::open(self.root.join(DIRECTORY).join("CURRENT"))?.sync_all()?;
-            retained::sync_dir(&self.root.join(DIRECTORY))?;
+            retained::sync_file_once(&self.root.join(DIRECTORY).join("CURRENT"))?;
+            retained::sync_dir_once(&self.root.join(DIRECTORY))?;
             self.selection_synced = true;
         }
         let offset = self.input.stream_position()?;

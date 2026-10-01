@@ -4249,12 +4249,7 @@ impl SlidesApp {
         if chrome.scrim.width() > 0.0 {
             let reveal = chrome.reveal.max(chrome.inspector_reveal);
             let alpha = (reveal * 0.5) as f32;
-            chrome::fill_rect(
-                scene,
-                t,
-                chrome.scrim,
-                render::with_alpha(Color::BLACK, (alpha * 255.0) as u8),
-            );
+            ui::chrome::fill_scrim(scene, t, chrome.scrim, alpha, theme);
         }
 
         {
@@ -4350,14 +4345,13 @@ impl SlidesApp {
     ) {
         let Some(slide) = self.slide() else { return };
         let c = &theme.tokens.colors;
-        // Soft drop shadow.
-        let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_round(
+        // Drop shadow from the theme elevation ladder.
+        ui::surface::shadow(
             scene,
             t,
-            sh.inflate(2.0, 2.0),
+            chrome.slide_dest,
             14.0,
-            render::with_alpha(Color::BLACK, 70),
+            &theme.tokens.elevation.e3,
         );
         // The text box being edited draws its words through its editor.
         let editing = self

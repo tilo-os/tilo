@@ -121,6 +121,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `rooms.md` | workspaces, hosts, membership |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
+| `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |

@@ -96,14 +96,14 @@ pub const NAV_RAIL_W: f64 = 86.0;
 /// foreground comfortable headroom in both themes (white ≈ 6.3:1 dark, black
 /// ≈ 8.3:1 light) while still reading unmistakably as "accent / selected".
 pub fn selected_accent_fill(theme: &Theme) -> SelectedStyle {
-    SelectedStyle::on(theme.accent_hover)
+    SelectedStyle::on(theme, theme.accent_hover)
 }
 
 /// Selected nav-rail item. The active item gets a strong accent fill (so it
 /// reads as "you are here") with a contrasting icon + label, instead of the
 /// old accent-coloured glyphs floating on a near-white slate-200 chip.
 pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
-    SelectedStyle::on(theme.accent_hover)
+    SelectedStyle::on(theme, theme.accent_hover)
 }
 
 /// "On" status pill (`SponsorBlock` / `DeArrow` indicators in the top bar). The
@@ -113,7 +113,7 @@ pub fn selected_nav_item(theme: &Theme) -> SelectedStyle {
 pub fn status_pill_on(theme: &Theme) -> SelectedStyle {
     // accent[3] (indigo-700 in dark) is dark enough that white text gets ~7.9:1
     // while still reading as the accent family.
-    SelectedStyle::on(theme.tokens.colors.accent.stops[3])
+    SelectedStyle::on(theme, theme.tokens.colors.accent.stops[3])
 }
 
 // ---------------------------------------------------------------------------

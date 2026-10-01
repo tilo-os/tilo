@@ -283,7 +283,11 @@ pub fn for_tile(tile: &crate::shell::state::TileContent) -> Option<AppImage> {
         crate::shell::state::TileContent::Foreign { app_id, surface_id } => {
             for_window(*surface_id, app_id)
         }
-        _ => None,
+        crate::shell::state::TileContent::LocalApp { app_id, .. }
+        | crate::shell::state::TileContent::PeerWindow { app_id, .. } => for_window_app_id(app_id),
+        crate::shell::state::TileContent::AppPlaceholder { .. }
+        | crate::shell::state::TileContent::Stub { .. }
+        | crate::shell::state::TileContent::WorkspaceActivity => None,
     }
 }
 

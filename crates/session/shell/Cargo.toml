@@ -60,7 +60,7 @@ reqwest.workspace = true
 # Its sanctioned builder installs the crypto provider reqwest needs.
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
@@ -303,7 +303,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # that would silently fall back to English fails a test.
 fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }

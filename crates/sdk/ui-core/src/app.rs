@@ -1101,6 +1101,8 @@ impl App {
 
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
         if *handled
+            || self.input.modifiers.state().super_key()
+            || self.input.modifiers.state().shift_key()
             || !matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -1895,6 +1897,9 @@ impl App {
         &mut self,
         host: crate::host_appearance::HostAppearance,
     ) -> bool {
+        if crate::host_appearance::session_document_owns_appearance() {
+            return false;
+        }
         let _entry = self.enter_wake_scope();
         let mut base_theme = crate::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;

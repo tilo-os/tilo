@@ -234,6 +234,11 @@ impl ImagerDoc {
             ui::doc::put_if_changed(doc, &map, "filesystem", filesystem.key());
         }
     }
+    pub fn set_profile_enroll_local_identity(doc: &mut AutoCommit, on: bool) {
+        if let Some(map) = Self::profile_map(doc) {
+            ui::doc::put_if_changed(doc, &map, "enroll_local_identity", on);
+        }
+    }
     pub fn set_profile_encrypt(doc: &mut AutoCommit, on: bool) {
         if let Some(map) = Self::profile_map(doc) {
             ui::doc::put_if_changed(doc, &map, "encrypt", on);
@@ -251,7 +256,7 @@ impl ImagerDoc {
             return;
         };
         match key {
-            "hostname" | "locale" | "timezone" | "keyboard" => {
+            "hostname" | "locale" | "timezone" | "keyboard" | "wifi_ssid" | "device_label" => {
                 ui::doc::put_if_changed(doc, &map, key, value);
             }
             "full_name" | "username" => {
@@ -356,6 +361,14 @@ impl ImagerDoc {
         ui::doc::put_if_changed(doc, map, "filesystem", profile.filesystem.key());
         ui::doc::put_if_changed(doc, map, "encrypt", profile.encrypt);
         ui::doc::put_if_changed(doc, map, "persist_mb", profile.persist_mb as i64);
+        ui::doc::put_if_changed(doc, map, "wifi_ssid", profile.wifi_ssid.as_str());
+        ui::doc::put_if_changed(doc, map, "device_label", profile.device_label.as_str());
+        ui::doc::put_if_changed(
+            doc,
+            map,
+            "enroll_local_identity",
+            profile.enroll_local_identity,
+        );
         let Some(user) = Self::map(doc, map, "user") else {
             return;
         };
@@ -390,6 +403,14 @@ impl ImagerDoc {
             profile.filesystem = filesystem;
         }
         profile.encrypt = read_bool(doc, map, "encrypt").unwrap_or(false);
+        if let Some(ssid) = read_str(doc, map, "wifi_ssid") {
+            profile.wifi_ssid = ssid;
+        }
+        if let Some(label) = read_str(doc, map, "device_label") {
+            profile.device_label = label;
+        }
+        profile.enroll_local_identity =
+            read_bool(doc, map, "enroll_local_identity").unwrap_or(false);
         profile.persist_mb = read_i64_coerced(doc, map, "persist_mb")
             .unwrap_or_default()
             .max(0) as u64;

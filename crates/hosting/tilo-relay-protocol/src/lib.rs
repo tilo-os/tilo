@@ -14,6 +14,7 @@
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
+//! - [`rooms`] — governed rooms over HTTPS: administration and joining;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the deterministic placement / remote-control routing over them;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
@@ -54,6 +55,7 @@ pub mod metrics;
 pub mod policy;
 pub mod process_lease;
 pub mod retention;
+pub mod rooms;
 mod sig64;
 pub mod transport;
 pub mod voice;
@@ -103,6 +105,28 @@ pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     if id == 0 { 1 } else { id }
+}
+
+/// Domain-separated secret the relay binds, derived from the device secret.
+///
+/// The relay and the filesystem must not publish competing address records
+/// for one Iroh node id. Callers that only need the dial target use
+/// [`relay_service_node_id`].
+#[must_use]
+pub fn relay_service_secret(device_secret: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("tilo-relay-iroh-service-key-v1", device_secret)
+}
+
+/// Public Iroh endpoint id of the relay that belongs to this device secret.
+///
+/// This is the value stored as `relay_service_node_id`. It is not the device
+/// public key, and deriving it does not require sending the device secret.
+#[must_use]
+pub fn relay_service_node_id(device_secret: &[u8; 32]) -> [u8; 32] {
+    iroh_base::SecretKey::from_bytes(&relay_service_secret(device_secret))
+        .public()
+        .as_bytes()
+        .to_owned()
 }
 
 /// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.

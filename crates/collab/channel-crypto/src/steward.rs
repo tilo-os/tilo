@@ -475,7 +475,7 @@ impl ChannelSteward {
     fn save_ledger(&self) -> Result<()> {
         let bytes = postcard::to_allocvec(&self.ledger)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        atomic_file::write_private(&self.ledger_path, &bytes).map_err(Error::Io)
+        tilo_files::native::atomic::write_private(&self.ledger_path, &bytes).map_err(Error::Io)
     }
 }
 

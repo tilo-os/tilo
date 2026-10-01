@@ -213,12 +213,14 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation)
         | SlidesOperation::StartPresentationOn { .. }
         | SlidesOperation::EndPresentation => spec.with_contract(ActionContract::view()),
         SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
-        SlidesOperation::Read => spec.with_contract(ActionContract {
-            result: ResultSpec::Json {
-                schema: crate::outline::result_schema(),
-            },
-            ..ActionContract::view()
-        }),
+        SlidesOperation::Read => spec
+            .with_contract(ActionContract {
+                result: ResultSpec::Json {
+                    schema: crate::outline::result_schema(),
+                },
+                ..ActionContract::view()
+            })
+            .reads_document(),
     }
 }
 
@@ -2646,6 +2648,13 @@ mod tests {
                 "{id}"
             );
         }
+        let readers: Vec<_> = published
+            .actions
+            .iter()
+            .filter(|action| action.contract.reads_document())
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(readers, ["read"], "an open answers the deck through `read`");
 
         let encoded = through_door(&doc, SET_SLIDE_TEXT, set_text_args());
         let action: SlidesAction = serde_json::from_slice(&encoded.payload).expect("decodes");

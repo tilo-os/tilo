@@ -1,4 +1,6 @@
 //! Transport-independent MCP projection of the production action broker.
+#[path = "mcp_content.rs"]
+mod content;
 #[path = "mcp_page.rs"]
 mod page;
 use serde::Deserialize;
@@ -66,6 +68,16 @@ fn opened_file<'a>(action: &str, arguments: &'a serde_json::Map<String, Value>) 
         .then(|| arguments.get("path").and_then(Value::as_str))
         .flatten()
         .filter(|path| !path.is_empty())
+}
+
+/// The action an app declared as reading its open document's first page,
+/// on the first resource of `page` that offers one.
+fn document_reader(page: &CataloguePage) -> Option<tilo_actions::ActionAddress> {
+    page.rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.contract.reads_document())
+        .map(|action| action.address.clone())
 }
 
 /// Whether an invocation's answer leaves open that it did what it asked: it
@@ -849,14 +861,44 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return Ok(value);
         }
         let peer = self.opened_peer(&app_id, &before).await;
+        self.answer_open(&mut value, peer, path, wait).await;
+        Ok(value)
+    }
+    /// Complete an `open`'s answer `value` with the instance `peer` it
+    /// started: the file at `path` opened in it, its directory and the
+    /// file's first page.
+    async fn answer_open(
+        &self,
+        value: &mut Value,
+        peer: Option<u64>,
+        path: Option<String>,
+        wait: std::time::Duration,
+    ) {
         let opened = match (peer, path) {
             (Some(peer), Some(path)) => Some(self.open_path(peer, &path, wait).await),
             (None, Some(_)) => Some(json!({"error":OPENED_NO_PEER})),
             (_, None) => None,
         };
+        let file_open = opened.as_ref().is_some_and(|opened| {
+            opened.get("error").is_none()
+                && opened.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
+        });
         // Best effort: the app is open whether or not its directory reads.
-        let directory = match peer {
-            Some(peer) if self.detail == Detail::Compact => self.first_directory(peer).await.ok(),
+        let page = match peer {
+            Some(peer) if self.detail == Detail::Compact || file_open => {
+                self.first_directory(peer).await.ok()
+            }
+            _ => None,
+        };
+        let reader = page
+            .as_ref()
+            .filter(|_| file_open)
+            .and_then(|(page, _)| document_reader(page));
+        let directory = page
+            .filter(|_| self.detail == Detail::Compact)
+            .map(|(page, truncated)| self.directory_value(&page, truncated));
+        let content = match (peer, reader) {
+            (Some(peer), Some(reader)) => Some(self.document_content(peer, reader, wait).await),
             _ => None,
         };
         if let Some(fields) = value.as_object_mut() {
@@ -869,8 +911,62 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             if let Some(directory) = directory {
                 fields.insert("directory".into(), directory);
             }
+            if let Some(content) = content {
+                fields.insert("content".into(), content);
+            }
         }
-        Ok(value)
+    }
+    /// The first page of the document instance `peer` just opened, read
+    /// through the action `reader` its app declared for it, and cut to
+    /// [`content::CONTENT_BYTES`]: the output's value, the resource and
+    /// action that read it, and `"truncated": true` when cut, which the
+    /// same action with no arguments answers whole.
+    async fn document_content(
+        &self,
+        peer: u64,
+        reader: tilo_actions::ActionAddress,
+        wait: std::time::Duration,
+    ) -> Value {
+        let mut answer = serde_json::Map::new();
+        answer.insert(
+            "resource".into(),
+            self.handles().short(&reader.resource).into(),
+        );
+        answer.insert("action".into(), reader.action.clone().into());
+        let target = RemoteActionTarget {
+            provider: peer.to_string(),
+            address: reader,
+        };
+        let read = self
+            .run(
+                target,
+                serde_json::Map::new(),
+                tilo_actions::InvocationId::new(),
+                None,
+                wait,
+            )
+            .await;
+        match read {
+            Ok(value) => match value.pointer("/update/output/value") {
+                Some(page) if value.pointer("/update/state") == Some(&json!("succeeded")) => {
+                    let mut page = page.clone();
+                    if content::fit(&mut page, content::CONTENT_BYTES) {
+                        answer.insert("truncated".into(), Value::Bool(true));
+                    }
+                    answer.insert("value".into(), page);
+                }
+                _ => {
+                    answer.insert(
+                        "update".into(),
+                        value.get("update").cloned().unwrap_or_default(),
+                    );
+                }
+            },
+            Err(error) => {
+                answer.insert("error".into(), error.into());
+            }
+        }
+        Value::Object(answer)
     }
     /// [`Self::run`], with the session handles `arguments` name expanded
     /// where the action takes a resource. Refused with a handle left as
@@ -1131,25 +1227,38 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
     /// publish again while it starts (binding its document), and a page read
     /// in between is empty, which leaves the caller to query again.
-    async fn first_directory(&self, peer: u64) -> Result<Value, String> {
+    async fn first_directory(&self, peer: u64) -> Result<(CataloguePage, bool), String> {
         let provider = peer.to_string();
         let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
         loop {
-            let directory = self.directory(&provider).await?;
-            let listed = directory
-                .get("resources")
-                .and_then(Value::as_array)
-                .is_some_and(|resources| !resources.is_empty());
+            let (page, truncated) = self.directory_page(&provider).await?;
+            let listed = !page.rows.is_empty();
             if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Ok(directory);
+                return Ok((page, truncated));
             }
             tokio::time::sleep(JUST_LAUNCHED_POLL).await;
         }
     }
+    async fn directory(&self, provider: &str) -> Result<Value, String> {
+        let (page, truncated) = self.directory_page(provider).await?;
+        Ok(self.directory_value(&page, truncated))
+    }
+    /// A directory page as an `open` answers it.
+    fn directory_value(&self, page: &CataloguePage, truncated: bool) -> Value {
+        let mut value = self.compact(page, false);
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("exhausted");
+            if truncated {
+                fields.insert("truncated".into(), Value::Bool(true));
+            }
+        }
+        value
+    }
     /// A just-opened instance's directory: its top-level resources with
     /// their actions, and the resources beneath them while the page stays
     /// within [`DIRECTORY_BYTES`], so an agent can act without browsing.
-    async fn directory(&self, provider: &str) -> Result<Value, String> {
+    /// Answers whether anything was left out.
+    async fn directory_page(&self, provider: &str) -> Result<(CataloguePage, bool), String> {
         let listing = |parent: Option<String>| CatalogueQuery {
             provider: Some(provider.to_owned()),
             parent_resource: parent,
@@ -1208,14 +1317,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
             page = grown;
         }
-        let mut value = self.compact(&page, false);
-        if let Some(fields) = value.as_object_mut() {
-            fields.remove("exhausted");
-            if truncated {
-                fields.insert("truncated".into(), Value::Bool(true));
-            }
-        }
-        Ok(value)
+        Ok((page, truncated))
     }
     /// Start `request`, answering an exact-phrase confirmation contract with
     /// the phrase it names.
@@ -1566,7 +1668,7 @@ fn tool_definitions() -> Vec<Value> {
     }
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id and directory (its resources and all their actions, so no tilo_query is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
+        ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
         ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),

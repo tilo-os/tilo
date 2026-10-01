@@ -78,7 +78,7 @@ class InstallTests(fixtures.PublicBundleTests):
             source = containerfile.read_text()
             self.assertLess(
                 source.index('python3 /run/tilo-trust-tools/install-public-trust.py'),
-                source.index('    dracut --force'),
+                source.index('bash /run/tilo-build-initramfs.sh "$kver"'),
             )
 
     def test_development_install(self):

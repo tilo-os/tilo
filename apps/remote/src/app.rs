@@ -2813,7 +2813,11 @@ impl Widget for RemoteApp {
                 // The rail is only 64px wide: retain enough separation to
                 // signal a temporary overlay without reducing the underlying
                 // connection list to disabled-looking contrast.
-                let scrim = Color::from_rgba8(0, 0, 0, 255).at_alpha((reveal * 0.26) as f32);
+                let scrim = tokens
+                    .colors
+                    .surfaces
+                    .scrim
+                    .at_alpha((reveal * 0.26) as f32);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
             }
             self.draw_hamburger(scene, transform, text_renderer, theme);
