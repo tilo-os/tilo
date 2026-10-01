@@ -33,69 +33,6 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-fn install_first_frame_sigill_probe() {
-    extern "C" fn report_fault(
-        _signal: libc::c_int,
-        _info: *mut libc::siginfo_t,
-        ctx: *mut libc::c_void,
-    ) {
-        // SAFETY: Linux passes a valid aarch64 ucontext to a SA_SIGINFO handler.
-        let pc = unsafe { (*(ctx.cast::<libc::ucontext_t>())).uc_mcontext.pc };
-        let mut digits = [b'0'; 16];
-        let alphabet = b"0123456789abcdef";
-        for (index, digit) in digits.iter_mut().enumerate() {
-            *digit = alphabet[((pc >> (4 * (15 - index))) & 0xf) as usize];
-        }
-        // SAFETY: write/open/read/close/_exit are async-signal-safe system calls.
-        unsafe {
-            libc::write(
-                libc::STDERR_FILENO,
-                b"TILO_SIGILL_PC 0x".as_ptr().cast(),
-                b"TILO_SIGILL_PC 0x".len(),
-            );
-            libc::write(libc::STDERR_FILENO, digits.as_ptr().cast(), digits.len());
-            libc::write(libc::STDERR_FILENO, b"\n".as_ptr().cast(), 1);
-            let fd = libc::open(c"/proc/self/maps".as_ptr(), libc::O_RDONLY);
-            if fd >= 0 {
-                libc::write(
-                    libc::STDERR_FILENO,
-                    b"TILO_SIGILL_MAPS_BEGIN\n".as_ptr().cast(),
-                    b"TILO_SIGILL_MAPS_BEGIN\n".len(),
-                );
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    let count = libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len());
-                    if count <= 0 {
-                        break;
-                    }
-                    libc::write(libc::STDERR_FILENO, buffer.as_ptr().cast(), count as usize);
-                }
-                libc::close(fd);
-                libc::write(
-                    libc::STDERR_FILENO,
-                    b"TILO_SIGILL_MAPS_END\n".as_ptr().cast(),
-                    b"TILO_SIGILL_MAPS_END\n".len(),
-                );
-            }
-            libc::_exit(128 + libc::SIGILL);
-        }
-    }
-
-    // SAFETY: the action is initialized before use and the handler has the
-    // required SA_SIGINFO signature. This diagnostic is enabled only when the
-    // host requested startup metrics.
-    unsafe {
-        let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = report_fault as *const () as usize;
-        action.sa_flags = libc::SA_SIGINFO;
-        libc::sigemptyset(&mut action.sa_mask);
-        if libc::sigaction(libc::SIGILL, &action, std::ptr::null_mut()) == 0 {
-            tilo_startup_metrics::mark("render-worker-sigill-probe-installed");
-        }
-    }
-}
-
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
@@ -1281,15 +1218,7 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-blit-copy-done");
     }
-    if frame_ix == 0 && tilo_startup_metrics::enabled() {
-        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-        install_first_frame_sigill_probe();
-    }
-    let command_buffer = encoder.finish();
-    if frame_ix == 0 {
-        tilo_startup_metrics::mark("render-worker-first-encoder-finish-done");
-    }
-    device_handle.queue.submit([command_buffer]);
+    device_handle.queue.submit([encoder.finish()]);
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-blit-done");
     }
