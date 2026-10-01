@@ -14,6 +14,12 @@ restore() {
 }
 trap restore EXIT
 
+variant=${GREETER_RENDER_VARIANT:-gpu}
+case "$variant" in
+  gpu|vello-cpu) ;;
+  *) echo "unsupported greeter render variant: $variant" >&2; exit 2 ;;
+esac
+
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
 TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
@@ -21,6 +27,9 @@ status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
 SH
+if [[ $variant == vello-cpu ]]; then
+  sed -i '2i export TILO_UI_VELLO_CPU=1' /tmp/tilo-child-status.sh
+fi
 chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
