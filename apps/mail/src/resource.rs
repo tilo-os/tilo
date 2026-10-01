@@ -10,13 +10,13 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{EncodedAction, Resource as PublishedResource};
+use ui::tilo_actions::{ActionSpec, EncodedAction, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
     MAIL_ACTION_TYPE, MailAction, MessageRow, mailbox_bound_document_actions,
-    publish_document_children, register,
+    mailbox_local_operations, publish_document_children, register,
 };
 use crate::app::MailApp;
 use crate::doc::MailDoc;
@@ -89,6 +89,10 @@ impl Resource for Mail {
 
     fn bound_actions(_state: &MailboxState) -> Vec<tilo_actions::ActionSpec> {
         mailbox_bound_document_actions()
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        mailbox_local_operations()
     }
 
     fn children(state: &MailboxState) -> Vec<tilo_actions::Resource> {
@@ -347,6 +351,11 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &doc, "mail.mailbox").is_none());
+        assert!(
+            ui::resources::resource(&app, &doc, "mail.folder:inbox").is_some(),
+            "a hosted folder stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &doc);
         assert!(
             extras
