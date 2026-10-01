@@ -899,7 +899,7 @@ impl ChatApp {
             tf,
             &txt,
             11.5,
-            c.readable_on(c.surfaces.scrim, Color::WHITE),
+            c.on_surface(c.surfaces.scrim).ink,
             pill.x0 + 24.0,
             pill.center().y - 8.0,
         );
@@ -1272,9 +1272,10 @@ impl ChatApp {
         fill_round(scene, tf, chip, 6.0, c.accent[5]);
         // A tiny drawn monitor: screen rect + base bar.
         let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
-        stroke_round(scene, tf, screen, 2.0, Color::WHITE, 1.4);
+        let ink = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        stroke_round(scene, tf, screen, 2.0, ink, 1.4);
         let base = Rect::new(cx - 3.0, screen.y1 + 0.5, cx + 3.0, screen.y1 + 2.0);
-        fill_round(scene, tf, base, 1.0, Color::WHITE);
+        fill_round(scene, tf, base, 1.0, ink);
     }
 
     /// Bottom-left name plate over a tile: name + mic state.

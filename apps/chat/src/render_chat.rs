@@ -402,7 +402,7 @@ impl ChatApp {
             "✉",
             20.0,
             if self.inbox_open {
-                Color::WHITE
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
             } else {
                 c.text_dim
             },
@@ -430,7 +430,7 @@ impl ChatApp {
                 tf,
                 &count,
                 9.0,
-                Color::WHITE,
+                c.on_surface(c.semantic.danger).ink,
                 badge.center().x - f64::from(w) / 2.0,
                 badge.center().y - 6.0,
             );
@@ -465,7 +465,11 @@ impl ChatApp {
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 &ws.glyph,
                 &TextStyle::new(17.0).with_weight(TextWeight::Bold),
-                if active { Color::WHITE } else { c.text_dim },
+                if active {
+                    c.on_surface(palette_color(theme, ws.color_idx)).ink
+                } else {
+                    c.text_dim
+                },
                 Point::new(
                     b.center().x - f64::from(tw) / 2.0,
                     b.center().y - f64::from(th) / 2.0,
@@ -676,7 +680,7 @@ impl ChatApp {
                         tf,
                         &count,
                         UNREAD_BADGE_TEXT,
-                        Color::WHITE,
+                        c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
                         badge.center().x - f64::from(cw) / 2.0,
                         line_top(cy, f64::from(ch)),
                     );
@@ -1254,7 +1258,7 @@ impl ChatApp {
             tf,
             "🗑",
             CHANNEL_NAME_SIZE,
-            Color::WHITE,
+            c.on_surface(c.semantic.danger).ink,
             ctx.side.x1 - 30.0,
             line_top(ctx.row.center().y, f64::from(gh)),
         );
@@ -1388,7 +1392,7 @@ impl ChatApp {
                 tf,
                 &txt,
                 UNREAD_BADGE_TEXT,
-                Color::WHITE,
+                c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
                 badge.x0 + 7.0,
                 line_top(cy, f64::from(bh)),
             );
@@ -1880,7 +1884,7 @@ impl ChatApp {
             &mut PaintCtx::new(scene, tf, tr, theme),
             label_text,
             &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(
                 visual.center().x - f64::from(tw) / 2.0,
                 visual.center().y - f64::from(th) / 2.0,
@@ -2442,7 +2446,7 @@ impl ChatApp {
             &mut PaintCtx::new(scene, tf, tr, theme),
             "Save",
             &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(
                 save.center().x - f64::from(sw) / 2.0,
                 save.center().y - f64::from(sh) / 2.0,
@@ -2755,7 +2759,7 @@ impl ChatApp {
             tf,
             &format!("🖼  {name}"),
             12.0,
-            c.readable_on(c.surfaces.scrim, Color::WHITE),
+            c.on_surface(c.surfaces.scrim).ink,
             rect.x0 + 12.0 * scale.min(1.2),
             rect.y1 - 22.0 * scale,
         );
@@ -2822,7 +2826,7 @@ impl ChatApp {
             &mut PaintCtx::new(scene, tf, tr, theme),
             "▶",
             &TextStyle::new(20.0),
-            Color::WHITE,
+            c.on_surface(c.lift(0.72)).ink,
             Point::new(cc.x - f64::from(pw) / 2.0 + 2.0, cc.y - f64::from(ph) / 2.0),
             None,
         );
@@ -2848,7 +2852,7 @@ impl ChatApp {
             tf,
             &format!("🎬  {name}"),
             12.0,
-            c.readable_on(c.surfaces.scrim, Color::WHITE),
+            c.on_surface(c.surfaces.scrim).ink,
             rect.x0 + 12.0 * scale.min(1.2),
             rect.y1 - 22.0 * scale,
         );
@@ -2896,7 +2900,7 @@ impl ChatApp {
             &mut PaintCtx::new(scene, tf, tr, theme),
             "📄",
             &TextStyle::new(16.0),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(
                 icon.center().x - f64::from(iw) / 2.0,
                 icon.center().y - f64::from(ih) / 2.0,

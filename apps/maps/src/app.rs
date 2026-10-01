@@ -18,7 +18,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -2756,7 +2756,12 @@ impl MapsApp {
         // returns as soon as the results dismiss.
         let show_panel = !self.search_overlay_active();
         if overlay && self.nav_open {
-            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.5));
+            draw::fill_rect(
+                scene,
+                t,
+                clip,
+                draw::alpha(theme.tokens.colors.surfaces.scrim, 0.5),
+            );
             self.click_targets.push((clip, Hit::CloseNav));
             if show_panel {
                 self.draw_panel(scene, t, tr, theme);
@@ -4085,11 +4090,7 @@ impl MapsApp {
         let seg_inset = f64::from(self.spacing.s1);
         draw::edged(scene, t, mode_rect, track_radius, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
-        let active_fg = c.ink_on(
-            theme.accent_primary,
-            Color::WHITE,
-            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-        );
+        let active_fg = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
@@ -4570,7 +4571,7 @@ impl MapsApp {
                         .text_color
                         .as_deref()
                         .and_then(draw::hex_color)
-                        .unwrap_or(Color::WHITE);
+                        .unwrap_or_else(|| theme.tokens.colors.on_surface(col).ink);
                     let lbl = if leg.line.is_empty() {
                         leg.mode.label().to_string()
                     } else {
