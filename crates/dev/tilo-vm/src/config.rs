@@ -184,11 +184,13 @@ impl Registry {
             // rename still avoids exposing a partially written TOML document.
             std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
                 .map_err(CliError::io(context.clone()))?;
-            atomic_file::write_regenerable(path, text.as_bytes()).map_err(CliError::io(context))
+            tilo_files::native::atomic::write_regenerable(path, text.as_bytes())
+                .map_err(CliError::io(context))
         }
         #[cfg(not(windows))]
         {
-            atomic_file::write_creating_parent(path, text.as_bytes()).map_err(CliError::io(context))
+            tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+                .map_err(CliError::io(context))
         }
     }
 

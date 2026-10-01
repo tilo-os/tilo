@@ -310,8 +310,10 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
         // last character until the walk commits — exercising the production
         // per-keystroke refresh rather than reaching into the index.
         session.type_str(&mut host, &layout, "quarterly-repor");
+        // The walk must happen; bound it by the hang limit, not a speed guess.
         let mut rows = Vec::new();
-        for _ in 0..200 {
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             session.type_str(&mut host, &layout, "t");
             session.press(
                 &mut host,

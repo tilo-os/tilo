@@ -186,3 +186,85 @@ fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion(
     mid_flight_re_toggle_picks_up_from_current_t();
     reduced_motion_snaps_overview_to_each_target();
 }
+
+#[test]
+fn overview_transition_uploads_the_panel_not_both_outputs() {
+    fn mid_fade(host: &mut ShellOverlayHost) {
+        host.tick_overview_transition(1.0, false);
+        let started = host
+            .transition_started
+            .expect("opening the overview latches a transition");
+        host.transition_started = Some(
+            started
+                .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+                .expect("the clock is older than half a transition"),
+        );
+    }
+
+    let mut host = host();
+    host.rect = Rect::new(0.0, 0.0, 3200.0, 1080.0);
+    host.set_output_geometry(&[
+        OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0),
+        OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0),
+    ]);
+    mid_fade(&mut host);
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+    let mut scene = Scene::new();
+    host.draw_overview_overlay(&mut scene, Affine::IDENTITY, &mut renderer, &theme, true);
+    let patch = host
+        .overview_fast_patch()
+        .expect("a mid-fade overview publishes a panel patch");
+    let desktop = host.rect.width() * host.rect.height();
+    let panel = f64::from(patch.panel.width) * f64::from(patch.panel.height);
+    assert!(
+        panel * 4.0 < desktop,
+        "the uploaded region is {panel} px on a {desktop} px desktop — that is both outputs, not the panel"
+    );
+    assert!(
+        patch.panel.width < 1920,
+        "the upload is one panel ({} px wide), not a 1920 or 3200 px scanout",
+        patch.panel.width
+    );
+    let fills = host.overview_panel_cache_fills();
+    assert_eq!(fills, 1, "the first fade frame records the panel once");
+    let mut again = Scene::new();
+    host.draw_overview_overlay(&mut again, Affine::IDENTITY, &mut renderer, &theme, true);
+    assert_eq!(
+        host.overview_panel_cache_fills(),
+        fills,
+        "the next fade frame reuses the panel recording"
+    );
+    assert!(
+        host.overview_fast_patch()
+            .is_some_and(|patch| patch.draw_panel),
+        "a mid-fade frame still draws the panel"
+    );
+
+    let started = host.transition_started.expect("the fade is still running");
+    host.tick_overview_transition(0.0, false);
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS + 1))
+            .expect("the clock is older than the transition"),
+    );
+    let mut closing = Scene::new();
+    host.draw_overview_overlay(&mut closing, Affine::IDENTITY, &mut renderer, &theme, false);
+    let restore = host
+        .overview_fast_patch()
+        .expect("the frame that finishes the close restores the panel clip");
+    assert!(
+        !restore.draw_panel,
+        "the closing frame puts the desktop back without rendering the panel"
+    );
+    assert!(
+        restore.panel.width < 1920,
+        "the restore stays inside the panel clip"
+    );
+    let mut settled = Scene::new();
+    host.draw_overview_overlay(&mut settled, Affine::IDENTITY, &mut renderer, &theme, false);
+    assert!(
+        host.overview_fast_patch().is_none(),
+        "a settled closed overview stops replacing the desktop"
+    );
+}

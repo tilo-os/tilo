@@ -203,7 +203,9 @@ launches an installed app and answers, once the new instance has published its
 directory, with its `peer_id` and its `directory`: the compact page of its
 top-level resources with all their actions, and the resources beneath them
 while the page stays within 12 KiB (`"truncated": true` when something was left
-for `tilo_query`). An agent acts on the reply without browsing first.
+for `tilo_query`). An agent acts on the reply without browsing first. An app
+may publish again while it starts, and a directory read in between lists
+nothing, so the reply waits up to 3 s more for one that lists a resource.
 
 `arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
 launch opens content only by hash, read through an authenticated app's scope,
@@ -216,6 +218,20 @@ that invocation's update and the resource and action it used, or an `error`
 naming why the file is not open (the app started empty either way). Workspace
 pages list `path?` on each application's `open`. Host applications
 (`app.host:…`) open without a path.
+
+Once the file is open, the reply's `content` carries the document's first
+page, so an agent edits without reading it first: the bridge runs, with no
+arguments, the action the app tagged `read:document`
+(`ActionSpec::reads_document`) and answers `{resource, action, value}`, the
+value being that action's output. That is the Word Processor's `read-text`
+(Markdown with block ids, up to 64 blocks, and its `nextCursor`), a sheet's
+`read-cells` (its used range, as `rows`, `formulas` and `bold`) and the
+deck's `read` outline. The File Explorer's `open` itself answers the folder's
+`entries` in `opened`. A value over 6 KiB is cut to fit (text at a line,
+arrays by whole elements) and says `"truncated": true`; its cursor is
+dropped, and the same action answers the page whole. An app without a
+tagged action answers no `content`, nor does a file that did not open or an
+instance that already held it.
 
 ### Reading back what an action did
 
@@ -278,7 +294,11 @@ resource id longer than 24 characters is shown as a session handle such as
 `r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
 which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. A bound UI resource's id is
+they take a resource, and full ids keep working. In `tilo_invoke`'s
+`arguments`, a handle this session issued is replaced by its id where the
+action declares a `resource` parameter. Where the parameter is text, the handle
+goes as given, since it may be meant literally. If the action refuses it, the
+call runs once more with the id, and `adjusted` says so. A bound UI resource's id is
 about 130 characters, repeated in every call. A model reads every page again
 on each later turn, and version 1's rows repeated each resource id three times
 and each contract twice. `detail: "full"` returns version 1 rows, with full

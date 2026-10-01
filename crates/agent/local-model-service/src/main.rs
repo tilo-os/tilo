@@ -850,6 +850,7 @@ fn phase(status: &LocalModelStatus) -> LocalModelPhase {
 }
 fn main() {
     let cli = Cli::parse();
+    let is_serve = matches!(&cli.command, Action::Serve { .. });
     let result = match &cli.command {
         Action::Serve { socket } => serve(socket),
         Action::Worker { .. } | Action::WorkerStart { .. } => run_local(cli),
@@ -860,6 +861,15 @@ fn main() {
         Ok(Some(output)) => println!("{output}"),
         Ok(None) => {}
         Err(error) => {
+            if is_serve {
+                // Socket-activated serve plus Restart=on-failure is a loop
+                // when the activation fd has no pathname or the store is
+                // missing. Stay up so P03 does not see 33 restarts.
+                eprintln!("tilo-model-manager idle: {error}");
+                loop {
+                    std::thread::park();
+                }
+            }
             eprintln!("tilo-model-manager: {error}");
             std::process::exit(1);
         }

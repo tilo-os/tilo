@@ -24,14 +24,18 @@
 #                            install without first importing IMAGE locally
 #     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
 #                            create the account on first boot, never in this step
-#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
-#                            instead of the image's /usr/bin/bootc
+#     --bootc-helper FILE     execute this bootc (an ELF for this host's
+#                            architecture) instead of the image's /usr/bin/bootc
+#     --reseal-uki            with a helper built from Containerfile.bootc-helper:
+#                            let install rewrite a stale composefs= seal to
+#                            its own digest and print it (bootc#2334)
 #     --offline-target-dir DIR
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
 #     --etc-overlay DIR       add files to THIS disk's installed /etc (release
 #                            gate only; os/dev/validation-access.sh). Limited to
-#                            systemd/system, verity.d and pam.d/sshd
+#                            systemd/system, verity.d, pam.d/sshd, and the
+#                            validation-only boot diagnostic script
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #     --direct-boot-bundle DIR
 #                            export this dev disk's installed UKI sections
@@ -114,6 +118,7 @@ RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
+RESEAL_UKI=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
@@ -140,6 +145,7 @@ while [ $# -gt 0 ]; do
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
+    --reseal-uki) RESEAL_UKI=1 ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
@@ -194,14 +200,19 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
 fi
 
 # The overlay only ever adds validation access to a gate's own disk copy: a
-# unit, the trust anchor for its extension, and sshd's PAM stack. Anything else
-# is refused rather than silently written into an installed /etc.
+# unit, the trust anchor for its extension, sshd's PAM stack, and its boot
+# diagnostic script. Anything else is refused rather than silently written
+# into an installed /etc.
 if [ -n "$ETC_OVERLAY" ]; then
   [ -d "$ETC_OVERLAY" ] && [ ! -L "$ETC_OVERLAY" ] \
     || die "--etc-overlay must name a regular directory"
   while IFS= read -r entry; do
     case "$entry" in
       systemd/system/*.service|systemd/system/*.target.wants/*.service|verity.d/*.crt|pam.d/sshd) ;;
+      tilo-validation-diagnostics.sh)
+        [ -f "$ETC_OVERLAY/$entry" ] && [ ! -L "$ETC_OVERLAY/$entry" ] \
+          || die "--etc-overlay diagnostics script must be a regular file"
+        ;;
       *) die "--etc-overlay may not write /etc/$entry" ;;
     esac
   done < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n')
@@ -222,20 +233,24 @@ if [ -n "$BOOTC_HELPER" ]; then
   [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
     || die "--bootc-helper must name an executable regular, non-symlink file"
   python3 - "$BOOTC_HELPER" <<'PY' \
-    || die "--bootc-helper must be an ARM64 ELF executable"
+    || die "--bootc-helper must be an ELF executable for $(uname -m)"
+import platform
 import struct
 import sys
+
+MACHINES = {"aarch64": 183, "x86_64": 62}
 
 with open(sys.argv[1], "rb") as source:
     header = source.read(20)
 if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
     raise SystemExit(1)
 byteorder = "<" if header[5] == 1 else ">"
-if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+if struct.unpack_from(byteorder + "H", header, 18)[0] != MACHINES.get(platform.machine()):
     raise SystemExit(1)
 PY
   BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
 fi
+[ "$RESEAL_UKI" = 0 ] || [ -n "$BOOTC_HELPER" ] || die "--reseal-uki needs --bootc-helper"
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
   podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
@@ -319,12 +334,13 @@ elif [ "$COMPOSEFS" = no ] && [ "$WANTS_SYSTEMD_BOOT" = yes ]; then
 fi
 
 # bib's implicit kargs, which nothing in the image supplies: `rw` because bootc
-# mounts the root read-only otherwise, and the two consoles because that is how
+# mounts the root read-only otherwise, and the framebuffer and architecture's
+# serial consoles because that is how
 # a headless boot leaves a log the VM toolkit can read (os/dev/vm.sh serial).
 # A sealed image cannot take kargs here at all, so for that layout they have to
 # be in the image's own kargs.d — the message below says so.
 if [ ${#KARGS[@]} -eq 0 ] && [ "$HAS_UKI" = no ] && [ "$DEFAULT_KARGS" = yes ]; then
-  KARGS=(--karg rw --karg console=tty0 --karg console=ttyS0)
+  KARGS=(--karg rw --karg console=tty0 --karg console=ttyAMA0 --karg console=ttyS0)
 fi
 
 if [ ${#KARGS[@]} -gt 0 ] && [ "$HAS_UKI" = yes ]; then
@@ -711,7 +727,10 @@ if [ -n "$BOOTC_HELPER" ]; then
   run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
     --entrypoint /run/tilo-installer-bootc)
   bootc_argv=()
-  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+  msg "using explicit bootc helper $BOOTC_HELPER"
+  if [ "$RESEAL_UKI" = 1 ]; then
+    run_args+=(-e BOOTC_INSTALL_RESEAL_UKI=1)
+  fi
 fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
