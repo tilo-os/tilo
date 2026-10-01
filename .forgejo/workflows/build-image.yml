@@ -1495,6 +1495,11 @@ jobs:
             cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
                    --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
+          # Half the release compile's jobs: the two overlap. The dev image
+          # step passes the same count, or its build would not find this one's
+          # result in the cache.
+          export TILO_DEV_CARGO_JOBS=$(( TILO_CARGO_JOBS > 8 ? TILO_CARGO_JOBS / 2 : 4 ))
+          echo "TILO_DEV_CARGO_JOBS=$TILO_DEV_CARGO_JOBS" >> "$GITHUB_ENV"
           export TILO_DEV_COMPILE_LOG="$RUNNER_TEMP/tilo-dev-compile.log"
           rm -f "$TILO_DEV_COMPILE_LOG" "$TILO_DEV_COMPILE_LOG.status" "$TILO_DEV_COMPILE_LOG.mem"
           echo "TILO_DEV_COMPILE_LOG=$TILO_DEV_COMPILE_LOG" >> "$GITHUB_ENV"
@@ -1507,7 +1512,7 @@ jobs:
               --build-arg "RPMS_REF=$RPMS_REF" \
               --build-arg "BASE_REF=$BASE_REF" \
               --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
-              --build-arg "TILO_CARGO_BUILD_JOBS=$(( TILO_CARGO_JOBS > 8 ? TILO_CARGO_JOBS / 2 : 4 ))" \
+              --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_DEV_CARGO_JOBS" \
               --build-arg TILO_DEV_RUST_LTO=off \
               --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
               "$@" --output type=cacheonly .
@@ -2190,7 +2195,7 @@ jobs:
             --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
             --build-arg "TILO_BASE_CREATED=$created" \
             --build-arg "TILO_CARGO_FRESHNESS=$TILO_CARGO_FRESHNESS" \
-            --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
+            --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_JOBS:-$TILO_CARGO_JOBS}" \
             --build-arg TILO_DEV_RUST_LTO=off \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             "${cache[@]}" \
