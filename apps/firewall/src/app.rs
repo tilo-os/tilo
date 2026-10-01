@@ -2000,15 +2000,14 @@ impl Widget for FirewallApp {
 }
 
 impl ui::resources::PublishesResources for FirewallApp {
-    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Publish the open configuration so the host's Ctrl+K palette scopes to
+    /// it. When the framework hosts the surface, that door already owns the
+    /// config — only service-recovery stays here.
     #[allow(
         clippy::expect_used,
         reason = "the empty string operation payload is always serializable"
     )]
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if !self.available {
             return vec![
                 tilo_actions::Resource::new(
@@ -2042,14 +2041,25 @@ impl ui::resources::PublishesResources for FirewallApp {
         if self.actions.is_hosted() {
             return Vec::new();
         }
-        let Some(config) = self.firewall_resource_ctx() else {
-            return Vec::new();
-        };
-        vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
-            "firewall.config",
-            "Firewall",
-            &config,
-        )]
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "firewall.config" {
+            return None;
+        }
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
