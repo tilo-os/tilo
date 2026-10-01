@@ -40,6 +40,16 @@ impl Routes {
     }
 }
 
+/// The connected relay session of the joined room on topic `ws`.
+pub(super) fn native_session(
+    sessions: &HashMap<(u64, iroh::EndpointId), HostRuntime>,
+    ws: u64,
+) -> Option<Arc<RelayCoeditSession>> {
+    sessions.iter().find_map(|((topic, _), runtime)| {
+        (*topic == ws && runtime.native_scope.is_some()).then(|| runtime.session.clone())
+    })
+}
+
 impl ActorState {
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
@@ -237,6 +247,7 @@ impl ActorState {
             self.internal_tx.clone(),
             Some(scope.clone()),
         );
+        self.native_media.reconnected(ws, &session);
         self.host_sessions.insert(
             (ws, host),
             HostRuntime {

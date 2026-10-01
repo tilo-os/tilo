@@ -52,6 +52,10 @@ tilo-automerge.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The native side of a call: the shell's joined-room owner and participation.
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true

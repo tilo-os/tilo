@@ -35,7 +35,10 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tokio = { workspace = true, features = ["time"] }
+# The relay voice carrier a call participation authorizes.
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 uuid = { workspace = true, optional = true }

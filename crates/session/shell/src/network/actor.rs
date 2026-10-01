@@ -481,6 +481,7 @@ struct SurfaceFanoutOutcome {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
+    Voice(tilo_relay::coedit::VoiceEvent),
     Live {
         from: [u8; 32],
         frame: Vec<u8>,
@@ -940,9 +941,13 @@ impl ActorState {
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
-            Some(NetCmd::NativeMedia(command)) => self
-                .native_media
-                .handle(command, self.host_identity.as_ref()),
+            Some(NetCmd::NativeMedia(command)) => {
+                let sessions = &self.host_sessions;
+                self.native_media
+                    .handle(command, self.host_identity.as_ref(), &|ws| {
+                        native_ingress::native_session(sessions, ws)
+                    });
+            }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
@@ -2388,6 +2393,14 @@ impl ActorState {
                 Some(NetEvent::HostReady { ws, peer })
             }
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Voice(event) => {
+                let session = self
+                    .host_sessions
+                    .get(&(ws, peer))
+                    .map(|runtime| runtime.session.clone());
+                self.native_media.voice(ws, &event, session.as_deref());
+                None
+            }
             HostEvent::Message {
                 author,
                 replayed: true,
@@ -3674,6 +3687,7 @@ fn spawn_host_pump(
                     HostEvent::Ready
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+                HostInbound::Voice(event) => HostEvent::Voice(event),
                 HostInbound::RemoteAction { from, frame } => {
                     let Ok(author) = EndpointId::from_bytes(&from) else {
                         continue;
