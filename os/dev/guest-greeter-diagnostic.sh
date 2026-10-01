@@ -15,7 +15,7 @@ trap restore EXIT
 
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
-/usr/bin/tilo-greeter
+LD_PRELOAD=/tmp/tilo-sigill-probe.so /usr/bin/tilo-greeter
 status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
@@ -73,7 +73,7 @@ PY
   echo "::group::guest cage diagnostic: $variant"
   if test -s "$log"; then
     echo "log lines: $(wc -l < "$log")"
-    grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|modesetting|renderer|started|exited|TILO_GREETER_EXIT|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
+    grep -Ei 'error|failed|fatal|panic|signal|segfault|denied|permission|modesetting|renderer|started|exited|TILO_GREETER_EXIT|TILO_SIGILL|illegal instruction' "$log" | tail -n 50 | cut -c 1-320 || true
     echo 'last 20 lines:'
     tail -n 20 "$log" | cut -c 1-320
   else
