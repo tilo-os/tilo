@@ -281,6 +281,40 @@ fn overview_transition_uploads_the_panel_not_both_outputs() {
 }
 
 #[test]
+fn a_full_presenter_does_not_finish_the_transition() {
+    let mut host = host();
+    host.tick_overview_transition(1.0, false);
+    assert!(host.transition_started.is_some());
+    host.defer_running_transitions(std::time::Duration::from_millis(
+        OVERVIEW_TRANSITION_MS + 50,
+    ));
+    let progress = host.tick_overview_transition(1.0, false);
+    assert!(
+        progress < 1.0,
+        "time spent waiting on a full presenter is not overview progress ({progress})"
+    );
+    assert!(
+        host.transition_started.is_some(),
+        "the open stays pending until a frame is presented"
+    );
+
+    host.start_workspace_switch_frames();
+    // The run has already ended; crediting the presenter's wait brings it back.
+    host.workspace_switch = ui::Transition::open();
+    host.workspace_switch_until =
+        std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+    assert!(
+        !host.workspace_switch_holding(),
+        "a finished switch is not a frame run"
+    );
+    host.defer_running_transitions(std::time::Duration::from_millis(WORKSPACE_SWITCH_MS + 50));
+    assert!(
+        host.workspace_switch_holding(),
+        "a workspace switch stays pending while the presenter is full"
+    );
+}
+
+#[test]
 fn both_overview_directions_stay_on_the_panel_clip() {
     fn panel_is_not_both_outputs(host: &ShellOverlayHost) {
         let patch = host
