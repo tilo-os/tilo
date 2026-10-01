@@ -30,7 +30,7 @@ base64.workspace = true
 crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
@@ -38,6 +38,9 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
 # toggles and fields dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
+tilo-identity-host = { path = "../../crates/runtime/tilo-identity-host" }
+tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 cap-fs-ext = "3.4.6"

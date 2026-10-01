@@ -490,8 +490,9 @@ impl Colors {
     /// [`Self::on_surface`] against a caller-chosen floor. [`OnCard::ink`]
     /// and `ink_dim` step out until they clear `min_ratio`;
     /// [`OnCard::ink_tertiary`] passes through as authored — how quiet the
-    /// quietest tier is belongs to the palette (Solarized runs it at 2.8:1
-    /// on purpose), and forcing a body-text floor would erase the tier.
+    /// quietest tier is belongs to the palette (held to 3:1 on its own
+    /// ground by `contrast::FLOORS`), and forcing a body-text floor would
+    /// erase the tier.
     pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> OnCard {
         use crate::a11y::contrast_ratio;
 

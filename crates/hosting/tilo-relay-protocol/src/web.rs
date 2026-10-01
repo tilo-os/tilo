@@ -21,8 +21,12 @@
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
+//! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
+//! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //!
-//! Routes after the handshake carry the session token in
+//! `/join` is the one route after `/certify` a device calls without a
+//! session: a person a host does not know yet joins through it. Routes after
+//! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
 
@@ -62,7 +66,14 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
-        | Envelope::CommitRefused { reason, .. } => reason.len(),
+        | Envelope::CommitRefused { reason, .. }
+        | Envelope::VoiceRefused { reason, .. } => reason.len(),
+        Envelope::VoiceGranted { grant, .. } => grant
+            .participants
+            .len()
+            .saturating_add(grant.subscriptions.len())
+            .saturating_mul(200)
+            .saturating_add(grant.endpoint.len()),
         Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
@@ -118,6 +129,16 @@ pub const FEATURE_RESUME: u64 = 1;
 /// [`crate::transport::Envelope::Compacted`], and may send volunteers
 /// [`crate::transport::Envelope::CompactRequest`].
 pub const FEATURE_COMPACTION: u64 = 2;
+
+/// The host governs calls in its rooms: it accepts
+/// [`crate::transport::Envelope::VoiceCall`],
+/// [`crate::transport::Envelope::VoiceJoin`] and
+/// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
+pub const FEATURE_VOICE: u64 = 4;
+
+/// The host governs rooms a page administers and joins over HTTPS
+/// (`/rooms`, `/join`; see [`crate::rooms`]).
+pub const FEATURE_ROOMS: u64 = 8;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits. A device that predates the features reads the grant

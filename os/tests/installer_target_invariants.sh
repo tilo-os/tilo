@@ -302,7 +302,7 @@ if [ -x "$preflight" ] \
    && containerfile_has_copy "$production_containerfile" \
         os/usr/libexec/tilo-verified-boot-install-preflight \
         /usr/libexec/tilo-verified-boot-install-preflight \
-   && grep -Fq '"$crypto_bin" verify-rsa-sha256 "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
+   && grep -Fq '"$crypto_bin" verify-rsa-sha256-efi "$pub" "$uki" "$prediction.uki.sig"' "$preflight" \
    && grep -Fq 'efi-signature-count "$uki"' "$preflight" \
    && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
   ok "TPM PIN preflight verifies both the exact target UKI and its PCR11 policy"
@@ -559,6 +559,30 @@ if [ -x "$guided_partitioner" ] \
   ok "guided alongside locks and revalidates the reviewed GPT map before appending only Tilo partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
+fi
+
+# bootc#1929: with two ESPs, stock bootc can write the first (Windows) ESP
+# even though the installer mounted a different Tilo ESP under /target.
+if python3 - "$backend" "$repo_root/os/dev/build-custom-installer.sh" <<'PY'
+from pathlib import Path
+import sys
+
+backend = Path(sys.argv[1]).read_text()
+builder = Path(sys.argv[2]).read_text()
+guard = backend.index('ALONGSIDE_BOOTC=/usr/libexec/tilo-bootc-alongside')
+mutation = backend.index('GUIDED_RESULT="$(', guard)
+assert guard < mutation
+assert '&& [ "$(' in backend[guard:mutation]
+assert 'alongside install requires the pinned mounted-ESP bootc helper' in backend[guard:mutation]
+assert backend.count('"${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}"') == 2
+assert '--entrypoint /run/tilo-bootc-alongside' in backend
+assert '0002-select-mounted-esp.patch' in builder
+assert 'rootfs/usr/libexec/tilo-bootc-alongside' in builder
+PY
+then
+  ok "alongside install selects a mounted-ESP bootc before any GPT mutation"
+else
+  bad "alongside install could run unpatched bootc against Windows ESP"
 fi
 
 # root=tilo-auto boots exactly one Tilo root per disk: both alongside paths

@@ -250,6 +250,7 @@ impl SearchBox {
             draw::card_ring(
                 scene,
                 transform,
+                theme,
                 rect,
                 12.0,
                 colors.surfaces.raised,
@@ -257,7 +258,7 @@ impl SearchBox {
                 2.0,
             );
         } else {
-            draw::card(scene, transform, rect, 12.0, colors.surfaces.raised);
+            draw::card(scene, transform, theme, rect, 12.0, colors.surfaces.raised);
         }
         let glyph = Point::new(rect.x0 + 22.0, rect.center().y);
         draw::stroke_circle(
@@ -346,7 +347,7 @@ impl SearchBox {
             x + w,
             top + pad * 2.0 + n as f64 * row_pitch - row_gap,
         );
-        draw::card(scene, transform, card, 12.0, c.surfaces.raised);
+        draw::card(scene, transform, theme, card, 12.0, c.surfaces.raised);
         self.targets.push((card, SearchHit::Consume));
 
         // Name and address stack on their measured lines, the block centred

@@ -10,7 +10,6 @@
 use vello::kurbo::{Line, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -168,14 +167,12 @@ pub fn pill(ctx: &mut PaintCtx<'_>, origin: Point, label: &str, style: &PillStyl
 
 /// Theme colour for a diff addition row tint (translucent emerald).
 pub fn add_tint(theme: &Theme) -> Color {
-    let c = theme.tokens.colors.semantic.success;
-    Color::from_rgba8(c.r(), c.g(), c.b(), 28)
+    ui::paint::with_alpha(theme.tokens.colors.semantic.success, 28)
 }
 
 /// Theme colour for a diff deletion row tint (translucent red).
 pub fn del_tint(theme: &Theme) -> Color {
-    let c = theme.tokens.colors.semantic.danger;
-    Color::from_rgba8(c.r(), c.g(), c.b(), 28)
+    ui::paint::with_alpha(theme.tokens.colors.semantic.danger, 28)
 }
 
 /// Strong addition foreground (the +/glyph and gutter).

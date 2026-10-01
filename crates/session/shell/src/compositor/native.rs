@@ -237,8 +237,17 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
 /// title, a selection) is only picked up by the next tick's pump. Nothing
 /// else need wake that tick on a backend that is never polled, so run it at
 /// once; a tick that dispatches nothing parks normally.
-fn client_followup_deadline(clients_dispatched: bool, now: Instant) -> Option<Instant> {
-    clients_dispatched.then_some(now)
+///
+/// A commit that only carries `wl_surface.frame` changes neither pixels nor
+/// protocol the pump reads. Answering that callback is not a reason to run
+/// the pump again: doing so woke an idle desktop about twice a second and
+/// painted the client's echo.
+fn client_followup_needed(clients_dispatched: bool, pump_visible: bool) -> bool {
+    clients_dispatched && pump_visible
+}
+
+fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> {
+    pump_needed.then_some(now)
 }
 
 fn dispatch_wayland_clients_fairly(
@@ -364,12 +373,36 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// A widget poll already ran in this tick's pump. Its deadline waking the
+/// loop is not a present: the tree, the layout, and any animation are the
+/// pump's result and the animation bit. Painting because the deadline
+/// merely came due kept idle apps submitting frames.
+fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
+    pump_changed
+}
+
+/// A `wl_surface.frame` on a commit that did not change the tree, the
+/// layout, or an animation is not a present. Release it on its own.
+/// While locked the desktop is not shown, and the callback stays until a
+/// real lock or unlock frame, as it did before idle apps stopped driving
+/// cadence.
+fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
+    !locked && !content_changed
+}
+
 /// Whether the next park must keep the frame deadline for a pending frame.
 /// While the bounded presenter is full, an already-due frame deadline would
 /// make every park a zero timeout and spin the loop until a frame retires;
 /// the presenter's retirement ping wakes calloop as soon as capacity returns.
 fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
+}
+
+/// A transition the presenter could not take stays pending. The park while
+/// the pipe is full is not animation time; the next submit still has the
+/// frame run ahead of it.
+fn present_hold_credit(presenter_full: bool, transition_pending: bool) -> bool {
+    presenter_full && transition_pending
 }
 
 /// A widget deadline only matters while the presenter can accept the frame
@@ -567,10 +600,15 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         return None;
     }
     if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity));
+        return Some(ClientState::attributed_arc(identity, pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
-        .then(ClientState::new_arc)
+        .then(|| {
+            Arc::new(ClientState {
+                pid: Some(pid),
+                ..ClientState::default()
+            })
+        })
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -786,6 +824,64 @@ fn frozen_floating_return_frame(
 )]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
+}
+
+/// Serve the shell's own file choosers when apps have no portal to reach: no
+/// session bus, as on a provider's headless guest. `attended` says whether an
+/// agent is driving the screen; an unattended session (one that saves into
+/// `TILO_SAVE_DIRECTORY`) otherwise leaves its choosers to the apps.
+fn start_chooser_service(
+    portal: Option<&PortalBackend>,
+    attended: Arc<AtomicBool>,
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::compositor::chooser_service::ChooserService> {
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|address| !address.is_empty()) {
+        return None;
+    }
+    let portal = portal?;
+    let save_directory = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from);
+    let unattended = save_directory.is_some();
+    let context = crate::compositor::chooser_service::ChooserContext {
+        grants: portal.media_grants.clone(),
+        pickers: Arc::new(portal.pickers.clone()),
+        presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
+        save_directory,
+        wake,
+    };
+    match crate::compositor::chooser_service::ChooserService::start(context) {
+        Ok(service) => {
+            tracing::info!("serving the shell's file choosers to apps without a portal");
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "file chooser service unavailable");
+            None
+        }
+    }
+}
+
+/// Open the files apps asked the chooser service to open, each in the app
+/// that owns its type, in the asking app's workspace.
+fn pump_chooser_opens(
+    service: &crate::compositor::chooser_service::ChooserService,
+    chrome: &crate::shell::chrome_state::Chrome,
+) {
+    for open in service.drain_opens() {
+        let active = chrome.borrow().tree().desktop.active;
+        let outcome = if open.caller.workspace_id == active {
+            crate::shell::doc_open::open_in_workspace(&open.path, chrome)
+                .map(|_| ())
+                .map_err(|error| error.user_message())
+        } else {
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
+        }
+        let _ = open.reply.send(outcome);
+    }
 }
 
 // This is the ordered protocol event pump; its branches share authentication
@@ -1588,7 +1684,8 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
-    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+    match tilo_files::native::atomic::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600)
+    {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
             eprintln!("tilo compositor: publishing {}: {e}", path.display());
@@ -2200,6 +2297,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
+                "power_menu": self.fb.host().power_menu_open(),
             },
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
@@ -2333,6 +2431,18 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
                 })),
+            // Super+S detaches the workspace wheel from the strip's left
+            // edge and places it at this point. `null` means docked. The
+            // disc's `test_id` is always `wheel_disc`, so a harness that
+            // only diffs target names cannot see the summon.
+            "wheel_summon": chrome.wheel_summon().map(|p| serde_json::json!({
+                "x": p.x,
+                "y": p.y,
+            })),
+            // Super+F on a Tilo window sets this; a client xdg fullscreen does too.
+            // Maximize is a different field (`workspace_tree` group.maximized).
+            "fullscreen_group": chrome.fullscreen_group(),
+            "fullscreen": chrome.is_fullscreen(),
         })
     }
 }
@@ -3171,7 +3281,21 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
         }
-        PlannedAction::InvokeAction { provider, id, args } => {
+        PlannedAction::InvokeAction {
+            provider,
+            id,
+            args,
+            device,
+        } => {
+            if let Some(device) = device {
+                return match fb.invoke_enrolled_device(device, provider, id, args) {
+                    Ok(()) => None,
+                    Err(message) => Some(Err(InvokeFailure {
+                        code: "action_failed".into(),
+                        message,
+                    })),
+                };
+            }
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
@@ -3496,8 +3620,8 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// The agent's strip on screen: its coordinates' origin and its
-    /// screenshots' extent.
+    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
+    /// its screenshots' extent.
     viewport: Rect,
 }
 
@@ -3553,7 +3677,6 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
-    let current = ctx.agents.seat(&agent.id).and_then(|seat| seat.strip);
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3562,7 +3685,19 @@ fn seat_agent(
                 .strip_owner(id)
                 .is_some_and(|owner| owner != agent.id)
         };
-        fb.with_chrome(|chrome| strip = chrome.agent_strip(current, claimed, &label));
+        let mut current = agents.seat(&agent.id).and_then(|seat| seat.strip);
+        // The seated agent moved to another strip nobody else works in: that
+        // strip is its own now, so its next command does not pull it back.
+        if agents.seated() == Some(agent.id.as_str())
+            && let Some(active) = fb.chrome().active_strip_id()
+            && !claimed(active)
+        {
+            current = Some(active);
+        }
+        fb.with_chrome(|chrome| {
+            chrome.set_single_strip(true);
+            strip = chrome.agent_strip(current, claimed, &label);
+        });
     }
     let strip = strip.ok_or_else(|| agent_refusal("no_workspace", "no active workspace"))?;
     let peer = {
@@ -3571,8 +3706,8 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb, strip)
-        .ok_or_else(|| agent_refusal("strip_hidden", "the agent's strip is not on screen"))?;
+    let viewport = agent_viewport(fb)
+        .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3593,7 +3728,6 @@ fn seat_agent(
     if let Some(modifiers) = handover.modifiers {
         apply_modifier_mask(ctx, modifiers);
     }
-    let viewport = agent_viewport(fb, strip).unwrap_or(viewport);
     Ok(Some(AgentScope {
         agent: agent.id.clone(),
         peer,
@@ -3602,23 +3736,14 @@ fn seat_agent(
     }))
 }
 
-/// Where an agent working in `strip` sees and acts: the strip's row. A
-/// workspace with no window at all draws its empty-workspace card over the
-/// whole screen instead of rows, and that card is where any agent opens its
-/// first app, so there the viewport is the screen.
-fn agent_viewport(fb: &FrameBuilder, strip: crate::shell::state::StripId) -> Option<Rect> {
-    if let Some(row) = fb.host().strip_row_rect(strip) {
-        return Some(row);
-    }
-    let empty = {
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        tree.desktop
-            .active_workspace()
-            .is_some_and(|ws| ws.strips.iter().all(|s| s.window_groups.is_empty()))
-    };
+/// Where an agent sees and acts: the whole screen. While agents drive the
+/// compositor only the focused strip is presented, filling the work area, and
+/// the seat focuses the agent's own strip on its turn; the launcher, palette,
+/// menus and dialogs its actions open are drawn over the whole screen, so
+/// anything narrower would hide them from it.
+fn agent_viewport(fb: &FrameBuilder) -> Option<Rect> {
     let (w, h) = fb.scene_size();
-    (empty && w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
+    (w > 0.0 && h > 0.0).then(|| Rect::new(0.0, 0.0, w, h))
 }
 
 /// Retire `agent`: its window sees the release of everything it still holds,
@@ -3629,19 +3754,26 @@ fn leave_agent(agent: &str, fb: &mut FrameBuilder, ctx: &mut TestControlCtx, sta
     };
     run_as_participant(seat.peer, &releases, fb, ctx, state);
     state.remote_seats.drop_peer(seat.peer);
-    if let Some(strip) = seat.strip {
-        let mut removed = false;
-        fb.with_chrome(|chrome| removed = chrome.remove_strip_if_empty(strip));
-        if removed {
-            fb.relayout();
-            client_input::sync_keyboard_focus(state, fb);
+    let last = ctx.agents.is_empty();
+    let mut changed = false;
+    fb.with_chrome(|chrome| {
+        if let Some(strip) = seat.strip {
+            changed = chrome.remove_strip_if_empty(strip);
         }
+        if last && chrome.single_strip() {
+            chrome.set_single_strip(false);
+            changed = true;
+        }
+    });
+    if changed {
+        fb.relayout();
+        client_input::sync_keyboard_focus(state, fb);
     }
 }
 
 /// Dispatch `command` for the seated agent in `scope`: its coordinates are
-/// relative to its strip, what it lists is what its strip shows, and a pointer
-/// it would move outside the strip is refused.
+/// relative to its viewport, what it lists is what its viewport shows, and a
+/// pointer it would move outside the viewport is refused.
 fn dispatch_for_agent(
     command: test_control::Command,
     scope: &AgentScope,
@@ -3696,10 +3828,7 @@ fn dispatch_for_agent(
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
         return (
-            agent_refusal(
-                "outside_viewport",
-                "the pointer would leave the agent's strip",
-            ),
+            agent_refusal("outside_viewport", "the pointer would leave the screen"),
             Vec::new(),
         );
     }
@@ -5393,6 +5522,7 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     net.join_at_boot();
+    frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
@@ -5742,6 +5872,9 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 struct PortalBackend {
     media_grants: crate::portal::GrantStoreHandle,
     media_prompts: crate::portal::PromptQueueHandle,
+    /// The on-screen file chooser's queue, shared with the chooser service
+    /// that apps without a portal reach.
+    pickers: crate::portal::FilePickerQueue,
     #[allow(
         dead_code,
         reason = "Retaining the registration keeps its D-Bus connection, bus name, and object server alive once registered."
@@ -6023,14 +6156,12 @@ fn start_portal_backend(
         "portal",
         async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
-            crate::portal::serve_with_inhibit_and_clipboard(
-                conn,
-                ctx,
-                inhibit_registry,
-                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-                )),
-            )
+            crate::portal::serve_with_inhibit_and_clipboard(conn, ctx, inhibit_registry, {
+                let broker = crate::portal::clipboard::CompositorClipboardBroker::new(selection);
+                let wake = broker.wake.clone();
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(broker))
+                    .with_selection_wake(wake)
+            })
             .await
         },
         move |server: &crate::portal::ServerHandle| {
@@ -6058,7 +6189,7 @@ fn start_portal_backend(
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
     frame_builder
         .host_mut()
-        .set_portal_queues(prompts.clone(), pickers);
+        .set_portal_queues(prompts.clone(), pickers.clone());
 
     if !documents.reaches_confined_apps() {
         // Say it out loud: a sandboxed app getting ENOENT after picking a file
@@ -6072,6 +6203,7 @@ fn start_portal_backend(
     Some(PortalBackend {
         media_grants: grants,
         media_prompts: prompts,
+        pickers,
         server,
         remote_input: remote_input_rx,
         input_capture,
@@ -6929,6 +7061,12 @@ pub fn run() {
     if let Some(net) = peer_sync.as_ref() {
         net.set_wake(Arc::clone(&session_wake));
     }
+    let chooser_attended = Arc::new(AtomicBool::new(false));
+    let chooser_service = start_chooser_service(
+        portal_backend.as_ref(),
+        Arc::clone(&chooser_attended),
+        Arc::clone(&session_wake),
+    );
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -7391,10 +7529,24 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
+    // Park spent waiting on a full presenter. Applied on the next tick,
+    // before animation demand is sampled, so the transition does not finish
+    // in the model with nothing presented.
+    let mut transition_hold_sleep = Duration::ZERO;
+    let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        if !transition_hold_sleep.is_zero() {
+            frame_builder
+                .host_mut()
+                .defer_running_transitions(transition_hold_sleep);
+            transition_hold_sleep = Duration::ZERO;
+        }
         if let Some((serial, retired_at)) = present_pipe
             .as_ref()
             .and_then(present::PresentPipe::latest_retirement)
@@ -7447,7 +7599,10 @@ pub fn run() {
         // Poll before processing launch actions so closed workspaces have
         // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&frame_builder.chrome_handle());
+            xwayland.poll(
+                &frame_builder.chrome_handle(),
+                &state.mapped_xwayland_pids(),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
@@ -7466,6 +7621,9 @@ pub fn run() {
             && pump_floating_toplevel_events(service, &mut state)
         {
             force_first_paint = true;
+        }
+        if let Some(service) = chooser_service.as_ref() {
+            pump_chooser_opens(service, &frame_builder.chrome_handle());
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
@@ -8294,6 +8452,17 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
+            // Input/display reload above does not re-theme. An appearance
+            // write must rebuild chrome on this tick and wake tiled apps so
+            // they paint the new Theme instead of keeping the last buffer.
+            frame_builder
+                .with_chrome(crate::shell::chrome_state::ChromeState::note_appearance_change);
+            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+            }
+            force_first_paint = true;
             let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
@@ -9441,7 +9610,10 @@ pub fn run() {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animation_demand = frame_builder.animation_demand();
-        let animating = animation_demand.any();
+        // Host demand clears when the crossfade settles (e2e). Keep
+        // painting until this many compositor frames have actually run (W16).
+        let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
+        let animating = animation_demand.any() || transition_run;
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -9517,7 +9689,12 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due,
+            // A client frame callback is not a present. A configure ack or a
+            // title carries one and changes no pixels; painting to release
+            // it kept the shell busy while apps sat still. The callback is
+            // fired after dispatch when this tick will not build a frame,
+            // and that answer does not schedule another pump.
+            apps: present_for_app_poll(apps_changed, widget_deadline_due),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -9549,6 +9726,10 @@ pub fn run() {
         let pipe_ready = present_pipe
             .as_ref()
             .is_none_or(super::present::PresentPipe::has_capacity);
+        credit_transition_hold = present_hold_credit(
+            !pipe_ready,
+            frame_builder.host().transition_present_pending(),
+        );
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -9566,6 +9747,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -9646,6 +9835,9 @@ pub fn run() {
         }
 
         if should_paint {
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
@@ -10271,6 +10463,9 @@ pub fn run() {
         {
             injected_redraw_pending = true;
         }
+        // An agent driving the screen answers the shell's choosers; a viewer
+        // only watching cannot click one.
+        chooser_attended.store(!test_control_ctx.agents.is_empty(), Ordering::Release);
         test_control_conns.retain_mut(|conn| {
             if conn.closed
                 && let Some(token) = conn.wake.take()
@@ -10288,6 +10483,7 @@ pub fn run() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
         let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
@@ -10312,7 +10508,8 @@ pub fn run() {
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
-        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+        let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        if capture_ready {
             injected_redraw_pending = true;
         }
         if let Err(err) = display.flush_clients() {
@@ -10334,6 +10531,25 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        let client_changed = foreign::client_pump_epoch() != pump_epoch;
+        // A frame callback that arrived without a new buffer, title, or
+        // configure is not a present and not another pump. Release it here,
+        // on the tick that saw the commit, so the client is not left waiting
+        // on FIFO and the shell does not wake itself to do the same work again.
+        if release_idle_client_callback(session.is_locked(), content_changed)
+            && !client_changed
+            && configured_after_dispatch == 0
+            && !capture_ready
+            && foreign::release_idle_frame_callbacks(&mut state)
+            && let Err(err) = display.flush_clients()
+        {
+            eprintln!("tilo compositor: idle frame callback flush error: {err}");
+            break;
+        }
+        let client_pump_needed = client_followup_needed(
+            clients_dispatched,
+            client_changed || configured_after_dispatch > 0 || capture_ready,
+        );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
         if (loop_timing || t_work_done > Duration::from_millis(100))
@@ -10407,7 +10623,7 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 (
                     "client-followup",
-                    client_followup_deadline(clients_dispatched, park_now),
+                    client_followup_deadline(client_pump_needed, park_now),
                 ),
             ],
         );
@@ -10418,6 +10634,9 @@ pub fn run() {
         }
         let slept = t_sleep_start.elapsed();
         metrics.mark_sleep(slept);
+        if credit_transition_hold {
+            transition_hold_sleep = slept;
+        }
         let wake = park_wake_reason(park, park_deadline, slept);
         metrics.mark_wake(wake);
         if paint_stats {
@@ -10438,7 +10657,8 @@ pub fn run() {
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
-            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+            && let Err(e) =
+                tilo_files::native::atomic::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
@@ -10612,14 +10832,22 @@ fn spawn_auto_brightness_worker() {
         .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
+            let mut seen = false;
+            let mut cached_stamp = None;
+            let mut enabled = false;
             loop {
-                let settings = settings_store::load();
-                let enabled = settings_store::bool_at(
-                    &settings,
-                    "display",
-                    "auto_brightness",
-                )
-                .unwrap_or(false);
+                let current = settings_store::stamp();
+                if settings_store::document_changed(seen, cached_stamp, current) {
+                    let settings = settings_store::load();
+                    enabled = settings_store::bool_at(
+                        &settings,
+                        "display",
+                        "auto_brightness",
+                    )
+                    .unwrap_or(false);
+                    seen = true;
+                    cached_stamp = current;
+                }
                 if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
@@ -10682,6 +10910,33 @@ mod tests {
             ),
             None,
             "a tick that dispatched nothing parks"
+        );
+        assert!(
+            !client_followup_needed(true, false),
+            "a wl_surface.frame with no new pixels, title, or configure must not schedule another shell tick"
+        );
+        assert!(
+            client_followup_needed(true, true),
+            "a buffer or protocol change still pumps on the next tick"
+        );
+        assert!(
+            release_idle_client_callback(false, false),
+            "an unchanged desktop releases a waiting callback without presenting"
+        );
+        assert!(
+            !present_for_app_poll(false, true),
+            "a poll whose tree, layout, and animations did not change must not present"
+        );
+        assert!(present_for_app_poll(true, true));
+        assert!(!present_for_app_poll(false, false));
+        assert_eq!(
+            client_followup_deadline(client_followup_needed(true, false), now),
+            None,
+            "answering that callback must not schedule another shell tick"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
         );
     }
 
@@ -10939,6 +11194,16 @@ mod tests {
     }
 
     #[test]
+    fn a_full_presenter_holds_a_pending_transition() {
+        assert!(present_hold_credit(true, true));
+        assert!(!present_hold_credit(false, true));
+        assert!(
+            !present_hold_credit(true, false),
+            "an idle desktop must not freeze its clock on a full presenter"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -10979,6 +11244,19 @@ mod tests {
         assert!(
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
+        );
+        // Phase `an_idle_frame_callback_does_not_present`.
+        assert!(
+            release_idle_client_callback(false, false),
+            "a callback with no tree, layout, or animation change is released without a frame"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
+        );
+        assert!(
+            !release_idle_client_callback(true, false),
+            "a locked session does not answer hidden clients with an idle release"
         );
         // Phase `available_presenter_keeps_overdue_work_immediate`.
         {
@@ -12447,7 +12725,8 @@ mod tests {
             let path = session_display_path(Some(dir.clone().into_os_string()))
                 .expect("absolute temp dir yields a path");
             std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-            atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            tilo_files::native::atomic::write_with_mode(&path, b"wayland-7", 0o600)
+                .expect("write display file");
 
             let read = std::fs::read_to_string(&path).expect("read back");
             assert_eq!(read, "wayland-7");
@@ -12827,6 +13106,29 @@ mod tests {
     }
 
     // state_dump
+
+    #[test]
+    fn state_dump_chrome_includes_wheel_summon() {
+        let fb = FrameBuilder::new((1600, 900));
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+        };
+        assert_eq!(
+            state.chrome_state_json().get("wheel_summon"),
+            Some(&serde_json::Value::Null),
+            "the wheel starts docked"
+        );
+
+        fb.chrome_handle()
+            .borrow_mut()
+            .set_wheel_summon(Some(vello::kurbo::Point::new(1180.0, 450.0)));
+        let summoned = &state.chrome_state_json()["wheel_summon"];
+        assert_eq!(summoned["x"].as_f64(), Some(1180.0));
+        assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
 
     #[test]
     #[allow(
@@ -13579,29 +13881,43 @@ fn apply_shell_gesture(
         }
         _ => {}
     }
-    frame_builder.with_chrome(|st| match action {
+    match action {
         GestureAction::SwitchStrip(dir) => {
-            st.switch_strip(dir);
+            frame_builder.with_chrome(|st| {
+                st.switch_strip(dir);
+            });
         }
         GestureAction::SwitchWorkspace(dir) => {
-            st.switch_workspace(dir);
+            let mut switched = false;
+            frame_builder.with_chrome(|st| {
+                switched = st.switch_workspace(dir);
+            });
+            if switched {
+                frame_builder.host_mut().start_workspace_switch_frames();
+            }
+        }
+        GestureAction::ShowOverview => {
+            frame_builder.with_chrome(|st| {
+                if !st.overlays.overview {
+                    st.overlays.overview = true;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
+        }
+        GestureAction::HideOverview => {
+            frame_builder.with_chrome(|st| {
+                if st.overlays.overview {
+                    st.overlays.overview = false;
+                    st.bump();
+                }
+            });
+            frame_builder.host_mut().latch_overview_transition();
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
         GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
-        GestureAction::ShowOverview => {
-            if !st.overlays.overview {
-                st.overlays.overview = true;
-                st.bump();
-            }
-        }
-        GestureAction::HideOverview => {
-            if st.overlays.overview {
-                st.overlays.overview = false;
-                st.bump();
-            }
-        }
-    });
+    }
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
@@ -13609,11 +13925,16 @@ fn apply_shell_gesture(
 /// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
-/// The full-screen chord: the focused Wayland client enters or leaves
-/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
-/// protocol fullscreen, so its window group maximizes instead.
+/// Super+F on a Tilo window covers the output, including the wheel.
+/// Hosted Tilo apps are xdg clients too; sending them a protocol
+/// fullscreen never sets `chrome.fullscreen_group` (W07). Maximize
+/// (Super+M) stays beside the wheel. A focused xdg surface with no
+/// window group still takes the protocol path.
 fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
     use smithay::wayland::shell::xdg::XdgShellHandler;
+    if frame.host_mut().toggle_focused_group_fullscreen() {
+        return;
+    }
     let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
         state
             .xdg_shell_state
@@ -13626,7 +13947,6 @@ fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder)
             .map(|toplevel| (surface_id, toplevel))
     });
     let Some((surface_id, toplevel)) = toplevel else {
-        let _ = frame.host_mut().toggle_focused_group_maximized();
         return;
     };
     if state

@@ -50,7 +50,6 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
@@ -61,7 +60,7 @@ reqwest.workspace = true
 # Its sanctioned builder installs the crypto provider reqwest needs.
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
@@ -244,6 +243,8 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+# The wire of the shell's own file choosers, served to apps with no portal.
+tilo-dialogs.workspace = true
 package-store = { path = "../../packaging/package-store" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 
@@ -302,8 +303,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # that would silently fall back to English fails a test.
 fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }

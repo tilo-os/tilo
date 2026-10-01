@@ -18,7 +18,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -2756,7 +2756,12 @@ impl MapsApp {
         // returns as soon as the results dismiss.
         let show_panel = !self.search_overlay_active();
         if overlay && self.nav_open {
-            draw::fill_rect(scene, t, clip, draw::alpha(Color::BLACK, 0.5));
+            draw::fill_rect(
+                scene,
+                t,
+                clip,
+                draw::alpha(theme.tokens.colors.surfaces.scrim, 0.5),
+            );
             self.click_targets.push((clip, Hit::CloseNav));
             if show_panel {
                 self.draw_panel(scene, t, tr, theme);
@@ -3049,7 +3054,7 @@ impl MapsApp {
         let y1 = self.rect.y1 - 54.0; // above the scale bar + attribution
         let y0 = y1 - card_h;
         let card = Rect::new(x0, y0, x0 + w, y1);
-        draw::card(scene, t, card, 16.0, c.surfaces.raised);
+        draw::card(scene, t, theme, card, 16.0, c.surfaces.raised);
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
@@ -3195,6 +3200,7 @@ impl MapsApp {
             draw::card(
                 scene,
                 t,
+                theme,
                 pill,
                 h / 2.0,
                 draw::alpha(c.surfaces.raised, 0.96),
@@ -3229,7 +3235,14 @@ impl MapsApp {
         let w = 180.0_f64;
         let h = pad + header_h + Congestion::ALL.len() as f64 * row_h + pad - 4.0;
         let card = Rect::new(map_left, bottom - h, map_left + w, bottom);
-        draw::card(scene, t, card, 12.0, draw::alpha(c.surfaces.raised, 0.96));
+        draw::card(
+            scene,
+            t,
+            theme,
+            card,
+            12.0,
+            draw::alpha(c.surfaces.raised, 0.96),
+        );
 
         let x = card.x0 + pad;
         let mut y = card.y0 + pad;
@@ -3302,7 +3315,14 @@ impl MapsApp {
         // (which spans most of the top edge in the narrow layout).
         let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
         let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
-        draw::card(scene, t, r, 15.0, theme.tokens.colors.surfaces.raised);
+        draw::card(
+            scene,
+            t,
+            theme,
+            r,
+            15.0,
+            theme.tokens.colors.surfaces.raised,
+        );
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
         draw::fill_circle(
@@ -3357,7 +3377,7 @@ impl MapsApp {
         let w = draw::measure_w(tr, msg, size) + 44.0;
         let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
         let c = &theme.tokens.colors;
-        draw::card(scene, t, r, 17.0, c.surfaces.raised);
+        draw::card(scene, t, theme, r, 17.0, c.surfaces.raised);
         let dot = Point::new(r.x0 + 18.0, r.center().y);
         let dot_col = if offline {
             c.semantic.warning
@@ -3404,7 +3424,7 @@ impl MapsApp {
                 pr.x1,
                 pr.y0 + self.panel_header_h() + 2.0 * inset,
             );
-            draw::card(scene, t, bar, 14.0, c.surfaces.raised);
+            draw::card(scene, t, theme, bar, 14.0, c.surfaces.raised);
             self.click_targets.push((bar, Hit::Consume));
             let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
             PaintCtx::new(scene, t, tr, theme).text(
@@ -3435,7 +3455,7 @@ impl MapsApp {
             return;
         }
 
-        draw::card(scene, t, pr, 14.0, c.surfaces.raised);
+        draw::card(scene, t, theme, pr, 14.0, c.surfaces.raised);
         // Swallow background clicks.
         self.click_targets.push((pr, Hit::Consume));
 
@@ -4070,11 +4090,7 @@ impl MapsApp {
         let seg_inset = f64::from(self.spacing.s1);
         draw::edged(scene, t, mode_rect, track_radius, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
-        let active_fg = c.ink_on(
-            theme.accent_primary,
-            Color::WHITE,
-            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-        );
+        let active_fg = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
@@ -4555,7 +4571,7 @@ impl MapsApp {
                         .text_color
                         .as_deref()
                         .and_then(draw::hex_color)
-                        .unwrap_or(Color::WHITE);
+                        .unwrap_or_else(|| theme.tokens.colors.on_surface(col).ink);
                     let lbl = if leg.line.is_empty() {
                         leg.mode.label().to_string()
                     } else {

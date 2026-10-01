@@ -1,7 +1,7 @@
 use super::super::CHILD_NAME;
 use super::*;
-use atomic_file::lease::FileLease;
 use std::os::unix::fs::PermissionsExt;
+use tilo_files::native::atomic::lease::FileLease;
 
 fn private_fixture(temp: tempfile::TempDir) -> tempfile::TempDir {
     // tempfile's default directory mode is subject to the process umask. Only
@@ -84,15 +84,15 @@ fn private_actions_admin_provisions_initial_existing_root() {
     assert!(matches!(
         FileLease::try_acquire(
             bounded.open_lease_existing(OsStr::new(LOCK_NAME)).unwrap(),
-            atomic_file::lease::LeaseMode::Exclusive
+            tilo_files::native::atomic::lease::LeaseMode::Exclusive
         ),
-        Err(atomic_file::lease::AcquireError::Busy)
+        Err(tilo_files::native::atomic::lease::AcquireError::Busy)
     ));
     drop(verified);
     assert!(
         FileLease::try_acquire(
             bounded.open_lease_existing(OsStr::new(LOCK_NAME)).unwrap(),
-            atomic_file::lease::LeaseMode::Exclusive,
+            tilo_files::native::atomic::lease::LeaseMode::Exclusive,
         )
         .is_ok()
     );
@@ -123,7 +123,7 @@ fn rewrite(
             OsStr::new(FILE_NAME),
             &bytes,
             PublishMode::Replace,
-            atomic_file::Privacy::OwnerOnly,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
         )
         .unwrap();
 }
@@ -258,7 +258,7 @@ fn private_actions_admin_current_root_sentinel_child_and_file_fences() {
                     OsStr::new(LOCK_NAME),
                     &[],
                     PublishMode::Replace,
-                    atomic_file::Privacy::OwnerOnly,
+                    tilo_files::native::atomic::Privacy::OwnerOnly,
                 )
                 .unwrap(),
             2 => {
@@ -285,7 +285,7 @@ fn private_actions_admin_current_root_sentinel_child_and_file_fences() {
 }
 #[test]
 fn private_actions_admin_publication_failures_retain_exact_custody() {
-    use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     for occurrence in [1, 2] {
         for checkpoint in [
             Checkpoint::BeforePublish,
@@ -329,7 +329,7 @@ fn private_actions_admin_publication_failures_retain_exact_custody() {
 }
 #[test]
 fn private_actions_admin_lost_fresh_custody_does_not_adopt_partial_child() {
-    use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     let root = fixture();
     let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
         open_path(root.path(), AdministrativeExpectation::Prepared)
@@ -346,7 +346,7 @@ fn private_actions_admin_lost_fresh_custody_does_not_adopt_partial_child() {
 }
 #[test]
 fn private_actions_admin_existing_barrier_and_named_file_change_keep_original_error() {
-    use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+    use tilo_files::native::atomic::test_support::{ExistingCheckpoint, with_existing_hooks};
     let root = fixture();
     let error = with_existing_hooks(
         Some(ExistingCheckpoint::BeforeNamespaceFlush),
@@ -573,7 +573,7 @@ fn private_actions_admin_owned_recheck_retains_actual_error_and_lease() {
                 matches!(
                     failure.operation.diagnostic.as_ref(),
                     Some(OpenError::Child(
-                        atomic_file::bounded::ChildOpenError::Admission(_)
+                        tilo_files::native::atomic::bounded::ChildOpenError::Admission(_)
                     ))
                 ),
                 "failed child FD must remain inside the actual admission error"
@@ -583,9 +583,9 @@ fn private_actions_admin_owned_recheck_retains_actual_error_and_lease() {
         assert!(matches!(
             FileLease::try_acquire(
                 bounded.open_lease_existing(OsStr::new(LOCK_NAME)).unwrap(),
-                atomic_file::lease::LeaseMode::Exclusive
+                tilo_files::native::atomic::lease::LeaseMode::Exclusive
             ),
-            Err(atomic_file::lease::AcquireError::Busy)
+            Err(tilo_files::native::atomic::lease::AcquireError::Busy)
         ));
         let failure = failure.retry().unwrap_err();
         assert!(failure.io_error().is_some());
@@ -601,7 +601,7 @@ fn private_actions_admin_owned_recheck_retains_actual_error_and_lease() {
         assert!(
             FileLease::try_acquire(
                 bounded.open_lease_existing(OsStr::new(LOCK_NAME)).unwrap(),
-                atomic_file::lease::LeaseMode::Exclusive
+                tilo_files::native::atomic::lease::LeaseMode::Exclusive
             )
             .is_ok()
         );
