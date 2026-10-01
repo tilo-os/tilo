@@ -3265,9 +3265,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 /// Whether a surface [`release_frame_throttle`] serves is waiting for
-/// `wl_surface.frame`. The loop must paint for it: a callback can arrive
-/// on a commit without a new buffer (a configure ack, a title), which
-/// changes nothing on screen, and the client draws nothing until it fires.
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
 #[cfg(target_os = "linux")]
 pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
     state
@@ -3286,6 +3287,22 @@ pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool 
                     .is_empty()
             })
         })
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen
