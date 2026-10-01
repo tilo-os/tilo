@@ -7,7 +7,10 @@ module (`pkg/tilo_browser_runtime_bg.wasm`):
 - `measure NAME BUNDLE_DIR` fails when the bundle is larger than its budget,
   and prints the lower budget to commit when it shrank by more than 1 %;
 - `check-budget --base REV` fails when a budget in the working tree is larger
-  than at REV, so budgets can only go down.
+  than at REV, so budgets can only go down. The one exception is a re-baseline:
+  the raised entry records `rebaseline = { run = <app-sdk run number>,
+  reason = "..." }`, new in this change, and its bytes are that run's
+  measurement.
 """
 
 from __future__ import annotations
@@ -43,13 +46,36 @@ def measure(name: str, bundle: pathlib.Path, text: str) -> tuple[int, str]:
     return 0, f"{name}: {size} bytes, within its budget of {limit}"
 
 
+def rebaselines(text: str) -> dict[str, dict]:
+    table = tomllib.loads(text).get("bundles", {})
+    return {name: entry["rebaseline"] for name, entry in table.items() if "rebaseline" in entry}
+
+
+def valid_rebaseline(record: object) -> bool:
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get("run"), int)
+        and record["run"] > 0
+        and isinstance(record.get("reason"), str)
+        and len(record["reason"].strip()) >= 20
+    )
+
+
 def increases(before: str, after: str) -> list[str]:
     old, new = budgets(before), budgets(after)
-    return [
-        f"{name}: budget raised from {old[name]} to {new[name]}"
-        for name in sorted(old)
-        if name in new and new[name] > old[name]
-    ] + [f"{name}: budget removed" for name in sorted(set(old) - set(new))]
+    old_records, new_records = rebaselines(before), rebaselines(after)
+    problems = []
+    for name in sorted(old):
+        if name not in new or new[name] <= old[name]:
+            continue
+        record = new_records.get(name)
+        if valid_rebaseline(record) and record != old_records.get(name):
+            continue
+        problems.append(f"{name}: budget raised from {old[name]} to {new[name]}")
+    for name, record in sorted(new_records.items()):
+        if not valid_rebaseline(record):
+            problems.append(f"{name}: rebaseline needs an app-sdk run number and a reason")
+    return problems + [f"{name}: budget removed" for name in sorted(set(old) - set(new))]
 
 
 def main() -> int:
