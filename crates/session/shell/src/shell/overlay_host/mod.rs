@@ -3053,6 +3053,12 @@ impl ShellOverlayHost {
         let _ = self.tick_overview_transition(if open { 1.0 } else { 0.0 }, false);
     }
 
+    /// Whether the workspace-switch frame run is still in flight.
+    /// Intermediate frames must not upload the desktop again.
+    pub(crate) fn workspace_switch_holding(&self) -> bool {
+        self.workspace_switch.is_animating(Instant::now())
+    }
+
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Draw snaps this when motion is reduced.
@@ -11286,8 +11292,13 @@ impl ShellOverlayHost {
             } else {
                 1
             };
-            if let Some(chrome) = self.chrome.clone() {
-                let _ = chrome.borrow_mut().switch_workspace(direction);
+            if let Some(chrome) = self.chrome.clone()
+                && chrome.borrow_mut().switch_workspace(direction)
+            {
+                // Both directions. Page Down's following frames were already
+                // cheap; Page Up fell through to a full upload of the desktop
+                // just restored.
+                self.start_workspace_switch_frames();
             }
             *handled = true;
             return true;
@@ -19212,14 +19223,18 @@ impl ShellOverlayHost {
                 overview_alpha,
             );
             self.store_overview_fast_patch(theme, overview_alpha, clip, panel_xform);
-        } else if self
-            .overview_fast_patch
-            .as_ref()
-            .is_some_and(|patch| patch.draw_panel)
+        } else if self.transition_started.is_some()
+            || self
+                .overview_fast_patch
+                .as_ref()
+                .is_some_and(|patch| patch.draw_panel)
         {
-            // The close has reached zero. Put the stashed desktop back inside
-            // the panel clip; a full readback here is the stall the fade just
-            // avoided. The following settled frame clears the patch.
+            // Progress is integer milliseconds, so the open's first sample is
+            // still alpha 0. That frame used to clear the patch and GPU-read
+            // both outputs; the close never did, because it starts at alpha 1.
+            // Keep the panel clip for the whole fade, including that sample
+            // and the frame that finishes a close. The next settled frame
+            // clears the patch.
             let clip = self.overview_stable_clip(theme);
             self.store_overview_fast_patch(theme, 0.0, clip, Affine::IDENTITY);
         } else {
