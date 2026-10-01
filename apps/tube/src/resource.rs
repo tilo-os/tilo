@@ -108,6 +108,15 @@ impl Resource for Tube {
     }
 }
 
+/// Document membership when `tube` has been written; otherwise the widget model.
+pub(crate) fn shared_for_publish(model: &TubeModel, doc: &Doc) -> TubeShared {
+    if matches!(doc.get(automerge::ROOT, "tube"), Ok(Some(_))) {
+        read_shared(doc)
+    } else {
+        TubeShared::from_model(model)
+    }
+}
+
 fn read_shared(doc: &Doc) -> TubeShared {
     let mut shared = TubeShared::default();
     let Ok(Some((Value::Object(ObjType::Map), tube))) = doc.get(ROOT, "tube") else {
