@@ -174,9 +174,17 @@ impl WeatherApp {
     }
 
     /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let core = self.core.borrow();
-        crate::actions::provide_resources(&core.model, self.live)
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let from_doc = WeatherDoc::read_model(doc);
+        let widget = self.core.borrow().model.clone();
+        // Saved places live in the document once sync has written them.
+        // Forecasts stay device-local and are not part of this door.
+        let model = if from_doc.locations.is_empty() && !widget.locations.is_empty() {
+            widget
+        } else {
+            from_doc
+        };
+        crate::actions::provide_resources(&model, self.live)
     }
 
     #[cfg(test)]
@@ -752,6 +760,24 @@ impl ui::resources::PublishesResources for WeatherApp {
             return Vec::new();
         }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.actions.is_hosted() && id == "weather.locations" {
+            return None;
+        }
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
