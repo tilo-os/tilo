@@ -5,32 +5,17 @@ set -euo pipefail
 config=/etc/greetd/config.toml
 original=$(mktemp /tmp/tilo-greetd-config.XXXXXX)
 cp -- "$config" "$original"
-core_pattern=$(cat /proc/sys/kernel/core_pattern 2>/dev/null || true)
-core_override=/etc/systemd/system/greetd.service.d/99-tilo-core-diagnostic.conf
-if [[ -e $core_override ]]; then
-  echo 'refusing to replace an existing greetd core limit override' >&2
-  exit 1
-fi
 restore() {
   cp -- "$original" "$config"
   rm -f -- "$original"
-  rm -f -- "$core_override"
-  systemctl daemon-reload || true
-  if [[ -n $core_pattern ]]; then
-    printf '%s\n' "$core_pattern" > /proc/sys/kernel/core_pattern 2>/dev/null || true
-  fi
   systemctl reset-failed greetd.service || true
   systemctl restart greetd.service || true
 }
 trap restore EXIT
-mkdir -p -- "$(dirname "$core_override")"
-printf '[Service]\nLimitCORE=infinity\n' > "$core_override"
-systemctl daemon-reload
-printf '%s\n' '/var/tmp/tilo-core.%p' > /proc/sys/kernel/core_pattern 2>/dev/null || true
 
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
-LD_PRELOAD=/tmp/tilo-sigill-probe.so /usr/bin/tilo-greeter
+TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
 status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
@@ -39,8 +24,6 @@ chmod 0755 /tmp/tilo-child-status.sh
 
 echo '::group::guest display before greeter restart'
 ls -l /dev/dri 2>&1 || true
-echo "core pattern: $(cat /proc/sys/kernel/core_pattern 2>/dev/null || true)"
-systemctl show greetd.service -p LimitCORE -p LimitCORESoft 2>&1 || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
@@ -111,13 +94,12 @@ PY
 done
 
 echo '::group::guest crash and kernel diagnostics'
+for metrics in /tmp/tilo-greeter-metrics-*.json; do
+  [[ -f $metrics ]] || continue
+  echo "startup marks from $metrics:"
+  jq -r '.events[]? | "\(.name) \(.ns)"' "$metrics" | tail -n 25 || true
+done
 journalctl -b -u greetd.service --no-pager -n 60 2>&1 || true
 journalctl -b -k --no-pager 2>&1 | grep -Ei 'segfault|oom|killed process|virtio.gpu|drm|avc.*denied' | tail -n 60 || true
 coredumpctl --no-pager list 2>&1 | tail -n 20 || true
-for core in /var/tmp/tilo-core.*; do
-  [[ -f $core ]] || continue
-  ls -lh "$core"
-  gdb -q -batch -c "$core" /usr/bin/tilo-greeter \
-    -ex 'p/x $pc' -ex 'info symbol $pc' -ex 'bt 12' 2>&1 | tail -n 80 || true
-done
 echo '::endgroup::'
