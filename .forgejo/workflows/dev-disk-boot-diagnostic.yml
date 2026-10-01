@@ -84,7 +84,7 @@ jobs:
             status=$?
             if (( status != 0 )); then
               ./os/dev/vm.sh cmd "screendump $TILO_RUN/boot-failure.ppm" >/dev/null 2>&1 || true
-              ./os/dev/diagnose-boot-failure.sh || true
+              bash ./os/dev/diagnose-boot-failure.sh || true
             fi
             ./os/dev/vm.sh stop || true
             rm -f -- "$overlay"
