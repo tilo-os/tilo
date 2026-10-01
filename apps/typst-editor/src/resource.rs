@@ -134,7 +134,8 @@ impl ResourceSurface<TypstEditor> for TypstApp {
         // empty projection must not wipe unpublished local source.
     }
 
-    fn attach(&mut self, _cx: SurfaceCx<TypstEditor>) {
+    fn attach(&mut self, cx: SurfaceCx<TypstEditor>) {
+        self.attach_document_actions(cx.dispatcher());
         self.set_framework_hosted(true);
     }
 }
@@ -280,8 +281,14 @@ mod tests {
             "standalone keeps one row per compiled page"
         );
 
+        let document_id = document.id.as_str().to_owned();
         app.set_framework_hosted(true);
         assert!(app.is_framework_hosted());
+        assert!(ui::resources::resource(&app, &state.doc, "typst.workspace").is_none());
+        assert!(
+            ui::resources::resource(&app, &state.doc, &document_id).is_some(),
+            "a hosted document stays the published row"
+        );
         let extras = app.resources(&state.doc);
         assert!(
             extras
@@ -343,6 +350,27 @@ mod tests {
             app.local_source_for_test(),
             "= Not published yet\n",
             "empty present must keep the local source body"
+        );
+    }
+
+    #[test]
+    fn hosted_source_setup_is_submitted_as_an_action() {
+        use automerge::ReadDoc;
+        let mut app = TypstApp::with_demo_documents();
+        app.set_framework_hosted(true);
+        let mut doc = automerge::AutoCommit::new();
+        let id = app.ensure_source_obj(&mut doc);
+        let text = doc.text(&id).expect("seeded source");
+        assert!(!text.is_empty(), "the first source action seeds the sample");
+        assert!(
+            app.take_source_action_for_test().is_some(),
+            "hosted source setup is an action the host records"
+        );
+        app.ensure_source_obj(&mut doc);
+        assert_eq!(
+            doc.text(&id).unwrap(),
+            text,
+            "a second setup leaves the source in place"
         );
     }
 }
