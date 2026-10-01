@@ -434,6 +434,24 @@ mod tests {
     }
 
     #[test]
+    fn a_standalone_view_edit_is_submitted_through_the_sink() {
+        let mut app = ContainersApp::new(false);
+        assert!(!app.is_hosted());
+        let mut doc = AutoCommit::new();
+        app.apply_view(
+            &mut doc,
+            &ContainersAction::SetSection {
+                section: "images".into(),
+            },
+        );
+        assert!(
+            app.last_document_action().is_some(),
+            "a standalone view edit is recorded on the action sink"
+        );
+        assert_eq!(ViewDoc::section(&doc), Section::Images);
+    }
+
+    #[test]
     fn create_draft_is_a_replayable_action() {
         let mut doc = AutoCommit::new();
         ContainersAction::SetCreateField {

@@ -612,18 +612,14 @@ impl ContainersApp {
         self.actions.dispatch(doc, action);
     }
 
-    /// Hosted edits go through the dispatcher. Standalone edits apply the same
-    /// action into the open transaction the shell commits.
+    /// View edits go through the action sink. Hosted, that is the framework
+    /// dispatcher. Standalone, `--shots`, and unit tests use the local host.
     pub(crate) fn apply_view(
         &mut self,
         doc: &mut AutoCommit,
         action: &crate::resource::ContainersAction,
     ) {
-        if self.is_hosted() {
-            self.commit_view(doc, action);
-        } else {
-            let _ = ui::tilo_actions::Action::apply(action, doc);
-        }
+        self.commit_view(doc, action);
     }
 
     #[cfg(test)]
