@@ -259,6 +259,9 @@ later throwaway install overlays. Component changes in a running dev VM use
 When building that disposable medium in WSL instead, set
 `TILO_PODMAN_BUILD_NETWORK=host` only if Podman's private build namespace
 cannot reach the package mirrors while the WSL host can.
+Keep `TILO_INSTALLER_OUTPUT` on WSL's native ext4 filesystem during the
+build; the raw disk can allocate its full logical size on `/mnt/c`. Export
+only the finished qcow2 or its compressed form to Windows.
 For a running WHPX installer, `installer-console.py --socket
 tcp://127.0.0.1:<console-port> state` reads the same action protocol that the
 scenario driver uses.
