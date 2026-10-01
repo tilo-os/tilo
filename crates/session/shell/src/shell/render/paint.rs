@@ -1810,7 +1810,7 @@ impl VelloDrmBridge {
         }
         self.retain_shown_workspace();
         let index = self.snapshot_index(id)?;
-        let bytes = self.workspace_snapshots[index].1.clone();
+        let bytes = self.workspace_snapshots.get(index)?.1.clone();
         self.readback.clone_from(&bytes);
         self.shown_workspace = Some(id);
         Some(bytes)
@@ -1825,7 +1825,12 @@ impl VelloDrmBridge {
             .iter()
             .position(|(stored, _)| *stored == id)
         {
-            self.workspace_snapshots[pos].1.clone_from(&self.readback);
+            {
+                let Some(entry) = self.workspace_snapshots.get_mut(pos) else {
+                    return;
+                };
+                entry.1.clone_from(&self.readback);
+            }
             // Most recently kept, so the next eviction drops the other one.
             let entry = self.workspace_snapshots.remove(pos);
             self.workspace_snapshots.push(entry);
