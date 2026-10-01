@@ -9,6 +9,7 @@ use qdoc::snapshot::{ChangeKind, ChangeView, CommentView};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
+use ui::paint::with_alpha;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -18,8 +19,8 @@ use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use crate::i18n::t;
 use crate::num;
 
-/// Pale-yellow band drawn behind a comment-marked body range.
-pub(super) const COMMENT_HIGHLIGHT: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
+/// Revision ink painted into the document text for tracked insertions /
+/// deletions — paper markup the user authored, not OS chrome.
 pub(super) const INSERTION_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
 pub(super) const DELETION_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
 /// Review colour for tracked insertions.
@@ -76,6 +77,8 @@ impl CardButtonLabels {
 const COMMENT_WASH: f32 = 0.14;
 /// Wash of the accept / reject / resolve button faces.
 const BUTTON_WASH: f32 = 0.20;
+/// Alpha of the comment-range band on the paper (text must read through it).
+const COMMENT_HIGHLIGHT_ALPHA: u8 = 0x66;
 
 /// The review cards' colours, derived from the OS theme. The cards sit on the
 /// desk beside the page, so they are chrome: comments take the `warning` hue,
@@ -97,6 +100,8 @@ pub(super) struct ReviewColors {
     deletion_mark: Color,
     accept: AccentChip,
     reject: AccentChip,
+    /// Warning wash behind a comment-marked body range. Chrome on the paper.
+    pub(super) comment_highlight: Color,
 }
 
 impl ReviewColors {
@@ -106,10 +111,12 @@ impl ReviewColors {
         let card = c.surfaces.raised;
         let comment =
             c.tinted_chip_on(card, c.semantic.warning, COMMENT_WASH, ON_FILL_MIN_CONTRAST);
+        let comment_tab = c.ink_on(paper, c.semantic.warning, NON_TEXT_MIN_CONTRAST);
         Self {
             comment,
             comment_body_ink: theme.on_surface(comment.fill).ink,
-            comment_tab: c.ink_on(paper, c.semantic.warning, NON_TEXT_MIN_CONTRAST),
+            comment_tab,
+            comment_highlight: with_alpha(comment_tab, COMMENT_HIGHLIGHT_ALPHA),
             comment_stripe: c.ink_on(comment.fill, c.semantic.warning, NON_TEXT_MIN_CONTRAST),
             change_card: card,
             change_edge: ui::surface::edge_on(card),
@@ -610,6 +617,7 @@ fn marker_order(a: &(String, f64, f64), b: &(String, f64, f64)) -> std::cmp::Ord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::ColorCompat;
 
     /// The review cards are chrome: under every shipped theme each label
     /// clears body-text contrast on the face it is drawn on, and each mark
@@ -620,7 +628,7 @@ mod tests {
         for name in Theme::ALL {
             let theme = Theme::named(name).expect("shipped theme resolves");
             let c = &theme.tokens.colors;
-            // The lightest paper the editor uses (`PAPER_DEFAULT`).
+            // Canonical light paper the editor falls back to (`PAPER_DEFAULT`).
             let paper = Color::from_rgb8(0xfc, 0xfc, 0xfa);
             let rc = ReviewColors::for_theme(&theme, paper);
             for (what, ink, face, floor) in [
@@ -681,6 +689,25 @@ mod tests {
                 );
             }
             assert_eq!(rc.change_card, c.surfaces.raised, "{name}: change card");
+            assert_eq!(
+                rc.comment_highlight.a(),
+                COMMENT_HIGHLIGHT_ALPHA,
+                "{name}: comment highlight stays a wash"
+            );
+            assert_eq!(
+                (
+                    rc.comment_highlight.r(),
+                    rc.comment_highlight.g(),
+                    rc.comment_highlight.b()
+                ),
+                (rc.comment_tab.r(), rc.comment_tab.g(), rc.comment_tab.b()),
+                "{name}: comment highlight is the tab warning"
+            );
+            assert_eq!(
+                rc.comment_tab,
+                c.ink_on(paper, c.semantic.warning, NON_TEXT_MIN_CONTRAST),
+                "{name}: comment tab is warning on paper"
+            );
         }
     }
 
