@@ -18,10 +18,12 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::chart_palette::ChartPalette;
 use ui::paint::PaintCtx;
 use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
 
@@ -2126,7 +2128,7 @@ impl Grid {
         self.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
         self.draw_active_highlight(scene, transform, theme, body);
         self.draw_fill_handle(scene, transform, theme, body);
-        self.draw_reference_highlights(scene, transform, body);
+        self.draw_reference_highlights(scene, transform, theme, body);
         scene.pop_layer();
 
         // --- headers (painted on top, never clipped by the body) ---
@@ -2363,12 +2365,18 @@ impl Grid {
     /// matching the tinted references in the formula text, so it's clear
     /// which cells feed the result (and, in point mode, which range a click
     /// just inserted).
-    fn draw_reference_highlights(&self, scene: &mut Scene, transform: Affine, body: Rect) {
+    fn draw_reference_highlights(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        body: Rect,
+    ) {
         if let Some(body_text) = self.highlight_formula_body() {
             let spans = crate::formula::references(&body_text);
             let slots = crate::formula::ref_color_slots(&spans);
             for (span, slot) in spans.iter().zip(&slots) {
-                let color = reference_color(*slot);
+                let color = reference_color(theme, *slot);
                 let tl = self.cell_screen_rect(span.tl.0, span.tl.1);
                 let br = self.cell_screen_rect(span.br.0, span.br.1);
                 let rr = Rect::new(tl.x0, tl.y0, br.x1, br.y1);
@@ -2747,7 +2755,7 @@ impl Grid {
             tr,
             &text,
             size,
-            colors.text_primary,
+            theme,
             Point::new(tx, ty),
             Some(e.caret()),
         );
@@ -2763,46 +2771,38 @@ impl Grid {
     }
 }
 
-/// A distinct, saturated hue for the `slot`-th reference in a formula, so
-/// each referenced cell/range reads in its own colour both in the formula
-/// text and as an outline on the grid — the coloured-reference cue every
-/// desktop spreadsheet shows while editing a formula. Cycles for formulas
-/// with more references than palette entries. These are a fixed syntax-style
-/// palette (there is no theme token for "reference colour N") chosen to stay
-/// legible on the app surfaces.
-pub(crate) fn reference_color(slot: usize) -> Color {
-    let palette = [
-        Color::from_rgb8(0x54, 0x9b, 0xf5), // blue
-        Color::from_rgb8(0xe2, 0x5b, 0x5b), // red
-        Color::from_rgb8(0x3f, 0xbb, 0x53), // green
-        Color::from_rgb8(0xb1, 0x6c, 0xf0), // purple
-        Color::from_rgb8(0xe0, 0x8a, 0x2a), // orange
-        Color::from_rgb8(0x1f, 0xbd, 0xa8), // teal
-        Color::from_rgb8(0xe2, 0x63, 0xb0), // pink
-    ];
-    // The modulo above always keeps the index in range.
-    palette
-        .get(slot % palette.len())
-        .copied()
-        .unwrap_or(palette[0])
+/// The colour of the `slot`-th reference in a formula, so each referenced
+/// cell/range reads in its own colour both in the formula text and as an
+/// outline on the grid — the coloured-reference cue every desktop
+/// spreadsheet shows while editing a formula. The theme's chart series
+/// (accent plus semantic hues) is made legible as text on the field and
+/// cell surface both are drawn on.
+pub(crate) fn reference_color(theme: &Theme, slot: usize) -> Color {
+    let colors = &theme.tokens.colors;
+    colors.ink_on(
+        colors.surfaces.base,
+        ChartPalette::from_theme(theme).categorical(slot),
+        ON_FILL_MIN_CONTRAST,
+    )
 }
 
 /// Draw a formula string with each cell/range reference tinted its assigned
-/// colour (the rest in `base_color`), starting at `origin` (top-left of the
+/// colour (the rest in `text_primary`), starting at `origin` (top-left of the
 /// text). When `caret` is `Some`, the returned value is the caret's x in
 /// scene space so the caller can draw a matching caret; otherwise the return
 /// is the x just past the text. Only strings beginning with `=` are scanned
-/// for references — a plain value is drawn entirely in `base_color`.
+/// for references — a plain value is drawn entirely in `text_primary`.
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     text: &str,
     size: f32,
-    base_color: Color,
+    theme: &Theme,
     origin: Point,
     caret: Option<usize>,
 ) -> f64 {
+    let base_color = theme.tokens.colors.text_primary;
     let chars: Vec<char> = text.chars().collect();
     // (start_char, end_char, colour) segments in full-text char space.
     let mut segs: Vec<(usize, usize, Color)> = Vec::new();
@@ -2817,7 +2817,7 @@ pub(crate) fn draw_formula_line(
             if s > cursor {
                 segs.push((cursor, s, base_color));
             }
-            segs.push((s, e, reference_color(*slot)));
+            segs.push((s, e, reference_color(theme, *slot)));
             cursor = e;
         }
         if cursor < chars.len() {
@@ -2887,6 +2887,26 @@ fn bounded_window(active: u32, total: u32, limit: u32) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::model::CellValue;
+
+    #[test]
+    fn formula_reference_colours_follow_the_theme() {
+        let dark = Theme::dark();
+        let other = Theme::named("Gruvbox").expect("Gruvbox is a shipped preset");
+        let first = reference_color(&dark, 0);
+        let second = reference_color(&dark, 1);
+        assert_ne!(first, second, "consecutive references stay distinct");
+        let wrap = ChartPalette::from_theme(&dark).len();
+        assert_eq!(
+            reference_color(&dark, wrap),
+            first,
+            "the series wraps with the theme palette"
+        );
+        assert_ne!(
+            first,
+            reference_color(&other, 0),
+            "the first slot is grown from the theme, not a fixed hue"
+        );
+    }
 
     /// Measured metrics and draggable scrollbar thumbs.
     #[test]

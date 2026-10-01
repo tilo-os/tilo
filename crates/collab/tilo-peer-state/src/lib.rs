@@ -20,7 +20,7 @@ pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome,
+    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome, Reseal,
     SealCheckpoint, SeedDocument, SeedState, StatePeer, TransportOrigin,
     VerifiedSecurityMetadataOnly, peer_handle, seed_room,
 };

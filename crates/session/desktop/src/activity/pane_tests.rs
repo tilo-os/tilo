@@ -1210,12 +1210,21 @@ mod tests {
             "two actors wrote to this room; contributors = {:?}",
             pane.contributors()
         );
+        // bootstrap_demo seeds a Research collaborator id "bob" named "Bob"
+        // with a cursor colour. seed_roster_colours registers that display
+        // name on the handle actor, so history shows "Bob" rather than the
+        // raw handle — same person, roster wins for colour and label.
         let bob = pane
             .contributors()
             .iter()
-            .find(|c| c.as_str() == "bob")
+            .find(|c| c.eq_ignore_ascii_case("bob"))
             .cloned()
-            .expect("the peer's self-declared handle resolves to a contributor");
+            .unwrap_or_else(|| {
+                panic!(
+                    "the peer's self-declared handle resolves to a contributor; got {:?}",
+                    pane.contributors()
+                )
+            });
 
         let everyone = pane.visible_len();
         pane.set_author_filter(Some(bob.clone()));

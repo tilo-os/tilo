@@ -8,6 +8,8 @@
 #         transport-qualified reference such as docker://, so the board build
 #         computes the digest install will compute from the pushed layers
 #         (os/Containerfile.board, cfs-digest).
+#   0003: with BOOTC_COMPOSEFS_DIGEST_REPO, that computation keeps its
+#         composefs repository there, so known layers are not fetched again.
 # No image ships it.
 ARG BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
