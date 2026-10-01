@@ -1141,6 +1141,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,
                 filters: opts.filters,
+                scope: None,
                 reply: tx,
             });
             driver.host_mut().pump_file_picker();
@@ -1474,8 +1475,8 @@ const THIRD_WIDTH_PERMILLE: u16 = 333;
 /// at the start, where the ease-out does most of its travelling.
 const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 
-/// Points along the 420 ms make-space curve to render. Evenly spaced,
-/// ending past the curve so the last one is the settled layout.
+/// Points along the make-space spring to render. Evenly spaced, ending
+/// past its settle so the last one is the settled layout.
 const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 
 /// Frames to let the motion finish before the settled capture.

@@ -151,6 +151,12 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
                 opts.ephemeral = true;
                 i = i.saturating_add(1);
             }
+            "--user-home" => {
+                // The supervisor passes this for a terminal session. It is not
+                // implied by the environment, so a package shell stays isolated.
+                opts.user_home = true;
+                i = i.saturating_add(1);
+            }
             "--base" => {
                 opts.base = PathBuf::from(
                     args.get(i.saturating_add(1))

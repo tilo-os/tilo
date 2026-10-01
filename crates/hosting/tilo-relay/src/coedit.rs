@@ -156,11 +156,6 @@ impl RelayCoeditSession {
         std::time::Duration::from_nanos(now_ns().saturating_sub(heard))
     }
 
-    /// Read support belongs to this exact negotiated connection.
-    pub fn supports_agent_reads_v1(&self) -> bool {
-        self.client.supports_agent_reads_v1()
-    }
-
     /// Enable the private v2 lane on this same co-edit connection. Await its
     /// `ActionsReady` with `recv_action`; v1 sessions explicitly return an error.
     ///

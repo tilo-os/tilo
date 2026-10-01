@@ -24,6 +24,59 @@ use media::audio_runtime::{PersistentAudioPolicy, PersistentAudioPreferences, Re
 use settings_store::system_sounds::SystemSoundEvent;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(1200);
+/// After the graph and preferences stay still, stop shelling `pw-dump`
+/// every 1.2 s. Hotplug still lands within this window; `R01`'s empty
+/// desktop must not keep `pw-dump` / `WirePlumber` in the session budget.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(8);
+const STABLE_POLLS_BEFORE_IDLE: u8 = 3;
+
+fn poll_interval(stable_polls: u8) -> Duration {
+    if graph_is_idle(stable_polls) {
+        IDLE_POLL_INTERVAL
+    } else {
+        POLL_INTERVAL
+    }
+}
+
+fn graph_is_idle(stable_polls: u8) -> bool {
+    stable_polls >= STABLE_POLLS_BEFORE_IDLE
+}
+
+/// Shell `pw-dump` only while the graph is still settling or Settings
+/// changed. An empty or volume-only graph is topology-stable: keep polling
+/// it and `PipeWire` stays in the R01 session budget.
+fn should_enumerate(stable_polls: u8, prefs_changed: bool) -> bool {
+    prefs_changed || !graph_is_idle(stable_polls)
+}
+
+/// Devices and hardware only. Streams (including the `pw-dump` this
+/// worker shells) are not part of "the graph is still": comparing
+/// [`AudioGraph::topology_signature`] kept the enumerator awake because
+/// each dump is itself a playback stream.
+fn idle_signature(graph: &AudioGraph) -> String {
+    let names = |devices: &[AudioDevice]| {
+        devices
+            .iter()
+            .map(|device| device.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "sink[{}]|src[{}]|hw[{}]",
+        names(&graph.sinks),
+        names(&graph.sources),
+        graph
+            .hardware
+            .iter()
+            .map(|device| format!("{}:{}", device.id, device.profiles.len()))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn topology_unchanged(previous: Option<&str>, graph: &AudioGraph) -> bool {
+    previous == Some(idle_signature(graph).as_str())
+}
 
 #[derive(Debug)]
 pub struct SessionAudioPolicyOwner {
@@ -50,45 +103,56 @@ impl SessionAudioPolicyOwner {
                 let mut last_error = None;
                 let mut devices = DeviceRoster::default();
                 let mut last_graph: Option<AudioGraph> = None;
+                let mut last_sig: Option<String> = None;
+                let mut last_prefs: Option<PersistentAudioPreferences> = None;
+                let mut stable_polls = 0_u8;
                 loop {
                     let prefs = load_preferences();
-                    let graph = media::audio::enumerate();
-                    for event in devices.observe(&graph) {
-                        let _ = device_tx.send(event);
-                    }
-                    if let Some(previous) = last_graph.as_ref()
-                        && enumerated(&graph)
-                    {
-                        let delta = AudioGraph::diff(previous, &graph);
-                        if pause_on_removal(previous, &delta)
-                            && !crate::shell::mpris::pause_playing_players()
+                    let prefs_changed = last_prefs.as_ref() != Some(&prefs);
+                    last_prefs = Some(prefs);
+                    if should_enumerate(stable_polls, prefs_changed) {
+                        let graph = media::audio::enumerate();
+                        if topology_unchanged(last_sig.as_deref(), &graph) && !prefs_changed {
+                            stable_polls = stable_polls.saturating_add(1);
+                        } else {
+                            stable_polls = 0;
+                        }
+                        last_sig = Some(idle_signature(&graph));
+                        for event in devices.observe(&graph) {
+                            let _ = device_tx.send(event);
+                        }
+                        if let Some(previous) = last_graph.as_ref()
+                            && enumerated(&graph)
                         {
-                            tracing::warn!(
-                                target: "tilo::audio_policy",
-                                "private output removed but players could not be paused"
-                            );
+                            let delta = AudioGraph::diff(previous, &graph);
+                            if pause_on_removal(previous, &delta)
+                                && !crate::shell::mpris::pause_playing_players()
+                            {
+                                tracing::warn!(
+                                    target: "tilo::audio_policy",
+                                    "private output removed but players could not be paused"
+                                );
+                            }
                         }
-                    }
-                    if enumerated(&graph) {
                         last_graph = Some(graph.clone());
-                    }
-                    let error = policy.reconcile(prefs, &graph).err();
-                    if error != last_error {
-                        match error.as_deref() {
-                            Some(error) => tracing::warn!(
-                                target: "tilo::audio_policy",
-                                %error,
-                                "persistent audio preference could not be applied"
-                            ),
-                            None if last_error.is_some() => tracing::info!(
-                                target: "tilo::audio_policy",
-                                "persistent audio preference recovered"
-                            ),
-                            None => {}
+                        let error = policy.reconcile(prefs, &graph).err();
+                        if error != last_error {
+                            match error.as_deref() {
+                                Some(error) => tracing::warn!(
+                                    target: "tilo::audio_policy",
+                                    %error,
+                                    "persistent audio preference could not be applied"
+                                ),
+                                None if last_error.is_some() => tracing::info!(
+                                    target: "tilo::audio_policy",
+                                    "persistent audio preference recovered"
+                                ),
+                                None => {}
+                            }
+                            last_error = error;
                         }
-                        last_error = error;
                     }
-                    if rx.recv_timeout(POLL_INTERVAL).is_ok() {
+                    if rx.recv_timeout(poll_interval(stable_polls)).is_ok() {
                         break;
                     }
                 }
@@ -325,6 +389,79 @@ mod tests {
     fn a_failed_enumeration_is_not_an_unplug() {
         assert!(!enumerated(&AudioGraph::default()));
         assert!(enumerated(&sinks_graph(vec![sink("a", "A", true)])));
+    }
+
+    #[test]
+    fn a_stable_graph_backs_off_pw_dump() {
+        assert_eq!(poll_interval(0), POLL_INTERVAL);
+        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE - 1), POLL_INTERVAL);
+        assert_eq!(poll_interval(STABLE_POLLS_BEFORE_IDLE), IDLE_POLL_INTERVAL);
+        assert_eq!(poll_interval(u8::MAX), IDLE_POLL_INTERVAL);
+        assert!(IDLE_POLL_INTERVAL > POLL_INTERVAL);
+    }
+
+    #[test]
+    fn empty_and_volume_only_graphs_are_topology_stable() {
+        let empty = AudioGraph::default();
+        assert!(
+            topology_unchanged(Some(idle_signature(&empty).as_str()), &empty),
+            "two empty dumps are the same topology; PartialEq used to miss this              when last_graph stayed unset"
+        );
+        let mut louder = graph(&["Built-in Audio"]);
+        louder.sinks.push(sink(
+            "alsa_output.pci.analog-stereo",
+            "Built-in Audio",
+            true,
+        ));
+        let mut quieter = louder.clone();
+        if let Some(device) = quieter.sinks.first_mut() {
+            device.volume = Some(0.1);
+        }
+        assert_eq!(
+            louder.topology_signature(),
+            quieter.topology_signature(),
+            "volume is not topology; comparing whole graphs kept pw-dump awake"
+        );
+    }
+
+    #[test]
+    fn a_transient_dump_stream_does_not_keep_the_graph_awake() {
+        let mut still = graph(&["Built-in Audio"]);
+        still.sinks.push(sink(
+            "alsa_output.pci.analog-stereo",
+            "Built-in Audio",
+            true,
+        ));
+        let mut with_dump = still.clone();
+        with_dump.playback_streams.push(media::audio::AudioStream {
+            id: 99,
+            serial: 1,
+            app: "pw-dump".into(),
+            media_name: None,
+            playback: true,
+            target_id: None,
+            volume: None,
+            muted: None,
+        });
+        assert_ne!(
+            still.topology_signature(),
+            with_dump.topology_signature(),
+            "topology_signature still sees streams; idle compare must not"
+        );
+        assert!(
+            topology_unchanged(Some(idle_signature(&still).as_str()), &with_dump),
+            "pw-dump is a stream, not a device; including it in idle compare kept itself awake"
+        );
+    }
+
+    #[test]
+    fn idle_session_skips_pw_dump_until_preferences_change() {
+        assert!(should_enumerate(0, false));
+        assert!(should_enumerate(STABLE_POLLS_BEFORE_IDLE, true));
+        assert!(
+            !should_enumerate(STABLE_POLLS_BEFORE_IDLE, false),
+            "R01's 30s empty desktop must not shell pw-dump at all once idle"
+        );
     }
 
     #[test]

@@ -45,12 +45,17 @@ suites = [
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
   "os/kernel/tests/test-signing-identity.py",
+  "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
   "os/tests/disk_image_root_podman_store.sh",
   "os/tests/disk_image_user_labels.sh",
+  "os/tests/rockchip_boot_gap.sh",
+  "os/tests/rockchip_loader_test.py",
+  "os/tests/setup_handoff_transport.sh",
+  "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/airplay_encrypted_session_test.sh",
@@ -389,10 +394,8 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
 
@@ -697,32 +700,6 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
-package = "tilo-cloud-host"
-# Owner-commit fixtures are a shared contract with tilo-peer-state.
-inputs = ["crates/collab/tilo-peer-state/src/owner_commit/fixtures/"]
-readers = [
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",
-]
-
-[[cargo]]
-package = "tilo-moq"
-# The voice test checks the browser's voice profile against the native one.
-inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
-readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
-
-[[cargo]]
-package = "tilo-device-host"
-# The ignored regeneration test rewrites tilo-relay's checked-in fixture.
-inputs = ["crates/hosting/tilo-relay/tests/fixtures/shell-selection/"]
-readers = ["crates/hosting/tilo-device-host/tests/publication.rs"]
-
-[[cargo]]
-package = "tilo-workspace-host"
-inputs = ["apps/settings/shots/settings.png"]
-readers = ["crates/hosting/tilo-workspace-host/src/action_host/scoped_fixture/notes.rs"]
-
-[[cargo]]
 package = "tilo-relay-protocol"
 inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
 readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
@@ -854,6 +831,11 @@ workflow = "release-desktop.yml"
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/tests/validation_drive_qemu.sh"
+reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1164,10 +1146,6 @@ reason = "manual smoke test across two hosts on a LAN"
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"

@@ -292,6 +292,10 @@ pub fn is_already_booted(bootc_stderr: &str) -> bool {
     bootc_stderr.contains("same fs-verity digest as the existing Some(Booted) deployment")
 }
 
+pub fn is_already_rollback(bootc_stderr: &str) -> bool {
+    bootc_stderr.contains("same fs-verity digest as the existing Some(Rollback) deployment")
+}
+
 /// Is `path` an OCI image layout directory (what `--image <dir>` takes)?
 pub fn is_layout(path: &Path) -> bool {
     path.join("oci-layout").is_file() && path.join("index.json").is_file()

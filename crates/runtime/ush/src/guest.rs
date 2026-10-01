@@ -17,7 +17,7 @@
 //! /var/lib /var/cache /var/log   the layer's own, bound
 //! /var/tmp /tmp /run /proc /dev  fresh
 //! /run/ush/bin            the runtime and its command shims, read-only
-//! $HOME                   the store's guest home, bound over the real one
+//! $HOME                   terminal: the caller's home; `ush`: the store copy, over the real path
 //! <trusted dirs>          bound read-write, one per `perm trust-dir`
 //! ```
 //!
@@ -74,6 +74,10 @@ pub struct GuestPlan {
     /// Where it is mounted — the real user's home path, so `~` and any
     /// absolute path a script has baked in still resolve.
     pub home_mountpoint: PathBuf,
+    /// When this session is the user's terminal, the store (policy and audit)
+    /// lives inside the home that was just bound. Covering it lets a typed
+    /// `~/file` land in the real home without letting the guest edit its grants.
+    pub masked_store: Option<PathBuf>,
     /// Directories the user trusted: bound read-write.
     pub trusted_dirs: Vec<PathBuf>,
     /// Directories granted read but not write.
@@ -310,6 +314,13 @@ fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
         a.push("--bind-try".into());
         a.push(dir.clone().into_os_string());
         a.push(dir.clone().into_os_string());
+    }
+    // After the home bind, so it covers the store even when `~` is the real
+    // home. A tmpfs here is not the user's files — it is the runtime's own
+    // policy and audit, which must stay unreachable from the guest.
+    if let Some(store) = &plan.masked_store {
+        a.push("--tmpfs".into());
+        a.push(store.clone().into_os_string());
     }
 }
 
@@ -726,6 +737,7 @@ mod tests {
             workdir_root: PathBuf::from("/store/sessions/s1"),
             guest_home: PathBuf::from("/store/home"),
             home_mountpoint: PathBuf::from("/var/home/you"),
+            masked_store: None,
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
@@ -1238,5 +1250,31 @@ mod tests {
             std::fs::write(&f, "1000:524288:65536\n").unwrap();
             assert_eq!(subid_range(&f, "you", 1000), Some((524_288, 65_536)));
         }
+    }
+
+    #[test]
+    fn a_terminal_home_bind_is_the_caller_and_the_store_is_covered() {
+        let mut terminal = plan();
+        terminal.guest_home = PathBuf::from("/var/home/you");
+        terminal.home_mountpoint = PathBuf::from("/var/home/you");
+        terminal.masked_store = Some(PathBuf::from("/var/home/you/.local/share/ush"));
+        let argv = strings(&build_argv(&terminal, Some(9), None));
+        let w3: Vec<&[String]> = argv.windows(3).collect();
+        assert!(
+            w3.iter()
+                .any(|w| w[0] == "--bind" && w[1] == "/var/home/you" && w[2] == "/var/home/you"),
+            "the terminal shell must bind the caller's home: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == "/var/home/you/.local/share/ush"),
+            "policy and audit under that home must be covered: {argv:?}"
+        );
+        assert!(
+            !argv
+                .windows(2)
+                .any(|w| w[0] == "--bind" && w[1] == "/store/home"),
+            "the isolated copy must not replace the caller's home: {argv:?}"
+        );
     }
 }
