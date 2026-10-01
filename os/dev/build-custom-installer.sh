@@ -122,8 +122,10 @@ alongside_bootc_key="$(cat \
   "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
   | sha256sum | cut -c1-16)"
 alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
-podman build -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
-  -t "$alongside_bootc_ref" "$TILO_REPO"
+if ! podman image exists "$alongside_bootc_ref"; then
+  podman build -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+    -t "$alongside_bootc_ref" "$TILO_REPO"
+fi
 (
   alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"
   trap 'podman rm -f "$alongside_bootc_container" >/dev/null 2>&1 || true' EXIT
