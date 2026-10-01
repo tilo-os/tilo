@@ -203,7 +203,10 @@ ln -s "../$UNIT" "$etc/systemd/system/multi-user.target.wants/$UNIT"
 cat > "$etc/tilo-validation-diagnostics.sh" <<'EOF'
 #!/usr/bin/bash
 sleep 45
-for phase in early late; do
+# early once, then late every 30 s: the gate prints the serial tail when its
+# SSH wait fails, about two to three minutes after boot, so the newest late
+# report covers its connection attempts.
+for phase in early late late late late late late late late; do
   report="$(
     echo "TILO_VALIDATION_DIAGNOSTICS $phase"
     systemctl is-system-running --no-pager || true
@@ -221,6 +224,14 @@ for phase in early late; do
     journalctl -b -u greetd.service -u tilo-validation-ssh.service \
       -u tilo-firstboot-user.service -u tilo-installer-setup.service \
       --no-pager -n 35 || true
+    if [ "$phase" = late ]; then
+      getent passwd quickuser || echo 'TILO_VALIDATION_NO_QUICKUSER'
+      faillock --user quickuser 2>&1 || true
+      ss -tnlp 2>/dev/null | grep -E ':22\b' || echo 'TILO_VALIDATION_NOTHING_ON_22'
+      ss -tn 2>/dev/null | grep -E ':22\b' || true
+      journalctl -b --no-pager -o short-monotonic -n 25 \
+        _COMM=sshd _COMM=sshd-session _COMM=sshd-auth _COMM=greetd _COMM=cage || true
+    fi
     echo "TILO_VALIDATION_DIAGNOSTICS_END $phase"
   )"
   for serial in /dev/ttyS0 /dev/ttyAMA0; do
@@ -228,7 +239,7 @@ for phase in early late; do
       printf '%s\n' "$report" | tail -n 160 > "$serial" || true
     fi
   done
-  [ "$phase" = late ] || sleep 135
+  sleep 30
 done
 EOF
 chmod 0644 "$etc/tilo-validation-diagnostics.sh"
