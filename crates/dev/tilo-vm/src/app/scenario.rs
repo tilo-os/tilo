@@ -273,6 +273,8 @@ struct VmInstallProof {
     architecture: String,
     booted_image_digest: String,
     installed_image_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    copied_manifest_digest: Option<String>,
     composefs_digest: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     booted_composefs_digest: Option<String>,
@@ -340,7 +342,9 @@ fn canonical_uuid(value: &str) -> bool {
 #[cfg(windows)]
 fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
-    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
+    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V3=") {
+        (3, rest)
+    } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
         (2, rest)
     } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V1=") {
         (1, rest)
@@ -388,8 +392,20 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                 .as_ref()
                 .is_some_and(|value| value != &proof.composefs_digest)
             || proof.selected_target.is_some()
+            || proof.copied_manifest_digest.is_some()
         {
             return Err("VM v1 install proof has inconsistent image identities".into());
+        }
+    } else if version == 3 {
+        if proof.schema != "tilo.vm-install-image-proof.v3"
+            || proof.booted_image_digest == proof.installed_image_digest
+            || proof.copied_manifest_digest.as_deref()
+                != Some(proof.installed_image_digest.as_str())
+            || proof.booted_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || proof.installed_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || proof.selected_target.is_some()
+        {
+            return Err("VM v3 development copy proof has inconsistent identities".into());
         }
     } else {
         let selected = proof
@@ -455,6 +471,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             "registry.tilo.so/tilo/tilo"
         };
         if proof.schema != "tilo.vm-install-image-proof.v2"
+            || proof.copied_manifest_digest.is_some()
             || !lowercase_hex(booted_composefs, 128)
             || !lowercase_hex(installed_composefs, 128)
             || proof.composefs_digest != installed_composefs
@@ -518,6 +535,8 @@ fn check_install_proof(
     Ok(json!({
         "schema": if proof.schema == "tilo.vm-install-image-proof.v2" {
             "tilo.windows-vm-install-proof-check.v2"
+        } else if proof.schema == "tilo.vm-install-image-proof.v3" {
+            "tilo.windows-vm-install-proof-check.v3"
         } else {
             "tilo.windows-vm-install-proof-check.v1"
         },
@@ -1414,6 +1433,47 @@ mod tests {
                     format!("TILO_VM_INSTALL_PROOF_V1={extended}\n").as_bytes()
                 )
                 .is_ok()
+            );
+        }
+
+        // A development VM may copy an identical composefs tree through a
+        // different OCI manifest. The copy digest is explicit and v2 remains
+        // the only proof accepted for a board install without first boot.
+        {
+            let installed = format!("sha256:{}", "a".repeat(64));
+            let mut payload = json!({
+                "schema": "tilo.vm-install-image-proof.v3", "architecture": "arm64",
+                "booted_image_digest": format!("sha256:{}", "b".repeat(64)),
+                "installed_image_digest": installed,
+                "copied_manifest_digest": installed,
+                "composefs_digest": "c".repeat(128),
+                "booted_composefs_digest": "c".repeat(128),
+                "installed_composefs_digest": "c".repeat(128),
+                "target_uki_sha256": "d".repeat(64),
+                "disk_guid": "44444444-4444-4444-8444-444444444444",
+                "partuuids": {
+                    "efi": "11111111-1111-4111-8111-111111111111",
+                    "boot": "22222222-2222-4222-8222-222222222222",
+                    "root": "33333333-3333-4333-8333-333333333333",
+                },
+            });
+            let line = format!("TILO_VM_INSTALL_PROOF_V3={payload}\n");
+            let proof = super::parse_install_proof(line.as_bytes()).expect("valid dev copy proof");
+            let source = json!({"disk_guid": "44444444-4444-4444-8444-444444444444",
+            "final_partuuids": {
+                "efi": "11111111-1111-4111-8111-111111111111",
+                "boot": "22222222-2222-4222-8222-222222222222",
+                "root": "33333333-3333-4333-8333-333333333333",
+            }});
+            let checked = super::check_install_proof(&proof, &source, Some(&"c".repeat(128)))
+                .expect("matching development copy");
+            assert_eq!(checked["schema"], "tilo.windows-vm-install-proof-check.v3");
+            payload["copied_manifest_digest"] = json!(format!("sha256:{}", "e".repeat(64)));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V3={payload}\n").as_bytes()
+                )
+                .is_err()
             );
         }
 
