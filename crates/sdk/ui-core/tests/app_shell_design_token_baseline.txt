@@ -63,9 +63,9 @@ apps/video-editor/src/app/preview_paint.rs white_or_black 7
 apps/video-editor/src/app/timeline_paint.rs white_or_black 3
 apps/weather/src/core.rs literal_color 0
 apps/weather/src/core.rs white_or_black 0
-apps/word-processor/src/review_overlay.rs literal_color 13
-apps/word-processor/src/widget.rs literal_color 18
-apps/word-processor/src/widget.rs white_or_black 2
+apps/word-processor/src/review_overlay.rs literal_color 0
+apps/word-processor/src/widget.rs literal_color 8
+apps/word-processor/src/widget.rs white_or_black 0
 crates/session/shell/src/compositor/backend/headless.rs literal_color 1
 crates/session/shell/src/compositor/backend/winit.rs literal_color 1
 crates/session/shell/src/compositor/projection_capture.rs literal_color 1
