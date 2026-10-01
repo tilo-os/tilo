@@ -2308,6 +2308,10 @@ impl ContactsApp {
     /// Exact resources read one validated contact/group from the authoritative
     /// store via stable-id indices. A stale position is refused instead of
     /// redirecting an action to whatever shifted into that vector slot.
+    pub(crate) fn export_is_busy(&self) -> bool {
+        self.export_dialog.is_open() || self.export_rx.is_some()
+    }
+
     pub(crate) fn exact_contacts_resource_ctx(
         &self,
         id: &str,
@@ -8249,21 +8253,16 @@ impl ui::resources::PublishesResources for ContactsApp {
         if self.is_hosted() {
             return crate::resource::live_extras(self);
         }
-        let state = <crate::resource::Contacts as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Contacts>(
-            crate::resource::BOOK_RESOURCE_ID,
-            "Contacts",
-            &state,
-        );
-        root.children.extend(crate::resource::live_extras(self));
-        vec![root]
+        self.publish_resources(doc)
     }
     /// Resolve contacts outside the contextual palette page. This is the
     /// other half of bounded discovery: a search hit for contact 65,000 still
     /// reaches the exact current resource/action catalogue, while a deleted
     /// contact has no resource for the broker to invoke.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "contacts.book" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
