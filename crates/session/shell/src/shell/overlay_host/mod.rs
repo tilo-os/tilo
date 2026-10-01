@@ -535,6 +535,9 @@ pub struct ShellOverlayHost {
     /// Wall-clock end of that frame run. Draw must not clear it: snapping
     /// the curve let the close flush both scanouts on every remaining paint.
     workspace_switch_until: Option<Instant>,
+    /// The workspace root was just rebuilt and has not been encoded yet.
+    /// A clip would replay the previous workspace, so that one frame is dense.
+    content_rebuild_owes_scene: bool,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -2017,6 +2020,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
             workspace_switch_until: None,
+            content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_px: (
@@ -3106,7 +3110,14 @@ impl ShellOverlayHost {
     /// Whether this frame is one display's content clip. The combined
     /// desktop is what makes a two-output fade a readback of both scanouts.
     pub(crate) fn presents_on_content_clip(&self) -> bool {
-        self.transition_started.is_some() || self.workspace_switch_holding()
+        !self.content_rebuild_owes_scene
+            && (self.transition_started.is_some() || self.workspace_switch_holding())
+    }
+
+    /// The dense frame just encoded the rebuilt workspace. Later paints in
+    /// this switch may stay on the clip.
+    pub(crate) fn dense_scene_covers_content_rebuild(&mut self) {
+        self.content_rebuild_owes_scene = false;
     }
 
     /// Whether a transition still owes a present. The clock may have been
@@ -3811,6 +3822,7 @@ impl ShellOverlayHost {
         };
         let swapped = self.rebuild_workspace_content(&chrome, &snapshot);
         if swapped {
+            self.content_rebuild_owes_scene = true;
             self.start_workspace_switch_frames();
         }
         swapped

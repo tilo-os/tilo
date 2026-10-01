@@ -1461,7 +1461,9 @@ impl FrameBuilder {
     /// A transition frame is the clip, not a new encoding of both displays.
     /// `None` when the desktop itself has to be drawn.
     fn paint_content_clip(&mut self) -> Option<FramePaint> {
-        if !self.host.presents_on_content_clip() {
+        // Reduced motion is a settled frame, not a clip run. The retained
+        // oracle has to see the new workspace's commands.
+        if self.theme.reduce_motion || !self.host.presents_on_content_clip() {
             return None;
         }
         self.host
@@ -1502,6 +1504,7 @@ impl FrameBuilder {
         if let Some(frame) = self.paint_content_clip() {
             return frame;
         }
+        self.host.dense_scene_covers_content_rebuild();
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
