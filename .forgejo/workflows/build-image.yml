@@ -1495,18 +1495,17 @@ jobs:
             cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
                    --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
-          # Half the release compile's jobs, three eighths on a builder under
-          # 40 GiB: the two overlap, and with every crate cold they peaked at
-          # 30.1 of a 31.9 GiB builder (run 55127). The dev image step passes
-          # the same count, or its build would not find this one's result in
-          # the cache.
+          # The dev compile overlaps the release compile, so it gets the
+          # builder's memory the release side leaves: with every crate cold,
+          # release and thin apps took about 24 GiB and each dev job about one
+          # more (30.1 GiB at 6 jobs on a 31.9 GiB builder, run 55127). Keep
+          # 2 GiB spare. The dev image step passes the same count, or its build
+          # would not find this one's result in the cache.
           builder_memory=$(docker inspect -f '{{.HostConfig.Memory}}' "buildx_buildkit_${BUILDER_NAME}0" 2>/dev/null || echo 0)
-          if (( builder_memory >= 40 * 1024 * 1024 * 1024 )); then
-            TILO_DEV_CARGO_JOBS=$(( TILO_CARGO_JOBS / 2 ))
-          else
-            TILO_DEV_CARGO_JOBS=$(( TILO_CARGO_JOBS * 3 / 8 ))
-          fi
+          TILO_DEV_CARGO_JOBS=$(( builder_memory / 1073741824 - 26 ))
+          (( TILO_DEV_CARGO_JOBS <= TILO_CARGO_JOBS )) || TILO_DEV_CARGO_JOBS=$TILO_CARGO_JOBS
           (( TILO_DEV_CARGO_JOBS >= 4 )) || TILO_DEV_CARGO_JOBS=4
+          echo "::notice::dev compile jobs: $TILO_DEV_CARGO_JOBS (builder $(( builder_memory / 1073741824 )) GiB)"
           export TILO_DEV_CARGO_JOBS
           echo "TILO_DEV_CARGO_JOBS=$TILO_DEV_CARGO_JOBS" >> "$GITHUB_ENV"
           export TILO_DEV_COMPILE_LOG="$RUNNER_TEMP/tilo-dev-compile.log"
