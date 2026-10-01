@@ -87,7 +87,7 @@ impl Resource for VideoProject {
             playhead: 0.0,
             mix: crate::audio::MixSnapshot::default(),
         };
-        crate::actions::provide_resources(&ctx)
+        crate::actions::project_tree(&ctx)
             .into_iter()
             .next()
             .map(|root| {
@@ -108,7 +108,7 @@ impl Resource for VideoProject {
             playhead: 0.0,
             mix: crate::audio::MixSnapshot::default(),
         };
-        crate::actions::provide_resources(&ctx)
+        crate::actions::project_tree(&ctx)
             .into_iter()
             .next()
             .map(|root| {
@@ -123,7 +123,7 @@ impl Resource for VideoProject {
     /// Import / open / save / export and other non-document project jobs.
     fn local_operations() -> Vec<ActionSpec> {
         let ctx = VideoResourceCtx::default();
-        crate::actions::provide_resources(&ctx)
+        crate::actions::project_tree(&ctx)
             .into_iter()
             .next()
             .map(|root| {
@@ -382,6 +382,23 @@ mod tests {
 
         app.set_framework_hosted(true);
         assert!(app.is_framework_hosted());
+        assert!(ui::resources::resource(&app, &state.doc, "video.project").is_none());
+        fn find_clip(resources: &[tilo_actions::Resource]) -> Option<String> {
+            for resource in resources {
+                if resource.kind == "video.clip" {
+                    return Some(resource.id.as_str().to_owned());
+                }
+                if let Some(found) = find_clip(&resource.children) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let clip_id = find_clip(&app.publish_resources(&state.doc)).expect("sample clip");
+        assert!(
+            ui::resources::resource(&app, &state.doc, &clip_id).is_some(),
+            "a hosted clip stays the published row"
+        );
         let extras = app.resources(&state.doc);
         assert!(
             extras

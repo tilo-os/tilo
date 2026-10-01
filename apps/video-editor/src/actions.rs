@@ -2125,7 +2125,9 @@ pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     clippy::too_many_lines,
     reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
 )]
-pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+/// Timeline tree used by [`Resource::children`] and the root action split.
+/// Playhead rows are included here and stripped by the resource's children.
+pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let p = &ctx.project;
     let mut root = Resource::new(
         "video.project".to_string(),
@@ -3734,6 +3736,24 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     vec![root]
 }
 
+/// The published project. Playhead and mix rows stay live extras on this tree
+/// so standalone callers still see them; the framework root adds them itself.
+pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
+    let label = if ctx.project.name.is_empty() {
+        "Project".to_string()
+    } else {
+        ctx.project.name.clone()
+    };
+    let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+        "video.project",
+        &label,
+        &ctx.project,
+    );
+    root.children.extend(live_playhead_resources(ctx));
+    annotate_contracts(&mut root);
+    vec![root]
+}
+
 #[derive(Clone, Copy)]
 enum FilterAxis {
     Brightness,
@@ -3868,17 +3888,24 @@ fn parse_transition(s: &str) -> Transition {
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::VideoEditorApp {
-    pub fn publish_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let ctx = self.video_resource_ctx();
-        let label = if ctx.project.name.is_empty() {
+        // The document is the project once it holds one. An unsynced editor
+        // still has the project only on the widget. Playhead and mix stay live.
+        let project = if VideoDoc::is_empty(doc) {
+            ctx.project.clone()
+        } else {
+            VideoDoc::load_project(doc)
+        };
+        let label = if project.name.is_empty() {
             "Project".to_string()
         } else {
-            ctx.project.name.clone()
+            project.name.clone()
         };
         let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
             "video.project",
             &label,
-            &ctx.project,
+            &project,
         );
         root.children.extend(live_playhead_resources(&ctx));
         vec![root]
