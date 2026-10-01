@@ -703,6 +703,7 @@ impl DrmPresenter {
                 overview: None,
                 workspace_id: None,
                 workspace_hold: false,
+                workspace_clip: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -735,6 +736,7 @@ impl DrmPresenter {
                 overview: frame.overview_patch.as_ref(),
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -1017,6 +1019,7 @@ struct ScanoutFrame<'a> {
     overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
     workspace_id: Option<u64>,
     workspace_hold: bool,
+    workspace_clip: Option<vello::FineDamageRect>,
 }
 
 /// An unchanged frame, or an overview fade that carries its own panel patch,
@@ -1032,25 +1035,45 @@ pub(crate) enum WorkspaceUpload {
     Render,
     /// Put a workspace this bridge already rendered back on the scanouts.
     Replay,
+    /// The held return: adopt the snapshot and upload only the workspace clip.
+    Clip,
     /// Intermediate frame of the switch: leave both scanouts alone.
     Skip,
 }
 
-/// The frame run after a workspace switch. Returning to a workspace replays
-/// the image rendered on the way out; every later sample of either direction
-/// skips the upload. The first visit still renders.
+/// The frame run after a workspace switch. The held return stays on the
+/// workspace clip; a settled return may still replay. Every later sample of
+/// either direction skips the upload. The first visit still renders.
 pub(crate) fn workspace_frame_upload(
     changed: bool,
     has_snapshot: bool,
     hold: bool,
 ) -> WorkspaceUpload {
-    if changed && has_snapshot {
-        WorkspaceUpload::Replay
+    if hold && changed && has_snapshot {
+        WorkspaceUpload::Clip
     } else if hold && !changed {
         WorkspaceUpload::Skip
+    } else if changed && has_snapshot {
+        WorkspaceUpload::Replay
     } else {
         WorkspaceUpload::Render
     }
+}
+
+/// The close may upload the one display it is painting. A clip that also
+/// meets another scanout is the two-output flush this frame run must not do.
+pub(crate) fn close_frame_spares_other_scanouts(
+    clip: vello::FineDamageRect,
+    outputs: &[(i32, i32, u32, u32)],
+) -> bool {
+    if clip.width == 0 || clip.height == 0 {
+        return false;
+    }
+    let covered = outputs
+        .iter()
+        .filter(|&&(x, y, width, height)| output_local_clip(x, y, (width, height), clip).is_some())
+        .count();
+    covered == 1
 }
 
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
@@ -1515,6 +1538,7 @@ fn render_combined_readback(
         overview,
         workspace_id,
         workspace_hold,
+        workspace_clip,
     } = frame;
     let unchanged = damage.is_some_and(|damage| {
         damage
@@ -1545,8 +1569,11 @@ fn render_combined_readback(
             outputs,
             paint,
             pointer,
-            workspace_id,
-            workspace_hold,
+            &WorkspacePresent {
+                id: workspace_id,
+                hold: workspace_hold,
+                clip: workspace_clip,
+            },
         )
     {
         return handled;
@@ -1607,23 +1634,33 @@ fn render_combined_readback(
     }
 }
 
+struct WorkspacePresent {
+    id: Option<u64>,
+    hold: bool,
+    clip: Option<vello::FineDamageRect>,
+}
+
 fn present_workspace_hold(
     scanouts: &mut [ScanoutEntry],
     outputs: &[Output],
     paint: &mut Option<paint::VelloDrmBridge>,
     pointer: (f64, f64),
-    workspace_id: Option<u64>,
-    workspace_hold: bool,
+    workspace: &WorkspacePresent,
 ) -> Option<PaintScanoutSample> {
     let bridge = paint.as_mut()?;
-    let changed = workspace_id.is_some_and(|id| bridge.shown_workspace() != Some(id));
-    let has_snapshot = workspace_id.is_some_and(|id| bridge.has_workspace_snapshot(id));
-    match workspace_frame_upload(changed, has_snapshot, workspace_hold) {
-        WorkspaceUpload::Skip if bridge.has_complete_readback() => {
-            Some(PaintScanoutSample::default())
-        }
+    let changed = workspace
+        .id
+        .is_some_and(|id| bridge.shown_workspace() != Some(id));
+    let has_snapshot = workspace
+        .id
+        .is_some_and(|id| bridge.has_workspace_snapshot(id));
+    match workspace_frame_upload(changed, has_snapshot, workspace.hold) {
+        WorkspaceUpload::Skip => Some(PaintScanoutSample::default()),
+        WorkspaceUpload::Clip => Some(present_workspace_clip(
+            scanouts, outputs, bridge, pointer, workspace,
+        )),
         WorkspaceUpload::Replay => {
-            let id = workspace_id?;
+            let id = workspace.id?;
             let bytes = bridge.replay_workspace(id)?;
             Some(present_composed_readback(
                 scanouts, outputs, pointer, &bytes, None,
@@ -1635,8 +1672,46 @@ fn present_workspace_hold(
             }
             None
         }
-        WorkspaceUpload::Skip => None,
     }
+}
+
+/// Adopt the workspace the close is returning to and upload only the clip.
+/// A missing clip, or one that meets another scanout, leaves the scanouts
+/// alone: falling through here used to flush both outputs.
+fn present_workspace_clip(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    workspace: &WorkspacePresent,
+) -> PaintScanoutSample {
+    let Some(id) = workspace.id else {
+        return PaintScanoutSample::default();
+    };
+    let Some(bytes) = bridge.replay_workspace(id) else {
+        return PaintScanoutSample::default();
+    };
+    let Some(clip) = workspace.clip else {
+        return PaintScanoutSample::default();
+    };
+    if !close_frame_spares_other_scanouts(clip, &scanout_boxes(scanouts, outputs)) {
+        return PaintScanoutSample::default();
+    }
+    present_composed_readback(scanouts, outputs, pointer, &bytes, Some(clip))
+}
+
+fn scanout_boxes(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<(i32, i32, u32, u32)> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off)
+        .map(|entry| {
+            let size = outputs
+                .iter()
+                .find(|output| output.id == entry.id)
+                .map_or_else(|| entry.scanout.size(), |output| output.size);
+            (entry.position.0, entry.position.1, size.0, size.1)
+        })
+        .collect()
 }
 
 fn present_composed_readback(
@@ -1955,6 +2030,7 @@ impl Backend for DrmBackend {
                 overview: None,
                 workspace_id: None,
                 workspace_hold: false,
+                workspace_clip: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1983,6 +2059,7 @@ impl Backend for DrmBackend {
                 overview: frame.overview_patch.as_ref(),
                 workspace_id: frame.workspace_id,
                 workspace_hold: frame.workspace_hold,
+                workspace_clip: frame.workspace_clip,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -2153,15 +2230,45 @@ mod tests {
 
     #[test]
     fn workspace_switch_replays_the_way_back_and_holds_both_directions() {
-        use super::WorkspaceUpload::{Render, Replay, Skip};
+        use super::WorkspaceUpload::{Clip, Render, Replay, Skip};
         // First visit renders. The frame run after that does not upload.
         assert_eq!(super::workspace_frame_upload(true, false, true), Render);
         assert_eq!(super::workspace_frame_upload(false, false, true), Skip);
-        // Switching back replays the image already rendered, then holds.
-        assert_eq!(super::workspace_frame_upload(true, true, true), Replay);
+        // The held return stays on the clip. A settled return may still replay.
+        assert_eq!(super::workspace_frame_upload(true, true, true), Clip);
         assert_eq!(super::workspace_frame_upload(false, true, true), Skip);
+        assert_eq!(super::workspace_frame_upload(true, true, false), Replay);
         // A settled desktop still renders when its pixels actually change.
         assert_eq!(super::workspace_frame_upload(false, true, false), Render);
+    }
+
+    #[test]
+    fn workspace_switch_close_clip_does_not_cover_the_other_scanout() {
+        let clip = vello::FineDamageRect {
+            x: 313,
+            y: 0,
+            width: 1607,
+            height: 1080,
+        };
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1280, 800)];
+        assert!(
+            super::close_frame_spares_other_scanouts(clip, &outputs),
+            "the content column meets the first display only"
+        );
+        let both = vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: 3200,
+            height: 1080,
+        };
+        assert!(
+            !super::close_frame_spares_other_scanouts(both, &outputs),
+            "a combined clip is the two-output flush"
+        );
+        assert!(
+            super::output_local_clip(1920, 0, (1280, 800), clip).is_none(),
+            "the second scanout is outside the close clip"
+        );
     }
 
     use super::*;
