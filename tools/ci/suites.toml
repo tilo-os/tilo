@@ -397,6 +397,13 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
 
 [[group]]
@@ -703,6 +710,14 @@ readers = ["crates/session/desktop/src/topbar.rs"]
 package = "tilo-relay-protocol"
 inputs = ["crates/hosting/tilo-relay/tests/fixtures/"]
 readers = ["crates/hosting/tilo-relay-protocol/src/config.rs"]
+
+[[cargo]]
+package = "tilo-browser-peer"
+# The actual microphone fixture serves the production web modules and pinned
+# MoQ bundle to two isolated Chromium profiles.
+inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs"]
+scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo-exempt]]
 file = "crates/session/shell/tests/headless_examples_smoke.rs"

@@ -278,6 +278,16 @@ jobs:
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
           bash tools/ci/require-pdf-sandbox.sh
 
+      # Real browser voice coverage runs only with the peer package. Both
+      # participants use throwaway profiles and Chromium's fake microphone.
+      - name: Prepare governed browser voice fixture
+        if: contains(matrix.test_packages, '-p tilo-browser-peer') || contains(matrix.scoped_tests, '"tilo-browser-peer"')
+        run: |
+          dnf install -y --setopt=install_weak_deps=False chromium
+          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
+          npm ci --prefix scripts/moq-browser
+          node scripts/moq-browser/build.mjs
+
       # Imager deliberately rejects cache/source directories on the container
       # overlay that also backs the operating-system root. The checked-out
       # workspace is a host-backed qualified filesystem, so keep its native

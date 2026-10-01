@@ -510,16 +510,30 @@ impl ChatApp {
             tr,
             tf,
             &format!(
-                "{caret} {} audio streams · {}",
-                self.native_voice.snapshot.publishers.len()
-                    + usize::from(self.native_voice.snapshot.publication.is_some()),
-                match self.native_voice.snapshot.state {
-                    ui::native_media::State::Live => "Connected",
-                    ui::native_media::State::Reconnecting => "Reconnecting",
-                    ui::native_media::State::Preparing | ui::native_media::State::Joining =>
-                        "Joining",
-                    _ => "Unavailable",
-                }
+                "{caret} {}",
+                crate::i18n::t_args(
+                    "chat-call-stream-status",
+                    &[
+                        (
+                            "count",
+                            (self.native_voice.snapshot.publishers.len()
+                                + usize::from(self.native_voice.snapshot.publication.is_some()))
+                            .to_string()
+                            .into(),
+                        ),
+                        (
+                            "status",
+                            crate::i18n::t(match self.native_voice.snapshot.state {
+                                ui::native_media::State::Live => "chat-call-connected",
+                                ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+                                ui::native_media::State::Preparing
+                                | ui::native_media::State::Joining => "chat-call-joining",
+                                _ => "chat-call-unavailable",
+                            })
+                            .into(),
+                        ),
+                    ],
+                )
             ),
             11.0,
             c.text_dim,

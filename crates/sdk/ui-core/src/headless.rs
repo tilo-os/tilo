@@ -28,6 +28,7 @@
 
 mod controls;
 mod document_history;
+pub mod host_media;
 
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
 

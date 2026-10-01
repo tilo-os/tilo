@@ -7,6 +7,7 @@
     reason = "each test binary uses a different subset of these fixtures"
 )]
 
+pub mod call;
 pub mod https;
 
 use std::net::SocketAddr;

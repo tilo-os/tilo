@@ -622,3 +622,16 @@ test('the room\'s records this page holds, and waiting for one', async () => {
   await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing', {timeoutMs: 20}), /no so.tilo.notes record missing/);
   await peer.dispose();
 });
+
+test('recertification retires voice before disposing the certified peer', async () => {
+  const runtime = fakeRuntime();
+  const retired = [];
+  const peer = await connect(options(runtime, memoryStore(), {live: false, voice: {createCall: () => ({leave() {retired.push(runtime.peer.disposed);}, dispose() {}})}}));
+  const previous = runtime.peer;
+  const service = peer.voice;
+  await peer.recover({kind: 'reauthenticate'});
+  assert.deepEqual(retired, [false], 'the old call retires while its session can send leave');
+  assert.equal(previous.disposed, true);
+  assert.equal(peer.voice, service, 'mounted shared controls retain their media service');
+  await peer.dispose();
+});

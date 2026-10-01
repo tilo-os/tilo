@@ -10,7 +10,9 @@
  *   a root-holding device of the user approves;
  * - the live plane (`peer.live`) over WebTransport `moq-lite`
  *   (`live-transport.mjs`), or its HTTPS stream fallback (`live-fallback.mjs`),
- *   admitted by a host grant for this session. Never authority.
+ *   admitted by a host grant for this session. Never authority;
+ * - the room's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
+ *   participation, the page's voice carrier follows its grants.
  *
  * The page holds one device key (`device-custody.mjs`) and no user root.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
@@ -21,6 +23,7 @@ import {createPresencePublisher, createRemotePresence} from './live-presence.mjs
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
+import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 
 const CERTIFICATE = 'certificate';
@@ -425,6 +428,7 @@ export async function connectPeer({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime,
   profile, device = 'tilo-browser-device', displayName = '',
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
+  voice: voiceOptions = {},
 }) {
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
@@ -469,6 +473,7 @@ export async function connectPeer({
   resetReady();
   let agents;
   let actions;
+  let voice;
   let disposed = false;
   let snapshot = {phase: 'authenticating', records: []};
   // The session's remote-action events are taken once per change and read
@@ -491,6 +496,7 @@ export async function connectPeer({
       const events = JSON.parse(peer.takeDurableEvents());
       for (const layer of layers()) layer.pump(events);
     }
+    voice?.pump(peer.takeVoiceEvents?.() ?? '[]');
     remoteEvents = peer.takeRemoteActionEvents();
     agents?.pump();
     actions?.pump();
@@ -622,6 +628,7 @@ export async function connectPeer({
       }
       agents?.dispose();
       actions?.dispose();
+      voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, room, ...voiceOptions});
       const hostDevice = hexKey(host.hostCert?.device_public_key);
       agents = hostDevice ? createAgents({peer: remote, runtime, room, live, userPublicKey, hostDevice}) : undefined;
       actions = hostDevice
@@ -679,6 +686,7 @@ export async function connectPeer({
     unsubscribeStorage?.();
     agents?.dispose();
     actions?.dispose();
+    voice?.dispose();
     stopLive();
     peer?.dispose();
     listeners.clear();
@@ -698,6 +706,8 @@ export async function connectPeer({
     get agents() { return agents; },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
+    get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
     get actionsV1() { return actions?.v1; },
     /** This peer in the wasm runtime, for mounts that replicate through it. */
@@ -788,6 +798,7 @@ export async function connectPeer({
         return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
       }
       if (request?.kind === 'reauthenticate') {
+        voice?.reset();
         stopLive();
         peer.dispose();
         resetReady();
