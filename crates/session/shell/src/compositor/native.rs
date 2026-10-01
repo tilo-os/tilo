@@ -7498,6 +7498,9 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
@@ -9693,6 +9696,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
