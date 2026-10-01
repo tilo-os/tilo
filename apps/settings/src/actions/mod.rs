@@ -1478,7 +1478,11 @@ pub fn provide_resources_with_accounts(
         .iter_mut()
         .find(|child| child.id.as_str() == pane_resource_id(Category::Notifications))
     {
-        section.children = notification_app_resources(doc, &prefs);
+        // Portable notification preferences stay the published children.
+        // Per-app rows are this machine's inventory beside them.
+        section
+            .children
+            .extend(notification_app_resources(doc, &prefs));
     }
     let mut published: std::collections::HashMap<String, Resource> = root
         .children
@@ -5629,6 +5633,21 @@ impl crate::SettingsApp {
                 "Settings",
                 &state,
             ));
+        }
+        // Notification rows include device-local apps that the portable document
+        // pane does not. Every other id already on the published tree is that node.
+        let device_notifications = category_for_resource_id(id) == Some(Category::Notifications)
+            || id.starts_with("settings.notification-app:");
+        if !device_notifications {
+            let state = crate::resource::SettingsState::from_doc(doc);
+            let root = ui::tilo_resource::publish::<crate::resource::Settings>(
+                "settings.root",
+                "Settings",
+                &state,
+            );
+            if let Some(found) = find_resource(root, id) {
+                return Some(found);
+            }
         }
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();

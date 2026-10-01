@@ -2227,6 +2227,9 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// re-checks an address against the current resource surface before the
     /// action door opens it.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "settings.root" {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
