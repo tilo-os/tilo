@@ -387,6 +387,17 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "containers").is_none());
+        let container_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "containers.container")
+            .map(|child| child.id.as_str().to_owned())
+            .expect("container");
+        assert!(
+            ui::resources::resource(&app, &seeded, &container_id).is_some(),
+            "a hosted container stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
