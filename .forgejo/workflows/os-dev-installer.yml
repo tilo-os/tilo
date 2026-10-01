@@ -30,6 +30,9 @@ jobs:
       TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
       TILO_IMAGE: ${{ github.event.inputs.os_image }}
       TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
+      # The nested Podman build must reach Cargo's GitHub sources; its private
+      # network stalled there while the native runner's network was available.
+      TILO_PODMAN_BUILD_NETWORK: host
       # This disposable, unsigned medium is exercised only in the WHPX VM.
       # Physical Windows-direct installs use paired CI-signed offline targets.
       TILO_UNVERIFIED_VM_INSTALL: "1"
