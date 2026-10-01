@@ -29,21 +29,16 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
     if matches!(target, LaunchTarget::PrimaryNew) {
         context
             .initialize_new_record(|doc| {
-                crate::doc::ChatDoc::seed_starter(
+                tilo_actions::Action::apply(
+                    &crate::actions::ChatAction::SeedStarter {
+                        id: identity.id.clone(),
+                        name: identity.name.clone(),
+                        initials: identity.initials.clone(),
+                        color_idx: identity.color_idx,
+                    },
                     doc,
-                    &identity.id,
-                    &identity.name,
-                    &identity.initials,
-                );
-                crate::doc::ChatDoc::ensure_user(
-                    doc,
-                    &identity.id,
-                    &identity.name,
-                    &identity.initials,
-                    identity.color_idx,
-                    crate::model::Presence::Online,
-                );
-                Ok(())
+                )
+                .map_err(|error| error.to_string())
             })
             .map_err(LaunchError::Record)?;
     }

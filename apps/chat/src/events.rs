@@ -664,7 +664,7 @@ impl ChatApp {
         // The draft is created the first time its surface is written in.
         let key = self.draft_key();
         if ChatDoc::rich_draft(doc, &key).is_none() {
-            ChatDoc::ensure_rich_draft(doc, &key);
+            self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
         self.focused_composer_mut()
@@ -1407,7 +1407,7 @@ impl ChatApp {
         }
         let key = self.draft_key();
         if ChatDoc::rich_draft(doc, &key).is_none() {
-            ChatDoc::ensure_rich_draft(doc, &key);
+            self.ensure_composer_draft(doc, &key);
             self.focused_composer_mut().sync(doc);
         }
         self.focused_composer_mut().insert_text(doc, s);

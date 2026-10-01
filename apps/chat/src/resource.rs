@@ -416,6 +416,16 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(ui::resources::resource(&app, &seeded, "chat.workspace").is_none());
+        let hosted_channel = ui::resources::resource(&app, &seeded, "chat.channel:c_crit")
+            .expect("a hosted channel is the published row");
+        assert!(
+            hosted_channel
+                .actions
+                .iter()
+                .any(|action| action.id == "post" && action.kind == OperationKind::Document),
+            "the hosted channel keeps the published post action"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
