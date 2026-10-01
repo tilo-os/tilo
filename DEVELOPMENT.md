@@ -67,10 +67,13 @@ installs the flashable disk:
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+| Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
-disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
-from the firmware boot menu:
+The moving tag moves once the board job has installed the disk from that image.
+The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+Lenovo, written to a USB drive or its internal disk and booted from the firmware
+boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
+root grows on first boot):
 
 ```sh
 curl -fLO <disk URL from the job summary>
@@ -82,7 +85,7 @@ The installed system follows the moving tag, so later builds of main arrive with
 ```sh
 sudo bootc upgrade && sudo systemctl reboot
 # or one particular build:
-sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
 
 ## Routine delivery workflow
@@ -91,7 +94,9 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. A PR that conflicts with
+PR is checked as it would land. When `main` moves after a PR's check went green,
+the lander reruns that check, which then only re-runs the packages and suites
+`main`'s new commits reach. A PR that conflicts with
 `main` fails there; merge `main` into the branch. A newer commit on the PR
 cancels the older revision's runs; every push to `main` keeps its own.
 

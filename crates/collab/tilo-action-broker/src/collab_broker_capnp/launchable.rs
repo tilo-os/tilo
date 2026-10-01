@@ -115,7 +115,7 @@ impl CatalogueStore {
                     while let Ok(newer) = pending.try_recv() {
                         bytes = newer;
                     }
-                    if let Err(error) = atomic_file::write_private(&path, &bytes) {
+                    if let Err(error) = tilo_files::native::atomic::write_private(&path, &bytes) {
                         tracing::warn!(
                             %error,
                             path = %path.display(),
@@ -169,7 +169,7 @@ impl LaunchableCatalogue {
     /// Load the catalogue saved at `path` and keep saving changes there. A
     /// missing or unreadable file is an empty catalogue.
     pub(super) fn persist_at(&self, path: &Path) {
-        let stored: Vec<StoredSurface> = atomic_file::json::load_or_default(path);
+        let stored: Vec<StoredSurface> = tilo_files::native::atomic::json::load_or_default(path);
         let store = match CatalogueStore::open(path.to_path_buf()) {
             Ok(store) => store,
             Err(error) => {

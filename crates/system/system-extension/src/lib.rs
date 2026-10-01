@@ -496,7 +496,7 @@ impl ExtensionStateStore {
         // Desired state authorises a privileged image-build boundary.  Keep it
         // owner-only before the atomic rename so a session cannot replace an
         // accepted declaration between review and activation.
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 

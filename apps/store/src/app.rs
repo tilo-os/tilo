@@ -5328,6 +5328,16 @@ mod tests {
             assert_eq!(accessible_name_count(tree.as_ref(), "Apps"), 0);
         }
 
+        // Case `first_empty_busy_catalogue_is_real_chrome_not_a_flat_fill`.
+        {
+            let mut app = StoreApp::new();
+            app.set_worker_busy(true);
+            app.set_layout_width_hint(1051.0);
+            let tree = app.compose(&Theme::dark());
+            assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
+            assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps…"), 1);
+        }
+
         // Case `full_narrow_catalogue_keeps_discover_section_below_ready_cards`.
         {
             let mut app = seeded_app();

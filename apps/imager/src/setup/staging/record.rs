@@ -439,12 +439,16 @@ pub fn write_atomic(dir: &Path, name: &str, bytes: &[u8], public: bool) -> std::
     let path = dir.join(name);
     #[cfg(unix)]
     {
-        atomic_file::write_with_mode(&path, bytes, if public { 0o644 } else { 0o600 })
+        tilo_files::native::atomic::write_with_mode(
+            &path,
+            bytes,
+            if public { 0o644 } else { 0o600 },
+        )
     }
     #[cfg(not(unix))]
     {
         let _ = public;
-        atomic_file::write(&path, bytes)
+        tilo_files::native::atomic::write(&path, bytes)
     }
 }
 
