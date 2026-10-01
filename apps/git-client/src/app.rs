@@ -3142,12 +3142,19 @@ impl ui::resources::PublishesResources for GitClientApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        // The framework root already owns the repository door.
+        if self.is_hosted() && id == "git_client.repo" {
+            return None;
+        }
+        if let Some(found) = self.publish_resource(doc, id) {
+            return Some(found);
+        }
         if self.is_hosted() {
             return crate::resource::live_extras(self)
                 .into_iter()
                 .find(|resource| resource.id.as_str() == id);
         }
-        self.publish_resource(doc, id)
+        None
     }
 }
 
