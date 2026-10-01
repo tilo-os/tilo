@@ -167,6 +167,16 @@ mod tests {
 
         view.mark_hosted_for_test();
         assert!(view.is_framework_hosted());
+        assert!(ui::resources::resource(&view, &state.doc, "hex_editor.document").is_none());
+        assert!(
+            ui::resources::resource(&view, &state.doc, "hex_editor.cursor").is_some_and(|cursor| {
+                cursor
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "insert-byte")
+            }),
+            "a hosted cursor stays the published row"
+        );
         let extras = view.resources(&state.doc);
         assert!(
             extras
