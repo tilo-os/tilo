@@ -75,7 +75,7 @@ EOF
 cat > "$work/build.sh" <<'EOF'
 set -euo pipefail
 dnf -q -y install --setopt=install_weak_deps=False \
-  cpio cryptsetup-libs erofs-utils openssl systemd-repart >/dev/null
+  attr cpio cryptsetup-libs erofs-utils openssl systemd-repart >/dev/null
 arch=$(uname -m)
 shopt -s nullglob
 rpms=(/rpms/repo/openssh-server-[0-9]*."$arch".rpm)
@@ -98,6 +98,15 @@ install -d /tree/usr/lib/extension-release.d
   printf 'ID=%s\n' "$OS_ID"
   [ -z "$OS_VERSION" ] || printf 'VERSION_ID=%s\n' "$OS_VERSION"
 } > /tree/usr/lib/extension-release.d/extension-release.$EXTENSION
+# systemd 259 derives a block-backed image's metadata name from the backing
+# device rather than /run/extensions/tilo-validation.raw. The raw disk arrives
+# via virtio, so that device name is not stable. This documented xattr permits
+# the one extension-release file above to match regardless of the device name;
+# the image is still required to pass the signed-Verity policy at activation.
+setfattr -n user.extension-release.strict -v 0 \
+  /tree/usr/lib/extension-release.d/extension-release.$EXTENSION
+test "$(getfattr --only-values -n user.extension-release.strict \
+  /tree/usr/lib/extension-release.d/extension-release.$EXTENSION)" = 0
 cp /unpacked/etc/pam.d/sshd /work/pam-sshd
 # Label with the image's policy at mkfs time; no host relabel is involved.
 mkfs.erofs --quiet --file-contexts=/work/file_contexts /work/root.erofs /tree
@@ -169,6 +178,11 @@ After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target
 
 [Service]
 Type=exec
+# Keep the signed-Verity diagnostics on this disposable gate disk. In
+# particular, systemd's normal log level hides whether the userspace
+# /etc/verity.d certificate fallback was attempted after kernel ENOKEY.
+Environment=SYSTEMD_LOG_LEVEL=debug
+ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt
 ExecStartPre=/usr/bin/mkdir -p /run/extensions
 ExecStartPre=/usr/bin/ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw
 # Only a verity-signed root partition, verified against /etc/verity.d.
@@ -198,9 +212,15 @@ for phase in early late; do
     systemctl status greetd.service tilo-validation-ssh.service \
       tilo-firstboot-user.service tilo-installer-setup.service \
       tilo-device-key-init.service --no-pager --lines=8 || true
+    if [ -r /etc/verity.d/tilo-validation.crt ]; then
+      echo "TILO_VALIDATION_CERT_PRESENT $(sha256sum /etc/verity.d/tilo-validation.crt)"
+    else
+      echo 'TILO_VALIDATION_CERT_MISSING'
+    fi
+    journalctl -b -u tilo-validation-ssh.service --no-pager -n 75 || true
     journalctl -b -u greetd.service -u tilo-validation-ssh.service \
       -u tilo-firstboot-user.service -u tilo-installer-setup.service \
-      --no-pager -n 60 || true
+      --no-pager -n 35 || true
     echo "TILO_VALIDATION_DIAGNOSTICS_END $phase"
   )"
   for serial in /dev/ttyS0 /dev/ttyAMA0; do
