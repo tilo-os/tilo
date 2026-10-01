@@ -22,7 +22,8 @@ esac
 
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
-TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
+LD_PRELOAD=/tmp/tilo-sigill-probe.so \
+  TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
 status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
