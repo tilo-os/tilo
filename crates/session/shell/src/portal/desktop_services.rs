@@ -245,7 +245,7 @@ impl ShellDynamicLauncherService {
 
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             records: Arc::new(Mutex::new(records)),
             path: Arc::new(path),
@@ -884,7 +884,7 @@ impl ShellWallpaperService {
         path: impl Into<PathBuf>,
     ) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             tree,
             records: Arc::new(Mutex::new(records)),
@@ -1204,7 +1204,7 @@ fn normalise_wallpaper(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    atomic_file::write_private(path, bytes).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_private(path, bytes).map_err(|error| error.to_string())
 }
 
 fn cleanup_wallpaper_cache(cache: &Path, records: &[WallpaperRecord]) {
@@ -1239,7 +1239,7 @@ pub(crate) fn wallpaper_state_path() -> PathBuf {
 }
 
 fn write_private_json(path: &Path, value: &(impl Serialize + ?Sized)) -> Result<(), String> {
-    atomic_file::json::write_private(path, value).map_err(|error| error.to_string())
+    tilo_files::native::atomic::json::write_private(path, value).map_err(|error| error.to_string())
 }
 
 /// All application-facing desktop capabilities.  This is cloneable by design:

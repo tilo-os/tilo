@@ -1651,7 +1651,8 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
     // 0600: not a secret, but nothing else should write it; applied before
     // the rename so it's never briefly visible wider than intended.
-    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+    match tilo_files::native::atomic::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600)
+    {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
             eprintln!("tilo compositor: publishing {}: {e}", path.display());
@@ -7497,6 +7498,9 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
@@ -9564,7 +9568,10 @@ pub fn run() {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animation_demand = frame_builder.animation_demand();
-        let animating = animation_demand.any();
+        // Host demand clears when the crossfade settles (e2e). Keep
+        // painting until this many compositor frames have actually run (W16).
+        let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
+        let animating = animation_demand.any() || transition_run;
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -9689,6 +9696,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -9769,6 +9784,9 @@ pub fn run() {
         }
 
         if should_paint {
+            frame_builder.with_chrome(
+                super::super::shell::chrome_state::ChromeState::consume_transition_paint,
+            );
             // Lay out only when about to paint — any structural change (spliced group,
             // tab switch, resize) is applied here, right before the scene is built.
             let t_layout_start = Instant::now();
@@ -10564,7 +10582,8 @@ pub fn run() {
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
             && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
-            && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+            && let Err(e) =
+                tilo_files::native::atomic::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
@@ -12573,7 +12592,8 @@ mod tests {
             let path = session_display_path(Some(dir.clone().into_os_string()))
                 .expect("absolute temp dir yields a path");
             std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
-            atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+            tilo_files::native::atomic::write_with_mode(&path, b"wayland-7", 0o600)
+                .expect("write display file");
 
             let read = std::fs::read_to_string(&path).expect("read back");
             assert_eq!(read, "wayland-7");

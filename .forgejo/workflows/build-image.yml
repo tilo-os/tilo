@@ -97,10 +97,12 @@ concurrency:
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  # A pull request's dev build is superseded by its next commit. On main the
-  # running build finishes and only the newest waiting commit follows it, so a
-  # stream of merges cannot starve every build of completion.
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  # A pull request's dev build is superseded by its next commit. Every main
+  # commit's dev build runs at once, side by side; its moving tags only move
+  # forward (os/dev/move-tag-forward.sh). Board jobs wait on a small runner
+  # (board-wait), so overlapping builds do not hold the large slots their
+  # lanes need.
   cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
@@ -1468,10 +1470,12 @@ jobs:
           # caches, since a cached layer keeps the file times of the build
           # that made it and any older than this commit escape
           # rewrite-timestamp's clamp (run 48898). Only main writes the layer
-          # caches; a pull request reads main's and exporting its own cost
-          # every run about two minutes.
+          # caches, and only from a cold builder: a pull request reads main's,
+          # and a builder the runner slot seeded from main's previous dev
+          # build already holds these layers; exporting them cost every run
+          # about two to three minutes.
           cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       - name: Build and cache the compile stages
         id: compile-stages
@@ -1632,7 +1636,7 @@ jobs:
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       - name: Build and cache the image tool stages
         id: tool-stages
@@ -1689,7 +1693,7 @@ jobs:
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # A small graph: its intermediate steps are what the image build
           # reuses.
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -2076,7 +2080,33 @@ jobs:
       # by the next commit, and exporting one crashed BuildKit (run 48837).
       # The index tilo-vm:<series>-ci, which `tilo-vm vm upgrade --from sha:`
       # pulls, collects both architectures. No disk install, no boot.
+      # Build / OS dev on aarch64: the Lenovo firmware the board image below
+      # carries, imported while the dev binaries still compile.
+      - name: Import the pinned Lenovo firmware for the board images
+        if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success' && matrix.arch == 'aarch64' && contains(needs.plan.outputs.boards, 'lenovo-83ed')
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
+          FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
+        run: |
+          set -euo pipefail
+          command -v podman >/dev/null || { sudo -n apt-get -o Acquire::Retries=3 update \
+            && sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman; }
+          authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
+          store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
+          trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
+          printf '{}\n' > "$authfile"
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
+            --root "$store/graph" --runroot "$store/run" login code.tilo.so \
+            --authfile "$authfile" --username "${{ github.actor }}" --password-stdin
+          sudo -n env REGISTRY_AUTH_FILE="$authfile" \
+            python3 os/dev/hardware-firmware-artifact.py import \
+            --reference "$FIRMWARE_REF" --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
+            --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
+          sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
+
       - name: Build and publish the dev image
+        id: dev-publish
         if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
         timeout-minutes: 30
         env:
@@ -2085,6 +2115,13 @@ jobs:
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
           ARCH: ${{ matrix.arch }}
           COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
+          # aarch64: the board dev images build on this dev image as soon as
+          # it is pushed, side by side with each other and with the index
+          # publication below. Main also moves tilo-vm:<board>-ci, which
+          # installed boards follow with `bootc upgrade`; the board jobs
+          # install each board's flashable disk from these images.
+          BOARDS: ${{ matrix.arch == 'aarch64' && needs.plan.outputs.boards || '[]' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           started=$(date +%s)
@@ -2134,12 +2171,33 @@ jobs:
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
+          board_pids=()
+          for board in $(jq -r '.[]?' <<< "${BOARDS:-[]}"); do
+            names="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-$board"
+            ( docker buildx build --builder "$BUILDER_NAME" --provenance=false \
+                -f os/Containerfile.board \
+                --build-arg "BASE_IMAGE=registry.tilo.so/tilo/tilo-vm@$digest" \
+                --build-arg "RPMS_REF=$RPMS_REF" \
+                --build-arg "TILO_HARDWARE_PROFILE=$board" \
+                --build-arg "TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:$board-dev" \
+                --label "org.opencontainers.image.version=$DEV_SERIES-$board" \
+                --output "type=image,name=$names,push=true,compression=zstd,compression-level=1" \
+                . > "$RUNNER_TEMP/tilo-board-$board.log" 2>&1 \
+              && echo "::notice::$board dev image published in $(( $(date +%s) - started ))s: tilo-vm:$DEV_SERIES-$board" \
+              || { tail -60 "$RUNNER_TEMP/tilo-board-$board.log"; echo "::error::the $board board layer failed to build"; exit 1; } ) &
+            board_pids+=("$!")
+          done
           DEV_TAG="$DEV_SERIES-ci" PUSHED_DIGEST="$digest" SOURCE_REVISION="$GITHUB_SHA" \
             DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
             BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
             BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
             ./os/dev/publish-dev-disk.sh
           echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+          boards_ok=true
+          for pid in "${board_pids[@]}"; do wait "$pid" || boards_ok=false; done
+          # A broken board layer fails this lane after the generic dev image
+          # is out; its board job then fails on the missing image.
+          [[ $boards_ok == true ]]
 
       - name: Publish the rootfs base for the runners' seed
         id: rootfs-publish
@@ -3008,13 +3066,73 @@ jobs:
   # the build-and-push lanes publish first. A board image is sealed
   # (os/Containerfile.board), and installing it is what closes the seal
   # (bootc#2334), so the job installs the disk before it publishes the image.
-  board:
-    name: "board: ${{ matrix.board }}"
-    # Not build-and-push: that would wait for the x86_64 lane too. The job
-    # sets itself up alongside the lanes and waits for the aarch64 dev image
-    # its board layer builds on.
+  # Waits on a small runner until the aarch64 lane has published every
+  # board's image, or has ended, so the board jobs take a large ARM slot only
+  # for their own work and never one the lane itself is queued for. Not
+  # build-and-push: that would wait for the x86_64 lane too.
+  board-wait:
     needs: [plan, ensure-rpms]
     if: ${{ !cancelled() && needs.ensure-rpms.result == 'success' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
+    runs-on: runner-quality
+    timeout-minutes: 60
+    steps:
+      - name: Install registry tools
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null || ! command -v jq >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get -o Acquire::Retries=3 update
+              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
+            else
+              sudo -n dnf install -y jq skopeo
+            fi
+          fi
+
+      - name: Log in to registry.tilo.so
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for this commit's board dev images
+        env:
+          BOARDS: ${{ needs.plan.outputs.boards }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            series="main-${GITHUB_SHA:0:7}"
+          elif [[ $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
+            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
+          else
+            branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
+            series="${branch:0:100}-${GITHUB_SHA:0:7}"
+          fi
+          jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
+          started=$(date +%s)
+          while :; do
+            missing=0
+            for board in $(jq -r '.[]' <<< "$BOARDS"); do
+              skopeo inspect --raw "docker://registry.tilo.so/tilo/tilo-vm:$series-$board" >/dev/null 2>&1 \
+                || missing=$(( missing + 1 ))
+            done
+            (( missing == 0 )) && break
+            lane="$(curl -fsS -H "Authorization: token $TOKEN" "$jobs" 2>/dev/null \
+              | jq -r '[.[] | select(.name | startswith("build-and-push (aarch64"))] | last | .status // empty' || true)"
+            case "$lane" in
+              success|failure|cancelled|skipped)
+                echo "::warning::the aarch64 dev lane ended $lane with $missing board image(s) unpublished"
+                break ;;
+            esac
+            sleep 20
+          done
+          echo "::notice::waited $(( $(date +%s) - started ))s for the board dev images"
+
+  board:
+    name: "board: ${{ matrix.board }}"
+    needs: [plan, ensure-rpms, board-wait]
+    if: ${{ !cancelled() && needs.board-wait.result == 'success' }}
     strategy:
       # Each board publishes on its own; one broken board must not cancel another.
       fail-fast: false
@@ -3098,97 +3216,60 @@ jobs:
       - name: Use native Podman overlay for the disk install
         run: ./os/dev/ci-native-podman-store.sh
 
-      - name: Install checksum-pinned Cosign
-        uses: ./.forgejo/actions/install-cosign
-        with:
-          cache-architecture: ${{ runner.arch }}
-
-      - name: Resolve RPMS_REF (frozen package snapshot)
-        run: |
-          set -euo pipefail
-          rpms_ref="$(./os/dev/resolve-rpm-snapshot.sh)"
-          echo "RPMS_REF=$rpms_ref" >> "$GITHUB_ENV"
-
-      - name: Import the pinned Lenovo firmware
-        if: matrix.board == 'lenovo-83ed'
-        env:
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          FIRMWARE_REF: ${{ vars.TILO_LENOVO_FIRMWARE_REF }}
-          FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
-        run: |
-          set -euo pipefail
-          authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
-          store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
-          trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
-          printf '{}\n' > "$authfile"
-          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman --storage-driver vfs \
-            --root "$store/graph" --runroot "$store/run" login code.tilo.so \
-            --authfile "$authfile" --username "${{ github.actor }}" --password-stdin
-          sudo -n env REGISTRY_AUTH_FILE="$authfile" \
-            python3 os/dev/hardware-firmware-artifact.py import \
-            --reference "$FIRMWARE_REF" --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
-            --profile lenovo-83ed --architecture aarch64 --repo "$GITHUB_WORKSPACE" > /dev/null
-          sudo -n chown -R "$(id -u):$(id -g)" os/hardware/firmware
-
-      # Built while the aarch64 lane still runs; the disk install below finds
-      # it matching its pinned sources and reuses it.
+      # The disk install below finds it matching its pinned sources and
+      # reuses it.
       - name: Build the Rockchip loader
         if: matrix.board == 'orangepi-3b-v2-1'
         run: ./os/dev/build-orangepi-uboot.sh "$BOARD_OUTPUT/rockchip-loader"
 
-      # The aarch64 lane publishes it about when this job's setup is done. The
-      # wait ends early when that lane has finished without publishing it.
-      - name: Wait for this commit's aarch64 dev image
-        timeout-minutes: 45
+      # board-wait has seen the aarch64 lane publish this board's image, or end.
+      - name: Pull this commit's board dev image
         env:
           SERIES: ${{ steps.series.outputs.series }}
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          base="registry.tilo.so/tilo/tilo-vm:$SERIES-ci-aarch64"
-          jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
-          started=$(date +%s)
-          until raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)"; do
-            lane="$(curl -fsS -H "Authorization: token $TOKEN" "$jobs" 2>/dev/null \
-              | jq -r '[.[] | select(.name | startswith("build-and-push (aarch64"))] | last | .status // empty' || true)"
-            case "$lane" in
-              failure|cancelled|skipped)
-                # A lane that published and then failed a later step still counts.
-                raw="$(skopeo inspect --raw "docker://$base" 2>/dev/null)" && break
-                echo "::error::the aarch64 dev lane ended $lane without publishing $base"; exit 1 ;;
-            esac
-            sleep 20
-          done
+          image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
+          raw="$(skopeo inspect --raw "docker://$image")" \
+            || { echo "::error::the aarch64 dev lane did not publish $image"; exit 1; }
           digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
-          echo "BOARD_BASE=registry.tilo.so/tilo/tilo-vm@$digest" >> "$GITHUB_ENV"
-          echo "::notice::waited $(( $(date +%s) - started ))s for $base ($digest)"
+          podman pull "registry.tilo.so/tilo/tilo-vm@$digest"
+          podman tag "registry.tilo.so/tilo/tilo-vm@$digest" "$BOARD_IMAGE"
+          {
+            echo "DEV_IMAGE_DIGEST=$digest"
+            echo "BOARD_IMAGE_ID=$(podman image inspect --format '{{.Id}}' "$BOARD_IMAGE")"
+            echo "BASE_CHILD_DIGEST=$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
+              | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
+          } >> "$GITHUB_ENV"
 
-      # Built with Podman straight into the store the disk install reads, so
-      # the image crosses the network once. The first build seals an all-zero
-      # placeholder digest; the install below closes the seal.
-      - name: Build the board dev image
-        env:
-          SERIES: ${{ steps.series.outputs.series }}
+      # A bootc that, on a composefs digest mismatch (bootc#2334), rewrites
+      # the UKI seal to the digest install computes instead of refusing. It
+      # is built once per patch and kept in the registry.
+      - name: Fetch the resealing bootc
+        # A build is a few minutes; a stalled crate fetch must not hold the
+        # board job until its own timeout.
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          started=$(date +%s)
-          podman build --security-opt label=disable --pull=missing \
-            -f os/Containerfile.board \
-            --build-arg "BASE_IMAGE=$BOARD_BASE" \
-            --build-arg "RPMS_REF=$RPMS_REF" \
-            --build-arg "TILO_HARDWARE_PROFILE=$BOARD" \
-            --build-arg "TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:$BOARD-dev" \
-            --label "org.opencontainers.image.version=$SERIES-$BOARD" \
-            -t "$BOARD_IMAGE" .
-          df -h "${RUNNER_TEMP:?}" /var/tmp
-          echo "::notice::$BOARD dev image built in $(( $(date +%s) - started ))s"
+          key="$(cat os/Containerfile.bootc-helper os/external-assets/bootc-install-reseal/*.patch | sha256sum | cut -c1-16)"
+          ref="registry.tilo.so/tilo/bootc-install-helper:$key-aarch64"
+          if ! podman pull -q "$ref" >/dev/null 2>&1; then
+            podman build -f os/Containerfile.bootc-helper -t "$ref" .
+            podman push "$ref"
+          fi
+          helper="${RUNNER_TEMP:?}/bootc-install-helper"
+          container="$(podman create "$ref" /bootc)"
+          podman cp "$container:/bootc" "$helper"
+          podman rm "$container" >/dev/null
+          chmod 0755 "$helper"
+          echo "TILO_BOOTC_HELPER=$helper" >> "$GITHUB_ENV"
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
-      # does; its install refuses the placeholder with the digest it wants, and
-      # it reseals the local image's UKI with that digest and installs again.
-      - name: Install the flashable disk and close the seal
+      # does, resealing the UKI to the digest install computes. The resealed
+      # image replaces the lane's, and only it moves the board's -ci tag.
+      - name: Install the flashable disk
         timeout-minutes: 30
         env:
+          SERIES: ${{ steps.series.outputs.series }}
           TILO_IMAGE: ${{ env.BOARD_IMAGE }}
           TILO_SKIP_BUILD: "1"
           TILO_DISTROBOX: ""
@@ -3200,19 +3281,27 @@ jobs:
           TILO_ROCKCHIP_LOADER: ${{ matrix.board == 'orangepi-3b-v2-1' && format('{0}/rockchip-loader', env.BOARD_OUTPUT) || '' }}
           TILO_QCOW2_COMPRESS: "1"
           TILO_DEV_DIRECT_BUNDLE_DIR: ${{ env.BOARD_OUTPUT }}/direct-boot
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
           ./os/dev/build-image.sh
           test -s "$TILO_OUTPUT/qcow2/disk.qcow2"
+          digest="$DEV_IMAGE_DIGEST"
+          if [[ $(podman image inspect --format '{{.Id}}' "$BOARD_IMAGE") != "$BOARD_IMAGE_ID" ]]; then
+            image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
+            digest_file="${RUNNER_TEMP:?}/tilo-board-digest"
+            podman push --compression-format zstd --digestfile "$digest_file" "$BOARD_IMAGE" "docker://$image"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+            echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          fi
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            ./os/dev/move-tag-forward.sh "registry.tilo.so/tilo/tilo-vm@$digest" \
+              "registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
+          fi
 
-      # Main also moves tilo-vm:<board>-ci, the origin the disk records, so
-      # an installed laptop follows main with `bootc upgrade`.
-      # The image push and the disk upload run side by side; the disk
-      # manifest names the pushed digest once the push is done.
-      - name: Publish the board dev image and the flashable disk
+      - name: Publish the flashable disk
         env:
-          SERIES: ${{ steps.series.outputs.series }}
           ARCH: aarch64
           SOURCE_REVISION: ${{ github.sha }}
           DISK_TOOLING_REVISION: ${{ github.sha }}
@@ -3225,22 +3314,7 @@ jobs:
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
-          export DEV_IMAGE_DIGEST_FILE="$(mktemp -u "${RUNNER_TEMP:?}/tilo-board-digest.XXXXXX")"
-          ( podman push --compression-format zstd --digestfile "$DEV_IMAGE_DIGEST_FILE.part" "$BOARD_IMAGE" "docker://$image" \
-              && mv "$DEV_IMAGE_DIGEST_FILE.part" "$DEV_IMAGE_DIGEST_FILE" \
-              || touch "$DEV_IMAGE_DIGEST_FILE.failed" ) &
-          push=$!
-          export BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
-            | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           bash ./os/dev/publish-dev-disk-candidate.sh
-          wait "$push"
-          digest="$(tr -d '[:space:]' < "$DEV_IMAGE_DIGEST_FILE")"
-          if [[ $GITHUB_REF == refs/heads/main ]]; then
-            skopeo copy --preserve-digests "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
-              "docker://registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
-          fi
-          echo "::notice::published $image ($digest)"
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo

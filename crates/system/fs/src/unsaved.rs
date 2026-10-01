@@ -110,8 +110,8 @@ impl UnsavedStore {
     pub fn stage(&self, entry: &UnsavedEntry, bytes: &[u8]) -> io::Result<()> {
         let (bytes_path, entry_path) = self.paths(&entry.key)?;
         let json = serde_json::to_vec_pretty(entry).map_err(io::Error::other)?;
-        atomic_file::write_private(&bytes_path, bytes)?;
-        atomic_file::write_private(&entry_path, &json)?;
+        tilo_files::native::atomic::write_private(&bytes_path, bytes)?;
+        tilo_files::native::atomic::write_private(&entry_path, &json)?;
         Ok(())
     }
 
@@ -129,7 +129,7 @@ impl UnsavedStore {
                 Err(error) => return Err(error),
             }
         }
-        atomic_file::sync_directory(&self.dir)
+        tilo_files::native::atomic::sync_directory(&self.dir)
     }
 
     /// Whether an entry exists for `key`.

@@ -9,16 +9,7 @@ homepage.workspace = true
 description = "User-owned private files with native ownership and access checks"
 
 [dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../atomic-file" }
-
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-
-[dev-dependencies]
-tempfile.workspace = true
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 [lints]
 workspace = true

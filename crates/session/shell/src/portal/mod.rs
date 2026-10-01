@@ -651,7 +651,7 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    atomic_file::json::write_private(
+    tilo_files::native::atomic::json::write_private(
         path,
         &PortalConsentFile {
             always: always.clone(),
