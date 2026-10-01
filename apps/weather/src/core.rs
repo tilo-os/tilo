@@ -1604,7 +1604,7 @@ impl Core {
             chip.x1 - 14.0,
             chip.y0 + 45.0,
         );
-        Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
+        Icon::Trash.draw(scene, t, icon_r, c.on_surface(c.semantic.danger).ink);
     }
 
     fn draw_delete_dropzone(
@@ -1629,7 +1629,7 @@ impl Core {
         let dash = Stroke::new(2.0).with_dashes(0.0, [6.0, 5.0]);
         scene.stroke(&dash, t, c.semantic.danger, None, &shape);
         let icon_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };
@@ -1641,7 +1641,7 @@ impl Core {
         );
         Icon::Trash.draw_with_stroke(scene, t, icon_r, icon_color, 2.0);
         let label_color = if armed {
-            Color::WHITE
+            c.on_surface(c.semantic.danger).ink
         } else {
             c.semantic.danger
         };

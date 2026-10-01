@@ -408,7 +408,7 @@ impl ContainersApp {
                 btn.x0 + 28.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.8,
         );
         draw::text(
@@ -416,7 +416,7 @@ impl ContainersApp {
             tr,
             shown,
             theme.tokens.typography.scale.base,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
             TextWeight::Semibold,
         );
@@ -1848,7 +1848,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.5,
         );
         draw::text(
@@ -1856,7 +1856,7 @@ impl ContainersApp {
             tr,
             "Attach shell",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 32.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );
@@ -2630,7 +2630,7 @@ impl ContainersApp {
                 btn.x0 + 26.0,
                 btn.center().y + 8.0,
             ),
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             1.6,
         );
         draw::text(
@@ -2638,7 +2638,7 @@ impl ContainersApp {
             tr,
             "Enter",
             theme.tokens.typography.scale.sm,
-            Color::WHITE,
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             Point::new(btn.x0 + 30.0, btn.center().y - 7.0),
             TextWeight::Semibold,
         );

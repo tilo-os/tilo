@@ -463,7 +463,7 @@ impl OfflinePanel {
             scene,
             transform,
             frame.viewport,
-            draw::alpha(Color::BLACK, 0.45),
+            draw::alpha(colors.surfaces.scrim, 0.45),
         );
         self.targets.push((frame.viewport, OfflineAction::Close));
 
