@@ -16151,16 +16151,11 @@ impl ui::resources::PublishesResources for PhotosApp {
     /// addresses. Without this the tree existed but only a caller already
     /// inside this process could reach it.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the library. Keep the open photograph
-        // (edit surface) and live button / search-status extras when hosted.
+        // The framework root publishes the library, including the open
+        // photograph as a child. Live button and search-status extras stay
+        // on the widget.
         let mut resources = if self.actions.is_hosted() {
-            match crate::doc::PhotosDoc::image(doc) {
-                Some(image) => crate::actions::PhotosResources
-                    .publish_resource(doc, &crate::actions::resource_id(&image))
-                    .into_iter()
-                    .collect(),
-                None => Vec::new(),
-            }
+            Vec::new()
         } else {
             crate::actions::PhotosResources.publish_resources(doc)
         };
@@ -16180,6 +16175,9 @@ impl ui::resources::PublishesResources for PhotosApp {
                 .search_refresh_error
                 .as_deref()
                 .map(crate::actions::search_status_resource);
+        }
+        if self.actions.is_hosted() && id == "photos.library" {
+            return None;
         }
         self.search_provider
             .resource(id)
