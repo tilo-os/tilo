@@ -354,8 +354,21 @@ mod tests {
             "standalone publishes journal entry rows from the local cache"
         );
 
+        let entry_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "logs.entry")
+            .map(|child| child.id.as_str().to_owned())
+            .expect("journal entry");
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        assert!(
+            ui::resources::resource(&app, &seeded, crate::actions::JOURNAL_RESOURCE_ID).is_none()
+        );
+        assert!(
+            ui::resources::resource(&app, &seeded, &entry_id).is_some(),
+            "a hosted journal entry stays the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
             extras
