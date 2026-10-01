@@ -29,11 +29,17 @@ ARG BOOTC_HELPER_IMAGE=scratch
 FROM ${RPMS_REF} AS rpms
 FROM ${BOOTC_HELPER_IMAGE} AS bootc-helper
 
+# The board's imported firmware, os/hardware/firmware/<profile>, as its own
+# build context (--build-context board-firmware=...), so a build sends only
+# this board's firmware. Empty for a board without any.
+FROM scratch AS board-firmware
+
 FROM scratch AS board-inputs
+ARG TILO_HARDWARE_PROFILE
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
-COPY os/hardware/firmware /tilo/os/hardware/firmware
+COPY --from=board-firmware / /tilo/os/hardware/firmware/${TILO_HARDWARE_PROFILE}/
 
 FROM ${BASE_IMAGE} AS board-root
 ARG TILO_HARDWARE_PROFILE
