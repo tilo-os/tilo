@@ -237,8 +237,17 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
 /// title, a selection) is only picked up by the next tick's pump. Nothing
 /// else need wake that tick on a backend that is never polled, so run it at
 /// once; a tick that dispatches nothing parks normally.
-fn client_followup_deadline(clients_dispatched: bool, now: Instant) -> Option<Instant> {
-    clients_dispatched.then_some(now)
+///
+/// A commit that only carries `wl_surface.frame` changes neither pixels nor
+/// protocol the pump reads. Answering that callback is not a reason to run
+/// the pump again: doing so woke an idle desktop about twice a second and
+/// painted the client's echo.
+fn client_followup_needed(clients_dispatched: bool, pump_visible: bool) -> bool {
+    clients_dispatched && pump_visible
+}
+
+fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> {
+    pump_needed.then_some(now)
 }
 
 fn dispatch_wayland_clients_fairly(
@@ -9659,7 +9668,8 @@ pub fn run() {
             // A client frame callback is not a present. A configure ack or a
             // title carries one and changes no pixels; painting to release
             // it kept the shell busy while apps sat still. The callback is
-            // fired below when this tick will not build a frame.
+            // fired after dispatch when this tick will not build a frame,
+            // and that answer does not schedule another pump.
             apps: apps_changed || widget_deadline_due,
             peers: peers_moved,
             presentation: presentation_frame_changed,
@@ -9701,13 +9711,6 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
-        // Nothing new to show. Release a waiting client callback without
-        // layout or present so a FIFO swapchain is not stuck, and so an
-        // idle desktop does not build a frame for a commit that changed
-        // neither the tree, the layout, nor an animation.
-        if release_idle_client_callback(session.is_locked(), content_changed) {
-            foreign::release_idle_frame_callbacks(&mut state);
-        }
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -10452,6 +10455,7 @@ pub fn run() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
         let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
@@ -10476,7 +10480,8 @@ pub fn run() {
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
-        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+        let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        if capture_ready {
             injected_redraw_pending = true;
         }
         if let Err(err) = display.flush_clients() {
@@ -10498,6 +10503,25 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        let client_changed = foreign::client_pump_epoch() != pump_epoch;
+        // A frame callback that arrived without a new buffer, title, or
+        // configure is not a present and not another pump. Release it here,
+        // on the tick that saw the commit, so the client is not left waiting
+        // on FIFO and the shell does not wake itself to do the same work again.
+        if release_idle_client_callback(session.is_locked(), content_changed)
+            && !client_changed
+            && configured_after_dispatch == 0
+            && !capture_ready
+            && foreign::release_idle_frame_callbacks(&mut state)
+            && let Err(err) = display.flush_clients()
+        {
+            eprintln!("tilo compositor: idle frame callback flush error: {err}");
+            break;
+        }
+        let client_pump_needed = client_followup_needed(
+            clients_dispatched,
+            client_changed || configured_after_dispatch > 0 || capture_ready,
+        );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
         if (loop_timing || t_work_done > Duration::from_millis(100))
@@ -10571,7 +10595,7 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 (
                     "client-followup",
-                    client_followup_deadline(clients_dispatched, park_now),
+                    client_followup_deadline(client_pump_needed, park_now),
                 ),
             ],
         );
@@ -10847,6 +10871,27 @@ mod tests {
             ),
             None,
             "a tick that dispatched nothing parks"
+        );
+        assert!(
+            !client_followup_needed(true, false),
+            "a wl_surface.frame with no new pixels, title, or configure must not schedule another shell tick"
+        );
+        assert!(
+            client_followup_needed(true, true),
+            "a buffer or protocol change still pumps on the next tick"
+        );
+        assert!(
+            release_idle_client_callback(false, false),
+            "an unchanged desktop releases a waiting callback without presenting"
+        );
+        assert_eq!(
+            client_followup_deadline(client_followup_needed(true, false), now),
+            None,
+            "answering that callback must not schedule another shell tick"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
         );
     }
 
