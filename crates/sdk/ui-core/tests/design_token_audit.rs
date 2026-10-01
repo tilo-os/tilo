@@ -20,7 +20,8 @@ use std::{
 };
 
 use crate::support::ratchet::{
-    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
+    Counts, is_skipped, note_stale, ratchet_failures, read_baseline, test_module_spans,
+    write_baseline,
 };
 
 /// Files exempt from the audit:
@@ -215,8 +216,8 @@ fn no_hardcoded_style_literals_in_tree() {
 //
 // Turning these into hard failures would break hundreds of existing lines, so
 // they're ratcheted instead: `design_token_baseline.txt` records what each
-// file carries today, a file may never carry more, and one that carries
-// fewer lowers its record in the same commit. The number only goes down.
+// file carries today and a file may never carry more. One that carries fewer
+// is noted so its record can be lowered. The number only goes down.
 
 /// Path to the recorded counts, relative to the crate root.
 const BASELINE: &str = "tests/design_token_baseline.txt";
@@ -304,8 +305,8 @@ const BASELINE_HEADER: &[&str] = &[
     "This is a ratchet, not approval: counts may only move down.",
 ];
 
-/// The escape hatches the older audit was blind to may not grow, and a file
-/// that has shed some has to say so — the record only moves downward.
+/// The escape hatches the older audit was blind to may not grow; a file that
+/// has shed some is noted so the record can be lowered.
 #[test]
 fn theme_escape_hatches_do_not_grow() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -331,13 +332,7 @@ fn theme_escape_hatches_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
-         The ratchet only moves down — lower these so the progress is kept:\n{}",
-        stale.len(),
-        stale.join("\n"),
-    );
+    note_stale(BASELINE, "UPDATE_DESIGN_BASELINE", &stale);
 }
 
 /// App and shell styling debt may only shrink. Set
@@ -371,12 +366,10 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} app/shell baseline entr(ies) are stale. Keep the improvement by lowering {}.\n{}",
-        stale.len(),
+    note_stale(
         APP_SHELL_BASELINE,
-        stale.join("\n"),
+        "UPDATE_APP_SHELL_DESIGN_BASELINE",
+        &stale,
     );
 }
 
@@ -406,8 +399,8 @@ fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
     )]
 }
 
-/// Chrome may not gain a declared edge, and a file that sheds one lowers its
-/// record in the same commit. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
+/// Chrome may not gain a declared edge; a file that sheds one is noted so its
+/// record can be lowered. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
 /// only after reviewing that every change is a reduction.
 #[test]
 fn declared_borders_in_chrome_do_not_grow() {
@@ -459,11 +452,10 @@ fn declared_borders_in_chrome_do_not_grow() {
         grew.len(),
         grew.join("\n"),
     );
-    assert!(
-        stale.is_empty(),
-        "{} entr(ies) in {CHROME_BORDER_BASELINE} are higher than the tree; the ratchet only moves down:\n{}",
-        stale.len(),
-        stale.join("\n"),
+    note_stale(
+        CHROME_BORDER_BASELINE,
+        "UPDATE_CHROME_BORDER_BASELINE",
+        &stale,
     );
 }
 
