@@ -525,7 +525,7 @@ The parts of this that are built, so the gap is visible rather than implied:
   yet witnessed.
 - OS-image reproducibility: digest-pinned base, frozen RPM snapshot,
   `SOURCE_DATE_EPOCH`, verified byte-identical rebuilds, cosign signatures and
-  SBOM attestation, `bootc upgrade` refusing unsigned images
+  a complete registry SBOM digest-bound in logged provenance, and `bootc upgrade` refusing unsigned images
   (`docs/supply-chain.md`).
 
 Not built: source logs and witnessing, rebuilder attestations, the Profile,

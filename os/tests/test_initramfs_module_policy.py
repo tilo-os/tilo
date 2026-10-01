@@ -53,7 +53,7 @@ class InitramfsModulePolicyTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.write('usr/lib/modules/test-kernel/initramfs.img', 'fixture initramfs\n')
-        self.write('usr/lib/tilo/initramfs-omitted-drivers.txt', 'ext4\nxfs\n')
+        self.write('usr/lib/tilo/initramfs-omitted-drivers.txt', 'xfs\n')
         for name in ('tilo-disk-encrypt', 'tilo-secureboot'):
             self.write('usr/libexec/' + name, '#!/bin/sh\nexit 0\n', executable=True)
         self.write('usr/lib/systemd/system/tilo-growfs-sysroot.service',
@@ -130,6 +130,12 @@ exec bash "$gate"
                     self.assertEqual(len(failures), 1, result.stdout + result.stderr)
                     self.assertIn('initramfs has no ' + module + ' module', failures[0])
         restart_fixture(self)
+        with self.subTest(phase="ext4_root_driver_must_remain"):
+            self.write('usr/lib/tilo/initramfs-omitted-drivers.txt', 'ext4\nxfs\n')
+            result = self.run_gate(REQUIRED)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('initramfs excludes Ext4', result.stderr)
+        restart_fixture(self)
         with self.subTest(phase="production_dracut_omits_dependency_consumers"):
             source = (OS / 'scripts/build-initramfs.sh').read_text(encoding='utf-8')
             logical_lines = re.sub(r'\\\r?\n\s*', ' ', source)
@@ -146,7 +152,9 @@ exec bash "$gate"
             self.assertIn('--compress', arguments)
             self.assertEqual(arguments[arguments.index('--compress') + 1], 'zstd')
             self.assertIn('--omit-drivers', arguments)
-            self.assertEqual(set(arguments[arguments.index('--omit-drivers') + 1].split()), {'ext4', 'xfs'})
+            self.assertEqual(set(arguments[arguments.index('--omit-drivers') + 1].split()), {'xfs'})
+            self.assertIn('--add-drivers', arguments)
+            self.assertEqual(set(arguments[arguments.index('--add-drivers') + 1].split()), {'ext4'})
 
 
 if __name__ == '__main__':

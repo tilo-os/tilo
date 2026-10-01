@@ -1,4 +1,5 @@
 pub mod colors;
+pub mod contrast;
 pub mod elevation;
 pub mod metrics;
 pub mod motion;

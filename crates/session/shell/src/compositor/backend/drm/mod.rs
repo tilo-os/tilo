@@ -700,6 +700,7 @@ impl DrmPresenter {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -729,6 +730,7 @@ impl DrmPresenter {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
             },
             Some(&mut self.phase_window),
             &mut self.direct_bypass_reported,
@@ -1008,6 +1010,13 @@ struct ScanoutFrame<'a> {
     scene: &'a Scene,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
+    overview: Option<&'a crate::shell::overlay_host::OverviewFastPatch>,
+}
+
+/// An unchanged frame, or an overview fade that carries its own panel patch,
+/// must not read the combined framebuffer back from the GPU.
+pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -> bool {
+    unchanged || overview
 }
 
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
@@ -1032,6 +1041,7 @@ fn paint_scanouts(
         scene,
         damage,
         hdr_layers,
+        overview: _,
     } = frame;
     if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
@@ -1465,8 +1475,33 @@ fn render_combined_readback(
     frame: ScanoutFrame<'_>,
 ) -> PaintScanoutSample {
     let ScanoutFrame {
-        scene, hdr_layers, ..
+        scene,
+        damage,
+        hdr_layers,
+        overview,
     } = frame;
+    let unchanged = damage.is_some_and(|damage| {
+        damage
+            .regions
+            .is_some_and(<[vello::FineDamageRect]>::is_empty)
+    });
+    if skips_full_framebuffer_readback(unchanged, overview.is_some())
+        && overview.is_none()
+        && paint
+            .as_ref()
+            .is_some_and(paint::VelloDrmBridge::has_complete_readback)
+    {
+        // The pixels already on the scanout are the scene. A workspace-switch
+        // frame run must not upload both outputs again.
+        return PaintScanoutSample::default();
+    }
+    if let Some(patch) = overview
+        && hdr_layers.is_empty()
+        && let Some(bridge) = paint.as_mut()
+        && let Ok(composed) = bridge.composite_overview_frame(patch)
+    {
+        return present_composed_readback(scanouts, outputs, pointer, &composed, Some(patch.panel));
+    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
@@ -1508,7 +1543,7 @@ fn render_combined_readback(
         layers: hdr_layers,
     });
     for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
-        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr);
+        paint_one_scanout(e, outputs, rgba, (cw, ch), pointer, hdr, None);
     }
     PaintScanoutSample {
         legacy_attempted: true,
@@ -1516,6 +1551,58 @@ fn render_combined_readback(
         scanout_us: scanout_started.elapsed().as_micros(),
         ..PaintScanoutSample::default()
     }
+}
+
+fn present_composed_readback(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    pointer: (f64, f64),
+    rgba: &[u8],
+    damage: Option<vello::FineDamageRect>,
+) -> PaintScanoutSample {
+    let scanout_started = Instant::now();
+    let target_size = combined_geometry(outputs);
+    let (cw, ch) = (
+        usize::try_from(target_size.0).unwrap_or(0),
+        usize::try_from(target_size.1).unwrap_or(0),
+    );
+    for entry in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
+        paint_one_scanout(entry, outputs, rgba, (cw, ch), pointer, None, damage);
+    }
+    PaintScanoutSample {
+        legacy_attempted: true,
+        scanout_us: scanout_started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    }
+}
+
+fn output_local_clip(
+    origin_x: i32,
+    origin_y: i32,
+    size: (u32, u32),
+    damage: vello::FineDamageRect,
+) -> Option<(u16, u16, u16, u16)> {
+    let x0 = i64::from(damage.x);
+    let y0 = i64::from(damage.y);
+    let x1 = x0.saturating_add(i64::from(damage.width));
+    let y1 = y0.saturating_add(i64::from(damage.height));
+    let left = i64::from(origin_x);
+    let top = i64::from(origin_y);
+    let right = left.saturating_add(i64::from(size.0));
+    let bottom = top.saturating_add(i64::from(size.1));
+    let ix0 = x0.max(left);
+    let iy0 = y0.max(top);
+    let ix1 = x1.min(right);
+    let iy1 = y1.min(bottom);
+    if ix1 <= ix0 || iy1 <= iy0 {
+        return None;
+    }
+    Some((
+        u16::try_from(ix0.saturating_sub(left)).ok()?,
+        u16::try_from(iy0.saturating_sub(top)).ok()?,
+        u16::try_from(ix1.saturating_sub(ix0)).ok()?,
+        u16::try_from(iy1.saturating_sub(iy0)).ok()?,
+    ))
 }
 
 /// Drain one page-flip event stream per KMS device and route each completion
@@ -1592,6 +1679,7 @@ fn paint_one_scanout(
     (cw, ch): (usize, usize),
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
+    damage: Option<vello::FineDamageRect>,
 ) {
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
@@ -1681,6 +1769,11 @@ fn paint_one_scanout(
     // starts at the output, the combined frame at the scene's origin.
     let scene_origin = if copied { (sx, sy) } else { (0, 0) };
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
+    match damage.map(|rect| output_local_clip(px, py, logical_size, rect)) {
+        Some(Some(clip)) => e.scanout.set_damage_rect(Some(clip)),
+        Some(None) => return,
+        None => e.scanout.set_damage_rect(None),
+    }
     e.scanout
         .present_no_drain(local_cursor, |dst, pitch| match &encoder {
             Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
@@ -1773,6 +1866,7 @@ impl Backend for DrmBackend {
                 scene,
                 damage: None,
                 hdr_layers: &[],
+                overview: None,
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1798,6 +1892,7 @@ impl Backend for DrmBackend {
                     regions: frame.damage_regions.as_deref(),
                 }),
                 hdr_layers: &frame.hdr_layers,
+                overview: frame.overview_patch.as_ref(),
             },
             None,
             &mut self.direct_bypass_reported,
@@ -1959,6 +2054,13 @@ impl Backend for DrmBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_overview_patch_or_unchanged_frame_skips_the_full_readback() {
+        assert!(super::skips_full_framebuffer_readback(true, false));
+        assert!(super::skips_full_framebuffer_readback(false, true));
+        assert!(!super::skips_full_framebuffer_readback(false, false));
+    }
+
     use super::*;
 
     #[test]

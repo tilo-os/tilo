@@ -48,10 +48,10 @@ fn save(path: &Path, source: &str) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt as _;
 
         let mode = std::fs::metadata(path).map_or(0o644, |metadata| metadata.permissions().mode());
-        atomic_file::write_with_mode(path, canonical.as_bytes(), mode)
+        tilo_files::native::atomic::write_with_mode(path, canonical.as_bytes(), mode)
     };
     #[cfg(not(unix))]
-    let result = atomic_file::write(path, canonical.as_bytes());
+    let result = tilo_files::native::atomic::write(path, canonical.as_bytes());
     result.map_err(|error| format!("write {}: {error}", path.display()))
 }
 

@@ -2364,14 +2364,39 @@ impl GroupRow {
         }
     }
 
-    /// Horizontal travel past the grab threshold pans 1:1; a reorder
-    /// that already claimed the finger is left alone.
+    /// Display under `p` when this strip is partitioned; `None` on a
+    /// single continuous row, so a same-row swipe is never a rehome.
+    fn output_at(&self, p: Point) -> Option<u32> {
+        let lane = self.lane_at(p)?;
+        self.lanes.get(lane).map(|lane| lane.spec.output)
+    }
+
+    /// The finger left the display it started on. That is a group rehome,
+    /// not a strip pan — #1833 only claimed same-display horizontal swipes.
+    fn finger_crossed_display(&self, from: Point, to: Point) -> bool {
+        match (self.output_at(from), self.output_at(to)) {
+            (Some(from), Some(to)) => from != to,
+            _ => false,
+        }
+    }
+
+    /// Horizontal travel past the grab threshold pans 1:1 while the finger
+    /// stays on the start display. Crossing onto another display, or a
+    /// reorder that already claimed the finger, is left to the group drag.
     fn update_touch_pan(&mut self, id: u64, at: Point) -> bool {
         let Some(mut pan) = self.touch_pan.filter(|pan| pan.id == id) else {
             return false;
         };
         let travel = pan.start.x - at.x;
         let dy = at.y - pan.start.y;
+        if self.finger_crossed_display(pan.start, at) {
+            if pan.engaged {
+                let _ = self.end_strip_pan(crate::time::now());
+                pan.engaged = false;
+                self.touch_pan = Some(pan);
+            }
+            return false;
+        }
         if !pan.engaged {
             if self.group_drag.is_some_and(|drag| drag.moved)
                 || travel.abs() <= GROUP_DRAG_THRESHOLD
@@ -2379,7 +2404,9 @@ impl GroupRow {
             {
                 return false;
             }
-            let _ = self.end_group_drag(false);
+            // Keep the group-drag candidate: a later step may still cross
+            // onto another display and must be able to rehome. End of a
+            // same-display pan drops that candidate without committing it.
             self.begin_strip_pan();
             pan.engaged = true;
         }
@@ -2426,8 +2453,9 @@ impl GroupRow {
                 button: MouseButton::Left,
                 ..
             } if pointer_drag => self.end_group_drag(true),
-            // A finger on the tab bar pans the strip when the swipe is
-            // horizontal; a mostly-vertical grab still reorders the group.
+            // A finger on the tab bar pans the strip when the swipe stays
+            // on this display; crossing onto another display, or a mostly
+            // vertical grab, still reorders the group.
             WindowEvent::Touch(touch) => {
                 let carries = self
                     .group_drag
@@ -2457,6 +2485,7 @@ impl GroupRow {
                     winit::event::TouchPhase::Ended if ours || carries => {
                         self.last_cursor = at;
                         if self.end_touch_pan(touch.id) {
+                            let _ = self.end_group_drag(false);
                             true
                         } else {
                             self.end_group_drag(true)
@@ -2464,6 +2493,7 @@ impl GroupRow {
                     }
                     winit::event::TouchPhase::Cancelled if ours || carries => {
                         if self.end_touch_pan(touch.id) {
+                            let _ = self.end_group_drag(false);
                             true
                         } else {
                             self.end_group_drag(false)
@@ -3475,11 +3505,17 @@ impl Widget for GroupRow {
             return false;
         }
         // The row owns drag animations outside its presentation children;
-        // propagate them alongside child animation requests.
+        // propagate them alongside child animation requests. Off-screen
+        // groups use the same cull as `needs_redraw`: a hosted app past
+        // the strip edge must not keep the desktop at the refresh rate.
         self.snap_in_flight()
             || self.shift_in_flight()
             || self.group_drag_active()
-            || self.groups.iter().any(super::Widget::needs_animation_frame)
+            || self
+                .groups
+                .iter()
+                .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
+                .any(super::Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4818,7 +4854,7 @@ mod tests {
     #[test]
     fn a_long_strip_encodes_only_the_groups_it_shows() {
         let (few, few_scene) = drawn_strip(6);
-        let (many, many_scene) = drawn_strip(40);
+        let (mut many, many_scene) = drawn_strip(40);
         let shown = many.onscreen_group_ids();
         assert!(
             !shown.is_empty() && shown.len() < 6,
@@ -4845,6 +4881,25 @@ mod tests {
             });
         assert_eq!(skipped, many.culled_groups);
         assert!(consulted.len() >= shown.len());
+
+        // Animation cadence used to OR every group, so a hosted app that
+        // kept asking for frames after it scrolled off pinned the shell
+        // at 144 Hz. The spawn animation is a real per-group demand.
+        let offscreen = many.culled_groups[0];
+        let group = many
+            .groups
+            .iter_mut()
+            .find(|g| g.id == offscreen)
+            .expect("culled group");
+        group.start_spawn_animation();
+        assert!(
+            group.needs_animation_frame(),
+            "fixture: the off-screen group is asking for frames"
+        );
+        assert!(
+            !many.needs_animation_frame(),
+            "an idle hosted app past the edge must not keep requesting frames"
+        );
     }
 
     #[test]
@@ -5099,6 +5154,61 @@ mod tests {
             &taffy,
             root,
             &touch_event(1, winit::event::TouchPhase::Ended, mid),
+        );
+    }
+
+    #[test]
+    fn one_finger_swipe_onto_another_display_rehomes_the_group() {
+        let (mut row, taffy, root) = relayout_row_owned(partitioned_row(), 1800.0);
+        // Leftmost group: its grab sits on display 0. Group 200 can hang
+        // across the seam, so a grab there never "crosses".
+        let start = group_grab_point(&row, 0);
+        assert_eq!(row.output_of_group(100), Some(0));
+        assert_eq!(
+            row.output_at(start),
+            Some(0),
+            "grab {start:?} must start on display 0"
+        );
+        assert!(
+            row.groups[0].bar_grab_hit(start),
+            "{start:?} must lift group 100"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Started, start),
+        );
+        let to = Point::new(1200.0, start.y);
+        assert_eq!(
+            row.output_at(to),
+            Some(1),
+            "{to:?} is on the second display"
+        );
+        for step in 1..=8 {
+            let t = f64::from(step) / 8.0;
+            let p = Point::new(start.x + (to.x - start.x) * t, start.y);
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
+                &touch_event(1, winit::event::TouchPhase::Moved, p),
+            );
+        }
+        assert!(
+            row.group_drag_active(),
+            "crossing a display must keep the group drag, not convert it to a pan"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Ended, to),
+        );
+        assert_eq!(
+            row.output_of_group(100),
+            Some(1),
+            "the group belongs to the display it was dropped on"
         );
     }
 

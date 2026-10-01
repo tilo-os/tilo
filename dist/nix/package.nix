@@ -29,13 +29,8 @@
 }:
 
 let
-  # A fixed-output vendor path can remain cached after Cargo.lock changes.
-  # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "7c949d48d86351cf192b3cac91961b2da953b5ca3327e27b06147e2d4f39b745";
   repoRoot = toString ../..;
 in
-assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
-  "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
@@ -54,9 +49,13 @@ rustPlatform.buildRustPackage rec {
       ]);
   };
 
-  # One fixed-output vendor closure avoids scheduling and copying each of the
-  # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = "sha256-bpGPPil3p0Xf78jfOfnSng5g6x+Jv1AvoHQvSixGn9k=";
+  # The lock file selects registry crates directly. The three pinned Git
+  # repositories can be fetched during evaluation without hand-maintained
+  # output hashes outside nixpkgs.
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    allowBuiltinFetchGit = true;
+  };
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
@@ -151,6 +150,10 @@ rustPlatform.buildRustPackage rec {
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
+
+  # NixOS display managers require this when the module registers the package
+  # in services.displayManager.sessionPackages.
+  passthru.providedSessions = [ "tilo" ];
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";

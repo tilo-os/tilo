@@ -36,14 +36,32 @@ refuses 'adds an arbitrary unit drop-in' 'may not write /etc/systemd/system/gett
   sh -c 'mkdir -p "$0/systemd/system/getty@.service.d" && echo x > "$0/systemd/system/getty@.service.d/x.conf"'
 refuses 'replaces the sudo PAM stack' 'may not write /etc/pam.d/sudo' \
   sh -c 'mkdir -p "$0/pam.d" && echo x > "$0/pam.d/sudo"'
+refuses 'links the diagnostic script outside the overlay' 'diagnostics script must be a regular file' \
+  sh -c 'ln -s /etc/passwd "$0/tilo-validation-diagnostics.sh"'
 refuses 'holds a device node' 'contains a special file' \
   sh -c 'mkdir -p "$0/verity.d" && mkfifo "$0/verity.d/x.crt"'
+
+# The release gate's diagnostic service must pass the overlay policy. Use an
+# intentionally missing helper to stop at the next preflight without a build.
+allowed_overlay="$work/diagnostics-allowed"
+mkdir -p "$allowed_overlay"
+printf '%s\n' 'printf diagnostics' > "$allowed_overlay/tilo-validation-diagnostics.sh"
+out="$("$disk" localhost/tilo-test "$work/out-diagnostics" \
+  --etc-overlay "$allowed_overlay" --bootc-helper "$work/missing-helper" 2>&1)"
+if [ $? -ne 0 ] && grep -Fq -- '--bootc-helper must name an executable regular, non-symlink file' <<<"$out"; then
+  ok 'the validation diagnostic script passes overlay preflight'
+else
+  bad "the validation diagnostic script did not pass overlay preflight: $out"
+fi
 
 # The unit merges only a signed root partition and binds to the disk vm.sh
 # attaches; the device unit name is the systemd escape of its by-id path.
 escaped="$(python3 -c 'print("dev-" + "disk/by-id/virtio-tilo-validation".replace("-", "\\x2d").replace("/", "-") + ".device")')"
 if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq -- '--image-policy=root=signed+absent:usr=absent:=unused+absent' "$access" \
+   && grep -Fq 'Environment=SYSTEMD_LOG_LEVEL=debug' "$access" \
+   && grep -Fq 'ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt' "$access" \
+   && grep -Fq 'TILO_VALIDATION_CERT_MISSING' "$access" \
    && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
    && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \
    && grep -Fq 'ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw' "$access"; then
@@ -61,6 +79,31 @@ if grep -Fq 'rm -f /work/validation.key' "$access" \
   ok 'the validation key is discarded and its certificate reaches only the gate disk'
 else
   bad 'the validation signing key can outlive the gate, or its trust can reach the image'
+fi
+
+# A virtio-backed raw block device can have a different backing name from the
+# symlink in /run/extensions. systemd 259 checks extension-release against that
+# backing name while reading metadata, before it merges the sysext. Ensure the
+# documented single-file filename fallback is embedded in the signed EROFS.
+if python3 - "$access" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+release = '/tree/usr/lib/extension-release.d/extension-release.$EXTENSION'
+create = source.index('} > ' + release)
+set_xattr = source.index('setfattr -n user.extension-release.strict -v 0')
+verify = source.index('getfattr --only-values -n user.extension-release.strict')
+mkfs = source.index('mkfs.erofs --quiet --file-contexts=')
+assert create < set_xattr < verify < mkfs
+assert source.count('} > ' + release) == 1
+assert '  attr cpio cryptsetup-libs erofs-utils openssl systemd-repart ' in source
+assert '--image-policy=root=signed+absent:usr=absent:=unused+absent' in source
+PY
+then
+  ok 'signed validation DDI carries the single-file extension-release fallback before EROFS sealing'
+else
+  bad 'signed validation DDI can fail extension-release lookup on a virtio block device'
 fi
 
 # Only a generic publication's gate prepares it; build-image.sh passes it only

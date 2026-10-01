@@ -92,9 +92,17 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
 }
 
-/// The shared settings file: `<config root>/settings.json`.
+/// Env a sandbox sets when the session `settings.json` is bound at a path
+/// other than the remapped `$XDG_CONFIG_HOME`. Empty is ignored.
+pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
+
+/// The shared settings file: `<config root>/settings.json`, or the session
+/// document named by [`SESSION_SETTINGS_ENV`] when a sandbox remapped XDG.
 pub fn settings_path() -> Option<PathBuf> {
-    config_path(Path::new(FILE))
+    match std::env::var_os(SESSION_SETTINGS_ENV) {
+        Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
+        _ => config_path(Path::new(FILE)),
+    }
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
@@ -393,6 +401,19 @@ mod tests {
                 )
             );
         }
+        // Phase `a_session_settings_env_wins_over_the_remapped_xdg_root`.
+        {
+            let session = tmpdir();
+            let xdg = tmpdir();
+            let session_file = session.join("settings.json");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .set(SESSION_SETTINGS_ENV, &session_file);
+            assert_eq!(settings_path(), Some(session_file));
+            drop(env);
+            let _ = std::fs::remove_dir_all(&session);
+            let _ = std::fs::remove_dir_all(&xdg);
+        }
     }
 
     // Forgiving reads
@@ -576,16 +597,16 @@ mod tests {
 #[cfg(all(test, unix))]
 mod parent_durability_tests {
     use super::*;
-    use atomic_file::test_support::{
+    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::test_support::{
         ProvisionCheckpoint, with_provision_failure, with_provision_observer,
     };
-    use atomic_file::{DirectoryState, directory_state};
-    use std::{cell::RefCell, rc::Rc};
+    use tilo_files::native::atomic::{DirectoryState, directory_state};
 
     #[test]
     fn public_update_preserves_file_publication_phase_and_visible_format() {
-        use atomic_file::test_support::{Checkpoint, with_failure};
-        use atomic_file::{PublicationState, publication_state};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::{PublicationState, publication_state};
         for (point, state, visible) in [
             (
                 Checkpoint::BeforePublish,
