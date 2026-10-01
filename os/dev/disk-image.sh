@@ -777,7 +777,7 @@ fi
 # runs on lacks fs-verity, so check every object here.
 if [ "$COMPOSEFS" = yes ]; then
   sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
-    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs CONFIG_FS_VERITY for $ROOTFS"
+    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs fs-verity support for $ROOTFS"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------
