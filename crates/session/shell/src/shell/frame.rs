@@ -5371,6 +5371,89 @@ mod tests {
     }
 
     #[test]
+    fn overview_publishes_new_workspace_before_the_fade_paints() {
+        use crate::shell::output_scene::OutputGeometry;
+        use crate::shell::state::WorkspaceTree;
+
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (3200, 1080));
+        fb.set_output_geometry(vec![
+            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
+        ]);
+        let _ = fb.paint_settled();
+        let before = fb.chrome().tree().desktop.workspaces.len();
+        fb.with_chrome(|st| {
+            st.overlays.overview = true;
+            st.bump();
+        });
+        fb.host_mut().latch_overview_transition();
+        // No settled paint: the acceptance check lists targets as soon as the
+        // overlay flag is up, which is this moment. The open's first sample
+        // is still alpha 0.
+        let rect = fb
+            .widget_registry()
+            .get("add_workspace")
+            .copied()
+            .unwrap_or(Rect::ZERO);
+        assert!(
+            rect.area() > 0.0,
+            "overview must publish add_workspace as soon as it is open"
+        );
+        assert!(
+            rect.x1 <= 1920.0,
+            "the new-workspace control stays on the first display (right edge {})",
+            rect.x1
+        );
+        let _ = fb.paint_with_damage();
+        assert!(
+            fb.widget_registry()
+                .get("add_workspace")
+                .is_some_and(|hit| hit.area() > 0.0),
+            "the alpha-zero open sample must keep add_workspace addressable"
+        );
+        let center = rect.center();
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        let modifiers = Modifiers::default();
+        let _ = fb.dispatch_event(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        );
+        let clicked = fb.dispatch_event(
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            &modifiers,
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        );
+        assert!(
+            clicked,
+            "the new-workspace click is handled by the overview"
+        );
+        let after = fb.chrome().tree().desktop.workspaces.len();
+        let open = fb.chrome().overlays.overview;
+        assert_eq!(
+            after,
+            before + 1,
+            "clicking add_workspace creates a workspace"
+        );
+        assert!(
+            !open,
+            "creating a workspace closes the overview so navigation reaches it"
+        );
+    }
+
+    #[test]
     fn an_unchanged_frame_reports_empty_damage() {
         let mut frame = FrameBuilder::new((800, 600));
         frame.relayout();
