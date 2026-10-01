@@ -334,9 +334,8 @@ pub struct TypstApp {
     /// Present once [`ResourceSurface::attach`] has run. Source setup and
     /// whole-source replacement go through it so history records the action.
     document_actions: Option<ui::framework::Dispatcher<crate::resource::TypstEditor>>,
-    /// Test-only host used when the surface is marked hosted without a
-    /// framework dispatcher.
-    #[cfg(test)]
+    /// Local host for standalone, `--shots`, and tests. The framework
+    /// dispatcher replaces it once the surface is attached.
     local_actions: ui::ActionHost,
 }
 
@@ -443,7 +442,6 @@ impl TypstApp {
             shots_status: false,
             framework_hosted: false,
             document_actions: None,
-            #[cfg(test)]
             local_actions: ui::ActionHost::new(),
         }
     }
@@ -468,9 +466,8 @@ impl TypstApp {
         self.document_actions = Some(dispatcher);
     }
 
-    /// Hosted source setup and replacement go through the framework dispatcher.
-    /// A hosted test without one uses the local action host. Standalone keeps
-    /// the action on the open transaction.
+    /// Source setup and replacement go through the framework dispatcher when
+    /// the surface is attached, and through the local action host otherwise.
     fn apply_source_action(
         &mut self,
         doc: &mut AutoCommit,
@@ -480,21 +477,12 @@ impl TypstApp {
             let _ = dispatcher.apply_now(doc, action);
             return;
         }
-        #[cfg(test)]
-        if self.framework_hosted {
-            let _ = self.local_actions.try_dispatch_with_context(
-                doc,
-                "typst.action",
-                action,
-                ui::tilo_actions::ActionContext::for_action(
-                    "so.tilo.typst-editor",
-                    "Typst",
-                    action,
-                ),
-            );
-            return;
-        }
-        let _ = ui::tilo_actions::Action::apply(action, doc);
+        let _ = self.local_actions.try_dispatch_with_context(
+            doc,
+            <crate::resource::TypstEditor as ui::tilo_resource::Resource>::ACTION_TYPE,
+            action,
+            ui::tilo_actions::ActionContext::for_action("so.tilo.typst-editor", "Typst", action),
+        );
     }
 
     #[cfg(test)]

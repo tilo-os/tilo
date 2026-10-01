@@ -354,6 +354,23 @@ mod tests {
     }
 
     #[test]
+    fn a_standalone_source_is_created_through_the_local_host() {
+        use automerge::ReadDoc;
+        let mut app = TypstApp::with_demo_documents();
+        assert!(!app.is_framework_hosted());
+        let mut doc = automerge::AutoCommit::new();
+        let id = app.ensure_source_obj(&mut doc);
+        assert!(
+            !doc.text(&id).unwrap_or_default().is_empty(),
+            "standalone source setup seeds the sample"
+        );
+        assert!(
+            app.take_source_action_for_test().is_some(),
+            "standalone source setup is recorded on the local action host"
+        );
+    }
+
+    #[test]
     fn hosted_source_setup_is_submitted_as_an_action() {
         use automerge::ReadDoc;
         let mut app = TypstApp::with_demo_documents();
