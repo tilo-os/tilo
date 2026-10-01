@@ -20,7 +20,7 @@ use ui::search::{
 
 use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
-    folder_resource_id, library_root_resource, metadata_label_counts, object_resource,
+    folder_resource_id, library_analysis_resource, metadata_label_counts, object_resource,
     object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
     photo_resource_from_seed, place_counts, place_resource, place_resource_id,
     places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
@@ -108,7 +108,15 @@ enum MaterializationSeed {
 impl MaterializationSeed {
     fn materialize(self) -> Resource {
         match self {
-            Self::Library => library_root_resource(),
+            Self::Library => {
+                let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
+                    "photos.library",
+                    "Photo library",
+                    &crate::resource::PhotosState::default(),
+                );
+                root.children.insert(0, library_analysis_resource());
+                root
+            }
             Self::Timeline { total, boundaries } => {
                 timeline_resource_from_search(total, &boundaries)
             }

@@ -47,8 +47,17 @@ impl Resource for Photos {
         })
     }
 
+    fn bound_actions(_state: &PhotosState) -> Vec<ActionSpec> {
+        crate::actions::library_document_actions()
+    }
+
     fn children(state: &PhotosState) -> Vec<tilo_actions::Resource> {
-        crate::actions::library_children(&state.library)
+        let mut children = Vec::new();
+        if let Some(image) = &state.open {
+            children.push(crate::actions::open_image_resource(image, &state.edits));
+        }
+        children.extend(crate::actions::library_children(&state.library));
+        children
     }
 
     fn local_operations() -> Vec<ActionSpec> {
