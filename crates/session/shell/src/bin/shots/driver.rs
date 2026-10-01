@@ -1840,7 +1840,7 @@ impl ShellDriver {
         if !explore {
             use collab_types::{ArtifactKind, OpClass};
             use ui::tilo_actions::ActionContext;
-            use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+            use ui::widget::history::{HistoryEntry, HistoryEntryId};
 
             let local = shell::shell::state::local_user_id();
             self.fb
@@ -1848,11 +1848,7 @@ impl ShellDriver {
                 .room_activity_mut()
                 .open_external_entry(HistoryEntry {
                     id: HistoryEntryId([0x51; 16]),
-                    author: HistoryAuthor::new(
-                        local.clone(),
-                        ui::history_source::stable_hue(&local),
-                        ui::history_source::short_id(&local),
-                    ),
+                    author: ui::history_source::author_for_identity(local.clone(), &local),
                     op_class: OpClass::Splice,
                     artifact_kind: ArtifactKind::File,
                     timestamp: std::time::SystemTime::now(),

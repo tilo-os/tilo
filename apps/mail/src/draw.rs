@@ -193,4 +193,18 @@ mod tests {
             assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
         }
     }
+
+    #[test]
+    fn every_avatar_hue_comes_from_the_theme() {
+        let dark = Theme::dark();
+        let nord = Theme::named("Nord").expect("Nord");
+        for i in 0..64 {
+            let email = format!("person{i}@example.com");
+            assert_ne!(
+                avatar_color(&dark, &email, 0),
+                avatar_color(&nord, &email, 0),
+                "{email}: its initials disc ignores the theme"
+            );
+        }
+    }
 }
