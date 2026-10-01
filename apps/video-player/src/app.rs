@@ -4398,6 +4398,9 @@ impl ui::resources::PublishesResources for PlayerApp {
         crate::actions::resources(&ctx, doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.framework_hosted && id == "video-player.application" {
+            return None;
+        }
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resource(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
