@@ -1,0 +1,332 @@
+# Theming — a token contract the OS owns
+
+Tilo applications do not own their pixels. An app declares its interface
+through `ui`, and the toolkit and compositor draw it. Theming follows from that
+one decision: a theme is a **typed, validated set of tokens owned by the OS**,
+not a stylesheet an application author writes and a user overrides.
+
+Four rules generate the rest of this document:
+
+1. **Themes target semantic roles, never implementation.** A theme says what
+   "the raised surface", "secondary text" or "danger" look like. It never says
+   what a `Button`'s third child looks like, and there is no selector language
+   in which it could.
+2. **Themes are data, never code.** A theme is a document of numbers and
+   strings that the OS validates and then applies. Nothing in it executes.
+3. **A theme that passes validation cannot break an app.** Validation covers
+   legibility, not only ranges, so "this theme broke my app" is not a bug class
+   an app developer can receive.
+4. **Expressiveness grows by adding roles to a versioned schema.** When a theme
+   needs to say something new, the schema (`CustomThemeSpec`,
+   `CUSTOM_THEME_SCHEMA_VERSION` in `crates/sdk/ui-core/src/theme.rs`) gains a
+   role and a version. It never grows CSS-like access to widget internals.
+
+It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9: "roles, not
+pixels"), on `docs/settings-and-studios.md` (who owns which theme state), and
+on `docs/architecture/distribution.md` §6 (Profile layers), which the layer
+model below reuses rather than reinvents.
+
+## What other platforms teach
+
+- **The web** has no semantics to theme: everything is a `div` with author
+  styles, so a user has no lever except overriding everything. The one durable
+  user win was Windows High Contrast, which became CSS `forced-colors`: a
+  small set of system colours the browser forces onto every page.
+- **GNOME**: in 2019 app developers published an open letter asking
+  distributions to stop theming their apps, and libadwaita followed. The real
+  complaint was not that users wanted colour; it was that themes targeted
+  implementation details (GTK widget CSS), broke apps in ways the theme author
+  never saw, and the bug reports landed on app developers. GNOME 47 later
+  brought accent colours back — a single role, safely themable.
+- **KDE** is the most themable desktop: global themes from the KDE Store
+  restyle the whole session, and Union is an in-progress effort toward one
+  style engine across toolkits. In 2024 a global theme from the store ran a
+  script that deleted a user's files. A theme that can execute is a package
+  with authority, and should be treated as one; ours cannot execute.
+- **Windows** locks `.msstyles` behind a signature, so enthusiasts patch
+  `uxtheme.dll`; meanwhile Win32, WinForms, WPF, UWP and WinUI each theme
+  differently, so no theme reaches everything.
+- **macOS** is coherent because apps use stock controls and semantic system
+  colours (`labelColor`, `controlAccentColor`), and gives users little control
+  beyond appearance, accent and contrast.
+- **Android** went from OEM reskins through runtime resource overlays (which
+  broke apps the same way GTK themes did) to Material You dynamic colour: a
+  token contract apps consume, filled from the user's wallpaper.
+
+Theming works when it targets semantic roles and fails when it targets
+implementation. "Light, dark and an accent colour" is what remains when a
+platform cannot guarantee that anything richer will not break apps. Tilo can
+offer more because it controls the drawing: every pixel of chrome comes from a
+role, and every role is validated.
+
+## The contract
+
+### Roles
+
+A role is a named promise. `surfaces.raised` is not "a grey"; it is "the
+surface one step above the ground, which primary and secondary text must read
+on". The current role set lives in `crates/sdk/ui-core/src/tokens/`:
+
+| Family | Roles | Where |
+|---|---|---|
+| Surfaces | `base`, `raised`, `overlay`, `scrim`, `glass`, `window_card`, `window_card_border` | `tokens/colors.rs` (`Surfaces`) |
+| Text | `text_primary`, `text_dim`, `text_tertiary` | `tokens/colors.rs` (`Colors`) |
+| Accent | accent ramp, `ACCENT_PRIMARY_IDX` / `ACCENT_HOVER_IDX`, `border_focus` | `tokens/colors.rs` |
+| Semantic | `success`, `warning`, `danger`, `info` | `tokens/colors.rs` (`SemanticColors`) |
+| State veneers | `overlay_subtle` / `medium` / `strong`, `overlay_border_*` | `tokens/colors.rs` |
+| Shape | radii `sm` / `md` / `lg` / `xl` / `full` | `tokens/radii.rs` |
+| Density | spacing `s0`–`s16`, `Metrics` (pointer targets, panel widths) | `tokens/spacing.rs`, `tokens/metrics.rs` |
+| Type | families, scale `xs`–`x4l`, `font_size_base` | `tokens/typography.rs` |
+| Motion | durations and easings, `reduce_motion` | `tokens/motion.rs` |
+| Depth | elevation `e0`–`e4` | `tokens/elevation.rs` |
+| Derived palettes | terminal ANSI palette, syntax palette, categorical series | `tokens/terminal_palette.rs`, `tokens/syntax_palette.rs`, `Colors::categorical` |
+
+A theme sets the authored roles. Everything else is **derived** in one place
+(`Colors::themed`, `Theme::from_tokens`): ramps, veneers whose polarity follows
+the ground, the terminal palette, ink measured against whatever surface a
+widget paints on (`Colors::on_surface`, `ink_on`, `legible_fill`). Derivation
+is what lets a ten-colour theme cover forty apps without a theme author ever
+seeing them.
+
+### Data, versioned
+
+The user-authored form is `CustomThemeSpec`: a schema version, an id and name,
+fourteen colours, `radius_px`, `spacing_px` and a font family. It is stored in
+`appearance.custom_theme` of the shared settings record, and Theme Studio is
+its only writer (`docs/settings-and-studios.md`, Themes). Built-in presets are
+the same contract expressed as `PaletteSpec` constructors.
+
+New roles arrive as new schema versions. A reader accepts every version it
+knows and fills new roles by derivation, so a file written by an older build
+still opens.
+
+### Validation: reject structure, repair legibility
+
+Validation has two halves, and they fail differently on purpose:
+
+- **Structure** (`CustomThemeSpec::validate`): schema version, id/name/font
+  shape, finite in-range radius and spacing. A file that fails is not a theme;
+  it is rejected and the user's previous or default theme stays.
+- **Legibility**: the contrast floors below. Theme Studio refuses to save or
+  export a theme that misses one, and shows which pair and by how much. A
+  theme that reaches the runtime anyway — a file written by an older build,
+  hand-edited, or produced by a future tool — is **repaired, not rejected**:
+  each failing foreground is stepped toward the contrasting extreme until it
+  clears its floor, the same "clamp, don't drop the user's theme" rule
+  `spacing_px` already follows (`CustomThemeSpec::SPACING_PX_MIN`).
+
+The floors are WCAG 2.x ratios, applied to the pairs apps actually rely on:
+
+| Foreground | Ground(s) | Floor | Why |
+|---|---|---|---|
+| `text_primary` | `base`, `raised`, `overlay` | 4.5:1 | body text (WCAG AA) |
+| `text_dim` | `base`, `raised`, `overlay` | 4.5:1 | captions and labels are still body text |
+| `text_tertiary` | `base` | 3:1 | quietest tier; the token's documented contract is large-text AA |
+| accent primary | `base`, `raised` | 3:1 | active states: toggle on, slider track (WCAG 1.4.11) |
+| `border_focus` | `base` | 3:1 | focus indicator (WCAG 2.4.11) |
+| `success`, `warning`, `danger`, `info` | `base` | 3:1 | status dots and icons |
+
+Labels drawn *on* an accent or semantic fill are not part of the floor table
+because they are always derived (`Colors::on_accent`, `legible_fill`,
+`tinted_chip_on`) and cannot be authored wrong. One rule table serves the
+shipped presets, Theme Studio and the runtime, and the preset sweep in
+`theme.rs` runs every preset through it.
+
+## Layers and precedence
+
+The theme a person sees is resolved from layers, lowest to highest:
+
+| # | Layer | Who writes it | Typical contents |
+|---|---|---|---|
+| 1 | Built-in defaults | Tilo | the Dark/Light presets, stock shape, density, type and motion |
+| 2 | **Distribution defaults** | whoever ships the OS image | palette, default accent, wallpaper, greeter and boot artwork, logo; optional pins |
+| 3 | User theme | the person, through Settings and Theme Studio | preset or custom theme, accent, shape, density, type, motion, materials, icons |
+| 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
+| 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
+
+**Accessibility always wins.** Nothing below layer 5 can lower contrast,
+shrink text, or re-enable motion that the person turned off, and distribution
+defaults cannot pin a value that layer 5 touches.
+
+**Distribution defaults** are the layer for companies that ship the Tilo OS
+image — an agent-sandbox provider, a hardware vendor, an organisation's managed
+fleet. The layer is a Profile layer in the sense of `distribution.md` §6: a
+signed, content-addressed, versioned fragment of the appearance record,
+delivered with the image. It sets defaults and may **pin** a choice by policy
+(a fixed wallpaper on kiosk machines, an accent that matches the company's
+colour). A pin is visible: Settings shows the pinned control as set by the
+distribution, the way an employer policy layer shows which of your values it
+overrode. Distribution defaults go through the same validator as everything
+else, so they can no more ship an illegible palette than a user can.
+
+Every layer is the same kind of thing — a signed, versioned data file that is
+validated before it is applied — and resolution is one deterministic function
+over the stack, in the style of the default-application resolver in
+`docs/settings-and-studios.md`. Layers contribute individual roles, not whole
+themes: distribution defaults that set only an accent leave the user's choice
+of light or dark alone.
+
+### What users get
+
+Far more than an accent colour, because every one of these is a token and not
+an implementation detail: palette (every surface, text tier, accent and
+semantic colour), shape (radius scale), density (spacing scale, kept
+proportional), type (family and scale), motion (durations, reduce motion),
+materials (glass, elevation) and icons. Each is safe to expose because apps
+consume only the role, and the validator guarantees the role keeps its promise.
+
+## App developers
+
+What an app may do:
+
+- **Supply an app accent.** An app may declare one accent colour. The toolkit
+  checks it against the active theme's ground with the accent floor above and
+  falls back to the OS accent where it fails, so an app's identity colour never costs a
+  user legibility. The user can turn app accents off.
+- **Own its content surfaces.** A canvas, a document page, a video, a game or
+  a map is content, and the app chooses how it looks. The reference pattern is
+  `apps/ebook/src/reader_theme.rs`: all chrome (toolbars, drawers, buttons)
+  reads strictly from `Theme`, while the page uses a palette the reader picks
+  (light, sepia, dark, high contrast), with on-page affordances tinted from
+  the OS accent.
+
+What an app may not do:
+
+- Draw or restyle window chrome (title bars, tab pills, decorations).
+- Restyle the internals of shared controls. A `Button` is the system's
+  button; an app that needs something different needs a new role or a new
+  widget in `ui`, not a local copy (HIG §8).
+- Override accessibility. High contrast and forced colours reach into content
+  surfaces too: a page palette must offer a forced-colours rendering and switch
+  to it when the person asks for high contrast, the way the ebook's high
+  contrast page already exists.
+
+The trade for an app developer: dark mode, high contrast, text and UI scaling,
+RTL and accessibility come for free, and there is no "a theme broke my app"
+bug class, because any theme that passes validation renders every app
+correctly.
+
+## Theming is per viewer
+
+Collaborators sync state, not pixels. A shared workspace is drawn natively on
+each machine from the same CRDT state, so each person sees it in their own
+theme, at their own text scale, with their own accessibility settings. A
+collaborator's high-contrast preference never reaches anyone else's screen,
+and a host's dark theme never reaches a guest.
+
+A workspace may carry an **identity colour** — a hint so that "the design
+review workspace" is recognisable at a glance. It is a hint, never an
+override: the viewer's theme decides whether and how it is shown (layer 4),
+and accessibility can suppress it. Collaborator colours work the same way:
+the room settles a colour per person for cursors and presence, and each viewer
+renders it through their own theme's legibility derivation.
+
+## Trusted UI
+
+A themable OS gives an attacker a palette. Permission prompts, the identity
+ceremony (`crates/session/shell/src/onboarding_view.rs`), the capability
+indicators of `distribution.md` §5 and the lock screen must carry a marker
+that **no theme and no app can reproduce**:
+
+- It is drawn by the compositor, in a region no client surface can cover.
+- Its appearance is not a theme role. Themes can recolour the prompt's body;
+  they cannot reach the marker, so a theme cannot make app content look like
+  it, nor make the real one look like app content.
+- It is tied to the session (for example a personal secure image or phrase set
+  at onboarding), so a pixel-perfect screenshot of someone else's prompt does
+  not carry it.
+
+## Current state
+
+Verified against the code at the time of writing:
+
+- **One contract, partly enforced.** `CustomThemeSpec` exists at schema
+  version 1, presets go through `PaletteSpec`/`Colors::themed`, and
+  derivations (`on_surface`, `legible_fill`, `window_edge`) already measure
+  contrast instead of trusting declared values.
+- **Validation checks ranges, not contrast.** `CustomThemeSpec::validate`
+  checks schema version, id, name, font, radius and spacing. A custom theme
+  with grey text on a grey ground materializes. The preset tests in
+  `theme.rs` check `text_primary` on `base` and derived ink, but not secondary
+  text on raised surfaces, accents or semantic colours.
+- **Four shipped presets miss the floors above.** Measured: Gruvbox Light's
+  accent and warning (2.2:1 on its cream ground) and success (2.7:1);
+  Catppuccin Latte's secondary text (4.4:1), tertiary text, and success,
+  warning and info (2.3–3.0:1); Solarized's secondary text on raised (4.1:1)
+  and tertiary text (2.8:1); Beige's tertiary text and warning (2.6–2.75:1).
+- **One active theme, no layers.** `Theme::from_settings_json` resolves a
+  single `appearance.theme` value (a preset name, `Automatic`, or
+  `custom:<id>`). `Theme::with_a11y` replaces the whole theme with
+  `Theme::high_contrast()` when high contrast is on; there is no distribution layer,
+  no workspace tint and no general precedence function.
+- **No forced-colours signal for content.** An app cannot ask "is the person
+  in high contrast?" except by comparing `Theme::name`. The ebook has a high
+  contrast page palette, but the reader picks it by hand; the word processor's
+  paper stays off-white under the high contrast theme.
+- **No app accent API.** Nothing in `tilo-app-package`'s manifest or in
+  `ui` lets an app declare an accent.
+- **Hard-coded colours in apps.** `rg -c "Color::from_rgb8\(|Color::rgb8\(|Color::new\(\["`
+  counts 155 sites in `apps/`. 122 are legitimate (document and media colours,
+  stored user choices, colour-math helpers, test fixtures) and 33 are chrome
+  that should come from `Theme`; see the appendix. That regex misses
+  `Color::from_rgba8` (71 sites) and `Color::WHITE`/`BLACK` (150 sites); the
+  HIG §9.13 audit covers `ui-core` only, so apps are not ratcheted yet.
+- **No trusted-UI marker.** The onboarding ceremony is compositor-drawn so an
+  app cannot imitate its placement, but nothing in its appearance is
+  unforgeable.
+
+## Roadmap
+
+1. **Contrast validation.** One floor table in `ui-core`; Theme Studio refuses
+   failing themes; `Theme::from_custom_spec` repairs legacy files; every preset
+   swept in tests; the four failing presets fixed.
+2. **Hard-coded chrome colours onto tokens**, one app per change, following
+   the appendix. Add a shared role wherever an app had to invent one (a
+   distinct-hue series for spreadsheet references, a forced-colours flag for
+   content surfaces) rather than hard-coding it locally.
+3. **Layer resolution.** A typed `ThemeLayers` stack (defaults, distribution defaults,
+   user, workspace tint, accessibility) resolved by one tested function in
+   `ui-core`, read from the settings record and the image's distribution defaults.
+4. **Forced colours in content surfaces.** A `Theme` flag every content
+   palette honours, starting with the ebook, feeds and word-processor pages.
+5. **App accent.** A manifest field, contrast-checked at theme
+   resolution, with a user switch.
+6. **Ratchet apps.** Extend `design_token_audit.rs` to `apps/` with a baseline
+   that can only fall.
+7. **Trusted-UI marker** for compositor-drawn prompts.
+
+## Appendix: hard-coded colours in `apps/`
+
+Classification of the 155 `from_rgb8` / `rgb8` / `Color::new([` sites, by
+file. **Content** means the colour belongs to the document, the media or the
+person: page and paper palettes, a stored or user-picked colour, overlays that
+keep controls legible over live video, colour-math helpers that convert rather
+than choose, and test fixtures. **Chrome** means the colour is a UI role the
+theme should supply.
+
+| File | Sites | Content | Chrome | Notes |
+|---|---:|---:|---:|---|
+| `ebook/src/reader_theme.rs` | 27 | 27 | 0 | page palettes (the reference pattern) |
+| `ebook/src/app.rs` | 4 | 2 | 2 | scheme swatches are content; badge ink should be measured (`readable_on`) |
+| `ebook/src/model.rs`, `input_controls.rs` | 3 | 3 | 0 | user-picked scheme and highlight colours |
+| `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from the accent and `danger`, made legible on paper |
+| `word-processor/src/review_overlay.rs` | 14 | 0 | 14 | comment and change cards, accept/reject buttons, insertion/deletion ink |
+| `word-processor/src/widget/tests.rs`, `style_color_picker.rs` | 4 | 4 | 0 | fixtures; seed from a stored style |
+| `feeds/src/reader_theme.rs` | 14 | 14 | 0 | page palettes |
+| `pdf-viewer/src/render.rs` | 9 | 8 | 1 | page ink and thumbnails are content; the page-card outline is chrome (`ui::surface::edge_on`) |
+| `pdf-viewer/src/app.rs` | 1 | 1 | 0 | shots harness clear colour |
+| `tube/src/contrast.rs`, `util.rs` | 9 | 9 | 0 | colour-math helpers and their tests |
+| `tube/src/widgets/thumbnail.rs` | 2 | 0 | 2 | LIVE badge and watch-progress bar |
+| `tube/src/screens.rs` | 2 | 2 | 0 | segment-category identity colours |
+| `terminal/src/main_body.rs`, `tests.rs` | 10 | 10 | 0 | ANSI/truecolor conversion; fixtures |
+| `sheets/src/grid.rs` | 7 | 0 | 7 | formula reference colours; needs a shared distinct-hue role |
+| `sheets/src/app.rs` | 1 | 1 | 0 | stored sheet-tab colour |
+| `camera/src/app.rs` | 6 | 5 | 1 | white controls and dark washes over the viewfinder, document paper are content; the settings-sheet scrim is chrome (`surfaces.scrim`) |
+| `video-editor/src/**` | 8 | 8 | 0 | title colours rendered into the video, stored swatches, blend helpers, test |
+| `themes/src/**` | 5 | 4 | 1 | spec conversion and tests are content; the customizer's seed colour should be the active accent |
+| `mail/src/draw.rs` | 2 | 0 | 2 | avatar palette entries outside the theme (`Colors::categorical`) |
+| `chat/src/**` | 3 | 3 | 0 | participant colour (made legible downstream), blend helper, scrim derivation over video |
+| `slides/src/model.rs` | 1 | 1 | 0 | the authored "Deep" slide treatment |
+| `music/src/art.rs` | 1 | 1 | 0 | generated cover art |
+| `db-client`, `remote`, `osk` | 3 | 3 | 0 | blend helper; test fixtures |
+| **Total** | **155** | **122** | **33** | |
