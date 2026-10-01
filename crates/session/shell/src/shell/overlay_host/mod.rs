@@ -5661,6 +5661,49 @@ impl ShellOverlayHost {
         self.pump_permission_prompt();
     }
 
+    /// Geometry `draw_desktop_extras` gives the live permission prompt.
+    fn permission_prompt_surface(&self) -> Rect {
+        let area = self.overlay_area();
+        let inset = f64::from(self.sidebar_top_y);
+        let bar_top = area.y0 + inset;
+        Rect::new(
+            area.x0 + inset,
+            bar_top,
+            area.x1 - inset,
+            bar_top + PROMPT_HEIGHT,
+        )
+    }
+
+    /// Seal bands for trusted surfaces that are on screen. Empty when none
+    /// are up. Only [`crate::shell::frame::FrameBuilder::widget_registry`]
+    /// publishes these names; the widget walk cannot.
+    pub(crate) fn trusted_frame_targets(
+        &self,
+        theme: &ui::theme::Theme,
+    ) -> Vec<(&'static str, Rect)> {
+        let mut targets = Vec::new();
+        let thickness = f64::from(theme.tokens.spacing.s1);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            targets.push((
+                crate::shell::trusted_ui::PERMISSION_PROMPT_TARGET,
+                crate::shell::trusted_ui::seal_band(
+                    surface,
+                    thickness,
+                    f64::from(theme.tokens.radii.md),
+                ),
+            ));
+        }
+        if let Some(layout) = self.portal_dialogs.layout(self.rect) {
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+            targets.push((
+                crate::shell::trusted_ui::PORTAL_DIALOG_TARGET,
+                crate::shell::trusted_ui::seal_band(layout.sheet, thickness, radius),
+            ));
+        }
+        targets
+    }
+
     /// Test-only accessor for the held [`PermissionPrompt`].
     #[cfg(any(test, debug_assertions))]
     pub fn permission_prompt_mut_for_tests(&mut self) -> Option<&mut PermissionPrompt> {
@@ -18851,17 +18894,21 @@ impl ShellOverlayHost {
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         let area = self.overlay_area();
-        if let Some(prompt) = self.permission_prompt.as_mut() {
-            let bar_top = area.y0 + f64::from(self.sidebar_top_y);
-            let bar_left = area.x0 + f64::from(self.sidebar_top_y);
-            let bar_right = area.x1 - f64::from(self.sidebar_top_y);
-            prompt.set_rect(Rect::new(
-                bar_left,
-                bar_top,
-                bar_right,
-                bar_top + PROMPT_HEIGHT,
-            ));
-            prompt.draw(scene, transform, text_renderer, theme, presence);
+        if self.permission_prompt.is_some() {
+            let surface = self.permission_prompt_surface();
+            if let Some(prompt) = self.permission_prompt.as_mut() {
+                prompt.set_rect(surface);
+                prompt.draw(scene, transform, text_renderer, theme, presence);
+            }
+            // The seal is shell chrome. `PermissionPrompt` itself cannot
+            // paint it, so an app that builds that widget does not get the frame.
+            crate::shell::trusted_ui::paint_seal(
+                scene,
+                transform,
+                surface,
+                theme,
+                f64::from(theme.tokens.radii.md),
+            );
         }
 
         // Above desktop content, below modal overlays and the permission
@@ -20763,6 +20810,7 @@ impl ShellOverlayHost {
             None,
             &sheet,
         );
+        crate::shell::trusted_ui::paint_seal(scene, transform, layout.sheet, theme, sheet_radius);
         text_renderer.draw_text(
             scene,
             &view.title(),
