@@ -19,7 +19,7 @@ use std::process::Command;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Stdio;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(any(test, target_os = "linux"))]
 use std::io::{self, Read, Write};
@@ -941,7 +941,18 @@ pub(crate) struct SessionLaunches {
     /// The launch key each mapped surface was attributed to.
     surfaces: Mutex<HashMap<u64, String>>,
     /// Launch keys whose app has shown a window since it last started.
-    presented: Mutex<std::collections::HashSet<String>>,
+    presented: Mutex<HashSet<String>>,
+    /// User launches still waiting for a window. This outlives the short
+    /// placement claim: Wine's first window can announce `wineboot.exe` long
+    /// after that claim expires, and it still belongs to the launch the
+    /// person asked for. Session autostart never enters this set.
+    awaiting_window: Mutex<HashSet<String>>,
+    /// User launches that already own a window whose toolkit id is not the
+    /// desktop id (`wineboot.exe`, `control.exe`).
+    unresolved_owners: Mutex<HashSet<String>>,
+    /// XDG autostart entries. Their exit is not a failed open of the app the
+    /// person just launched.
+    session_helpers: Mutex<HashSet<String>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -960,6 +971,9 @@ impl Default for SessionLaunches {
             launched: Mutex::default(),
             surfaces: Mutex::default(),
             presented: Mutex::default(),
+            awaiting_window: Mutex::default(),
+            unresolved_owners: Mutex::default(),
+            session_helpers: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -3135,6 +3149,119 @@ pub(crate) fn note_launch_presented(key: &str) {
     lock(&LaunchSession::current().presented).insert(key.to_string());
 }
 
+/// Remember an XDG autostart entry. Its process exiting is not the person
+/// failing to open the app they just launched.
+pub(crate) fn note_session_helper(package_id: &str) {
+    lock(&LaunchSession::current().session_helpers).insert(package_id.to_string());
+}
+
+/// A signal exit of an autostart helper that the person did not ask to open.
+///
+/// A later palette launch of the same id sets [`set_pending_placement`] and
+/// is reported normally.
+pub(crate) fn unasked_session_helper(package_id: &str) -> bool {
+    let session = LaunchSession::current();
+    let helpers = lock(&session.session_helpers);
+    if !helpers.iter().any(|id| id.eq_ignore_ascii_case(package_id)) {
+        return false;
+    }
+    drop(helpers);
+    let awaiting = lock(&session.awaiting_window);
+    !awaiting
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(package_id))
+}
+
+/// Bind a host window whose toolkit id matches no desktop entry to the one
+/// user launch still waiting for a window, then remember that later windows
+/// from that launch (`control.exe` after `wineboot.exe`) belong to it too.
+pub(crate) fn attribute_unresolved_host_window(surface_id: u64, app_id: &str) {
+    if app_id.trim().is_empty() || app_id.starts_with("anon-") {
+        return;
+    }
+    if launch_key_for_surface(surface_id).is_some() || launch_key_for_app_id(app_id).is_some() {
+        return;
+    }
+    let Some(key) = unresolved_user_launch_key() else {
+        return;
+    };
+    attribute_surface_launch(surface_id, &key);
+    let session = LaunchSession::current();
+    lock(&session.unresolved_owners).insert(key.clone());
+    lock(&session.awaiting_window).retain(|id| !id.eq_ignore_ascii_case(&key));
+}
+
+/// The compositor observed a toplevel. Record it against the launch that
+/// owns the window, including when the announced id is not the desktop id.
+pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
+    if app_id.trim().is_empty() || app_id.starts_with("anon-") {
+        return;
+    }
+    attribute_unresolved_host_window(surface_id, app_id);
+    note_launch_presented(&crate::shell::persist::durable_app_id(surface_id, app_id));
+}
+
+/// Live unconfined launches a close of an unmatched toolkit window may stop.
+///
+/// One live launch is that launch. Several live launches means session
+/// helpers are up beside the app the person opened: only the launch that
+/// asked for a window, or that already owns an unmatched window, is stopped.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn unconfined_launches_for_unresolved_close() -> Vec<String> {
+    let session = LaunchSession::current();
+    let awaiting = lock(&session.awaiting_window).clone();
+    let owners = lock(&session.unresolved_owners).clone();
+    let live = live_unconfined_package_ids();
+    let targets: Vec<String> = live
+        .iter()
+        .filter(|id| {
+            awaiting
+                .iter()
+                .any(|marked| marked.eq_ignore_ascii_case(id))
+                || owners.iter().any(|marked| marked.eq_ignore_ascii_case(id))
+        })
+        .cloned()
+        .collect();
+    if targets.len() == 1 {
+        return targets;
+    }
+    if targets.is_empty() && live.len() == 1 {
+        return live;
+    }
+    Vec::new()
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn unresolved_user_launch_key() -> Option<String> {
+    let session = LaunchSession::current();
+    let awaiting = lock(&session.awaiting_window).clone();
+    let owners = lock(&session.unresolved_owners).clone();
+    let live = live_unconfined_package_ids();
+    let pick = |marked: &HashSet<String>| -> Vec<String> {
+        live.iter()
+            .filter(|id| marked.iter().any(|item| item.eq_ignore_ascii_case(id)))
+            .cloned()
+            .collect()
+    };
+    let waiting = pick(&awaiting);
+    if waiting.len() == 1 {
+        return waiting.into_iter().next();
+    }
+    if !waiting.is_empty() {
+        return None;
+    }
+    let owned = pick(&owners);
+    if owned.len() == 1 {
+        return owned.into_iter().next();
+    }
+    None
+}
+
+#[cfg(not(any(test, target_os = "linux")))]
+fn unresolved_user_launch_key() -> Option<String> {
+    None
+}
+
 /// Whether launch `key` has shown a window since it last started, clearing
 /// the mark: a later launch of the same app starts unproven.
 pub(crate) fn take_launch_presented(key: &str) -> bool {
@@ -3153,6 +3280,10 @@ pub(crate) fn clear_launched_for_test() {
     let session = LaunchSession::current();
     lock(&session.launched).clear();
     lock(&session.surfaces).clear();
+    lock(&session.awaiting_window).clear();
+    lock(&session.unresolved_owners).clear();
+    lock(&session.session_helpers).clear();
+    lock(&session.presented).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -3214,6 +3345,10 @@ pub fn set_pending_placement_for_identities(
     placement: crate::shell::tab_binding::Placement,
 ) {
     let session = LaunchSession::current();
+    // The person asked for this window. Autostart does not come through here,
+    // so a later toolkit id that no desktop entry declared (wineboot.exe)
+    // can still be tied to this launch and not to a session helper.
+    lock(&session.awaiting_window).insert(key.to_string());
     let mut pending = lock(&session.pending);
     pending.push(PendingPlacement {
         key: key.to_string(),
@@ -3484,6 +3619,11 @@ pub fn clear_pending_placements() {
     for note in pending.drain(..) {
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
+    drop(pending);
+    lock(&session.awaiting_window).clear();
+    lock(&session.unresolved_owners).clear();
+    lock(&session.session_helpers).clear();
+    lock(&session.presented).clear();
 }
 
 /// Test hook: publish a socket path directly (production goes through
@@ -5384,6 +5524,115 @@ mod tests {
             "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn an_opened_wine_window_is_not_a_crash_and_helpers_are_not_toasted() {
+        let _ = drain_events();
+        clear_pending_placements();
+        clear_launched_for_test();
+
+        let wine = LauncherStandIn::spawn();
+        let geoclue = LauncherStandIn::spawn();
+        let applet = LauncherStandIn::spawn();
+        register_launched_process(wine.pid(), "wine-winefile", None, false);
+        register_launched_process(geoclue.pid(), "geoclue-demo-agent", None, false);
+        register_launched_process(applet.pid(), "nm-applet", None, false);
+        set_pending_placement(
+            "wine-winefile",
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        note_session_helper("geoclue-demo-agent");
+        note_session_helper("nm-applet");
+        // The compositor records the toplevel the client actually announced.
+        record_host_window_open(501, "wineboot.exe");
+        record_host_window_open(502, "control.exe");
+        assert_eq!(
+            launch_key_for_surface(501).as_deref(),
+            Some("wine-winefile"),
+            "wineboot.exe is the window Wine File opened"
+        );
+        assert_eq!(
+            launch_key_for_surface(502).as_deref(),
+            Some("wine-winefile")
+        );
+
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
+            (1, "wineboot.exe", 501),
+            (2, "control.exe", 502),
+        ]));
+        // group.close of the Wine File group. Wine Mono's window stays.
+        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 1)
+            .expect("close Wine File's wineboot.exe window");
+        assert!(
+            process_is_live(wine.pid())
+                && process_is_live(geoclue.pid())
+                && process_is_live(applet.pid()),
+            "a second X11 window keeps Wine File, and helpers stay up"
+        );
+        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 2)
+            .expect("close the last X11 window");
+        tilo_test_env::wait_until("Wine File exits after its last window closes", || {
+            !process_is_live(wine.pid()) && !process_is_live(wine.descendant())
+        });
+        assert!(
+            process_is_live(geoclue.pid())
+                && process_is_live(geoclue.descendant())
+                && process_is_live(applet.pid())
+                && process_is_live(applet.descendant()),
+            "closing Wine File must not signal Geoclue or the NetworkManager applet"
+        );
+
+        let crashed = "The app crashed before opening. Open Applications and try again.";
+        let event = |package_id: &str, display_name: &str| LaunchEvent {
+            package_id: package_id.to_string(),
+            display_name: display_name.to_string(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: LaunchEventKind::Failed {
+                code: None,
+                stderr_tail: String::new(),
+            },
+        };
+        for (id, name) in [
+            ("wine-winefile", "Wine File"),
+            ("geoclue-demo-agent", "Geoclue Demo agent"),
+            ("nm-applet", "NetworkManager Applet"),
+        ] {
+            let notice = event(id, name)
+                .failure_notice()
+                .expect("a signal exit is the crash notice");
+            assert_eq!(notice.body, crashed, "{name} is classified as a crash");
+            push_event(event(id, name));
+        }
+        let mut host = crate::shell::overlay_host::ShellOverlayHost::with_fixture_content(
+            Box::new(ui::widget::Container::new()),
+        )
+        .with_chrome(chrome.clone());
+        host.enable_persisted_launch_drain_for_test();
+        let _ = host.drain_launch_events();
+        drop(host);
+        let posted: Vec<(String, String)> = chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|note| (note.title.clone(), note.body.clone()))
+            .collect();
+        assert!(
+            posted
+                .iter()
+                .all(|(title, body)| body != crashed && !title.starts_with("Couldn't open")),
+            "an opened Wine File window and session helpers must not toast a crash: {posted:?}"
+        );
+
+        unregister_launched_process(wine.pid());
+        unregister_launched_process(geoclue.pid());
+        unregister_launched_process(applet.pid());
+        clear_pending_placements();
+        clear_launched_for_test();
     }
 
     #[cfg(target_os = "linux")]
