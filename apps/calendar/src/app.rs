@@ -1222,7 +1222,7 @@ impl CalendarApp {
                 // Clear successfully-uploaded events from the push outbox and
                 // server-confirmed removals from the delete outbox.
                 for revision in revisions {
-                    CalDoc::set_remote_binding(
+                    self.record_remote_binding(
                         doc,
                         revision.id,
                         &revision.calendar_id,
@@ -1231,11 +1231,20 @@ impl CalendarApp {
                     );
                 }
                 for id in pushed {
-                    CalDoc::dequeue_push(doc, id);
+                    self.perform_action(
+                        doc,
+                        &crate::actions::CalendarAction::AcknowledgeRemotePush {
+                            id: id.to_string(),
+                        },
+                    );
                 }
                 for id in deleted {
-                    CalDoc::dequeue_delete(doc, id);
-                    CalDoc::remove_remote_binding(doc, id);
+                    self.perform_action(
+                        doc,
+                        &crate::actions::CalendarAction::AcknowledgeRemoteDelete {
+                            id: id.to_string(),
+                        },
+                    );
                 }
                 if !conflicts.is_empty() {
                     outcome = SyncOutcome::Failed(format!(
@@ -1322,7 +1331,12 @@ impl CalendarApp {
                 continue;
             }
             e.id = Uuid::new_v4();
-            CalDoc::update_event(doc, &e);
+            self.perform_action(
+                doc,
+                &crate::actions::CalendarAction::AdoptRemoteEvent(
+                    crate::actions::EventData::from_event(&e),
+                ),
+            );
             self.model.events.push(e);
             added += 1;
         }
@@ -1359,8 +1373,13 @@ impl CalendarApp {
                     self.model.events.push(event.clone());
                     added += 1;
                 }
-                CalDoc::update_event(doc, &event);
-                CalDoc::set_remote_binding(
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::AdoptRemoteEvent(
+                        crate::actions::EventData::from_event(&event),
+                    ),
+                );
+                self.record_remote_binding(
                     doc,
                     id,
                     &resource.calendar_id,
@@ -1383,8 +1402,13 @@ impl CalendarApp {
                     self.model.tasks.push(task.clone());
                     added += 1;
                 }
-                CalDoc::update_task(doc, &task);
-                CalDoc::set_remote_binding(
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::AdoptRemoteTask(
+                        crate::actions::TaskData::from_task(&task),
+                    ),
+                );
+                self.record_remote_binding(
                     doc,
                     id,
                     &resource.calendar_id,
@@ -1402,10 +1426,10 @@ impl CalendarApp {
                 .map(|(id, _)| id)
                 .collect();
             for id in victims {
-                CalDoc::delete_event(doc, id);
-                CalDoc::delete_task(doc, id);
-                CalDoc::remove_remote_binding(doc, id);
-                CalDoc::dequeue_push(doc, id);
+                self.perform_action(
+                    doc,
+                    &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
+                );
                 self.model.events.retain(|event| event.id != id);
                 self.model.tasks.retain(|task| task.id != id);
                 removed += 1;
@@ -1424,10 +1448,10 @@ impl CalendarApp {
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
                     {
-                        CalDoc::delete_event(doc, id);
-                        CalDoc::delete_task(doc, id);
-                        CalDoc::remove_remote_binding(doc, id);
-                        CalDoc::dequeue_push(doc, id);
+                        self.perform_action(
+                            doc,
+                            &crate::actions::CalendarAction::DropRemoteItem { id: id.to_string() },
+                        );
                         self.model.events.retain(|event| event.id != id);
                         self.model.tasks.retain(|task| task.id != id);
                         removed += 1;
@@ -1438,7 +1462,13 @@ impl CalendarApp {
         // Commit markers are deliberately last: a crash before here repeats a
         // response idempotently; a crash after here sees fully reconciled data.
         for checkpoint in result.checkpoints {
-            CalDoc::set_sync_token(doc, &checkpoint.calendar_id, &checkpoint.token);
+            self.perform_action(
+                doc,
+                &crate::actions::CalendarAction::SetSyncToken {
+                    calendar_id: checkpoint.calendar_id.clone(),
+                    token: checkpoint.token.clone(),
+                },
+            );
         }
         self.model.events.sort_by_key(|e| e.start);
         self.status = Some(match outcome {
@@ -1848,6 +1878,25 @@ impl CalendarApp {
         self.actions.dispatch(doc, action);
     }
 
+    fn record_remote_binding(
+        &mut self,
+        doc: &mut AutoCommit,
+        id: Id,
+        calendar_id: &str,
+        href: &str,
+        etag: Option<&str>,
+    ) {
+        self.perform_action(
+            doc,
+            &crate::actions::CalendarAction::SetRemoteBinding {
+                id: id.to_string(),
+                calendar_id: calendar_id.to_string(),
+                href: href.to_string(),
+                etag: etag.unwrap_or_default().to_string(),
+            },
+        );
+    }
+
     /// Send a local effect through the same typed resource-operation protocol
     /// that agents, search, history, and collaboration-aware hosts invoke.
     ///
@@ -2192,13 +2241,6 @@ impl CalendarApp {
             data: crate::actions::ProjectData::from_project(project),
             in_use: self.resource_index.projects_in_use.contains(&raw),
         })
-    }
-
-    /// Build only the root metadata the pull directory needs.  In particular,
-    /// do not materialise events/tasks (which may number in the hundreds of
-    /// thousands) merely to expose Calendar's stable root actions.
-    fn calendar_directory_root_ctx(&self) -> crate::actions::CalendarResourceCtx {
-        self.resource_ctx_base()
     }
 
     /// Convert parsed ICS records into one deterministic action. Tilo's UUID
@@ -7392,13 +7434,36 @@ impl ui::resources::PublishesResources for CalendarApp {
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The framework root already publishes the calendar. The directory page
+        // keeps the same pending-import extra as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
+                self.pending_launch_resource().into_iter().collect()
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
+        // The pull directory is the published calendar root. Event and task
+        // rows stay on the revisioned search provider; walking them here would
+        // materialise the whole history just to list stable root actions.
+        let mut root = ui::tilo_resource::publish::<crate::resource::Calendar>(
+            "calendar.calendar",
+            "Calendar",
+            &crate::doc::CalDoc::read_model(doc),
+        );
+        root.children.clear();
         Some(ui::widget::ActionDirectoryResourcePage {
             resources: (cursor.is_empty() && max_results > 0)
-                .then(|| crate::actions::calendar_root(&self.calendar_directory_root_ctx()))
+                .then_some(root)
                 .into_iter()
                 .collect(),
             next_cursor: Vec::new(),
@@ -7408,6 +7473,9 @@ impl ui::resources::PublishesResources for CalendarApp {
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if id == "calendar.pending-import" {
             return self.pending_launch_resource();
+        }
+        if self.actions.is_hosted() && id == "calendar.calendar" {
+            return None;
         }
         self.publish_resource(doc, id)
     }

@@ -345,6 +345,9 @@ pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<Calendar>>,
     last: Option<EncodedAction>,
+    /// Test-only: hosted lookup without a framework dispatcher.
+    #[cfg(test)]
+    hosted: bool,
 }
 
 impl ActionSink {
@@ -353,7 +356,17 @@ impl ActionSink {
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
+        #[cfg(test)]
+        if self.hosted {
+            return true;
+        }
         self.framework.is_some()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 
     pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalendarAction) {
