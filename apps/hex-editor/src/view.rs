@@ -214,10 +214,9 @@ pub struct HexView {
     shots_overlay: bool,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
-    /// Set when the framework ResourceApp hosts this surface. Hosted
-    /// [`PublishesResources`] keeps only live cursor extras — never a second
-    /// `hex_editor.document` beside ResourceRoot.
-    hosted: bool,
+    /// Local host for standalone tests; the framework dispatcher once the
+    /// surface is attached. Hosted publication keeps only live cursor extras.
+    pub(crate) actions: crate::resource::ActionSink,
 }
 
 impl HexView {
@@ -266,25 +265,20 @@ impl HexView {
             shots_status: false,
             shots_overlay: false,
             focused: false,
-            hosted: false,
+            actions: crate::resource::ActionSink::default(),
         }
-    }
-
-    /// Framework [`ResourceSurface::attach`] marks the surface hosted so
-    /// palette publication does not duplicate ResourceRoot's publish door.
-    pub(crate) fn mark_framework_hosted(&mut self) {
-        self.hosted = true;
     }
 
     /// Whether this surface is under the framework ResourceApp host.
     pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.hosted
+        self.actions.is_hosted()
     }
 
     /// Test-only: mark hosted without constructing a framework dispatcher.
+    /// Standalone tests stay on the local action host.
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+        self.actions.mark_hosted_for_test();
     }
 
     /// The editor with no file loaded — the honest live default. Shows a
@@ -2335,14 +2329,14 @@ impl ui::resources::PublishesResources for HexView {
     /// framework hosts the surface, [`tilo_resource::publish`] already owns
     /// `hex_editor.document` — keep only live cursor / selection byte extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.hosted {
+        if self.actions.is_hosted() {
             return crate::actions::live_buffer_extras(&self.hex_resource_ctx());
         }
         self.publish_resources(doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.hosted && id == "hex_editor.document" {
+        if self.actions.is_hosted() && id == "hex_editor.document" {
             return None;
         }
         fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
@@ -2366,7 +2360,7 @@ impl HexView {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
@@ -2390,6 +2384,14 @@ impl HexView {
                 self.dirty = true;
             }
             HexOperation::Edit { edit } if self.has_file => {
+                // Raw bytes: the sink returns before the framework dispatcher.
+                // The buffer stays on this device.
+                let action = crate::actions::action_from_wire(&edit);
+                self.actions.dispatch_document(
+                    doc,
+                    &action,
+                    ui::tilo_actions::ActionContext::default(),
+                );
                 self.model.apply_local_edit(&edit.into());
                 self.record_local_history();
                 self.dirty = true;
@@ -2413,7 +2415,7 @@ impl HexView {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {

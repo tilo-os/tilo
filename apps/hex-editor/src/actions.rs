@@ -147,6 +147,36 @@ impl Action for HexEditorAction {
     }
 }
 
+/// Raw hex bytes stay on this device. [`HexEditorAction::apply`] refuses
+/// collaborative replay, so a hosted surface must not hand these variants to
+/// the framework dispatcher. A document variant this match does not name is
+/// replayable and uses [`crate::resource::ActionSink::dispatch_document`].
+pub(crate) const fn refuses_collaborative_replay(action: &HexEditorAction) -> bool {
+    match action {
+        HexEditorAction::InsertBytes { .. }
+        | HexEditorAction::DeleteBytes { .. }
+        | HexEditorAction::OverwriteBytes { .. } => true,
+    }
+}
+
+/// The legacy byte action corresponding to a local edit wire payload.
+pub(crate) fn action_from_wire(edit: &BufferEditWire) -> HexEditorAction {
+    match edit {
+        BufferEditWire::Insert { offset, bytes } => HexEditorAction::InsertBytes {
+            offset: *offset,
+            bytes: bytes.clone(),
+        },
+        BufferEditWire::Delete { offset, len } => HexEditorAction::DeleteBytes {
+            offset: *offset,
+            len: *len,
+        },
+        BufferEditWire::Overwrite { offset, bytes } => HexEditorAction::OverwriteBytes {
+            offset: *offset,
+            bytes: bytes.clone(),
+        },
+    }
+}
+
 /// Register the legacy decoder so stale envelopes fail with the action's
 /// explicit local-only refusal rather than being misinterpreted.
 pub fn register(registry: &mut ActionRegistry) {
