@@ -1,3 +1,8 @@
+pub use crate::theme_layers::{
+    AccessibilityLayer, BrandAccentRejection, ContentSurface, DISTRIBUTION_DEFAULTS_KEY,
+    DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, PIN_ACCENT, PIN_PALETTE,
+    ThemeLayerStack, WorkspaceTint, resolve_theme_layers,
+};
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{PaletteSpec, Tokens};
@@ -189,6 +194,11 @@ pub struct Theme {
     /// folds in the accessibility preference once, keeping file I/O out of
     /// widget draw paths.
     pub caret_width: f64,
+    /// High contrast or forced colours is the active track. Content surfaces
+    /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
+    pub forced_colors: bool,
+    /// Whether an app may supply a brand accent. The person turns this off.
+    pub allow_app_accents: bool,
 }
 
 impl Default for Theme {
@@ -292,6 +302,8 @@ impl Theme {
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
+            forced_colors: false,
+            allow_app_accents: true,
             tokens,
         }
     }
@@ -692,31 +704,17 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let document = serde_json::from_str::<serde_json::Value>(text).ok();
-        // The accessibility switch is separate from the theme choice and wins
-        // over it, as it does for apps reading the appearance portal.
-        let high_contrast = document
-            .as_ref()
-            .and_then(|v| v.get("appearance")?.get("high_contrast")?.as_bool())
-            .unwrap_or(false);
-        let mut theme = if high_contrast {
-            Self::high_contrast()
-        } else {
-            Self::from_settings_json(text).unwrap_or_else(Self::dark)
-        };
-        let thick = document
-            .as_ref()
-            .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
-            .unwrap_or(false);
-        theme.caret_width = if thick { 4.0 } else { 2.0 };
-        // Match standalone apps' accessibility override.  The compositor is
-        // itself a UI host, so an explicitly reduced-motion session must not
-        // keep full-desktop transitions running even when settings.json has
-        // not been written yet (notably the disposable software-rendered VM).
-        if reduce_motion_override {
-            theme.reduce_motion = true;
-        }
-        theme
+        let mut stack =
+            crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
+        // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
+        // Baking the file's factors here would apply them twice. Reduced motion
+        // follows the host override: the compositor is itself a UI host, so an
+        // explicitly reduced-motion session must not keep full-desktop
+        // transitions running even when settings.json has not been written yet.
+        stack.accessibility.text_scale = 1.0;
+        stack.accessibility.ui_scale = 1.0;
+        stack.accessibility.reduce_motion = reduce_motion_override;
+        resolve_theme_layers(&stack)
     }
 
     /// Parser shared by runtime loading and hermetic tests. An "Automatic"
@@ -814,7 +812,9 @@ impl Theme {
         c.semantic.danger = Color::from_rgb8(255, 82, 82);
         c.semantic.info = Color::from_rgb8(64, 196, 255);
 
-        Self::from_tokens("High Contrast", t)
+        let mut theme = Self::from_tokens("High Contrast", t);
+        theme.forced_colors = true;
+        theme
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
@@ -1005,6 +1005,7 @@ impl Theme {
         text_scale: f32,
         ui_scale: f32,
     ) -> Self {
+        let allow_app_accents = self.allow_app_accents;
         let base = if settings.high_contrast {
             Self::high_contrast()
         } else {
@@ -1013,6 +1014,15 @@ impl Theme {
         base.with_ui_scale(ui_scale)
             .with_text_scale(text_scale)
             .with_reduce_motion(settings.reduce_motion)
+            .with_app_accents(allow_app_accents)
+    }
+
+    /// Restores the app-accent switch after a track replacement
+    /// ([`Theme::with_a11y`] swaps in [`Theme::high_contrast`]).
+    #[must_use]
+    pub fn with_app_accents(mut self, allow: bool) -> Self {
+        self.allow_app_accents = allow;
+        self
     }
 }
 

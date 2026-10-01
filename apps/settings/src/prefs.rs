@@ -499,6 +499,27 @@ pub struct AppearancePrefs {
     /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
     #[serde(default = "default_wallpaper_target")]
     pub wallpaper_target: String,
+    /// Palette, default accent and pins shipped with the OS image.
+    /// Absent on a settings file written before the layer existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
+    /// Accent hint for one workspace. Accessibility can drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_tint: Option<ui::theme::WorkspaceTint>,
+    /// When false, [`ui::Theme::brand_accent`] refuses every app colour.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub app_accents: bool,
+    /// Force theme tokens onto content surfaces, with high contrast.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub forced_colors: bool,
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn default_schedule() -> String {
@@ -545,6 +566,10 @@ impl Default for AppearancePrefs {
             sunset: default_sunset(),
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
+            distribution_defaults: None,
+            workspace_tint: None,
+            app_accents: true,
+            forced_colors: false,
         }
     }
 }
@@ -574,17 +599,22 @@ impl AppearancePrefs {
     /// real "apply" contract — a consumer that wants the user's look calls
     /// this rather than hard-coding [`ui::Theme::dark`].
     pub fn resolve_theme(&self) -> ui::Theme {
-        let base = if self.high_contrast {
-            ui::Theme::high_contrast()
-        } else {
-            self.base_theme()
-        };
-        // UI scale grows the whole system first; text scale then layers extra
-        // type growth on top. Both fold into the same theme the compositor and
-        // every app draw against.
-        base.with_ui_scale(self.ui_scale as f32)
-            .with_text_scale(self.text_scale as f32)
-            .with_reduce_motion(self.reduce_motion)
+        // The same function the compositor uses. UI scale grows the whole
+        // system first; text scale then layers extra type growth on top.
+        ui::theme::resolve_theme_layers(&ui::theme::ThemeLayerStack {
+            distribution_defaults: self.distribution_defaults.clone(),
+            user_theme: Some(self.base_theme()),
+            workspace_tint: self.workspace_tint.clone(),
+            accessibility: ui::theme::AccessibilityLayer {
+                high_contrast: self.high_contrast,
+                forced_colors: self.forced_colors,
+                text_scale: self.text_scale as f32,
+                ui_scale: self.ui_scale as f32,
+                reduce_motion: self.reduce_motion,
+                thick_caret: false,
+            },
+            allow_app_accents: self.app_accents,
+        })
     }
 }
 
@@ -1545,6 +1575,22 @@ mod tests {
         // Spacing grows by the UI factor only; type by UI × text.
         assert!((theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
         assert!((theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+
+        // A pinned distribution accent wins over the named preset's accent
+        // only. The palette stays the one the pane shows.
+        let mut pinned = prefs("Light", false, false, 1.0, 1.0);
+        pinned.distribution_defaults = Some(ui::theme::DistributionDefaults {
+            accent: Some([0x0B, 0x3A, 0x82]),
+            policy: ui::theme::DistributionPolicy {
+                pins: vec![ui::theme::PIN_ACCENT.into()],
+                ..ui::theme::DistributionPolicy::default()
+            },
+            ..ui::theme::DistributionDefaults::default()
+        });
+        let pinned_theme = pinned.resolve_theme();
+        assert_eq!(pinned_theme.name, "Light");
+        let accent = pinned_theme.accent_primary.to_rgba8();
+        assert_eq!([accent.r, accent.g, accent.b], [0x0B, 0x3A, 0x82]);
     }
 
     /// Writing one section never clobbers the region store's locale, a theme
