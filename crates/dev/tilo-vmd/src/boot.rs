@@ -854,7 +854,15 @@ mod tests {
         {
             // Every option that takes a value has one, and the value is no option.
             for pair in IMAGE_DRACUT_ARGS.windows(2) {
-                if ["--compress", "--omit", "--omit-drivers", "--add-drivers", "--add"].contains(&pair[0]) {
+                if [
+                    "--compress",
+                    "--omit",
+                    "--omit-drivers",
+                    "--add-drivers",
+                    "--add",
+                ]
+                .contains(&pair[0])
+                {
                     assert!(!pair[1].starts_with("--"), "{pair:?}");
                 }
             }
