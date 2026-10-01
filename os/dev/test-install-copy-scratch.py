@@ -30,7 +30,7 @@ class EncryptedCopyScratchTest(unittest.TestCase):
             self.assertIn('--property=PrivateMounts=yes', INSTALL)
             copy = INSTALL.index('TMPDIR=/var/tmp bootc image copy-to-storage')
             release = INSTALL.index('release_copy_scratch || die "could not remove bootc scratch mount"', copy)
-            install = INSTALL.index('bootc install to-filesystem', release)
+            install = INSTALL.index('"${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem', release)
             self.assertLess(copy, release)
             self.assertLess(release, install)
             self.assertIn('rm -rf --one-file-system -- "$COPY_SCRATCH"', INSTALL)

@@ -167,7 +167,8 @@ pub struct HttpsLink {
 
 impl HttpsLink {
     /// Run the handshake as the device behind `signer` and start the send
-    /// and poll pumps. The host must present `host_device` under `user`.
+    /// and poll pumps. The host must present `host_device`, certified under
+    /// any person's root.
     ///
     /// # Errors
     ///
@@ -191,9 +192,10 @@ impl HttpsLink {
             })?,
         )
         .await?;
-        auth::verify_hello_ack(
+        // The host device is pinned, so it may be another person's: the
+        // host of a room this device was invited to.
+        auth::verify_pinned_host_ack(
             &challenge.ack,
-            &cert.user_public_key,
             revocations,
             crate::clock::now_ns(),
             &client_nonce,
@@ -258,6 +260,12 @@ impl HttpsLink {
     /// (`Envelope::CompactVolunteer`).
     pub fn compacts(&self) -> bool {
         self.features & tilo_relay_protocol::web::FEATURE_COMPACTION != 0
+    }
+
+    /// Whether the host governs calls in its rooms
+    /// (`Envelope::VoiceJoin`, see [`tilo_relay_protocol::voice`]).
+    pub fn voice(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_VOICE != 0
     }
 
     /// Queue one envelope for the host, in order.

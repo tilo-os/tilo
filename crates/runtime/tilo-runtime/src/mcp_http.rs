@@ -114,6 +114,7 @@ pub struct Endpoint<H> {
     /// Present exactly when a compositor is driven, which `/watch` then gates.
     watch: Option<Arc<WatchLease>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
+    open_files: Arc<crate::mcp::OpenFiles>,
 }
 
 /// The only body `POST /watch` accepts.
@@ -172,6 +173,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             viewer,
             watch,
             sessions: Mutex::new(HashMap::new()),
+            open_files: Arc::default(),
         })
     }
 
@@ -328,7 +330,8 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let server = Arc::new(tokio::sync::Mutex::new(
             McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
                 .with_agent_run(agent_run_id(&id), client_label(initialize))
-                .with_computer(self.computer.clone()),
+                .with_computer(self.computer.clone())
+                .with_open_files(Arc::clone(&self.open_files)),
         ));
         let now = Instant::now();
         let session = Session {

@@ -4,9 +4,16 @@
 # the same commit (BASE_IMAGE, a tilo-vm image built by os/Containerfile.dev).
 # The firmware comes from the board's pinned firmware artifact, imported into
 # os/hardware/firmware/<profile>/ before the build
-# (os/dev/hardware-firmware-artifact.py import). The dev image boots unsealed
-# from ordinary boot entries, so the profile's device tree goes where bootc
-# points them at one: /usr/lib/modules/<kver>/devicetree.
+# (os/dev/hardware-firmware-artifact.py import).
+#
+# Unlike the generic dev image, a board image is sealed: bootc takes a device
+# tree only from a UKI's .dtb section, never from ordinary boot entries, so the
+# profile's DTB reaches the kernel, and survives `bootc upgrade`, only inside a
+# UKI. The layout is the release's (os/Containerfile `split`, `uki`, `final`):
+# the kernel is split out of the rootfs, os/dev/uki.sh builds the UKI with the
+# DTB, and the final stage adds only /boot, which the composefs digest excludes.
+# `bootc container ukify` seals the digest of the split rootfs, and bootc
+# install accepts it in one pass (see the split stage).
 ARG BASE_IMAGE
 ARG RPMS_REF
 
@@ -18,7 +25,7 @@ COPY os/scripts/build-initramfs.sh /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
 COPY os/hardware/firmware /tilo/os/hardware/firmware
 
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS board-root
 ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
@@ -37,11 +44,38 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
-    && dtb="$(python3 -c 'import json; print(json.load(open("/usr/lib/tilo/hardware-profile.json"))["devicetree"] or "")')" \
-    && { [ -z "$dtb" ] || install -m 0644 "$dtb" "/usr/lib/modules/$kver/devicetree"; } \
     && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
     && dnf clean all \
     && rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf \
     && bootc container lint
 
+# Nothing may be added to the rootfs after the split: the UKI seals its digest.
+FROM board-root AS split
+# bootc install reads directories from the image's layers, where one that a
+# later layer only added entries to keeps an older entry's time and mode, while
+# `bootc container ukify` reads them from the merged tree. Setting every
+# directory here puts all of them in this layer, so both see the same tree.
+RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel \
+    && find / -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /tmp \) -prune \
+        -o -type d -exec touch -h -d @0 {} +
+
+FROM ${BASE_IMAGE} AS uki-tools
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        systemd-ukify \
+        systemd-boot-unsigned \
+        binutils \
+    && dnf clean all
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+FROM uki-tools AS uki
+ARG TILO_CFS_DIGEST=
+ENV CFS_DIGEST=${TILO_CFS_DIGEST}
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
+    bash /usr/local/bin/uki.sh
+
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
 LABEL org.opencontainers.image.title="Tilo board dev image (not for production)"

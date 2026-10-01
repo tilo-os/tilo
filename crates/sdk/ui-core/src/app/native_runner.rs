@@ -7,6 +7,7 @@
 //! its responsibility-specific implementation units.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -98,6 +99,12 @@ struct AppHandler {
     decorations: linux_header::Decorations,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
+    /// Settings.json changed while this process was idle. The next
+    /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
+    settings_store_changed: Arc<AtomicBool>,
+    /// Lives for the event loop so an idle app still hears Theme Studio
+    /// and compositor appearance writes.
+    _settings_watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 #[cfg(target_os = "macos")]
@@ -3322,7 +3329,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // event loop; this is short-lived only while GPU setup runs.
             audience.window.request_redraw();
         }
+        let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
         let app = &mut self.app;
+        if force_theme {
+            if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
+            {
+                app.last_theme_store_check = due;
+            }
+        }
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
@@ -3425,8 +3439,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let scheduled_due =
             scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         if scheduled_due {
-            app.needs_sync = true;
-            request_primary_redraw();
+            // A due deadline means "run sync" (poll a directory, settle
+            // spellcheck), not "commit a buffer". Files' 750ms metadata
+            // poll found nothing and still presented at ~2 Hz because
+            // `needs_sync` forced a full redraw.
+            let updated = app.update_model();
+            let _ = app.sync_model(true);
+            let structure = app.root_widget.take_structure_dirty();
+            if structure {
+                app.layout.structure_dirty = true;
+            }
+            if present_after_deadline_sync(
+                updated || structure || app.layout.layout_dirty,
+                app.root_widget.needs_animation_frame(),
+            ) {
+                request_primary_redraw();
+            }
         }
 
         // A hover tooltip is not motion, so it reveals even under
@@ -3814,6 +3842,21 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
+        let settings_store_changed = Arc::new(AtomicBool::new(false));
+        let settings_watch = {
+            let _entry = self.enter_wake_scope();
+            self.watch_system_settings
+                .then(|| {
+                    let pending = Arc::clone(&settings_store_changed);
+                    let wake = crate::wake::WakeHandle::new();
+                    settings_store::watch::watch_settings(move || {
+                        pending.store(true, Ordering::Release);
+                        wake.wake();
+                    })
+                    .ok()
+                })
+                .flatten()
+        };
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -3865,6 +3908,8 @@ impl App {
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
             host_appearance,
+            settings_store_changed,
+            _settings_watch: settings_watch,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3918,4 +3963,31 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = (app, window);
+}
+
+/// A due `next_wake_deadline` runs sync. Present only when that sync
+/// changed the model, the tree, or an in-flight animation. `needs_redraw`
+/// is not a reason: Files stays `needs_redraw` after `mark_drawn` (closed
+/// menus and other default leaves), so treating it as dirty recommits
+/// every 750ms metadata poll.
+fn present_after_deadline_sync(model_or_layout_dirty: bool, needs_animation: bool) -> bool {
+    model_or_layout_dirty || needs_animation
+}
+
+#[cfg(test)]
+mod deadline_present_tests {
+    use super::present_after_deadline_sync;
+
+    #[test]
+    fn idle_scheduled_sync_does_not_request_frames() {
+        assert!(
+            !present_after_deadline_sync(false, false),
+            "an idle scheduled poll must not keep requesting frames"
+        );
+        // Sticky `needs_redraw` after mark_drawn is not an argument: the
+        // helper no longer takes that bit. Model/structure/layout OR into
+        // the first flag at the call site (keeps clippy's bool limit).
+        assert!(present_after_deadline_sync(false, true));
+        assert!(present_after_deadline_sync(true, false));
+    }
 }

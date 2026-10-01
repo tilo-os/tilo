@@ -1878,7 +1878,7 @@ impl SheetsApp {
                                     Self::table_from_snapshot(&snapshot)
                                 })
                                 .collect();
-                            if let Err(error) = self.import_tables_with(doc, tables, false) {
+                            if let Err(error) = self.import_tables_with(doc, tables, false, None) {
                                 self.status = format!("Could not import saved workbook: {error}");
                                 self.last_persist_failure = Some(ui::time::now());
                             }
@@ -2545,7 +2545,12 @@ impl SheetsApp {
                 (inferred.format != CellFormat::General).then_some(inferred.format),
             ));
         }
-        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)], true) {
+        match self.import_workbook_action(
+            doc,
+            vec![(sheet_name_from_path(path), writes)],
+            true,
+            Some(path),
+        ) {
             Ok(count) => self.status = format!("Imported {count} cells from {}", file_label(path)),
             Err(error) => self.status = format!("CSV import failed: {error}"),
         }
@@ -2653,8 +2658,9 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
-        self.import_tables_with(doc, tables, true)
+        self.import_tables_with(doc, tables, true, source)
     }
 
     /// Import a parsed set of tables (one per sheet) into new sheets, running
@@ -2664,6 +2670,7 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
         replace_blank: bool,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
         let cur = self.default_currency();
         let mut total: usize = 0;
@@ -2698,7 +2705,7 @@ impl SheetsApp {
             total += writes.len();
             imported.push((table.name, writes));
         }
-        self.import_workbook_action(doc, imported, replace_blank)?;
+        self.import_workbook_action(doc, imported, replace_blank, source)?;
         self.reload(doc);
         Ok(total)
     }
@@ -2733,6 +2740,7 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         sheets: ImportedWorkbook,
         replace_blank: bool,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
         let mut total = 0usize;
         let mut action =
@@ -2764,8 +2772,10 @@ impl SheetsApp {
             SheetsAction::ImportSheets {
                 sheets,
                 replace_blank: replace,
+                source: from,
             } => {
                 *replace = replace_blank;
+                *from = source.map(import_source);
                 sheets.last().map(|sheet| sheet.sheet_id.clone())
             }
             _ => None,
@@ -2791,7 +2801,7 @@ impl SheetsApp {
             return;
         }
         match crate::xlsx::read_xlsx(path) {
-            Ok(tables) => match self.import_tables(doc, tables) {
+            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
                 Ok(total) => {
                     self.status = format!("Imported {total} cells from {}", file_label(path));
                 }
@@ -2813,7 +2823,7 @@ impl SheetsApp {
             return;
         }
         match crate::ods::read_ods(path) {
-            Ok(tables) => match self.import_tables(doc, tables) {
+            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
                 Ok(total) => {
                     self.status = format!("Imported {total} cells from {}", file_label(path));
                 }
@@ -2866,6 +2876,16 @@ impl SheetsApp {
         operation: PendingIo,
         path: PathBuf,
     ) -> Result<(), String> {
+        if let PendingIo::Import(_) = operation
+            && let Some(sheet) = SheetsDoc::sheet_index_by_source(doc, &import_source(&path))
+        {
+            self.switch_sheet(doc, sheet);
+            let name = self.sheet_names.get(sheet).cloned().unwrap_or_default();
+            self.status = format!("{} is already open as {name}", file_label(&path));
+            // Imports publish a job result, which carries no terminal value.
+            self.finish_resource_output(Ok(tilo_actions::ActionOutput::default()));
+            return Ok(());
+        }
         if self.interchange_rx.is_some() || self.active_interchange_generation.is_some() {
             return Err("a spreadsheet import or export is already in progress".into());
         }
@@ -3182,7 +3202,7 @@ impl SheetsApp {
                 path,
                 tables,
                 ..
-            } => self.import_tables(doc, tables).map(|total| {
+            } => self.import_tables(doc, tables, Some(&path)).map(|total| {
                 self.status = format!(
                     "Imported {total} cells from .{} {}",
                     format.ext(),
@@ -3318,7 +3338,7 @@ impl SheetsApp {
                 result,
                 ..
             } => result
-                .and_then(|tables| self.import_tables(doc, tables))
+                .and_then(|tables| self.import_tables(doc, tables, Some(&path)))
                 .map(|total| {
                     self.status = format!(
                         "Imported {total} cells from .{} {}",
@@ -3346,15 +3366,16 @@ impl SheetsApp {
     }
 
     fn finish_resource_io(&mut self, result: Result<(), String>) {
+        self.finish_resource_output(result.map(|()| tilo_actions::ActionOutput::default()));
+    }
+
+    fn finish_resource_output(&mut self, result: Result<tilo_actions::ActionOutput, String>) {
         let Some(invocation) = self.resource_invocation.take() else {
             return;
         };
         self.resource_confirmation = None;
         self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
+            Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
             Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
                 error: tilo_actions::ActionFailure {
@@ -5641,6 +5662,15 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "Imported".to_string())
 }
 
+/// How an imported sheet remembers its file: the resolved path, so every
+/// spelling of one file finds the sheets it already became.
+fn import_source(path: &std::path::Path) -> String {
+    tilo_files::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Cumulative x positions (layout space) of every character boundary in
 /// `text` when laid out at `size` starting at `x0`. The returned vector has
 /// `text.chars().count() + 1` entries: `[0]` is `x0` and the last is the text's
@@ -6505,6 +6535,15 @@ impl ui::resources::PublishesResources for SheetsApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
+        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
     }
 }
 
@@ -8829,6 +8868,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// Admit an agent's direct-path `.xlsx` import and run the one model pass
+    /// admission schedules.
+    fn admit_direct_import(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        source: &std::path::Path,
+    ) -> tilo_actions::InvocationId {
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&actions::SheetsOperation::ImportXlsx {
+            path: Some(source.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &payload,
+            ),
+            doc,
+            &automerge::ROOT,
+        );
+        assert!(
+            matches!(
+                started,
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            ),
+            "{started:?}"
+        );
+        app.sync(doc, &automerge::ROOT);
+        invocation
+    }
+
+    /// Opening a file the workbook already holds, by an agent's typed import
+    /// or the Import dialog, reveals the sheet it became instead of importing
+    /// a second copy.
+    #[test]
+    fn opening_an_open_file_again_reveals_it_instead_of_importing_a_copy() {
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, wakes) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let directory = std::env::temp_dir().join(format!("tilo-sheets-reopen-{}", Uuid::new_v4()));
+        let file = directory.join("budget.xlsx");
+        {
+            let (mut app, mut doc) = seeded_app();
+            let invocation = admit_direct_export(&mut app, &mut doc, &file);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+        }
+        let (mut app, mut doc) = seeded_app();
+        let imported = SheetsDoc::sheet_count(&mut doc);
+        let first = admit_direct_import(&mut app, &mut doc, &file);
+        let update = settle_on_idle_host(&mut app, &mut doc, &wakes, first);
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "{update:?}"
+        );
+        let sheets = SheetsDoc::sheet_count(&mut doc);
+        let imported_id = SheetsDoc::sheet_resource_id(&doc, imported);
+
+        // Case `a_typed_reopen_returns_the_open_sheet`.
+        {
+            app.switch_sheet(&mut doc, 0);
+            let respelled = directory.join(".").join("budget.xlsx");
+            let again = admit_direct_import(&mut app, &mut doc, &respelled);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, again);
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                panic!("{update:?}");
+            };
+            tilo_actions::ResultSpec::Job
+                .validate(&output)
+                .expect("a reopen honours the import's published job result");
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
+            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+            assert_eq!(
+                SheetsDoc::sheet_resource_id(&doc, app.active_sheet),
+                imported_id
+            );
+        }
+
+        // Case `the_import_dialog_reveals_the_open_sheet`.
+        {
+            app.switch_sheet(&mut doc, 0);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(file.clone()));
+            ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
+            app.drain_io(&mut doc);
+            assert!(app.interchange_rx.is_none(), "nothing is read again");
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
+            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+            assert!(app.status.contains("already open"), "{}", app.status);
+        }
+
+        // Case `a_file_whose_sheets_were_deleted_imports_again`.
+        {
+            while let Some(idx) = SheetsDoc::sheet_index_by_source(&doc, &import_source(&file)) {
+                let deleted = actions::SheetsAction::DeleteSheet {
+                    idx,
+                    sheet_id: SheetsDoc::sheet_resource_id(&doc, idx).unwrap(),
+                };
+                app.try_perform_action(&mut doc, &deleted).unwrap();
+            }
+            app.reload(&mut doc);
+            let after_delete = SheetsDoc::sheet_count(&mut doc);
+            let reimport = admit_direct_import(&mut app, &mut doc, &file);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, reimport);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(SheetsDoc::sheet_count(&mut doc) > after_delete);
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         app.cache
             .as_ref()
@@ -9199,7 +9362,7 @@ mod tests {
             // Import into a brand-new, empty document via the real import path.
             let mut fresh = SheetsApp::new();
             let mut doc2 = AutoCommit::new();
-            fresh.import_tables(&mut doc2, tables).unwrap();
+            fresh.import_tables(&mut doc2, tables, None).unwrap();
 
             // The formula came back as a formula, not its computed value.
             assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (4, 1)), "=SUM(B2:D2)");
@@ -9227,10 +9390,11 @@ mod tests {
                     bold: false,
                 })]],
             };
-            app.import_tables(&mut doc, vec![table.clone()]).unwrap();
+            app.import_tables(&mut doc, vec![table.clone()], None)
+                .unwrap();
             assert_eq!(SheetsDoc::sheet_names(&mut doc), ["sales"]);
             assert_eq!(app.active_sheet, 0);
-            app.import_tables(&mut doc, vec![table]).unwrap();
+            app.import_tables(&mut doc, vec![table], None).unwrap();
             assert_eq!(
                 SheetsDoc::sheet_names(&mut doc).len(),
                 2,
