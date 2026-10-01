@@ -294,6 +294,17 @@ pub enum CodeEditorAction {
     },
     /// Create the embedded terminal's object if this project does not have one.
     EnsureTerminalPanel,
+    /// Mint the durable project id once. Replay writes the same id; a later
+    /// call leaves an id that is already there.
+    EnsureProjectId {
+        id: String,
+    },
+    /// Create a file buffer and seed it once. An existing buffer is left as it
+    /// is, so a peer's unsaved text is not replaced by a disk read.
+    EnsureBuffer {
+        key: String,
+        seed: String,
+    },
 }
 
 /// The durable tree entry type an action addresses. Serializing this enum
@@ -330,13 +341,15 @@ pub fn history_context(
         CodeEditorAction::SetFileLanguage { id, .. } => (id.as_str(), "file", "Set file language"),
         CodeEditorAction::DeleteFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Delete"),
         CodeEditorAction::EnsureTerminalPanel => ("terminal", "panel", "Open terminal panel"),
+        CodeEditorAction::EnsureProjectId { id } => (id.as_str(), "project", "Identify project"),
+        CodeEditorAction::EnsureBuffer { key, .. } => (key.as_str(), "file", "Open file"),
     };
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
-        id: if kind == "folder" {
-            folder_resource_id(id)
-        } else {
-            file_resource_id(id)
+        id: match kind {
+            "folder" => folder_resource_id(id),
+            "project" => project_resource_id(id),
+            _ => file_resource_id(id),
         },
         kind: format!("code_editor.{kind}"),
         label: file_name.to_string(),
@@ -411,12 +424,22 @@ impl Action for CodeEditorAction {
                 doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?;
                 Ok(())
             }
+            Self::EnsureProjectId { id } => {
+                EditorDoc::ensure_project_id(doc, id);
+                Ok(())
+            }
+            Self::EnsureBuffer { key, seed } => {
+                EditorDoc::ensure_buffer_key(doc, key, seed);
+                Ok(())
+            }
         }
     }
 
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
-            Self::EnsureTerminalPanel => tilo_actions::ChangeKind::Housekeeping,
+            Self::EnsureTerminalPanel | Self::EnsureProjectId { .. } => {
+                tilo_actions::ChangeKind::Housekeeping
+            }
             _ => tilo_actions::ChangeKind::Content,
         }
     }
@@ -992,19 +1015,6 @@ pub struct CodeEditorResourceCtx {
 /// search result set) from being flattened on every palette interaction.
 pub const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
 
-fn project_resource(ctx: &CodeEditorResourceCtx) -> Resource {
-    let label = if ctx.project_name.trim().is_empty() {
-        "Project".to_string()
-    } else {
-        ctx.project_name.clone()
-    };
-    Resource::new(
-        project_resource_id(&ctx.project_id),
-        "code_editor.project",
-        label,
-    )
-}
-
 fn entry_rename_action(id: String, kind: EntryKind, revision: i64) -> ActionSpec {
     let (action_id, label, prompt) = match kind {
         EntryKind::File => ("rename", "Rename file", "new file name"),
@@ -1136,27 +1146,20 @@ fn file_resource_base(doc: &AutoCommit, f: &OpenFileRef) -> Resource {
         deletion_revision: 0,
     });
     let buffer = EditorDoc::read_buffer_key(doc, &f.id);
-    let label = if f.name.trim().is_empty() {
-        "untitled".to_string()
-    } else {
-        f.name.clone()
-    };
-    let mut file = Resource::new(file_resource_id(&f.id), "code_editor.file", label).with_action(
-        file_operation(
-            "open",
-            "Open file",
-            OperationKind::View,
-            &CodeEditorOperation::Open {
-                file_id: f.id.clone(),
-            },
-        ),
-    );
+    let mut file = publish_file_document(&record, buffer.as_deref());
+    let mut front = vec![file_operation(
+        "open",
+        "Open file",
+        OperationKind::View,
+        &CodeEditorOperation::Open {
+            file_id: f.id.clone(),
+        },
+    )];
     if f.can_save {
-        file = file.with_action(save_action(f.id.clone()));
+        front.push(save_action(f.id.clone()));
     }
-    for action in publish_file_document(&record, buffer.as_deref()).actions {
-        file = file.with_action(action);
-    }
+    front.append(&mut file.actions);
+    file.actions = front;
     file
 }
 
@@ -1464,45 +1467,38 @@ fn folder_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, folder: &Folde
     )
 }
 
-fn add_catalogue_actions(project: &mut Resource) {
-    for spec in project_view_effect_specs()
+/// Command, open, and create specs. New-file and new-folder carry the live
+/// next ids so a palette create matches the chrome's next create.
+fn live_project_action_specs(ctx: &CodeEditorResourceCtx) -> Vec<ActionSpec> {
+    let mut specs: Vec<ActionSpec> = project_view_effect_specs()
         .into_iter()
-        .filter(|spec| spec.id.starts_with("command-"))
-    {
-        project.actions.push(spec);
-    }
-}
-
-fn add_project_actions(mut project: Resource, ctx: &CodeEditorResourceCtx) -> Resource {
-    add_catalogue_actions(&mut project);
-    for spec in project_view_effect_specs()
-        .into_iter()
-        .filter(|spec| matches!(spec.id.as_str(), "open-file" | "open-folder"))
-    {
-        project = project.with_action(spec);
-    }
-    project
-        .with_action(document_action_spec(
-            "new-file",
-            "New file",
-            &create_file_action(
-                ctx.next_file_id.clone(),
-                ctx.next_file_name.clone(),
-                None,
-                i64::MAX / 2,
-                String::new(),
-            ),
-        ))
-        .with_action(document_action_spec(
-            "new-folder",
-            "New folder",
-            &CodeEditorAction::CreateFolder {
-                id: ctx.next_folder_id.clone(),
-                name: ctx.next_folder_name.clone(),
-                parent: None,
-                order: i64::MAX / 2,
-            },
-        ))
+        .filter(|spec| {
+            spec.id.starts_with("command-")
+                || matches!(spec.id.as_str(), "open-file" | "open-folder")
+        })
+        .collect();
+    specs.push(document_action_spec(
+        "new-file",
+        "New file",
+        &create_file_action(
+            ctx.next_file_id.clone(),
+            ctx.next_file_name.clone(),
+            None,
+            i64::MAX / 2,
+            String::new(),
+        ),
+    ));
+    specs.push(document_action_spec(
+        "new-folder",
+        "New folder",
+        &CodeEditorAction::CreateFolder {
+            id: ctx.next_folder_id.clone(),
+            name: ctx.next_folder_name.clone(),
+            parent: None,
+            order: i64::MAX / 2,
+        },
+    ));
+    specs
 }
 
 fn attach_nested_resources(
@@ -1758,7 +1754,21 @@ pub(crate) fn live_presentation_extras(ctx: &CodeEditorResourceCtx) -> Vec<Resou
 /// Stable project root for bounded remote hierarchy. Files, folders, and
 /// search results stay behind Code's retained, revisioned providers.
 pub fn project_root(ctx: &CodeEditorResourceCtx) -> Resource {
-    add_project_actions(project_resource(ctx), ctx)
+    let label = if ctx.project_name.trim().is_empty() {
+        "Project".to_string()
+    } else {
+        ctx.project_name.clone()
+    };
+    let mut project = ui::tilo_resource::publish::<crate::resource::CodeEditor>(
+        &project_resource_id(&ctx.project_id),
+        &label,
+        &crate::resource::ProjectState::default(),
+    );
+    for action in live_project_action_specs(ctx) {
+        project.actions.retain(|existing| existing.id != action.id);
+        project = project.with_action(action);
+    }
+    project
 }
 
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
@@ -1770,31 +1780,85 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<R
         ctx.project_name.as_str()
     };
     let project_id = project_resource_id(&ctx.project_id);
-    let published =
+    let mut project =
         ui::tilo_resource::publish::<crate::resource::CodeEditor>(&project_id, label, &state);
-    let protocol = project_root(ctx);
-    let mut project = published;
-    // Prefer the live next-id Document creates and View/Effect catalogue over
+    // Prefer the live next-id Document creates and the command catalogue over
     // framework declarations with freshly minted UUIDs, so palette and chrome
     // stay byte-identical on the standalone path.
-    for action in protocol.actions {
+    for action in live_project_action_specs(ctx) {
         project.actions.retain(|existing| existing.id != action.id);
         project = project.with_action(action);
     }
-    for view in protocol.views {
-        project = project.with_view(view);
-    }
     let root_folder = root_folder_id(ctx).map(str::to_owned);
     let snapshot = bounded_resource_snapshot(ctx);
-
-    // Replace publish's Document children with the live open/save-enriched
-    // snapshot, then nest. Hosted ResourceRoot keeps the Document children.
-    project.children.clear();
+    let file_ids: std::collections::HashSet<String> = snapshot
+        .open_files
+        .iter()
+        .map(|file| file_resource_id(&file.id))
+        .collect();
+    let folder_ids: std::collections::HashSet<String> = snapshot
+        .folders
+        .iter()
+        .map(|folder| folder_resource_id(&folder.id))
+        .collect();
+    // The bounded open set. A published file in that set stays; open and save
+    // are added in front. Files outside the set stay addressable by id.
+    project.children.retain(|child| {
+        file_ids.contains(child.id.as_str()) || folder_ids.contains(child.id.as_str())
+    });
     for file in &snapshot.open_files {
-        project = project.with_child(file_resource_base(doc, file));
+        let id = file_resource_id(&file.id);
+        if let Some(existing) = project
+            .children
+            .iter_mut()
+            .find(|child| child.id.as_str() == id)
+        {
+            let mut front = Vec::new();
+            if !existing.actions.iter().any(|action| action.id == "open") {
+                front.push(file_operation(
+                    "open",
+                    "Open file",
+                    OperationKind::View,
+                    &CodeEditorOperation::Open {
+                        file_id: file.id.clone(),
+                    },
+                ));
+            }
+            if file.can_save && !existing.actions.iter().any(|action| action.id == "save") {
+                front.push(save_action(file.id.clone()));
+            }
+            if !front.is_empty() {
+                front.append(&mut existing.actions);
+                existing.actions = front;
+            }
+        } else {
+            project.children.push(file_resource_base(doc, file));
+        }
     }
     for folder in &snapshot.folders {
-        project = project.with_child(folder_resource(&snapshot, doc, folder));
+        let id = folder_resource_id(&folder.id);
+        let live = folder_resource(&snapshot, doc, folder);
+        if let Some(existing) = project
+            .children
+            .iter_mut()
+            .find(|child| child.id.as_str() == id)
+        {
+            // Keep the published folder. Live new-file / new-folder ids replace
+            // the declarations that minted a fresh uuid.
+            for action in live.actions {
+                if let Some(slot) = existing
+                    .actions
+                    .iter_mut()
+                    .find(|have| have.id == action.id)
+                {
+                    *slot = action;
+                } else {
+                    existing.actions.push(action);
+                }
+            }
+        } else {
+            project.children.push(live);
+        }
     }
     for result in &snapshot.search_results {
         project = project.with_child(result_resource(result));
@@ -1835,13 +1899,36 @@ fn lazy_folder_resource(
     resource
 }
 
+fn find_nested(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_nested(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resolve_resource(
     ctx: &CodeEditorResourceCtx,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<Resource> {
     if id == project_resource_id(&ctx.project_id) {
-        return Some(add_project_actions(project_resource(ctx), ctx));
+        // The same published project the palette lists, including the document's
+        // files. `project_root` is only the bottom-panel binding, which has no
+        // document to read.
+        return provide_resources(ctx, doc).into_iter().next();
+    }
+    if id.starts_with("code_editor.file:") || id.starts_with("code_editor.folder:") {
+        if let Some(found) = provide_resources(ctx, doc)
+            .into_iter()
+            .find_map(|root| find_nested(&root, id))
+        {
+            return Some(found);
+        }
     }
     if let Some(file_id) = id.strip_prefix("code_editor.file:") {
         return ctx
@@ -1894,6 +1981,65 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn ensure_project_id_is_idempotent_housekeeping() {
+        let mut doc = AutoCommit::new();
+        let first = CodeEditorAction::EnsureProjectId {
+            id: "00000000-0000-4000-8000-0000000000aa".into(),
+        };
+        assert_eq!(first.change_kind(), tilo_actions::ChangeKind::Housekeeping);
+        first.apply(&mut doc).unwrap();
+        CodeEditorAction::EnsureProjectId {
+            id: "00000000-0000-4000-8000-0000000000bb".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let Some((automerge::Value::Scalar(value), _)) =
+            doc.get(automerge::ROOT, "project_id").unwrap()
+        else {
+            panic!("project id was not written");
+        };
+        let automerge::ScalarValue::Str(id) = value.as_ref() else {
+            panic!("project id was not text");
+        };
+        assert_eq!(id.as_str(), "00000000-0000-4000-8000-0000000000aa");
+    }
+
+    #[test]
+    fn ensure_buffer_keeps_text_that_is_already_there() {
+        let mut doc = AutoCommit::new();
+        CodeEditorAction::EnsureBuffer {
+            key: "file-1".into(),
+            seed: "hello".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        CodeEditorAction::EnsureBuffer {
+            key: "file-1".into(),
+            seed: "replaced".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, "file-1").as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn ensure_terminal_panel_creates_one_map() {
+        let mut doc = AutoCommit::new();
+        assert!(EditorDoc::terminal_panel(&doc).is_none());
+        CodeEditorAction::EnsureTerminalPanel
+            .apply(&mut doc)
+            .unwrap();
+        let first = EditorDoc::terminal_panel(&doc).expect("terminal map");
+        CodeEditorAction::EnsureTerminalPanel
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(EditorDoc::terminal_panel(&doc), Some(first));
     }
 
     #[test]

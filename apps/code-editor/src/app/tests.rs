@@ -5,6 +5,17 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn hosted_terminal_panel_is_created_by_the_action() {
+    let mut app = CodeApp::new();
+    app.mark_hosted_for_test();
+    let mut doc = AutoCommit::new();
+    assert!(EditorDoc::terminal_panel(&doc).is_none());
+    let id = app.terminal_document_root(&mut doc);
+    assert_eq!(EditorDoc::terminal_panel(&doc), Some(id.clone()));
+    assert_eq!(app.terminal_document_root(&mut doc), id);
+}
+
+#[test]
 fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
     // Each phase builds a fresh app and document.
     direct_open_is_accepted_then_reports_the_exact_failure();

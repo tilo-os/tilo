@@ -354,11 +354,37 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        let root_id = standalone[0].id.as_str().to_owned();
+        assert!(ui::resources::resource(&app, &doc, &root_id).is_none());
+        let hosted_file =
+            ui::resources::resource(&app, &doc, &file_resource_id(&file_id)).expect("hosted file");
+        assert!(
+            hosted_file
+                .actions
+                .iter()
+                .any(|action| action.id == "rename" && action.kind == OperationKind::Document),
+            "a hosted file is the published row"
+        );
         let extras = ui::resources::PublishesResources::resources(&app, &doc);
         assert!(
             extras.iter().all(|resource| resource.kind != PROJECT_KIND),
             "hosted must not republish code_editor.project beside ResourceRoot: {:?}",
             extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        let directory =
+            ui::resources::PublishesResources::action_directory_resource_page(&app, &doc, &[], 8)
+                .expect("hosted directory");
+        assert!(
+            directory
+                .resources
+                .iter()
+                .all(|resource| resource.kind != PROJECT_KIND),
+            "hosted directory must not republish the project: {:?}",
+            directory
+                .resources
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
         );
 
         // Empty present must not wipe unpublished local files.
