@@ -6116,18 +6116,39 @@ impl ui::resources::PublishesResources for PdfApp {
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| {
+        // The framework root already publishes the document. The directory page
+        // keeps the same live find slice as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
                 self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::document_root(&ctx))
-            })
-            .flatten()
-            .into_iter()
-            .collect();
+                    .map(|ctx| crate::actions::find_result_resources(&ctx))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
+        // The directory is the published document. Page, outline, and find
+        // rows stay on the full resource tree; listing them here would walk
+        // the open document just to name the root actions.
+        let mut resources = if cursor.is_empty() && max_results > 0 {
+            self.pdf_resource_ctx()
+                .map(|ctx| crate::actions::provide_resources(&ctx, doc))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Some(root) = resources.first_mut() {
+            root.children.clear();
+        }
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: Vec::new(),
@@ -6135,6 +6156,13 @@ impl ui::resources::PublishesResources for PdfApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted()
+            && self
+                .pdf_resource_ctx()
+                .is_some_and(|ctx| id == format!("pdf.document:{}", ctx.doc_id))
+        {
+            return None;
+        }
         self.publish_resource(doc, id)
     }
 }
