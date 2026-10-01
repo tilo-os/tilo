@@ -3027,7 +3027,13 @@ impl ShellOverlayHost {
             self.overview_scroll_y = 0.0;
         }
         if let Some(started) = self.transition_started {
-            let elapsed = millis_to_f32_lossy(started.elapsed().as_millis());
+            // A start that was deferred past `now` has not begun. `elapsed`
+            // would panic there; the wait is not progress.
+            let elapsed = millis_to_f32_lossy(
+                Instant::now()
+                    .saturating_duration_since(started)
+                    .as_millis(),
+            );
             let duration = millis_to_f32_lossy(u128::from(OVERVIEW_TRANSITION_MS));
             if elapsed >= duration {
                 self.overview_t = self.overview_target;
@@ -3095,6 +3101,53 @@ impl ShellOverlayHost {
             .set_open(true, duration, ui::Curve::EaseOut);
         self.workspace_switch_until = Instant::now().checked_add(duration);
         self.request_compositor_transition_paints();
+    }
+
+    /// Whether this frame is one display's content clip. The combined
+    /// desktop is what makes a two-output fade a readback of both scanouts.
+    pub(crate) fn presents_on_content_clip(&self) -> bool {
+        self.transition_started.is_some() || self.workspace_switch_holding()
+    }
+
+    /// Whether a transition still owes a present. The clock may have been
+    /// deferred; this is the signal that keeps the frame run alive.
+    pub(crate) fn transition_present_pending(&self) -> bool {
+        self.transition_started.is_some() || self.workspace_switch_holding()
+    }
+
+    /// Give `by` back to a running overview or workspace switch. Call with
+    /// the park spent on a full presenter, before the next sample of the clock.
+    pub(crate) fn defer_running_transitions(&mut self, by: Duration) {
+        if by.is_zero() {
+            return;
+        }
+        if let Some(started) = self.transition_started.as_mut() {
+            *started = started.checked_add(by).unwrap_or(*started);
+        }
+        if let Some(until) = self.workspace_switch_until.as_mut() {
+            *until = until.checked_add(by).unwrap_or(*until);
+        }
+        self.workspace_switch.defer(by);
+    }
+
+    /// Tick the overlay and store its clip. The desktop underneath is the
+    /// frame already presented; drawing it again encodes both outputs.
+    pub(crate) fn prepare_content_clip(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let overview_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.overview);
+        if self.transition_started.is_none() && !overview_open {
+            return;
+        }
+        let mut scratch = Scene::new();
+        self.draw_overview_overlay(
+            &mut scratch,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            overview_open,
+        );
     }
 
     fn request_compositor_transition_paints(&self) {
