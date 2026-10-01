@@ -3082,6 +3082,16 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Fixture hosts start with explicit desktop controls, which skip launch
+    /// notifications. Tests of that drain switch to the persisted source the
+    /// session uses.
+    #[cfg(test)]
+    pub(crate) fn enable_persisted_launch_drain_for_test(&mut self) {
+        self.desktop_controls = DesktopControlsSource::Persisted(
+            settings_store::hardware::DesktopControlsConfig::default(),
+        );
+    }
+
     /// Configure peer-sync palette commands during host construction.
     #[must_use]
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
@@ -5380,6 +5390,20 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         exit_code = ?code,
                         "application exited with an error after showing its window"
+                    );
+                    continue;
+                }
+                // Geoclue and nm-applet are autostart helpers. They are not the
+                // app the person opened, so their exit must not toast
+                // "crashed before opening" for that launch.
+                LaunchEventKind::Failed { .. }
+                    if crate::shell::launcher::unasked_session_helper(&event.package_id) =>
+                {
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        "session helper exited without a window the user asked to open"
                     );
                     continue;
                 }
