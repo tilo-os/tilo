@@ -106,11 +106,21 @@ need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the 
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
 models_dropin="$repo/os/dev-image/usr/lib/systemd/user/tilo-models.service.d/10-nested-user-namespace.conf"
-for off in ProtectSystem=false ProtectHome=false ProtectKernelTunables=false ProtectKernelModules=false ProtectKernelLogs=false; do
+for off in ProtectSystem=false ProtectHome=false ProtectKernelTunables=false ProtectKernelModules=false ProtectKernelLogs=false PrivateIPC=false PrivateTmp=false ProtectControlGroups=false ReadWritePaths=; do
     need "$models_dropin" "$off" "nested-session drop-in does not set $off for the model manager"
 done
-if grep -Eq '^(ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs)=$' "$models_dropin"; then
-    bad 'nested-session drop-in uses an empty Protect* assignment'
+if grep -Eq '^(ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|PrivateIPC|PrivateTmp|ProtectControlGroups)=$' "$models_dropin"; then
+    bad 'nested-session drop-in uses an empty boolean assignment'
+fi
+merged_ipc=""
+while IFS= read -r line; do
+    case "$line" in
+        PrivateIPC=) ;;
+        PrivateIPC=*) merged_ipc="${line#PrivateIPC=}" ;;
+    esac
+done < <(grep -h -E '^PrivateIPC=' "$user_model" "$models_dropin" || true)
+if [ "$merged_ipc" = yes ]; then
+    bad 'model manager dev-image merge still sets PrivateIPC=yes'
 fi
 if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/usr" >/dev/null; then
     bad 'nested-session drop-in leaked into the production image'
