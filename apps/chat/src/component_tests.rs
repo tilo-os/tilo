@@ -243,6 +243,19 @@ fn component_mount(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
+    component_mount_in_room(cache, author, instance, "room")
+}
+
+fn component_mount_in_room(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+    room: &str,
+) -> (
+    ui::headless::FrameHarness,
+    ui::record::RecordStore,
+    ui::record::RecordCheckout,
+) {
     use std::{cell::RefCell, rc::Rc};
     use ui::application::{
         ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -251,9 +264,9 @@ fn component_mount(
     let cache = cache.clone();
     let definition = crate::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
-        .open(definition.app_id, "room")
+        .open(definition.app_id, room)
         .unwrap();
-    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
+    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, room).unwrap());
     let permissions = Rc::new(RefCell::new(
         ui::permissions::PermissionContext::from_capabilities(
             ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
@@ -845,4 +858,71 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     visitor.close_components();
     agent.close_components();
+}
+
+#[test]
+fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
+    use ui::headless::host_media::MediaLane;
+    use ui::native_media::{Command, Snapshot, State};
+    let cache =
+        ui::portable_storage::PortableStorage::new("browser-media-controls", "device").unwrap();
+    let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let (mut frame, records, checkout) = component_mount_in_room(&cache, "author", 1, room);
+    let mut lane = MediaLane::default();
+    let before = records.replication_snapshot(&checkout.id).unwrap().0;
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 1,
+        address: tilo_actions::ActionAddress::new("chat.call:c_lounge", "join"),
+    };
+    frame
+        .invoke_bound_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let requests = lane.take(&mut frame);
+    let joining = requests
+        .iter()
+        .find(|request| matches!(request.command.command, Command::Join { .. }))
+        .expect("the actual shared action enters the browser media lane");
+    assert_eq!(joining.app, "so.tilo.chat");
+    assert_eq!(joining.room, room);
+    assert_eq!(joining.record, "", "Chat uses its package-primary route");
+    assert_eq!(joining.instance, "1");
+    let mut live = Snapshot::unavailable();
+    live.state = State::Live;
+    live.issue = None;
+    assert!(lane.complete(&mut frame, joining.ticket, Ok(live.clone())));
+    assert_eq!(
+        frame.with_widget_mut::<ChatApp, _>(|app| app.native_voice.snapshot.state),
+        Some(State::Live)
+    );
+    assert!(
+        !lane.complete(&mut frame, joining.ticket, Ok(live.clone())),
+        "a completion is single-use"
+    );
+    assert_eq!(
+        records.replication_snapshot(&checkout.id).unwrap().0,
+        before,
+        "voice effects never write the Chat CRDT"
+    );
+    frame
+        .invoke_bound_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let pending = lane.take(&mut frame);
+    assert!(
+        !pending.is_empty(),
+        "the closed-owner assertion must observe a pending command"
+    );
+    frame.close_components();
+    let retired = lane.take(&mut frame);
+    assert!(
+        retired
+            .iter()
+            .any(|request| request.retired && matches!(request.command.command, Command::Leave)),
+        "closing the component retires its browser call even after completions have drained"
+    );
+    for request in pending {
+        assert!(
+            !lane.complete(&mut frame, request.ticket, Ok(live.clone())),
+            "a closed owner cannot accept a late result"
+        );
+    }
 }

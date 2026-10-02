@@ -271,15 +271,16 @@ impl RelayCollabTransport {
                 PeerEvent::LiveMember { device, active, .. } => {
                     self.live.member(device, active);
                 }
-                // Remote actions are the page's (`agents.mjs`, `actionsV1`),
-                // consumed from their own event queue. The toolkit keeps its
+                // Remote actions and voice are the page's (`agents.mjs`,
+                // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
-                | PeerEvent::CompactionRequested { .. } => {}
+                | PeerEvent::CompactionRequested { .. }
+                | PeerEvent::Voice(_) => {}
             }
         }
         if self.confirm_pending
