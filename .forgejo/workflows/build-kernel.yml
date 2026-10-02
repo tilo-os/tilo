@@ -409,6 +409,8 @@ jobs:
             kernel-acceptance/inputs.json
             kernel-acceptance/rpm.sha256
           if-no-files-found: warn
+          # Evidence for this run's failure triage only.
+          retention-days: 1
 
       - name: Prove firmware rejects unsigned EFI and executes the signed image
         timeout-minutes: 15
@@ -529,6 +531,8 @@ jobs:
         with:
           name: tilo-kernel-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
+          # Read by this run's pin job.
+          retention-days: 1
 
       - name: Revoke local registry login
         if: ${{ always() }}

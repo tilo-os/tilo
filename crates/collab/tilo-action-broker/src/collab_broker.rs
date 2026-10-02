@@ -841,8 +841,9 @@ impl BrokerHandle {
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
-        self.fanout.request_shutdown();
+        // Quit first so a wake from request_stop sees the flag and exits.
         self.capnp_quit.store(true, Ordering::Relaxed);
+        self.fanout.request_shutdown();
         if let Some(thread) = self.capnp_thread.take() {
             join_owned_thread(thread, self.capnp_identity);
         }

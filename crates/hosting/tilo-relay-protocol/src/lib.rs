@@ -16,6 +16,7 @@
 //! - [`legacy_window`] — legacy windows a session streams, as the live plane
 //!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
+//! - [`rooms`] — governed rooms over HTTPS: administration and joining;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the deterministic placement / remote-control routing over them;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
@@ -57,6 +58,7 @@ pub mod metrics;
 pub mod policy;
 pub mod process_lease;
 pub mod retention;
+pub mod rooms;
 mod sig64;
 pub mod transport;
 pub mod voice;

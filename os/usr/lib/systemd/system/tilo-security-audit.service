@@ -17,11 +17,11 @@ TimeoutStartSec=2min
 # The audit is important but not latency-sensitive; its result remains loud
 # in the journal and failed-unit state while recurring successful runs return
 # inactive so the timer can activate them again. Scans yield to the session.
-Nice=10
+Nice=19
+CPUSchedulingPolicy=idle
 CPUWeight=20
 IOWeight=20
-IOSchedulingClass=best-effort
-IOSchedulingPriority=7
+IOSchedulingClass=idle
 # This process observes security state; it never repairs it. Keep the host
 # filesystem immutable and expose only TPM devices needed by the verified-boot
 # preflight it invokes. Kernel diagnostics come from the journal and daemon

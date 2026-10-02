@@ -42,14 +42,21 @@ main also moves `tilo-vm:main-ci` to its newest dev images.
 and a `release` dispatch of main.
 
 To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
+full commit SHA, `base_image` to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
 `tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
 not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
 disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
 (`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
 and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
-systemctl reboot` moves it to main's newest dev image.
+systemctl reboot` moves it to main's newest dev image. The newest such disk from
+main stays at a fixed URL, which retention never prunes:
+
+```sh
+curl -fLO https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2
+curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2.sha256 | sha256sum -c -
+```
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
@@ -69,14 +76,20 @@ installs the flashable disk:
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
 | Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
-The moving tag moves once the board job has installed the disk from that image.
-The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
+The moving tag moves once the aarch64 lane has sealed and pushed the image; the
+board job then installs the disk from it.
+On main, the job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
 Lenovo, written to a USB drive or its internal disk and booted from the firmware
 boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
 root grows on first boot):
 
+The newest disk per board stays at a fixed URL, which retention never prunes
+(`<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`):
+
 ```sh
-curl -fLO <disk URL from the job summary>
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/aarch64-<board>
+curl -fLO "$base/tilo-vm-candidate-aarch64.qcow2"
+curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
 sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
 ```
 

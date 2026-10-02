@@ -229,7 +229,13 @@ impl Vm<'_> {
     }
 
     fn memory(&self) -> u32 {
-        self.entry.memory_mb.unwrap_or(8192)
+        self.entry.memory_mb.unwrap_or_else(|| {
+            if self.entry.hypervisor == "whpx" {
+                3072
+            } else {
+                8192
+            }
+        })
     }
 
     fn cpus(&self) -> u32 {
@@ -1255,6 +1261,22 @@ mod tests {
             ssh_port: Some(2223),
             ..VmEntry::default()
         }
+    }
+
+    #[test]
+    fn whpx_defaults_to_fast_memory_without_changing_explicit_or_other_vms() {
+        let memory = |entry: &VmEntry| Vm { name: "dev", entry }.memory();
+        let mut entry = entry();
+        entry.hypervisor = "whpx".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 3072);
+
+        entry.memory_mb = Some(8192);
+        assert_eq!(memory(&entry), 8192);
+
+        entry.hypervisor = "libvirt".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 8192);
     }
 
     /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an

@@ -46,6 +46,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error if `--shots` rendering fails (see
 /// [`render_shot_to_png`]); the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tilo_startup_metrics::init();
+    let _startup_metrics = tilo_startup_metrics::ScopedDumper;
+    tilo_startup_metrics::mark("greeter-main-start");
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
@@ -82,6 +85,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .without_native_document_chrome();
+    tilo_startup_metrics::mark("greeter-app-ready");
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.
     // Zero/multiple candidates retain the two-field fallback and autofocus
@@ -95,6 +99,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // that one enables/disables the inputs and so changes which widgets are
     // focusable at all.
     app.autofocus_on_structure_change = true;
+    tilo_startup_metrics::mark("greeter-run-start");
     app.run_with_setup(move |proxy| {
         serve_console(&console, proxy.clone());
         let _ = proxy_slot.set(proxy);

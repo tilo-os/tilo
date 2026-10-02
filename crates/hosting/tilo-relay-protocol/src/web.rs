@@ -22,8 +22,12 @@
 //! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
 //! | `/live/legacy-input` | [`InputRequest`](crate::legacy_window::InputRequest) | `204`, `403` when the member may not drive the window |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
+//! | `/rooms` | [`RoomsRequest`](crate::rooms::RoomsRequest) | [`RoomsReply`](crate::rooms::RoomsReply) |
+//! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //!
-//! Routes after the handshake carry the session token in
+//! `/join` is the one route after `/certify` a device calls without a
+//! session: a person a host does not know yet joins through it. Routes after
+//! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
 
@@ -132,6 +136,10 @@ pub const FEATURE_COMPACTION: u64 = 2;
 /// [`crate::transport::Envelope::VoiceJoin`] and
 /// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
 pub const FEATURE_VOICE: u64 = 4;
+
+/// The host governs rooms a page administers and joins over HTTPS
+/// (`/rooms`, `/join`; see [`crate::rooms`]).
+pub const FEATURE_ROOMS: u64 = 8;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits. A device that predates the features reads the grant

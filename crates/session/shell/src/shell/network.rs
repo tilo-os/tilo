@@ -10,6 +10,7 @@ mod governor_actions;
 mod hosted_topology;
 mod native_enrollment;
 mod native_ingress;
+mod relay_rooms;
 
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
@@ -1201,6 +1202,7 @@ pub struct PendingInviteSummary {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     hosted_topology: hosted_topology::State,
+    relay_rooms: relay_rooms::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
     /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
@@ -1327,6 +1329,8 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Wakes the broker's drain thread. An empty queue parks there.
+    pub(crate) drain_wake: std::sync::Arc<crate::idle_wake::DrainPark>,
     /// Inbound channel governance pushed by [`Self::tick`], drained by the
     /// channel encryption service.
     inbound_channel_governance: Arc<Mutex<Vec<InboundChannelGovernance>>>,
@@ -1737,8 +1741,10 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             hosted_topology: hosted_topology::State::default(),
+            relay_rooms: relay_rooms::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
@@ -2319,6 +2325,7 @@ impl ShellNetwork {
                 ts,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Is `cluster_id` a room this machine is in? An app's cluster is
@@ -2395,6 +2402,7 @@ impl ShellNetwork {
         if let Ok(mut inbound) = self.inbound_channel_governance.lock() {
             inbound.push(entry);
         }
+        self.drain_wake.poke();
     }
 
     /// Publish one validated signed document mutation. A record id that
@@ -2502,6 +2510,7 @@ impl ShellNetwork {
                 envelope: Box::new(envelope),
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Publish an app's presence frame to the peers in its room —
@@ -2675,6 +2684,7 @@ impl ShellNetwork {
                 presence,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Shared handle to the cooperative-scrollback request buffer,
@@ -2840,6 +2850,7 @@ impl ShellNetwork {
                     message: frame.message,
                 });
             }
+            self.drain_wake.poke();
         } else if !self.remote_action_replies.deliver(peer, &frame.message) {
             tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
         }
@@ -2900,6 +2911,7 @@ impl ShellNetwork {
                 max,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Queue a received `ScrollbackResponse` for the broker's drainer.
@@ -2916,6 +2928,7 @@ impl ShellNetwork {
                 ops,
             });
         }
+        self.drain_wake.poke();
     }
 
     /// Subscribe the actor to every durable room currently in the tree, plus
@@ -3154,8 +3167,20 @@ impl ShellNetwork {
 
     /// Cancel one exact bearer credential. A later redemption carrying its
     /// hash has no pending authority grant and is refused. Existing members
-    /// are unaffected; removing them is a separate governance action.
+    /// are unaffected; removing them is a separate governance action. An
+    /// invitation a relay issued stays pending until that relay cancels it.
     pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
+        let room = match self.pending_identity_admissions.lock() {
+            Ok(pending) => match pending.get(id) {
+                Some(invite) => invite.room,
+                None => return false,
+            },
+            Err(_) => return false,
+        };
+        if let Err(error) = self.cancel_relay_invitation(room, *id) {
+            tracing::warn!(%error, "the relay did not cancel the invitation");
+            return false;
+        }
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return false;
         };
@@ -3307,18 +3332,32 @@ impl ShellNetwork {
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
         let actor = crate::shell::state::local_user_id_for_room(&ws.room);
-        if !tree.governs_room(ws.room)
-            || !ws.allows(
+        let governs = tree.governs_room(ws.room)
+            && ws.allows(
                 &ws.actor_for_person(&actor),
                 &crate::shell::state::ResourceRef::Workspace,
                 crate::shell::state::Verb::Invite,
-            )
-        {
-            drop(tree);
-            return Err("only a governing workspace administrator can create invitations".into());
-        }
+            );
         let ws = ws.clone();
         drop(tree);
+        let relay_room = match self.administered_room(ws.room) {
+            Some(room) => Some(room),
+            None if governs => self.share_on_home_relay(local, ws.room, &ws.name)?,
+            None => {
+                return Err(
+                    "only a governing workspace administrator can create invitations".into(),
+                );
+            }
+        };
+        if let Some(relay_room) = relay_room {
+            return self.issue_relay_invitation(
+                &relay_room,
+                role,
+                recipient_user_public_key,
+                invitee,
+                expiry_seconds_from_now,
+            );
+        }
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
@@ -4875,6 +4914,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.finish_shared_rooms();
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
@@ -6657,8 +6697,10 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         hosted_topology: hosted_topology::State::default(),
+        relay_rooms: relay_rooms::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),

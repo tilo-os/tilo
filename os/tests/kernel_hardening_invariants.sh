@@ -507,7 +507,6 @@ done
 for unit in \
   tilo-boot-entries.service \
   tilo-growfs-sysroot.service \
-  tilo-security-audit.service \
   tilo-secureboot-sign.service \
   tilo-system-extension-boot-pack-stage.service \
   tilo-system-extension-boot-pack-status.service; do
@@ -517,6 +516,11 @@ for unit in \
     grep -Fqx "$required" "$unit_path" \
       || bad "$unit does not yield background resources with $required"
   done
+done
+for required in 'Nice=19' 'CPUSchedulingPolicy=idle' 'CPUWeight=20' 'IOWeight=20' \
+    'IOSchedulingClass=idle'; do
+  grep -Fqx "$required" "$repo/os/usr/lib/systemd/system/tilo-security-audit.service" \
+    || bad "tilo-security-audit.service does not run idle with $required"
 done
 update_resources="$repo/os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf"
 for required in 'Nice=10' 'CPUWeight=20' 'IOWeight=20' \
@@ -619,11 +623,15 @@ grep -Fq 'dracut --force --reproducible --compress zstd' "$initramfs_recipe" \
 grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"' \
   "$initramfs_recipe" \
   || bad 'local-root initramfs still carries unused network/NBDE attack surface'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$initramfs_recipe" \
-  && ok 'initramfs excludes non-root Ext4/XFS filesystem parsers'
-grep -Fq -- '--omit-drivers "ext4 xfs"' "$initramfs_recipe" \
-  || bad 'initramfs carries non-root Ext4/XFS filesystem attack surface'
-grep -Fq "printf '%s\\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
+grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
+  && ok 'initramfs supports Ext4 roots'
+grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
+  || bad 'initramfs cannot mount a supported Ext4 root'
+grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+  && ok 'initramfs excludes non-root XFS filesystem parser'
+grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+  || bad 'initramfs carries non-root XFS filesystem attack surface'
+grep -Fq "printf '%s\\n' xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
   "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
 grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \

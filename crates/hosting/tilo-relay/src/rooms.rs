@@ -11,11 +11,13 @@
 //! removes is cut off.
 //!
 //! Devices of the relay's own user administer its rooms over
-//! [`ROOM_ADMIN_ALPN`]; any device redeems an invitation over the shared
-//! workspace-join protocol.
+//! [`ROOM_ADMIN_ALPN`] or, from a page, over HTTPS; any device redeems an
+//! invitation over the shared workspace-join protocol, and a page over
+//! HTTPS, where the owner then admits it.
 
 mod admin;
 mod collaboration;
+mod pages;
 #[cfg(test)]
 mod tests;
 mod voice;
@@ -386,6 +388,7 @@ struct RoomsInner {
     dir: PathBuf,
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
     calls: Arc<voice::Calls>,
+    page_joins: std::sync::Mutex<pages::PageJoins>,
 }
 
 /// The authority governing one room, as the room's workspace refers to it.
@@ -438,6 +441,7 @@ impl Rooms {
                 dir,
                 rooms: AsyncMutex::new(rooms),
                 calls: Arc::default(),
+                page_joins: std::sync::Mutex::default(),
             }),
         };
         let rooms = this

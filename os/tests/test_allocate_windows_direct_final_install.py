@@ -36,6 +36,19 @@ def fixture():
 
 
 class AllocateTests(unittest.TestCase):
+    def test_recover_completed_allocation_without_original_request(self):
+        plan, request, _, complete, _, _, c = fixture()
+        snapshot = {"partitions": complete, **plan["windows_disk"]}
+        with patch.object(allocate, "GIB", MIB):
+            recovered_request, recovered_plan = allocate.request_from_allocated_snapshot(
+                snapshot, c, 32)
+            self.assertEqual(recovered_request, request)
+            self.assertEqual(recovered_plan, plan)
+            changed = json.loads(json.dumps(snapshot))
+            changed["partitions"][5]["size_bytes"] -= MIB
+            with self.assertRaisesRegex(ValueError, "created final partition differs"):
+                allocate.request_from_allocated_snapshot(changed, c, 32)
+
     def test_diskpart_fallback_exact_shrink_on_file_backed_gpt(self):
         plan, request, before, _, final, disk_size, c = fixture()
         with tempfile.TemporaryDirectory() as tmp:
