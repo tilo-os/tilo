@@ -34,6 +34,8 @@ mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod history;
 #[cfg(target_arch = "wasm32")]
+mod live_view;
+#[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
