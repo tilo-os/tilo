@@ -290,7 +290,7 @@ impl CanvasSurface {
             Drag::Move { start, now, ids } => {
                 let (dx, dy) = (now.x - start.x, now.y - start.y);
                 if dx.hypot(dy) > 0.5 {
-                    self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                    self.dispatch(&CanvasAction::edit(EditMarks {
                         ids,
                         move_by: Some([dx, dy]),
                         ..EditMarks::default()
@@ -347,18 +347,8 @@ impl CanvasSurface {
                 self.dispatch(&CanvasAction::Draw(Draw {
                     layer,
                     marks: vec![NewMark {
-                        id: None,
-                        name: None,
-                        shape,
                         fill: Some(self.tools.hex()),
-                        gradient: None,
-                        stroke: None,
-                        stroke_width: None,
-                        opacity: None,
-                        brush: None,
-                        angle: None,
-                        wet: None,
-                        params: None,
+                        ..NewMark::new(shape)
                     }],
                 }));
             }
@@ -395,7 +385,7 @@ impl CanvasSurface {
                 ..EditMarks::default()
             }
         };
-        self.dispatch(&CanvasAction::EditMarks(edit));
+        self.dispatch(&CanvasAction::edit(edit));
     }
 
     fn key(&mut self, key: &Key, modifiers: ui::winit::keyboard::ModifiersState) -> bool {
@@ -413,7 +403,7 @@ impl CanvasSurface {
         };
         match key {
             _ if step.is_some() && !self.selection.is_empty() => {
-                self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                self.dispatch(&CanvasAction::edit(EditMarks {
                     ids: self.selection.clone(),
                     move_by: step,
                     ..EditMarks::default()
@@ -660,13 +650,16 @@ impl Widget for CanvasSurface {
             None,
             &(board + ui::vello::kurbo::Vec2::new(3.0 / zoom, 4.0 / zoom)),
         );
-        self.renderer.draw(
-            &self.art,
-            scene,
-            to_screen,
-            text_renderer,
-            &Options::default(),
-        );
+        let options = Options {
+            reference: self
+                .art
+                .reference
+                .as_ref()
+                .is_some_and(|reference| reference.visible),
+            ..Options::default()
+        };
+        self.renderer
+            .draw(&self.art, scene, to_screen, text_renderer, &options);
         scene.stroke(
             &Stroke::new(1.0 / zoom),
             to_screen,

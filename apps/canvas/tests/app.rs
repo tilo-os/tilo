@@ -139,23 +139,14 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
         None,
         vec![NewMark {
             id: Some("box".into()),
-            name: None,
-            shape: Shape::Rect {
+            fill: Some("#336699".into()),
+            ..NewMark::new(Shape::Rect {
                 x: 100.0,
                 y: 100.0,
                 width: 200.0,
                 height: 100.0,
                 radius: 0.0,
-            },
-            fill: Some("#336699".into()),
-            gradient: None,
-            stroke: None,
-            stroke_width: None,
-            opacity: None,
-            brush: None,
-            angle: None,
-            wet: None,
-            params: None,
+            })
         }],
     )))
     .expect("draw");

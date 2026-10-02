@@ -44,6 +44,7 @@ fn a_look_shows_the_painting_whole_and_up_close() {
         size: Some(640),
         grid: Some(true),
         layers: None,
+        reference: None,
     };
     let (detail, info) = view_ops::look(&mut renderer, &mut text, &art, &close).unwrap();
     assert_eq!((detail.width, detail.height), (640, 480));

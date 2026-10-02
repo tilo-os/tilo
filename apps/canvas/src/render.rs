@@ -77,12 +77,13 @@ struct PaintedLayer {
     image: Option<ImageData>,
 }
 
-/// Keeps what is expensive between frames: the lit ground and each painted
-/// layer's simulation.
+/// Keeps what is expensive between frames: the lit ground, each painted
+/// layer's simulation and the decoded reference picture.
 #[derive(Default)]
 pub struct Renderer {
     ground: Option<(String, Arc<Heightfield>, ImageData)>,
     painted: HashMap<String, PaintedLayer>,
+    reference: Option<(String, Option<ImageData>)>,
 }
 
 /// What a scene shows.
@@ -95,6 +96,38 @@ pub struct Options {
     /// The part of the artwork being shown, which the grid labels along its
     /// edges; the whole artwork when absent.
     pub view: Option<Rect>,
+    /// The reference picture over the artwork, when there is one.
+    pub reference: bool,
+    /// Leave the ground out: the layers over transparency.
+    pub bare: bool,
+}
+
+/// The largest reference picture, in bytes.
+pub const MAX_REFERENCE_BYTES: usize = 40 << 20;
+
+/// A PNG or JPEG decoded to straight RGBA, at most 8192 pixels a side.
+///
+/// # Errors
+/// Returns why the bytes are not a picture.
+pub fn decode_picture(bytes: &[u8]) -> Result<ImageData, String> {
+    let format = image::guess_format(bytes).map_err(|error| error.to_string())?;
+    if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg) {
+        return Err(format!("{format:?} is not PNG or JPEG"));
+    }
+    let decoded =
+        image::load_from_memory_with_format(bytes, format).map_err(|error| error.to_string())?;
+    if decoded.width().max(decoded.height()) > 8192 {
+        return Err("the picture is over 8192 pixels a side".into());
+    }
+    let rgba = decoded.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(ImageData {
+        data: Blob::new(Arc::new(rgba.into_raw())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width,
+        height,
+    })
 }
 
 impl Renderer {
@@ -108,7 +141,9 @@ impl Renderer {
         options: &Options,
     ) {
         let board = art.bounds();
-        self.draw_ground(art, scene, transform);
+        if !options.bare {
+            self.draw_ground(art, scene, transform);
+        }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &board);
         let live: Vec<String> = art.layers.iter().map(|layer| layer.id.clone()).collect();
         self.painted.retain(|id, _| live.contains(id));
@@ -134,15 +169,78 @@ impl Renderer {
                     &board,
                 );
                 for mark in art.marks_of(&layer.id) {
-                    draw_vector(mark, &palette, scene, transform, text);
+                    draw_mark(art, mark, &palette, scene, (transform, text));
                 }
                 scene.pop_layer();
             }
         }
         scene.pop_layer();
+        if options.reference
+            && let Some(reference) = &art.reference
+        {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                narrow(reference.opacity),
+                transform,
+                &board,
+            );
+            self.draw_reference(art, scene, transform);
+            scene.pop_layer();
+        }
         if options.grid {
             draw_grid(art, options.view.unwrap_or(board), scene, transform, text);
         }
+    }
+
+    /// The reference picture, decoded once per picture.
+    pub fn reference_image(&mut self, art: &Artwork) -> Option<ImageData> {
+        let address = &art.reference.as_ref()?.image;
+        if self
+            .reference
+            .as_ref()
+            .is_none_or(|(have, _)| have != address)
+        {
+            let image = ui::tilo_actions::content_hash(address)
+                .and_then(|hash| tilo_content::ContentStore::for_app().read(hash))
+                .and_then(|bytes| decode_picture(&bytes).ok());
+            self.reference = Some((address.clone(), image));
+        }
+        self.reference.as_ref().and_then(|(_, image)| image.clone())
+    }
+
+    /// Where the reference lies: its frame, or fitted to the artwork with
+    /// its aspect kept.
+    pub fn reference_frame(&mut self, art: &Artwork) -> Option<Rect> {
+        let image = self.reference_image(art)?;
+        if let Some([x, y, width, height]) = art.reference.as_ref()?.frame {
+            return Some(Rect::new(x, y, x + width, y + height));
+        }
+        let (width, height) = (f64::from(image.width), f64::from(image.height));
+        let fit = (art.width / width).min(art.height / height);
+        let (w, h) = (width * fit, height * fit);
+        let (x, y) = ((art.width - w) / 2.0, (art.height - h) / 2.0);
+        Some(Rect::new(x, y, x + w, y + h))
+    }
+
+    /// Draw the reference picture alone, fully opaque, into its frame.
+    pub fn draw_reference(&mut self, art: &Artwork, scene: &mut Scene, transform: Affine) {
+        let (Some(image), Some(frame)) = (self.reference_image(art), self.reference_frame(art))
+        else {
+            return;
+        };
+        let to_frame = Affine::translate(frame.origin().to_vec2())
+            * Affine::scale_non_uniform(
+                frame.width() / f64::from(image.width),
+                frame.height() / f64::from(image.height),
+            );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &ImageBrush::new(image),
+            Some(to_frame),
+            &frame,
+        );
     }
 
     fn draw_ground(&mut self, art: &Artwork, scene: &mut Scene, transform: Affine) {
@@ -476,6 +574,287 @@ fn gradient_brush(
     Some(brush.with_extend(Extend::Pad).with_stops(&stops[..]))
 }
 
+/// The blend a mark names.
+pub fn mix(blend: &str) -> Option<Mix> {
+    Some(match blend {
+        "multiply" => Mix::Multiply,
+        "screen" => Mix::Screen,
+        "overlay" => Mix::Overlay,
+        "darken" => Mix::Darken,
+        "lighten" => Mix::Lighten,
+        "color-dodge" => Mix::ColorDodge,
+        "color-burn" => Mix::ColorBurn,
+        "hard-light" => Mix::HardLight,
+        "soft-light" => Mix::SoftLight,
+        "difference" => Mix::Difference,
+        "exclusion" => Mix::Exclusion,
+        "hue" => Mix::Hue,
+        "saturation" => Mix::Saturation,
+        "color" => Mix::Color,
+        "luminosity" => Mix::Luminosity,
+        _ => return None,
+    })
+}
+
+/// The region a shape covers, untransformed: a brush stroke's inked
+/// outline, a text's box, any other shape's outline.
+pub fn silhouette(shape: &Shape) -> BezPath {
+    match shape {
+        Shape::Stroke { points, size } => ink_path(points, *size),
+        shape => shape.path(),
+    }
+}
+
+fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
+    let points: Vec<WetPoint> = points
+        .iter()
+        .map(|point| {
+            WetPoint::new(
+                narrow(point.first().copied().unwrap_or(0.0)),
+                narrow(point.get(1).copied().unwrap_or(0.0)),
+                narrow(point.get(2).copied().unwrap_or(1.0)),
+            )
+        })
+        .collect();
+    let samples = tilo_wet_media::brush::smooth(&points, 0.75);
+    let outline = tilo_wet_media::brush::ink_outline(&samples, narrow(size));
+    let mut path = BezPath::new();
+    for (index, (x, y)) in outline.iter().enumerate() {
+        let point = Point::new(f64::from(*x), f64::from(*y));
+        if index == 0 {
+            path.move_to(point);
+        } else {
+            path.line_to(point);
+        }
+    }
+    path.close_path();
+    path
+}
+
+/// Draw one mark of a plain layer: cut to its clip, mixed by its blend,
+/// over its shadow.
+fn draw_mark(
+    art: &Artwork,
+    mark: &Mark,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    (transform, text): (Affine, &mut TextRenderer),
+) {
+    let mut layers = 0;
+    if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform * clip.affine(),
+            &silhouette(&clip.shape),
+        );
+        layers += 1;
+    }
+    if let Some(mix) = mark.style.blend.as_deref().and_then(mix) {
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(mix, Compose::SrcOver),
+            1.0,
+            transform,
+            &art.bounds(),
+        );
+        layers += 1;
+    }
+    if let Some(shadow) = &mark.style.shadow {
+        draw_shadow(mark, shadow, palette, scene, (transform, text));
+    }
+    draw_vector(mark, palette, scene, transform, text);
+    for _ in 0..layers {
+        scene.pop_layer();
+    }
+}
+
+/// How many rings a soft shadow is built from.
+const SHADOW_RINGS: u16 = 8;
+
+/// A shadow: the mark's silhouette offset and, when soft, grown outward in
+/// rings that fade, so its edge falls off over `blur` units.
+fn draw_shadow(
+    mark: &Mark,
+    shadow: &crate::model::Shadow,
+    palette: &[Pigment],
+    scene: &mut Scene,
+    (transform, text): (Affine, &mut TextRenderer),
+) {
+    // A shadow's colour is the artwork's, not the theme's.
+    let ink = shadow
+        .colour
+        .as_deref()
+        .and_then(|value| colour(value, palette))
+        .unwrap_or(Color::from_rgba8(0, 0, 0, 96)); // document colour
+    let alpha = f64::from(ink.components[3]) * mark.style.opacity();
+    let ink = ink.with_alpha(1.0);
+    let at = transform * Affine::translate((shadow.offset[0], shadow.offset[1])) * mark.affine();
+    let rings = if shadow.blur > 0.0 { SHADOW_RINGS } else { 1 };
+    // Each ring lets through the share that compounds to `alpha` inside.
+    let each = 1.0 - (1.0 - alpha.clamp(0.0, 0.999)).powf(1.0 / f64::from(rings));
+    let reach = (mark.bounds() + ui::vello::kurbo::Vec2::new(shadow.offset[0], shadow.offset[1]))
+        .inflate(shadow.blur + 2.0, shadow.blur + 2.0);
+    if let Shape::Text { .. } = mark.shape {
+        for ring in 0..rings {
+            let turn = f64::from(ring) / f64::from(rings) * std::f64::consts::TAU;
+            let jitter = Affine::translate((
+                turn.cos() * shadow.blur * 0.5,
+                turn.sin() * shadow.blur * 0.5,
+            ));
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                narrow(each),
+                transform,
+                &reach,
+            );
+            draw_text_shape(&mark.shape, ink, scene, jitter * at, text);
+            scene.pop_layer();
+        }
+        return;
+    }
+    let filled = mark.shape.closed() || matches!(mark.shape, Shape::Stroke { .. });
+    let path = silhouette(&mark.shape);
+    let width = if filled {
+        0.0
+    } else {
+        mark.style.stroke_width.max(1.0)
+    };
+    for ring in 0..rings {
+        let grow = if rings > 1 {
+            shadow.blur * (f64::from(ring) + 0.5) / f64::from(rings)
+        } else {
+            0.0
+        };
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            narrow(each),
+            transform,
+            &reach,
+        );
+        if filled {
+            scene.fill(Fill::NonZero, at, ink, None, &path);
+        }
+        if width + grow > 0.0 {
+            let pen = Stroke::new(width + grow * 2.0)
+                .with_caps(Cap::Round)
+                .with_join(Join::Round);
+            scene.stroke(&pen, at, ink, None, &path);
+        }
+        scene.pop_layer();
+    }
+}
+
+/// The toolkit's text style for a text shape.
+fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
+    let Shape::Text {
+        size,
+        font,
+        weight,
+        italic,
+        align,
+        line_height,
+        ..
+    } = shape
+    else {
+        return None;
+    };
+    let family = match font.as_deref() {
+        None | Some("sans") => ui::FontChoice::SansSerif,
+        Some("serif") => ui::FontChoice::Serif,
+        Some("mono") => ui::FontChoice::Monospace,
+        Some(name) => ui::FontChoice::Named(name.to_owned()),
+    };
+    let weight = match weight.unwrap_or(400) {
+        0..=449 => ui::TextWeight::Regular,
+        450..=549 => ui::TextWeight::Medium,
+        550..=649 => ui::TextWeight::Semibold,
+        _ => ui::TextWeight::Bold,
+    };
+    let align = match align.as_deref() {
+        Some("center") => ui::ParagraphAlign::Center,
+        Some("end") => ui::ParagraphAlign::End,
+        _ => ui::ParagraphAlign::Start,
+    };
+    Some(
+        ui::TextStyle::new(narrow(*size))
+            .with_family(family)
+            .with_weight(weight)
+            .with_italic(*italic)
+            .with_line_height(narrow(line_height.unwrap_or(1.2)))
+            .with_align(align),
+    )
+}
+
+/// Shape and paint a text mark with the toolkit's text renderer.
+fn draw_text_shape(
+    shape: &Shape,
+    ink: Color,
+    scene: &mut Scene,
+    at: Affine,
+    text: &mut TextRenderer,
+) {
+    let (
+        Some(style),
+        Shape::Text {
+            x,
+            y,
+            text: words,
+            size,
+            align,
+            line_height,
+            width,
+            ..
+        },
+    ) = (text_style(shape), shape)
+    else {
+        return;
+    };
+    let natural = f64::from(text.measure_style(words, width.map(narrow), &style).0);
+    let wide = width.unwrap_or(natural + 0.5);
+    let left = match (width, align.as_deref()) {
+        (None, Some("center")) => x - wide / 2.0,
+        (None, Some("end")) => x - wide,
+        _ => *x,
+    };
+    // The first baseline sits about 0.8 of the size below a line's top at
+    // the renderer's default leading, and half the extra leading lower.
+    let top = y - size * (0.8 + (line_height.unwrap_or(1.2) - 1.25) / 2.0);
+    let max = (width.is_some() || align.as_deref().is_some_and(|align| align != "start"))
+        .then(|| narrow(wide));
+    text.draw_style(
+        scene,
+        words,
+        ink,
+        at * Affine::translate((left, top)),
+        max,
+        &style,
+    );
+}
+
+/// The pen a mark's outline is drawn with.
+fn pen(style: &crate::model::Style, width: f64) -> Stroke {
+    let cap = match style.cap.as_deref() {
+        Some("butt") => Cap::Butt,
+        Some("square") => Cap::Square,
+        _ => Cap::Round,
+    };
+    let join = match style.join.as_deref() {
+        Some("miter") => Join::Miter,
+        Some("bevel") => Join::Bevel,
+        _ => Join::Round,
+    };
+    let pen = Stroke::new(width).with_caps(cap).with_join(join);
+    if style.dash.is_empty() {
+        pen
+    } else {
+        pen.with_dashes(0.0, style.dash.iter().copied())
+    }
+}
+
 /// Draw one mark as vector art.
 pub fn draw_vector(
     mark: &Mark,
@@ -498,47 +877,13 @@ pub fn draw_vector(
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
                 return;
             };
-            let points: Vec<WetPoint> = points
-                .iter()
-                .map(|point| {
-                    WetPoint::new(
-                        narrow(point.first().copied().unwrap_or(0.0)),
-                        narrow(point.get(1).copied().unwrap_or(0.0)),
-                        narrow(point.get(2).copied().unwrap_or(1.0)),
-                    )
-                })
-                .collect();
-            let samples = tilo_wet_media::brush::smooth(&points, 0.75);
-            let outline = tilo_wet_media::brush::ink_outline(&samples, narrow(*size));
-            let mut path = BezPath::new();
-            for (index, (x, y)) in outline.iter().enumerate() {
-                let point = Point::new(f64::from(*x), f64::from(*y));
-                if index == 0 {
-                    path.move_to(point);
-                } else {
-                    path.line_to(point);
-                }
-            }
-            path.close_path();
-            scene.fill(Fill::NonZero, at, ink, None, &path);
+            scene.fill(Fill::NonZero, at, ink, None, &ink_path(points, *size));
         }
-        Shape::Text {
-            x,
-            y,
-            text: words,
-            size,
-        } => {
+        Shape::Text { .. } => {
             let Some(ink) = named(&style.fill).or_else(|| named(&style.stroke)) else {
                 return;
             };
-            text.draw_text(
-                scene,
-                words,
-                narrow(*size),
-                ink,
-                at * Affine::translate((*x, y - size * 0.8)),
-                None,
-            );
+            draw_text_shape(&mark.shape, ink, scene, at, text);
         }
         shape => {
             let path = shape.path();
@@ -561,10 +906,7 @@ pub fn draw_vector(
             if width > 0.0
                 && let Some(line) = named(&style.stroke)
             {
-                let pen = Stroke::new(width)
-                    .with_caps(Cap::Round)
-                    .with_join(Join::Round);
-                scene.stroke(&pen, at, line, None, &path);
+                scene.stroke(&pen(style, width), at, line, None, &path);
             }
         }
     }

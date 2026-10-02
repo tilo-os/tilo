@@ -12,8 +12,8 @@ use ui::tilo_resource::{
 };
 
 use crate::actions::{
-    ACTION_TYPE, AddLayer, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint, RemoveLayer,
-    RemoveMarks, RemoveMedium, SaveMedium, SetArtwork,
+    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint,
+    RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork, SetReference,
 };
 use crate::model::Artwork;
 
@@ -61,6 +61,8 @@ pub struct Look {
     pub grid: Option<bool>,
     /// Show only these layers.
     pub layers: Option<Vec<String>>,
+    /// Show the reference picture over the artwork; as set when absent.
+    pub reference: Option<bool>,
 }
 
 /// List layers and marks with their ids, bounds and colours.
@@ -165,6 +167,39 @@ fn read_args<T: serde::de::DeserializeOwned>(
     serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
 }
 
+/// Read the picture at `path` where the action is authored and keep it in
+/// the content store, so the action names it by content and every replica
+/// shows the same picture.
+fn store_picture(path: &str) -> Result<String, String> {
+    let bytes = read_file(path, crate::render::MAX_REFERENCE_BYTES)?;
+    crate::render::decode_picture(&bytes)
+        .map_err(|error| format!("{path} is not a PNG or JPEG: {error}"))?;
+    store(&bytes)
+}
+
+/// The bytes of the file at `path`, at most `limit` of them.
+///
+/// # Errors
+/// Returns why the file cannot be read, or that it is too large.
+pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{path} is over {limit} bytes"));
+    }
+    Ok(bytes)
+}
+
+/// Keep `bytes` in the app's content store; answers their address.
+///
+/// # Errors
+/// Returns the store's failure.
+pub fn store(bytes: &[u8]) -> Result<String, String> {
+    let hash = tilo_content::ContentStore::for_app()
+        .put(bytes)
+        .map_err(|error| format!("the content could not be stored: {error}"))?;
+    ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
+}
+
 /// A short random id, minted where an action is authored.
 fn minted(prefix: &str) -> String {
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -229,7 +264,7 @@ impl Resource for ArtworkResource {
                 "edit-marks",
                 "Edit marks",
                 "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
-                CanvasAction::EditMarks,
+                CanvasAction::edit,
             ),
             decl::<RemoveMarks>(
                 "remove-marks",
@@ -281,6 +316,22 @@ impl Resource for ArtworkResource {
                 "Remove a medium saved in this artwork.",
                 CanvasAction::RemoveMedium,
             ),
+            decl::<Align>(
+                "align",
+                "Align marks",
+                "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
+                CanvasAction::Align,
+            ),
+            ActionDecl::new("set-reference", "Set reference", params_of::<SetReference>(), |args, _now| {
+                let mut set: SetReference = read_args(args)?;
+                if let Some(image) = &set.image
+                    && image.starts_with('/')
+                {
+                    set.image = Some(store_picture(image)?);
+                }
+                Ok(CanvasAction::SetReference(set))
+            })
+            .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
         ]
     }
 
