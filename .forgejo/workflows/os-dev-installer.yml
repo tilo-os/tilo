@@ -67,6 +67,11 @@ jobs:
             echo '::error::native ARM64 runner must provide apt-get or dnf'; exit 1
           fi
           command -v debugfs losetup mattrib mkfs.vfat podman qemu-img skopeo zstd >/dev/null
+      - name: Use the native overlay disk-builder store
+        run: |
+          set -euo pipefail
+          ./os/dev/ci-prepare-disk-devices.sh --kata-job
+          ./os/dev/ci-native-podman-store.sh
       - name: Pull the published dev image and build its installer overlay
         run: |
           set -euo pipefail
