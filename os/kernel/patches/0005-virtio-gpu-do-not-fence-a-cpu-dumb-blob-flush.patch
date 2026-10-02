@@ -1,0 +1,25 @@
+From: Tilo <tilo@tilo.so>
+Subject: virtio-gpu: do not fence a CPU dumb blob flush
+
+A guest blob that the CPU filled has no GL submit. Queuing a fenced
+RESOURCE_FLUSH leaves the control-queue slot occupied until a fence
+that never completes. The next present then blocks for 1-2 s and an
+animation paints no frames.
+
+Skip that fence for a dumb primary. An imported primary blob still
+allocates one.
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -366,7 +366,11 @@
+ 
+ 	drm_gem_plane_helper_prepare_fb(plane, new_state);
+ 
+-	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY && !bo->guest_blob))
++	/* A CPU dumb blob has no GL submit, so a fenced flush never
++	 * completes in virgl and the control queue stalls the next present.
++	 */
++	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY &&
++		    (!bo->guest_blob || bo->dumb)))
+ 		return 0;
+ 
+ 	obj = new_state->fb->obj[0];
