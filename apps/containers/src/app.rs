@@ -599,7 +599,7 @@ impl ContainersApp {
     /// Adopt collaborative view prefs; never clear the local engine catalogue.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ContainersState) {
         self.view.section = state.section;
-        self.view.selected = state.selected.clone();
+        self.view.selected.clone_from(&state.selected);
         self.view.tab = state.tab;
         self.view.search.clone_from(&state.search);
     }
@@ -2935,6 +2935,10 @@ impl Widget for ContainersApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic target table for every painted a11y control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -3331,6 +3335,10 @@ fn pull_progress_node(pull: &PullProgress) -> AccessNode {
 impl ContainersApp {
     /// Seeds a representative demo scene on the first sync of a demo or
     /// screenshot session so the detail view is populated out of the box.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one seeded scene table covers every screenshot / demo state"
+    )]
     fn seed_demo_scene(&mut self, doc: &mut AutoCommit) {
         self.seeded = true;
         // An optional env hook selects a demo scene for screenshots

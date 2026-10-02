@@ -42,7 +42,7 @@
 //! There is no saved compose / favourites collection yet. Live engine inventory
 //! (containers, images, volumes, distroboxes) stays host-local and is published
 //! as live extras when hosted — never a second `containers.engine` root beside
-//! ResourceRoot.
+//! `ResourceRoot`.
 //!
 //! ## Consequence
 //!
