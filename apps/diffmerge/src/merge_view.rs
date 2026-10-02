@@ -289,9 +289,17 @@ impl MergeView {
     /// Historical/remote content cannot identify the unsaved original input hunks.
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
-            if let Some(shared) = SharedMerge::read(doc) {
+            let adoptable = SharedMerge::read(doc).filter(|shared| {
+                let mut model = shared.into_model();
+                crate::doc::apply_resolutions(&mut model, doc);
+                model.merged_text() == MergeDoc::merged_text(doc)
+            });
+            if let Some(shared) = adoptable {
                 self.adopt_shared(&shared, doc);
             } else {
+                // Missing shared projection, or a restored merged buffer that no
+                // longer matches the three-way compose — drop actionable hunks
+                // so a queued ResolveHunk cannot overwrite the restored output.
                 self.model = MergeModel::default();
                 self.shared = None;
                 self.base_label.clear();

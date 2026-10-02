@@ -1563,11 +1563,10 @@ fn page_body_child(page: &PageMeta) -> Resource {
     let mut body_doc = AutoCommit::new();
     RichText::initialize(&mut body_doc).expect("empty rich text initializes");
     let state = RichText::read(&body_doc).expect("empty rich text reads");
-    ui::tilo_resource::publish::<RichText>(
-        &format!("notes.page:{}/body", page.id),
-        &page.title,
-        &state,
-    )
+    let id = format!("notes.page:{}/body", page.id);
+    let mut body = ui::tilo_resource::publish::<RichText>(&id, &page.title, &state);
+    stamp_published_dynamic_continuations(&mut body, id.as_bytes().to_vec());
+    body
 }
 
 #[expect(
@@ -1856,6 +1855,31 @@ pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resour
     vec![notebook]
 }
 
+/// Attach Draft continuation domains to published dynamic doors that still
+/// lack one (`apply` / `group` and rich-text catalogue builders). Fixed
+/// encodings and already-stamped specs are left alone.
+fn stamp_published_dynamic_continuations(resource: &mut Resource, scope: Vec<u8>) {
+    let actions = std::mem::take(&mut resource.actions);
+    resource.actions = actions
+        .into_iter()
+        .map(|spec| {
+            if spec.fixed_invocation_encoding().is_some() || spec.has_continuation_identity() {
+                return spec;
+            }
+            let action = spec.id.clone();
+            let scope = scope.clone();
+            spec.with_continuation_identity(continuation::builder(BuilderDomain::PublishedDoor {
+                action,
+                scope,
+            }))
+        })
+        .collect();
+    for child in &mut resource.children {
+        let child_scope = child.id.as_str().as_bytes().to_vec();
+        stamp_published_dynamic_continuations(child, child_scope);
+    }
+}
+
 fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     let state =
         <crate::resource::Notebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
@@ -1937,6 +1961,7 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     }
     notebook.children.push(tags);
     decorate_tag_actions(&mut notebook, ctx);
+    stamp_published_dynamic_continuations(&mut notebook, b"notes.notebook".to_vec());
     notebook
 }
 
