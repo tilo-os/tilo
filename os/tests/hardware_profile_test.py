@@ -41,6 +41,39 @@ def restart_fixture(test):
 
 
 class HardwareProfileTest(unittest.TestCase):
+    def test_current_dev_origin_requires_target_flavour_and_policy(self):
+        from hardware_profile import install_update_origin, validate_target_imgref
+        ref = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"
+        flavour = self.root / "usr/lib/tilo/image-flavour"
+        flavour.parent.mkdir(parents=True, exist_ok=True)
+        policy = self.root / "etc/containers/policy.json"
+        policy.parent.mkdir(parents=True)
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}],
+        }}}))
+        flavour.write_text("production\n")
+        with self.assertRaisesRegex(ValueError, "immutable dev flavour"):
+            validate_target_imgref(ref, root=self.root)
+        flavour.write_text("dev\n")
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "reject"}],
+        }}}))
+        with self.assertRaisesRegex(ValueError, "development repository policy"):
+            validate_target_imgref(ref, root=self.root)
+        policy.write_text(json.dumps({"transports": {"docker": {
+            "registry.tilo.so/tilo/tilo-vm": [{"type": "insecureAcceptAnything"}],
+        }}}))
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=ref)
+        self.assertEqual(install_update_origin(self.root), ref)
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            install_update_origin(self.root, TARGET_REF)
+        with self.assertRaisesRegex(ValueError, "signature-required"):
+            validate_target_imgref(ref)
+        flavour.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, "not group/world writable"):
+            install_update_origin(self.root)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -27,6 +27,24 @@ def validate_target_imgref(value, *, root=None):
             if value != bound:
                 raise ValueError("update origin differs from immutable development origin")
             return value
+        if isinstance(value, str) and re.fullmatch(
+            r"registry\.tilo\.so/tilo/tilo-vm(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+        ):
+            # Current tilo-vm images intentionally admit unsigned development
+            # updates. Both immutable flavour and the repository's actual
+            # policy must agree; a live medium or environment variable alone
+            # cannot enable this origin for a production target.
+            flavour = trusted_path(root, Path("usr/lib/tilo/image-flavour"), regular=True)
+            policy = trusted_path(root, Path("etc/containers/policy.json"), regular=True)
+            if flavour.stat().st_size > 16 or flavour.read_bytes() != b"dev\n":
+                raise ValueError("tilo-vm update origin requires the immutable dev flavour")
+            if policy.stat().st_size > 65536:
+                raise ValueError("development container policy is too large")
+            admission = json.loads(policy.read_bytes()).get("transports", {}).get("docker", {}).get(
+                "registry.tilo.so/tilo/tilo-vm")
+            if admission != [{"type": "insecureAcceptAnything"}]:
+                raise ValueError("tilo-vm update origin requires its development repository policy")
+            return value
     # Board images carry private firmware and follow the forge's private
     # repository; every other image follows the public one. Both require
     # the release signature.
