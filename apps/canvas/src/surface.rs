@@ -36,6 +36,9 @@ use crate::render::{Options, Renderer};
 use crate::resource::{ArtworkResource, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
+/// The largest SVG `export-svg` also answers inline, in bytes.
+const MAX_INLINE_SVG: usize = 48 * 1024;
+
 /// What the pointer does on the canvas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -463,11 +466,60 @@ impl CanvasSurface {
             ViewOp::Export(export) => {
                 picture(view_ops::export(&mut self.renderer, text, &art, export))
             }
+            ViewOp::Compare(compare) => {
+                picture(view_ops::compare(&mut self.renderer, text, &art, compare))
+            }
+            ViewOp::ExportSvg => {
+                let renderer = &mut self.renderer;
+                let svg = crate::svg::export(&art, |layer| {
+                    let options = Options {
+                        layers: Some(vec![layer.id.clone()]),
+                        bare: true,
+                        ..Options::default()
+                    };
+                    view_ops::render(renderer, text, &art, art.bounds(), 1.0, &options)
+                        .ok()
+                        .map(|picture| picture.png)
+                });
+                let address = crate::resource::store(svg.as_bytes())?;
+                let mut value = json!({
+                    "format": "svg",
+                    "bytes": svg.len(),
+                    "content": address,
+                    "revision": revision,
+                });
+                if svg.len() <= MAX_INLINE_SVG
+                    && let Value::Object(fields) = &mut value
+                {
+                    fields.insert("svg".into(), svg.into());
+                }
+                Ok(ActionOutput {
+                    value: Some(value),
+                    resources: vec![address],
+                })
+            }
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
                 if let Value::Object(fields) = &mut value {
                     fields.insert("revision".into(), revision.into());
                     fields.insert("selected".into(), json!(self.selection));
+                    if let Some(reference) = &art.reference {
+                        let frame = self.renderer.reference_frame(&art);
+                        let pixels = self
+                            .renderer
+                            .reference_image(&art)
+                            .map(|image| [image.width, image.height]);
+                        fields.insert(
+                            "reference".into(),
+                            json!({
+                                "image": reference.image,
+                                "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
+                                "pixels": pixels,
+                                "opacity": reference.opacity,
+                                "visible": reference.visible,
+                            }),
+                        );
+                    }
                 }
                 Ok(ActionOutput {
                     value: Some(value),

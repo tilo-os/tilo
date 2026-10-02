@@ -1626,6 +1626,65 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "compare",
+    "resource_kind": "canvas.artwork",
+    "label": "Compare with reference",
+    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "region",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, width, height]`; the reference's frame when absent.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, width, height]`; the reference's frame when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`side-by-side` (default), `overlay` or `difference`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`side-by-side` (default), `overlay` or `difference`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
+        "ty": "integer",
+        "required": false,
+        "description": "Longest side of each picture, 64 to 1024 (default 640).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Longest side of each picture, 64 to 1024 (default 640)."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
@@ -2828,6 +2887,15 @@
         "nullable": true
       }
     ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "export-svg",
+    "resource_kind": "canvas.artwork",
+    "label": "Export SVG",
+    "description": "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+    "operation": "Effect",
+    "params": []
   },
   {
     "resource": "canvas.artwork",
@@ -4433,6 +4501,60 @@
                 "properties": {
                   "action": {
                     "type": "string",
+                    "const": "import-svg"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "svg"
+                    ],
+                    "properties": {
+                      "svg": {
+                        "type": "string",
+                        "description": "SVG markup, an absolute path to a `.svg`, or a content address."
+                      },
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The layer to draw on; the top layer when absent."
+                      },
+                      "group": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The group the marks join (one is made when absent)."
+                      },
+                      "fit": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Import SVG"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
                     "const": "apply"
                   },
                   "args": {
@@ -5799,6 +5921,74 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "import-svg",
+    "resource_kind": "canvas.artwork",
+    "label": "Import SVG",
+    "description": "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "svg",
+        "ty": "text",
+        "required": true,
+        "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
+        "schema": {
+          "type": "string",
+          "description": "SVG markup, an absolute path to a `.svg`, or a content address."
+        },
+        "nullable": false
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "The layer to draw on; the top layer when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The layer to draw on; the top layer when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "The group the marks join (one is made when absent).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The group the marks join (one is made when absent)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "fit",
+        "ty": "array",
+        "required": false,
+        "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
@@ -5835,6 +6025,20 @@
             "null"
           ],
           "description": "Only marks on this layer."
+        },
+        "nullable": true
+      },
+      {
+        "name": "full",
+        "ty": "boolean",
+        "required": false,
+        "description": "Also each mark's shape, style and transform, to edit exactly.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Also each mark's shape, style and transform, to edit exactly."
         },
         "nullable": true
       }
