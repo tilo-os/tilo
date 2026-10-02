@@ -39,7 +39,9 @@ fail() {
 useradd --home-dir "$work/home" --create-home --shell /bin/bash "$smoke_user"
 smoke_uid=$(id -u "$smoke_user")
 smoke_gid=$(id -g "$smoke_user")
-chmod 0711 "$work"
+# The tree stands in for / and /var above a real /var/home: world-readable,
+# as identity storage opens every ancestor directory for reading.
+chmod 0755 "$work"
 install -d -m 0700 -o "$smoke_uid" -g "$smoke_gid" \
     "$work/runtime" "$work/config" "$work/data" "$work/state" "$work/cache"
 

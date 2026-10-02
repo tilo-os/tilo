@@ -414,9 +414,22 @@ arch)
     fi
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
+    # Arch's rustup keeps toolchains per user, and the compiler cache turns
+    # auto-install off and probes rustc outside this checkout: install the
+    # pinned toolchain as the default for root and for the package builder.
+    useradd --create-home builder
+    toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+    rustup default "$toolchain"
+    su builder -c "cd /workspace && rustup toolchain install && rustup default '$toolchain'"
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
+    # The probe above started the cache server as root; makepkg compiles as
+    # the builder, which cannot read what a root server writes. Its first
+    # compile starts the builder's own server.
+    if [[ -n ${RUSTC_WRAPPER:-} ]]; then
+        "$RUSTC_WRAPPER" --stop-server >/dev/null
+    fi
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
@@ -424,7 +437,6 @@ arch)
     # in this userspace while retaining its portable Rust implementation.
     export TILO_BLAKE3_PURE=1
     stage=prepare-arch-builder
-    useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'

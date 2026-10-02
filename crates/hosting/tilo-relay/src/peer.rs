@@ -5114,9 +5114,11 @@ async fn handle_commit(
     if !subscribed.contains(&workspace_id) {
         return refused("commit sent before subscribing to workspace");
     }
-    if peer.role != crate::auth::PeerRole::Device
-        || author_device_public_key != peer.device_public_key
-    {
+    // The relay's own device takes part in its rooms' channels like any
+    // other member: its self-connection commits as that device.
+    let device =
+        peer.role == crate::auth::PeerRole::Device || &peer.cert == session.own_device_cert;
+    if !device || author_device_public_key != peer.device_public_key {
         return refused("author does not match authenticated device");
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {

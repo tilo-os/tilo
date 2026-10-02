@@ -31,6 +31,8 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -472,6 +474,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let state = tempfile::tempdir().unwrap();
 
     let hosted = start(&root, &host, state.path()).await;
+    let mut steward = steward::Steward::start(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -591,6 +594,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 
     let hosted = start(&root, &host, state.path()).await;
+
+    steward.reconnect(&hosted.relay, &root).await;
     let approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let resumed = browser
@@ -637,6 +642,8 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     hosted.stop().await;
 
     let hosted = start(&root, &host, state.path()).await;
+
+    steward.reconnect(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let after = browser.status().await;
@@ -805,6 +812,7 @@ async fn an_agents_tasks_beside_a_page_write_nothing_in_the_clear() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -866,6 +874,7 @@ async fn two_pages_and_an_agent_exchange_nothing_in_the_clear() {
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut first = Browser::open(&hosted, &first_device, &host).await;
     let mut second = Browser::open(&hosted, &second_device, &host).await;
@@ -980,6 +989,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start_with(&root, &host, state.path(), model).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);

@@ -46,7 +46,7 @@ async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host, &root).await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
     let peer = start_peer(
         Host::Https(host.https()),
         browser.cert.clone(),
@@ -91,7 +91,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut steward = steward::Steward::start(&host, &root).await;
+    let mut steward = steward::Steward::start(&host.relay, &root).await;
     let listen = host.web.addr;
     let https = host.https();
 
@@ -135,7 +135,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     );
 
     let host = start_host(&root, &host_device, state.path(), listen).await;
-    steward.reconnect(&host, &root).await;
+    steward.reconnect(&host.relay, &root).await;
     peer.reconnect().unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {

@@ -44,6 +44,7 @@ printf '%s\n' '[    0.100000] host kernel: start' \
   '[   14.500000] host kernel: Run /init as init process' \
   '[   20.000000] host systemd[1]: after the initrd'
 EOF
+cp "$work/dmesg" "$work/journalctl"
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
 printf 'mock critical chain\n' >&2
@@ -55,7 +56,7 @@ if [ "${TILO_TEST_ZRAM_SWAP:-yes}" = yes ]; then
 fi
 [ -z "${TILO_TEST_EXTRA_SWAP:-}" ] || printf '%s\n' "$TILO_TEST_EXTRA_SWAP"
 EOF
-chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg"
+chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" "$work/journalctl"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
@@ -74,7 +75,13 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
   >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
 grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
-if grep -Fq 'after the initrd' "$work/gaps.err"; then
+grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
+  TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
+  >/dev/null 2>"$work/initrd-gaps.err" || true
+grep -Fq '5.500s before [   20.000000] host systemd[1]: after the initrd' "$work/initrd-gaps.err" \
+  || { cat "$work/initrd-gaps.err" >&2; exit 1; }
+if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the initrd'; then
   echo 'kernel gap report reached past the initrd start' >&2
   exit 1
 fi
