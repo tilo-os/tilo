@@ -55,7 +55,7 @@ impl ResourceApp for App {
                 .collect(),
             1,
         )
-        .on_view("canvas-tool", move |index| {
+        .on_view("Tool", move |index| {
             chosen.set(surface::Tool::ALL.get(index).copied().unwrap_or_default());
         });
 

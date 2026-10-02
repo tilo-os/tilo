@@ -1,0 +1,4259 @@
+[
+  {
+    "resource": "canvas.artwork",
+    "action": "add-layer",
+    "resource_kind": "canvas.artwork",
+    "label": "Add layer",
+    "description": "Add a layer on top (or above another). Give it a medium (see media) to paint in oil or watercolour; without one it holds crisp vector art.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "id",
+        "ty": "text",
+        "required": false,
+        "description": "An id to address the layer by (`sky`); one is made when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An id to address the layer by (`sky`); one is made when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "name",
+        "ty": "text",
+        "required": true,
+        "description": "name",
+        "schema": {
+          "type": "string"
+        },
+        "nullable": false
+      },
+      {
+        "name": "medium",
+        "ty": "text",
+        "required": false,
+        "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
+        },
+        "nullable": true
+      },
+      {
+        "name": "opacity",
+        "ty": "number",
+        "required": false,
+        "description": "`0..=1`.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "`0..=1`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "above",
+        "ty": "text",
+        "required": false,
+        "description": "Put the new layer directly above this layer instead of on top.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Put the new layer directly above this layer instead of on top."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "apply",
+    "resource_kind": "canvas.artwork",
+    "label": "Apply Artwork edit",
+    "description": null,
+    "operation": "Document",
+    "params": [
+      {
+        "name": "action",
+        "ty": "object",
+        "required": true,
+        "description": "A Artwork action, as JSON",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "width": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Width in units, 16 to 8192."
+                },
+                "height": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Height in units, 16 to 8192."
+                },
+                "texture": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`."
+                },
+                "ground_colour": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Ground colour, `#rrggbb`."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "set-artwork"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Set the artwork's title, size or ground.",
+              "required": [
+                "action"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "An id to address the layer by (`sky`); one is made when absent."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "medium": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
+                },
+                "opacity": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "`0..=1`."
+                },
+                "above": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Put the new layer directly above this layer instead of on top."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "add-layer"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Add a layer on top, or above another."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "medium": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A medium id, or empty for plain vector art."
+                },
+                "opacity": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "visible": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`front`, `back`, `forward` or `backward` among the layers."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "edit-layer"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Change a layer."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "remove-layer"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Remove a layer and everything on it."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "marks"
+              ],
+              "properties": {
+                "layer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The layer to draw on; the top layer when absent."
+                },
+                "marks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "shape"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "An id to address the mark by later (`sun`, `hill-2`); one is made when absent."
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "shape": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "x",
+                              "y",
+                              "width",
+                              "height"
+                            ],
+                            "properties": {
+                              "x": {
+                                "type": "number"
+                              },
+                              "y": {
+                                "type": "number"
+                              },
+                              "width": {
+                                "type": "number"
+                              },
+                              "height": {
+                                "type": "number"
+                              },
+                              "radius": {
+                                "type": "number"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "rect"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "cx",
+                              "cy",
+                              "rx",
+                              "ry"
+                            ],
+                            "properties": {
+                              "cx": {
+                                "type": "number"
+                              },
+                              "cy": {
+                                "type": "number"
+                              },
+                              "rx": {
+                                "type": "number"
+                              },
+                              "ry": {
+                                "type": "number"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "ellipse"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "An ellipse around its centre."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "points"
+                            ],
+                            "properties": {
+                              "points": {
+                                "type": "array",
+                                "items": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "polygon"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "points"
+                            ],
+                            "properties": {
+                              "points": {
+                                "type": "array",
+                                "items": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "line"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "An open polyline through `points`, drawn with the stroke colour."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "d"
+                            ],
+                            "properties": {
+                              "d": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "path"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "x",
+                              "y",
+                              "text",
+                              "size"
+                            ],
+                            "properties": {
+                              "x": {
+                                "type": "number"
+                              },
+                              "y": {
+                                "type": "number"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "size": {
+                                "type": "number"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "text"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Text with its baseline starting at `x, y`."
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "kind",
+                              "points",
+                              "size"
+                            ],
+                            "properties": {
+                              "points": {
+                                "type": "array",
+                                "items": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  }
+                                }
+                              },
+                              "size": {
+                                "type": "number"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "const": "stroke"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                          }
+                        ],
+                        "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
+                      },
+                      "fill": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`#rrggbb[aa]` or `pigment:<name>`."
+                      },
+                      "gradient": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "required": [
+                          "kind",
+                          "from",
+                          "to",
+                          "stops"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+                          },
+                          "from": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2
+                          },
+                          "to": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2
+                          },
+                          "stops": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "A colour gradient across a mark."
+                      },
+                      "stroke": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Outline colour."
+                      },
+                      "stroke_width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Outline width in units."
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "`0..=1`."
+                      },
+                      "brush": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Painted layers: the brush width a filled shape is laid in with."
+                      },
+                      "angle": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Painted layers: the brushwork's direction in degrees."
+                      },
+                      "wet": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "Painted layers: paint into what is still wet."
+                      },
+                      "params": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "One shape to draw."
+                  }
+                },
+                "action": {
+                  "type": "string",
+                  "const": "draw"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Draw shapes, in order, on top of a layer."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "strokes"
+              ],
+              "properties": {
+                "layer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The layer to paint on; the top layer when absent."
+                },
+                "strokes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "points",
+                      "size",
+                      "colour"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          }
+                        },
+                        "description": "`[[x, y], …]` or `[[x, y, pressure], …]`, pressure `0..=1`; the stroke is smoothed through them, so a few points make a curve."
+                      },
+                      "size": {
+                        "type": "number",
+                        "description": "Brush width in units."
+                      },
+                      "colour": {
+                        "type": "string",
+                        "description": "`#rrggbb[aa]` or `pigment:<name>`."
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "wet": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "Paint into what is still wet: blends in oil, bleeds in watercolour."
+                      },
+                      "params": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "description": "Medium parameter overrides for this stroke (`{\"load\": 0.2}` for dry brush)."
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "One brush stroke."
+                  }
+                },
+                "action": {
+                  "type": "string",
+                  "const": "paint"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Paint brush strokes, in order, on top of a layer: a passage of painting in one step."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "ids"
+              ],
+              "properties": {
+                "ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "fill": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A colour, or `none`."
+                },
+                "gradient": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "kind",
+                    "from",
+                    "to",
+                    "stops"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+                    },
+                    "from": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "to": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "stops": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2
+                      },
+                      "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A colour gradient across a mark."
+                },
+                "stroke": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A colour, or `none`."
+                },
+                "stroke_width": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "opacity": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "brush": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "angle": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "wet": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "params": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "move_by": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "Move by `[dx, dy]` units."
+                },
+                "scale": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Scale about each mark's centre (`1.5` is half again as large)."
+                },
+                "rotate": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Rotate about each mark's centre, in degrees clockwise."
+                },
+                "layer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Move the marks onto this layer, on top."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "edit-marks"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Change marks: their colours and style, position, size, rotation or layer."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "layer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Remove every mark on this layer."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "remove-marks"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Remove marks by id, or every mark of a layer.",
+              "required": [
+                "action"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "ids",
+                "to"
+              ],
+              "properties": {
+                "ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "to": {
+                  "type": "string",
+                  "description": "`front`, `back`, `forward` or `backward`."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "arrange"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Move marks within their layer's stacking order."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "medium"
+              ],
+              "properties": {
+                "medium": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "label",
+                    "engine"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Lowercase id, letters, digits and `-`."
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "engine": {
+                      "type": "string",
+                      "description": "`oil` or `watercolour`."
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "params": {
+                      "type": "object",
+                      "description": "Engine parameters by id; `media` lists each engine's parameters and ranges."
+                    },
+                    "ground": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough` or `linen`."
+                    },
+                    "palette": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "colour"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "description": "Lowercase words joined by `-`, such as `burnt-sienna`."
+                          },
+                          "colour": {
+                            "type": "string",
+                            "description": "Masstone colour, `#rrggbb`."
+                          },
+                          "granulation": {
+                            "type": "number",
+                            "description": "Watercolour: how much it settles into the paper's tooth, `0..=1`."
+                          },
+                          "strength": {
+                            "type": "number",
+                            "description": "How strongly it tints, around `1`."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "A pigment in a medium's palette, used as `pigment:<name>`."
+                      }
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "save-medium"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Save a medium in the artwork (or replace one saved before), so layers can use it and everyone who opens the artwork has it."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "remove-medium"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Remove a medium saved in the artwork; layers using it paint plain."
+            }
+          ],
+          "description": "One edit of the artwork."
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "arrange",
+    "resource_kind": "canvas.artwork",
+    "label": "Arrange marks",
+    "description": "Bring marks to the front or back of their layer, or one step forward or backward.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "ids",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nullable": false
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": true,
+        "description": "`front`, `back`, `forward` or `backward`.",
+        "schema": {
+          "type": "string",
+          "description": "`front`, `back`, `forward` or `backward`."
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "draw",
+    "resource_kind": "canvas.artwork",
+    "label": "Draw shapes",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "The layer to draw on; the top layer when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The layer to draw on; the top layer when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "marks",
+        "ty": "array",
+        "required": true,
+        "description": "marks",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "shape"
+            ],
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "An id to address the mark by later (`sun`, `hill-2`); one is made when absent."
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shape": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "width": {
+                        "type": "number"
+                      },
+                      "height": {
+                        "type": "number"
+                      },
+                      "radius": {
+                        "type": "number"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "rect"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "cx",
+                      "cy",
+                      "rx",
+                      "ry"
+                    ],
+                    "properties": {
+                      "cx": {
+                        "type": "number"
+                      },
+                      "cy": {
+                        "type": "number"
+                      },
+                      "rx": {
+                        "type": "number"
+                      },
+                      "ry": {
+                        "type": "number"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "ellipse"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "An ellipse around its centre."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "points"
+                    ],
+                    "properties": {
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "maxItems": 2
+                        }
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "polygon"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "points"
+                    ],
+                    "properties": {
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "maxItems": 2
+                        }
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "line"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "An open polyline through `points`, drawn with the stroke colour."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "d"
+                    ],
+                    "properties": {
+                      "d": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "path"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "x",
+                      "y",
+                      "text",
+                      "size"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "number"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "text"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "Text with its baseline starting at `x, y`."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "points",
+                      "size"
+                    ],
+                    "properties": {
+                      "points": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          }
+                        }
+                      },
+                      "size": {
+                        "type": "number"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "stroke"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                  }
+                ],
+                "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
+              },
+              "fill": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`#rrggbb[aa]` or `pigment:<name>`."
+              },
+              "gradient": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "required": [
+                  "kind",
+                  "from",
+                  "to",
+                  "stops"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+                  },
+                  "from": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "to": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "stops": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A colour gradient across a mark."
+              },
+              "stroke": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Outline colour."
+              },
+              "stroke_width": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Outline width in units."
+              },
+              "opacity": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "`0..=1`."
+              },
+              "brush": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Painted layers: the brush width a filled shape is laid in with."
+              },
+              "angle": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Painted layers: the brushwork's direction in degrees."
+              },
+              "wet": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Painted layers: paint into what is still wet."
+              },
+              "params": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+              }
+            },
+            "additionalProperties": false,
+            "description": "One shape to draw."
+          }
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "edit-layer",
+    "resource_kind": "canvas.artwork",
+    "label": "Edit layer",
+    "description": "Rename a layer, change its medium, opacity or visibility, or move it to the front, back, forward or backward.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "id",
+        "ty": "text",
+        "required": true,
+        "description": "id",
+        "schema": {
+          "type": "string"
+        },
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "ty": "text",
+        "required": false,
+        "description": "name",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "medium",
+        "ty": "text",
+        "required": false,
+        "description": "A medium id, or empty for plain vector art.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A medium id, or empty for plain vector art."
+        },
+        "nullable": true
+      },
+      {
+        "name": "opacity",
+        "ty": "number",
+        "required": false,
+        "description": "opacity",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "visible",
+        "ty": "boolean",
+        "required": false,
+        "description": "visible",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": false,
+        "description": "`front`, `back`, `forward` or `backward` among the layers.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`front`, `back`, `forward` or `backward` among the layers."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "edit-marks",
+    "resource_kind": "canvas.artwork",
+    "label": "Edit marks",
+    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "ids",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nullable": false
+      },
+      {
+        "name": "name",
+        "ty": "text",
+        "required": false,
+        "description": "name",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "fill",
+        "ty": "text",
+        "required": false,
+        "description": "A colour, or `none`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A colour, or `none`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "gradient",
+        "ty": "object",
+        "required": false,
+        "description": "A colour gradient across a mark.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "kind",
+            "from",
+            "to",
+            "stops"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+            },
+            "from": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "stops": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+            }
+          },
+          "additionalProperties": false,
+          "description": "A colour gradient across a mark."
+        },
+        "nullable": true
+      },
+      {
+        "name": "stroke",
+        "ty": "text",
+        "required": false,
+        "description": "A colour, or `none`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A colour, or `none`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "stroke_width",
+        "ty": "number",
+        "required": false,
+        "description": "stroke_width",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "opacity",
+        "ty": "number",
+        "required": false,
+        "description": "opacity",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "brush",
+        "ty": "number",
+        "required": false,
+        "description": "brush",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "angle",
+        "ty": "number",
+        "required": false,
+        "description": "angle",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "wet",
+        "ty": "boolean",
+        "required": false,
+        "description": "wet",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": false,
+        "description": "params",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "move_by",
+        "ty": "array",
+        "required": false,
+        "description": "Move by `[dx, dy]` units.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Move by `[dx, dy]` units."
+        },
+        "nullable": true
+      },
+      {
+        "name": "scale",
+        "ty": "number",
+        "required": false,
+        "description": "Scale about each mark's centre (`1.5` is half again as large).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Scale about each mark's centre (`1.5` is half again as large)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "rotate",
+        "ty": "number",
+        "required": false,
+        "description": "Rotate about each mark's centre, in degrees clockwise.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Rotate about each mark's centre, in degrees clockwise."
+        },
+        "nullable": true
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "Move the marks onto this layer, on top.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Move the marks onto this layer, on top."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "export",
+    "resource_kind": "canvas.artwork",
+    "label": "Export PNG",
+    "description": "Render the artwork at full size as a PNG and answer with its content address.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "scale",
+        "ty": "number",
+        "required": false,
+        "description": "Pixels per artwork unit, 0.25 to 4 (default 1).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Pixels per artwork unit, 0.25 to 4 (default 1)."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "group",
+    "resource_kind": "canvas.artwork",
+    "label": "Apply several Artwork edits as one",
+    "description": null,
+    "operation": "Document",
+    "params": [
+      {
+        "name": "actions",
+        "ty": "array",
+        "required": true,
+        "description": "Artwork actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+        "schema": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "paint"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "strokes"
+                    ],
+                    "properties": {
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The layer to paint on; the top layer when absent."
+                      },
+                      "strokes": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "points",
+                            "size",
+                            "colour"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "points": {
+                              "type": "array",
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                }
+                              },
+                              "description": "`[[x, y], …]` or `[[x, y, pressure], …]`, pressure `0..=1`; the stroke is smoothed through them, so a few points make a curve."
+                            },
+                            "size": {
+                              "type": "number",
+                              "description": "Brush width in units."
+                            },
+                            "colour": {
+                              "type": "string",
+                              "description": "`#rrggbb[aa]` or `pigment:<name>`."
+                            },
+                            "opacity": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "wet": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ],
+                              "description": "Paint into what is still wet: blends in oil, bleeds in watercolour."
+                            },
+                            "params": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "description": "Medium parameter overrides for this stroke (`{\"load\": 0.2}` for dry brush)."
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "One brush stroke."
+                        },
+                        "description": "strokes"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Paint strokes"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "draw"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "marks"
+                    ],
+                    "properties": {
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The layer to draw on; the top layer when absent."
+                      },
+                      "marks": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": [
+                            "shape"
+                          ],
+                          "properties": {
+                            "id": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "An id to address the mark by later (`sun`, `hill-2`); one is made when absent."
+                            },
+                            "name": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "shape": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height"
+                                  ],
+                                  "properties": {
+                                    "x": {
+                                      "type": "number"
+                                    },
+                                    "y": {
+                                      "type": "number"
+                                    },
+                                    "width": {
+                                      "type": "number"
+                                    },
+                                    "height": {
+                                      "type": "number"
+                                    },
+                                    "radius": {
+                                      "type": "number"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "rect"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "cx",
+                                    "cy",
+                                    "rx",
+                                    "ry"
+                                  ],
+                                  "properties": {
+                                    "cx": {
+                                      "type": "number"
+                                    },
+                                    "cy": {
+                                      "type": "number"
+                                    },
+                                    "rx": {
+                                      "type": "number"
+                                    },
+                                    "ry": {
+                                      "type": "number"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "ellipse"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "An ellipse around its centre."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "points"
+                                  ],
+                                  "properties": {
+                                    "points": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "minItems": 2,
+                                        "maxItems": 2
+                                      }
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "polygon"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "points"
+                                  ],
+                                  "properties": {
+                                    "points": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "minItems": 2,
+                                        "maxItems": 2
+                                      }
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "line"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "An open polyline through `points`, drawn with the stroke colour."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "d"
+                                  ],
+                                  "properties": {
+                                    "d": {
+                                      "type": "string"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "path"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "x",
+                                    "y",
+                                    "text",
+                                    "size"
+                                  ],
+                                  "properties": {
+                                    "x": {
+                                      "type": "number"
+                                    },
+                                    "y": {
+                                      "type": "number"
+                                    },
+                                    "text": {
+                                      "type": "string"
+                                    },
+                                    "size": {
+                                      "type": "number"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "text"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "Text with its baseline starting at `x, y`."
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "points",
+                                    "size"
+                                  ],
+                                  "properties": {
+                                    "points": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "number"
+                                        }
+                                      }
+                                    },
+                                    "size": {
+                                      "type": "number"
+                                    },
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "stroke"
+                                    }
+                                  },
+                                  "additionalProperties": false,
+                                  "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                                }
+                              ],
+                              "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
+                            },
+                            "fill": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`#rrggbb[aa]` or `pigment:<name>`."
+                            },
+                            "gradient": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "required": [
+                                "kind",
+                                "from",
+                                "to",
+                                "stops"
+                              ],
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+                                },
+                                "from": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                },
+                                "to": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                },
+                                "stops": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                                }
+                              },
+                              "additionalProperties": false,
+                              "description": "A colour gradient across a mark."
+                            },
+                            "stroke": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "Outline colour."
+                            },
+                            "stroke_width": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "Outline width in units."
+                            },
+                            "opacity": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "`0..=1`."
+                            },
+                            "brush": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "Painted layers: the brush width a filled shape is laid in with."
+                            },
+                            "angle": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "Painted layers: the brushwork's direction in degrees."
+                            },
+                            "wet": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ],
+                              "description": "Painted layers: paint into what is still wet."
+                            },
+                            "params": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "One shape to draw."
+                        },
+                        "description": "marks"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Draw shapes"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "edit-marks"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "ids"
+                    ],
+                    "properties": {
+                      "ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "ids"
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "name"
+                      },
+                      "fill": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A colour, or `none`."
+                      },
+                      "gradient": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "required": [
+                          "kind",
+                          "from",
+                          "to",
+                          "stops"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
+                          },
+                          "from": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2
+                          },
+                          "to": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2
+                          },
+                          "stops": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "minItems": 2,
+                              "maxItems": 2
+                            },
+                            "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "A colour gradient across a mark."
+                      },
+                      "stroke": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A colour, or `none`."
+                      },
+                      "stroke_width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "stroke_width"
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "opacity"
+                      },
+                      "brush": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "brush"
+                      },
+                      "angle": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "angle"
+                      },
+                      "wet": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "wet"
+                      },
+                      "params": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "description": "params"
+                      },
+                      "move_by": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "Move by `[dx, dy]` units."
+                      },
+                      "scale": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Scale about each mark's centre (`1.5` is half again as large)."
+                      },
+                      "rotate": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Rotate about each mark's centre, in degrees clockwise."
+                      },
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Move the marks onto this layer, on top."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Edit marks"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "remove-marks"
+                  },
+                  "args": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "ids": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "ids"
+                      },
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Remove every mark on this layer."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Remove marks"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "arrange"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "ids",
+                      "to"
+                    ],
+                    "properties": {
+                      "ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "ids"
+                      },
+                      "to": {
+                        "type": "string",
+                        "description": "`front`, `back`, `forward` or `backward`."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Arrange marks"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "add-layer"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "name"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "An id to address the layer by (`sky`); one is made when absent."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "name"
+                      },
+                      "medium": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A medium id (`oil`, `watercolour`, … see `media`) to paint this layer's marks with; absent or empty for plain vector art."
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "`0..=1`."
+                      },
+                      "above": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Put the new layer directly above this layer instead of on top."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Add layer"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "edit-layer"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "id"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "id"
+                      },
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "name"
+                      },
+                      "medium": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A medium id, or empty for plain vector art."
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "opacity"
+                      },
+                      "visible": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "visible"
+                      },
+                      "to": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`front`, `back`, `forward` or `backward` among the layers."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Edit layer"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "remove-layer"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "id"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "id"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Remove layer"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "set-artwork"
+                  },
+                  "args": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "title": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "title"
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Width in units, 16 to 8192."
+                      },
+                      "height": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Height in units, 16 to 8192."
+                      },
+                      "texture": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`."
+                      },
+                      "ground_colour": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Ground colour, `#rrggbb`."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Set artwork"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "save-medium"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "medium"
+                    ],
+                    "properties": {
+                      "medium": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "label",
+                          "engine"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Lowercase id, letters, digits and `-`."
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "engine": {
+                            "type": "string",
+                            "description": "`oil` or `watercolour`."
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Engine parameters by id; `media` lists each engine's parameters and ranges."
+                          },
+                          "ground": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough` or `linen`."
+                          },
+                          "palette": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "name",
+                                "colour"
+                              ],
+                              "properties": {
+                                "name": {
+                                  "type": "string",
+                                  "description": "Lowercase words joined by `-`, such as `burnt-sienna`."
+                                },
+                                "colour": {
+                                  "type": "string",
+                                  "description": "Masstone colour, `#rrggbb`."
+                                },
+                                "granulation": {
+                                  "type": "number",
+                                  "description": "Watercolour: how much it settles into the paper's tooth, `0..=1`."
+                                },
+                                "strength": {
+                                  "type": "number",
+                                  "description": "How strongly it tints, around `1`."
+                                }
+                              },
+                              "additionalProperties": false,
+                              "description": "A pigment in a medium's palette, used as `pigment:<name>`."
+                            }
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Save medium"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "remove-medium"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "id"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "id"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Remove medium"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "apply"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "action"
+                    ],
+                    "properties": {
+                      "action": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "title": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "width": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "height": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "texture": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "ground_colour": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "set-artwork"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "action"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "name"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "medium": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "opacity": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "above": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "add-layer"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "id"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "medium": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "opacity": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "visible": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "to": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "edit-layer"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "id"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "remove-layer"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "marks"
+                            ],
+                            "properties": {
+                              "layer": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "marks": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "shape"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "name": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "shape": {
+                                      "oneOf": [
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "x",
+                                            "y",
+                                            "width",
+                                            "height"
+                                          ],
+                                          "properties": {
+                                            "x": {
+                                              "type": "number"
+                                            },
+                                            "y": {
+                                              "type": "number"
+                                            },
+                                            "width": {
+                                              "type": "number"
+                                            },
+                                            "height": {
+                                              "type": "number"
+                                            },
+                                            "radius": {
+                                              "type": "number"
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "rect"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "cx",
+                                            "cy",
+                                            "rx",
+                                            "ry"
+                                          ],
+                                          "properties": {
+                                            "cx": {
+                                              "type": "number"
+                                            },
+                                            "cy": {
+                                              "type": "number"
+                                            },
+                                            "rx": {
+                                              "type": "number"
+                                            },
+                                            "ry": {
+                                              "type": "number"
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "ellipse"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "points"
+                                          ],
+                                          "properties": {
+                                            "points": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "number"
+                                                },
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "polygon"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "points"
+                                          ],
+                                          "properties": {
+                                            "points": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "number"
+                                                },
+                                                "minItems": 2,
+                                                "maxItems": 2
+                                              }
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "line"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "d"
+                                          ],
+                                          "properties": {
+                                            "d": {
+                                              "type": "string"
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "path"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "x",
+                                            "y",
+                                            "text",
+                                            "size"
+                                          ],
+                                          "properties": {
+                                            "x": {
+                                              "type": "number"
+                                            },
+                                            "y": {
+                                              "type": "number"
+                                            },
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "size": {
+                                              "type": "number"
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "text"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "required": [
+                                            "kind",
+                                            "points",
+                                            "size"
+                                          ],
+                                          "properties": {
+                                            "points": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "number"
+                                                }
+                                              }
+                                            },
+                                            "size": {
+                                              "type": "number"
+                                            },
+                                            "kind": {
+                                              "type": "string",
+                                              "const": "stroke"
+                                            }
+                                          },
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    "fill": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "gradient": {
+                                      "type": [
+                                        "object",
+                                        "null"
+                                      ],
+                                      "required": [
+                                        "kind",
+                                        "from",
+                                        "to",
+                                        "stops"
+                                      ],
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string"
+                                        },
+                                        "from": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        },
+                                        "to": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        },
+                                        "stops": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "array",
+                                            "minItems": 2,
+                                            "maxItems": 2
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "stroke": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "stroke_width": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "opacity": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "brush": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "angle": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "wet": {
+                                      "type": [
+                                        "boolean",
+                                        "null"
+                                      ]
+                                    },
+                                    "params": {
+                                      "type": [
+                                        "object",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "draw"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "strokes"
+                            ],
+                            "properties": {
+                              "layer": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "strokes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "required": [
+                                    "points",
+                                    "size",
+                                    "colour"
+                                  ],
+                                  "properties": {
+                                    "id": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "name": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "points": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "number"
+                                        }
+                                      }
+                                    },
+                                    "size": {
+                                      "type": "number"
+                                    },
+                                    "colour": {
+                                      "type": "string"
+                                    },
+                                    "opacity": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "wet": {
+                                      "type": [
+                                        "boolean",
+                                        "null"
+                                      ]
+                                    },
+                                    "params": {
+                                      "type": [
+                                        "object",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "paint"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "ids"
+                            ],
+                            "properties": {
+                              "ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "fill": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "gradient": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "required": [
+                                  "kind",
+                                  "from",
+                                  "to",
+                                  "stops"
+                                ],
+                                "properties": {
+                                  "kind": {
+                                    "type": "string"
+                                  },
+                                  "from": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "to": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "stops": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "array",
+                                      "minItems": 2,
+                                      "maxItems": 2
+                                    }
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "stroke": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "stroke_width": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "opacity": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "brush": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "angle": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "wet": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "params": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ]
+                              },
+                              "move_by": {
+                                "type": [
+                                  "array",
+                                  "null"
+                                ],
+                                "items": {
+                                  "type": "number"
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              },
+                              "scale": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "rotate": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "layer": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "edit-marks"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "layer": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "remove-marks"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "action"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "ids",
+                              "to"
+                            ],
+                            "properties": {
+                              "ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "to": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "arrange"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "medium"
+                            ],
+                            "properties": {
+                              "medium": {
+                                "type": "object",
+                                "required": [
+                                  "id",
+                                  "label",
+                                  "engine"
+                                ],
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "engine": {
+                                    "type": "string"
+                                  },
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "params": {
+                                    "type": "object"
+                                  },
+                                  "ground": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "palette": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "name",
+                                        "colour"
+                                      ],
+                                      "properties": {
+                                        "name": {
+                                          "type": "string"
+                                        },
+                                        "colour": {
+                                          "type": "string"
+                                        },
+                                        "granulation": {
+                                          "type": "number"
+                                        },
+                                        "strength": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "save-medium"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "id"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "remove-medium"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "One Artwork action, as `apply` takes it"
+              }
+            ]
+          }
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "inspect",
+    "resource_kind": "canvas.artwork",
+    "label": "Inspect marks",
+    "description": "List the layers and the marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "region",
+        "ty": "array",
+        "required": false,
+        "description": "Only marks touching `[x, y, width, height]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Only marks touching `[x, y, width, height]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "Only marks on this layer.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Only marks on this layer."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "look",
+    "resource_kind": "canvas.artwork",
+    "label": "Look at the artwork",
+    "description": "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "region",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, width, height]` in artwork units; the whole artwork when absent. A small region is a close look at detail."
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
+        "ty": "integer",
+        "required": false,
+        "description": "The longest side of the picture in pixels, 64 to 1536 (default 1024).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "The longest side of the picture in pixels, 64 to 1536 (default 1024)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "grid",
+        "ty": "boolean",
+        "required": false,
+        "description": "Draw a labelled coordinate grid over the picture, to place marks.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Draw a labelled coordinate grid over the picture, to place marks."
+        },
+        "nullable": true
+      },
+      {
+        "name": "layers",
+        "ty": "array",
+        "required": false,
+        "description": "Show only these layers.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Show only these layers."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "media",
+    "resource_kind": "canvas.artwork",
+    "label": "List media",
+    "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes.",
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "paint",
+    "resource_kind": "canvas.artwork",
+    "label": "Paint strokes",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "The layer to paint on; the top layer when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The layer to paint on; the top layer when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "strokes",
+        "ty": "array",
+        "required": true,
+        "description": "strokes",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "points",
+              "size",
+              "colour"
+            ],
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "points": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "description": "`[[x, y], …]` or `[[x, y, pressure], …]`, pressure `0..=1`; the stroke is smoothed through them, so a few points make a curve."
+              },
+              "size": {
+                "type": "number",
+                "description": "Brush width in units."
+              },
+              "colour": {
+                "type": "string",
+                "description": "`#rrggbb[aa]` or `pigment:<name>`."
+              },
+              "opacity": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "wet": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Paint into what is still wet: blends in oil, bleeds in watercolour."
+              },
+              "params": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Medium parameter overrides for this stroke (`{\"load\": 0.2}` for dry brush)."
+              }
+            },
+            "additionalProperties": false,
+            "description": "One brush stroke."
+          }
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "remove-layer",
+    "resource_kind": "canvas.artwork",
+    "label": "Remove layer",
+    "description": "Remove a layer and every mark on it.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "id",
+        "ty": "text",
+        "required": true,
+        "description": "id",
+        "schema": {
+          "type": "string"
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "remove-marks",
+    "resource_kind": "canvas.artwork",
+    "label": "Remove marks",
+    "description": "Remove marks by id, or every mark of a layer.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": false,
+        "description": "ids",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nullable": true
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "Remove every mark on this layer.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Remove every mark on this layer."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "remove-medium",
+    "resource_kind": "canvas.artwork",
+    "label": "Remove medium",
+    "description": "Remove a medium saved in this artwork.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "id",
+        "ty": "text",
+        "required": true,
+        "description": "id",
+        "schema": {
+          "type": "string"
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "save-medium",
+    "resource_kind": "canvas.artwork",
+    "label": "Save medium",
+    "description": "Save a medium preset in the artwork: an engine (oil or watercolour) with parameters, a ground and a pigment palette. Layers can then use its id.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "medium",
+        "ty": "object",
+        "required": true,
+        "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it.",
+        "schema": {
+          "type": "object",
+          "required": [
+            "id",
+            "label",
+            "engine"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Lowercase id, letters, digits and `-`."
+            },
+            "label": {
+              "type": "string"
+            },
+            "engine": {
+              "type": "string",
+              "description": "`oil` or `watercolour`."
+            },
+            "description": {
+              "type": "string"
+            },
+            "params": {
+              "type": "object",
+              "description": "Engine parameters by id; `media` lists each engine's parameters and ranges."
+            },
+            "ground": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The ground this medium suits: `smooth`, `paper`, `cold-press`, `rough` or `linen`."
+            },
+            "palette": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "colour"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Lowercase words joined by `-`, such as `burnt-sienna`."
+                  },
+                  "colour": {
+                    "type": "string",
+                    "description": "Masstone colour, `#rrggbb`."
+                  },
+                  "granulation": {
+                    "type": "number",
+                    "description": "Watercolour: how much it settles into the paper's tooth, `0..=1`."
+                  },
+                  "strength": {
+                    "type": "number",
+                    "description": "How strongly it tints, around `1`."
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A pigment in a medium's palette, used as `pigment:<name>`."
+              }
+            }
+          },
+          "additionalProperties": false,
+          "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
+        },
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "set-artwork",
+    "resource_kind": "canvas.artwork",
+    "label": "Set artwork",
+    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen) and colour.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "title",
+        "ty": "text",
+        "required": false,
+        "description": "title",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Width in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Width in units, 16 to 8192."
+        },
+        "nullable": true
+      },
+      {
+        "name": "height",
+        "ty": "number",
+        "required": false,
+        "description": "Height in units, 16 to 8192.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Height in units, 16 to 8192."
+        },
+        "nullable": true
+      },
+      {
+        "name": "texture",
+        "ty": "text",
+        "required": false,
+        "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`smooth`, `paper`, `cold-press`, `rough` or `linen`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "ground_colour",
+        "ty": "text",
+        "required": false,
+        "description": "Ground colour, `#rrggbb`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Ground colour, `#rrggbb`."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "tilo.control:Tool",
+    "action": "select",
+    "resource_kind": "tilo.control.segmented",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "index",
+        "ty": "integer",
+        "required": true,
+        "description": "Zero-based segment index",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "ui:root%7Ek%3Aadd%2Dlayer",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Aadd%2Dlayer%2D2",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Aadd%2Dlayer%2D3",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "action": "decrement",
+    "resource_kind": "tilo.ui.control",
+    "label": "Decrement",
+    "description": null,
+    "operation": "Effect",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "action": "increment",
+    "resource_kind": "tilo.ui.control",
+    "label": "Increment",
+    "description": null,
+    "operation": "Effect",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dlayer",
+    "action": "expand",
+    "resource_kind": "tilo.ui.control",
+    "label": "Expand",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dlayer",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dlayer",
+    "action": "set-value",
+    "resource_kind": "tilo.ui.control",
+    "label": "Set value",
+    "description": null,
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "value",
+        "ty": "text",
+        "required": true,
+        "description": "Value",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "ui:root%7Ek%3Acolor%5Fpicker",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acolor%5Fpicker",
+    "action": "set-value",
+    "resource_kind": "tilo.ui.control",
+    "label": "Set value",
+    "description": null,
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "value",
+        "ty": "text",
+        "required": true,
+        "description": "Value",
+        "nullable": false
+      }
+    ]
+  }
+]
