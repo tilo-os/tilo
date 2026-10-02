@@ -118,6 +118,8 @@ pub fn parse_path_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+pub use resource::{CodeEditor, CodeEditorShell};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,4 +171,3 @@ mod tests {
         }
     }
 }
-pub use resource::{CodeEditor, CodeEditorShell};

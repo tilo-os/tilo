@@ -295,6 +295,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one assertion covers publish ownership and hosted playhead extras"
+    )]
     fn hosted_resources_keep_playhead_extras_without_project_root() {
         let published = ui::tilo_resource::publish::<VideoProject>(
             "video.project",
@@ -382,9 +386,6 @@ mod tests {
             "standalone playhead nests split/trim on playhead-clip rows"
         );
 
-        app.set_framework_hosted(true);
-        assert!(app.is_framework_hosted());
-        assert!(ui::resources::resource(&app, &state.doc, "video.project").is_none());
         fn find_clip(resources: &[tilo_actions::Resource]) -> Option<String> {
             for resource in resources {
                 if resource.kind == "video.clip" {
@@ -396,6 +397,9 @@ mod tests {
             }
             None
         }
+        app.set_framework_hosted(true);
+        assert!(app.is_framework_hosted());
+        assert!(ui::resources::resource(&app, &state.doc, "video.project").is_none());
         let clip_id = find_clip(&app.publish_resources(&state.doc)).expect("sample clip");
         assert!(
             ui::resources::resource(&app, &state.doc, &clip_id).is_some(),

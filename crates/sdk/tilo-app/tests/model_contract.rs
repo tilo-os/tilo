@@ -321,7 +321,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
     assert_eq!(arrived_ids, ["local".to_string(), "remote".to_string()]);
     assert_eq!(
         tilo_app::record::former_identities(&arrived),
-        vec![origin.id.clone()]
+        vec![origin.id]
     );
     assert!(tilo_app::record::references(&arrived).is_empty());
     assert!(
@@ -337,7 +337,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
         foreign.is_empty(),
         "meta keys a governed import would refuse: {foreign:?}"
     );
-    let arrived_hashes: Vec<_> = tilo_resource::history::versions(&mut arrived.clone())
+    let arrived_hashes: Vec<_> = tilo_resource::history::versions(&mut arrived)
         .into_iter()
         .map(|version| version.hash)
         .collect();

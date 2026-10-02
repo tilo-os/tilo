@@ -252,6 +252,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one assertion covers publish ownership and hosted extras"
+    )]
     fn resource_publish_owns_document_door_and_hosted_keeps_only_live_extras() {
         let mut doc = AutoCommit::new();
         CameraAction::SetMode {

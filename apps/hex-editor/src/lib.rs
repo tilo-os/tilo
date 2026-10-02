@@ -117,6 +117,8 @@ fn parse_file_arg(args: Vec<String>) -> Option<String> {
     None
 }
 
+pub use resource::{HexEditor, HexEditorShell, launch_spec};
+
 #[cfg(test)]
 mod tests {
     use super::parse_file_arg;
@@ -139,4 +141,3 @@ mod tests {
         }
     }
 }
-pub use resource::{HexEditor, HexEditorShell, launch_spec};
