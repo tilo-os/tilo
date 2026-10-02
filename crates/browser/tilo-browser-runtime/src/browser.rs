@@ -190,6 +190,7 @@ struct Mount {
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
+    media: ui::headless::host_media::MediaLane,
     store: Rc<durable_store::MemoryStore>,
     /// Every package record owner the mount opened, flushed together.
     stores: Rc<RefCell<Vec<RecordStore>>>,
@@ -916,6 +917,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         window: Arc::clone(&window),
         canvas,
         frame,
+        media: ui::headless::host_media::MediaLane::default(),
         store,
         stores,
         checkout,
@@ -2311,5 +2313,38 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)
+    })
+}
+
+/// The shared Chat controls' local media requests, scoped to retained owners.
+///
+/// # Errors
+///
+/// Rejects a closed mount or a failure to serialize its requests.
+#[wasm_bindgen]
+pub fn take_media_requests(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |mount| {
+        serde_json::to_string(&mount.media.take(&mut mount.frame)).map_err(error)
+    })
+}
+
+/// Complete one exact retained component request; late replies are refused.
+///
+/// # Errors
+///
+/// Rejects malformed snapshots and closed mounts.
+#[wasm_bindgen]
+pub fn complete_media_request(id: u64, ticket: u64, response: &str) -> Result<bool, JsValue> {
+    let result: Result<ui::native_media::Snapshot, String> =
+        serde_json::from_str(response).map_err(error)?;
+    if result.as_ref().is_ok_and(|snapshot| !snapshot.valid()) {
+        return Err(error("invalid local media snapshot"));
+    }
+    with_mount(id, |mount| {
+        let completed = mount.media.complete(&mut mount.frame, ticket, result);
+        if completed {
+            mount.window.request_redraw();
+        }
+        Ok(completed)
     })
 }

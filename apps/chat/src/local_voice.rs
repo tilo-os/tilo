@@ -240,17 +240,16 @@ impl crate::app::ChatApp {
             self.call.leave();
         }
         self.media_error = snapshot.issue.map(|issue| {
-            match issue {
-                ui::native_media::Issue::Unavailable => "Voice is unavailable",
-                ui::native_media::Issue::Denied => "Call access was denied",
-                ui::native_media::Issue::PermissionDenied => "Microphone permission was denied",
-                ui::native_media::Issue::SourceLost => "Microphone disconnected",
-                ui::native_media::Issue::CaptureFailed => "Microphone could not start",
-                ui::native_media::Issue::TransportFailed => "Call disconnected",
-                ui::native_media::Issue::SessionEnded => "Call ended",
-                ui::native_media::Issue::Stale => "Call session expired",
-            }
-            .to_string()
+            crate::i18n::t(match issue {
+                ui::native_media::Issue::Unavailable => "chat-call-issue-unavailable",
+                ui::native_media::Issue::Denied => "chat-call-issue-denied",
+                ui::native_media::Issue::PermissionDenied => "chat-call-issue-permission-denied",
+                ui::native_media::Issue::SourceLost => "chat-call-issue-source-lost",
+                ui::native_media::Issue::CaptureFailed => "chat-call-issue-capture-failed",
+                ui::native_media::Issue::TransportFailed => "chat-call-issue-transport-failed",
+                ui::native_media::Issue::SessionEnded => "chat-call-issue-session-ended",
+                ui::native_media::Issue::Stale => "chat-call-issue-stale",
+            })
         });
         self.refresh_native_streams();
         self.request_relayout();

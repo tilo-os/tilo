@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 75169792
+bytes = 76742656
 
 [bundles.desktop.rebaseline]
-run = 55796
-measured = 74377176
-reason = "the previous budget was the exact run 55499 measurement with no headroom, so any added byte failed main"
+run = 56288
+measured = 75954743
+reason = "feature growth: Activity history and retained notifications (#2070); reduction tracked in #2091"

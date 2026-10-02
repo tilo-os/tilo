@@ -59,7 +59,8 @@ fi
 escaped="$(python3 -c 'print("dev-" + "disk/by-id/virtio-tilo-validation".replace("-", "\\x2d").replace("/", "-") + ".device")')"
 if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq -- '--image-policy=root=signed+absent:usr=absent:=unused+absent' "$access" \
-   && grep -Fq 'Environment=SYSTEMD_LOG_LEVEL=debug' "$access" \
+   && grep -Fq 'ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh' "$access" \
+   && ! grep -Fq 'Environment=SYSTEMD_LOG_LEVEL=debug' "$access" \
    && grep -Fq 'ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt' "$access" \
    && grep -Fq 'TILO_VALIDATION_CERT_MISSING' "$access" \
    && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
