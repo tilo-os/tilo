@@ -24,6 +24,16 @@ on:
         type: string
         required: false
         default: '["x86_64","aarch64"]'
+      fex_payload_candidate:
+        description: Optional immutable ARM FEX payload for a main dev dispatch
+        type: string
+        required: false
+        default: ''
+      windows_guest_candidate:
+        description: Optional immutable x86 guest paired with the FEX payload
+        type: string
+        required: false
+        default: ''
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -104,6 +114,7 @@ concurrency:
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
+  TILO_DEV_INPUT_COHORT: ${{ (inputs.fex_payload_candidate != '' || inputs.windows_guest_candidate != '') && github.run_id || '' }}
 
 jobs:
   plan:
@@ -873,17 +884,11 @@ jobs:
           FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
           HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          BUILD_MODE: ${{ needs.plan.outputs.mode }}
         run: |
           set -euo pipefail
           if [[ -n "$FEX_PAYLOAD_CANDIDATE" || -n "$WINDOWS_GUEST_CANDIDATE" ]]; then
-            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main \
-               && "$HARDWARE_PROFILE" == lenovo-83ed ]] || {
-              echo '::error::one-off Windows provider inputs require a Lenovo main dispatch'; exit 1;
-            }
-            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
-               && "$WINDOWS_GUEST_CANDIDATE" =~ ^(registry|code)\.tilo\.so/tilo/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
-              echo '::error::one-off Windows provider inputs require two immutable registry digests'; exit 1;
-            }
+            ./os/dev/check-windows-provider-candidates.sh
             FEX_PAYLOAD_REF="$FEX_PAYLOAD_CANDIDATE"
             WINDOWS_GUEST_REF="$WINDOWS_GUEST_CANDIDATE"
             provider_input_class=development-only
@@ -1120,6 +1125,7 @@ jobs:
           elif [[ $validate == true && $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
             series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
           fi
+          series="$(bash os/dev/dev-image-cohort.sh "$series")"
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
           # A release and its reproduction clamp every mtime and compress
           # alike. A Build / OS dev image needs neither: no rewrite, and fast
@@ -3138,6 +3144,7 @@ jobs:
     # queue for a native slot before its own build, so allow the ceiling.
     timeout-minutes: 180
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install registry tools
         run: |
           set -euo pipefail
@@ -3171,6 +3178,7 @@ jobs:
             branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
             series="${branch:0:100}-${GITHUB_SHA:0:7}"
           fi
+          series="$(bash os/dev/dev-image-cohort.sh "$series")"
           jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
           started=$(date +%s)
           while :; do
@@ -3227,6 +3235,7 @@ jobs:
             branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
             series="${branch:0:100}-${GITHUB_SHA:0:7}"
           fi
+          series="$(bash os/dev/dev-image-cohort.sh "$series")"
           echo "series=$series" >> "$GITHUB_OUTPUT"
 
       - name: Log in to registry.tilo.so

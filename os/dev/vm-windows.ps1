@@ -5,6 +5,17 @@ param([Parameter(Position=0)][string]$Action, [Parameter(ValueFromRemainingArgum
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-ScenarioNetwork {
+    # Optional recovery-login test endpoint; never expose the guest on the LAN.
+    $port = $env:TILO_SCENARIO_SSH_PORT
+    if (!$port) { return 'user,id=net0' }
+    $number = 0
+    if ($port -notmatch '^[0-9]{1,5}$' -or ![int]::TryParse($port, [ref]$number) -or $number -lt 1024 -or $number -gt 65535) {
+        throw 'TILO_SCENARIO_SSH_PORT must be an unprivileged TCP port (1024-65535)'
+    }
+    return "user,id=net0,hostfwd=tcp:127.0.0.1:$number-:22"
+}
+
 $cycle = $env:TILO_VM_CYCLE
 $storage = $env:TILO_INSTALLER_OUTPUT
 $medium = $env:TILO_INSTALLER_DISK
@@ -113,7 +124,7 @@ function Boot([bool]$installer, [string[]]$flags) {
     $code = Resolve-Firmware 'edk2-aarch64-code.fd' $env:TILO_EFI_CODE
     # ProcessStartInfo.ArgumentList keeps paths and comma-bearing QEMU options intact.
     $proofPort = if ($installer) { @('-chardev', "file,id=tiloproof,path=$proof", '-device', 'virtserialport,chardev=tiloproof,name=org.tilo.vm-install-proof') } else { @() }
-    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '3072', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', 'user,id=net0', '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
+    $argv = @('-name', $cycle, '-machine', 'virt,gic-version=3,highmem=on', '-accel', 'whpx', '-cpu', 'host', '-smp', 'cpus=4', '-m', '3072', '-no-reboot', '-drive', "if=pflash,format=raw,readonly=on,file=$code", '-drive', "if=pflash,format=raw,file=$vars") + $disks + @('-device', 'virtio-gpu-pci,edid=on,xres=1280,yres=1024', '-device', 'qemu-xhci', '-device', 'usb-kbd', '-device', 'usb-tablet', '-netdev', (Get-ScenarioNetwork), '-device', 'virtio-net-pci,netdev=net0', '-display', 'none', '-serial', "file:$uart", '-chardev', "file,id=tilo-ttyS0,path=$serial", '-device', 'pci-serial,chardev=tilo-ttyS0', '-device', 'virtio-serial-pci', '-chardev', "socket,id=tiloconsole,host=127.0.0.1,port=$env:TILO_CONSOLE_PORT,server=on,wait=off", '-device', 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0') + $proofPort + @('-qmp', "tcp:127.0.0.1:$env:TILO_QMP_PORT,server=on,wait=off", '-monitor', 'none')
     $start = [Diagnostics.ProcessStartInfo]::new($qemu)
     foreach ($arg in $argv) { $start.ArgumentList.Add([string]$arg) }
     # Command::output in tilo-vm captures this PowerShell process's stdout and

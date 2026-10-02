@@ -1,0 +1,35 @@
+# Adapt a CI-built, unsealed generic dev image to the existing UKI installer.
+# No component is compiled here. Only the boot layout changes; the existing
+# installer disk builder subsequently closes the derived composefs seal.
+ARG BASE_IMAGE
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
+FROM ${BASE_IMAGE} AS split
+RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
+    && test -x /usr/bin/tilo-installer \
+    && test ! -e /usr/lib/tilo/hardware-profile.json \
+    && mkdir -p /kernel \
+    && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+FROM ${BASE_IMAGE} AS uki-tools
+# tilo-rpm-snapshot-package[aarch64]: systemd-ukify
+# tilo-rpm-snapshot-package[aarch64]: systemd-boot-unsigned
+# tilo-rpm-snapshot-package[aarch64]: binutils
+# tilo-rpm-snapshot-package[aarch64]: python3-pillow
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo \
+      systemd-ukify systemd-boot-unsigned binutils python3-pillow \
+    && dnf clean all
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+FROM uki-tools AS uki
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
+    bash /usr/local/bin/uki.sh
+
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
+LABEL org.opencontainers.image.title="Tilo dev installer base (not for production)"

@@ -19,6 +19,29 @@ SPEC.loader.exec_module(CLIENT)
 
 
 class ManifestScenarioTests(unittest.TestCase):
+    def test_package_store_metadata_and_payload_are_separate(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "pkgs"
+            metadata = root / ("a" * 64 + ".pkg")
+            payload = root / ("a" * 64)
+            metadata.mkdir(parents=True)
+            binary = payload / "bin/example"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o755)
+            (metadata / "manifest.toml").write_text(
+                '[package]\nid="so.tilo.example"\nname="Example"\n'
+                '[entrypoint]\nbin="bin/example"\n'
+                '[accessibility.atspi_acceptance]\nroot="Example"\n'
+                'required=["Open"]\naction="Open"\nafter_action=["Close"]\n'
+            )
+            rows = CLIENT.installed_scenarios(root)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][1], binary)
+            binary.unlink()
+            with self.assertRaisesRegex(CLIENT.GateError, "certified binary is absent"):
+                CLIENT.installed_scenarios(root)
+
     def write_manifest(self, body: str) -> Path:
         directory = Path(tempfile.mkdtemp())
         manifest = directory / "manifest.toml"
