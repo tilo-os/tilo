@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_manifest:
-        description: "Public tilo-vm-disk-candidate candidate.json URL from a dev-disk run."
+        description: "Public dev disk candidate.json or retained tilo-vm-disk-aarch64.json URL."
         required: true
       source_revision:
         description: "Exact 40-character source revision the candidate must name."
@@ -73,27 +73,31 @@ jobs:
         run: |
           set -euo pipefail
           [[ $SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]]
-          [[ $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk-candidate/[A-Za-z0-9._-]+/candidate\.json$ ]] || {
+          [[ $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk-candidate/[A-Za-z0-9._-]+/candidate\.json$ || $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk/[A-Za-z0-9._-]+/tilo-vm-disk-aarch64\.json$ ]] || {
             echo '::error::candidate_manifest must be a Tilo dev disk candidate URL'
             exit 1
           }
           mkdir -p "$TILO_RUN"
-          base=${CANDIDATE_MANIFEST%/candidate.json}
-          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json" "$CANDIDATE_MANIFEST"
-          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json.sha256" "$CANDIDATE_MANIFEST.sha256"
-          (cd "$TILO_RUN" && sha256sum -c candidate.json.sha256)
+          manifest_file=${CANDIDATE_MANIFEST##*/}
+          base=${CANDIDATE_MANIFEST%/*}
+          curl --fail --location --retry 3 --output "$TILO_RUN/$manifest_file" "$CANDIDATE_MANIFEST"
+          curl --fail --location --retry 3 --output "$TILO_RUN/$manifest_file.sha256" "$CANDIDATE_MANIFEST.sha256"
+          (cd "$TILO_RUN" && sha256sum -c "$manifest_file.sha256")
+          jq 'if .schema == "https://tilo.sh/dev/disk/v1" then
+            .files = [.disks[] | select(.arch == "aarch64" and .format == "qcow2") | . + {role: "disk"}]
+            else . end' "$TILO_RUN/$manifest_file" > "$TILO_RUN/disk-input.json"
           jq -e --arg source "$SOURCE_REVISION" '
-            .schema == "https://tilo.sh/dev/disk-candidate/v1"
-            and .validation == "unvalidated"
+            ((.schema == "https://tilo.sh/dev/disk-candidate/v1" and .validation == "unvalidated")
+             or .schema == "https://tilo.sh/dev/disk/v1")
             and .arch == "aarch64"
             and .sourceRevision == $source
             and ([.files[] | select(.role == "disk")] | length) == 1
-          ' "$TILO_RUN/candidate.json" >/dev/null
-          file=$(jq -er '.files[] | select(.role == "disk") | .file' "$TILO_RUN/candidate.json")
-          [[ $file == tilo-vm-candidate-aarch64.qcow2 ]]
-          url=$(jq -er '.files[] | select(.role == "disk") | .url' "$TILO_RUN/candidate.json")
+          ' "$TILO_RUN/disk-input.json" >/dev/null
+          file=$(jq -er '.files[] | select(.role == "disk") | .file' "$TILO_RUN/disk-input.json")
+          [[ $file =~ ^tilo-vm-[A-Za-z0-9._-]+\.qcow2$ ]]
+          url=$(jq -er '.files[] | select(.role == "disk") | .url' "$TILO_RUN/disk-input.json")
           [[ $url == "$base/$file" ]]
-          sha=$(jq -er '.files[] | select(.role == "disk") | .sha256' "$TILO_RUN/candidate.json")
+          sha=$(jq -er '.files[] | select(.role == "disk") | .sha256' "$TILO_RUN/disk-input.json")
           [[ $sha =~ ^[0-9a-f]{64}$ ]]
           curl --fail --location --retry 3 --output "$TILO_RUN/$file" "$url"
           (cd "$TILO_RUN" && printf '%s  %s\n' "$sha" "$file" | sha256sum -c -)
