@@ -2575,7 +2575,7 @@ jobs:
           # test-only minting or bypass enters the image.
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
-              "pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null"; then
+              "busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1"; then
               break
             fi
             if [[ "$attempt" == 60 ]]; then

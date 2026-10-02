@@ -152,6 +152,7 @@ cmd_boot() {
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
+    $(console_qemu_args) \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
@@ -408,24 +409,44 @@ cmd_click() {
   hmp "mouse_button 0" >/dev/null
 }
 
-# Typing is only meaningful once the greeter has the keyboard.
-await_greeter_input() {
-  local attempts="${TILO_GREETER_INPUT_ATTEMPTS:-60}" i
+# The greeter answers its console once its event loop runs; typed keys still
+# only reach the form once the compositor maps and focuses the window. Prefer
+# the greeter's own accepts_input report over a blank-screen heuristic.
+greeter_console() {
+  python3 "$(dirname "${BASH_SOURCE[0]}")/installer-console.py" --socket "$TILO_CONSOLE" "$@"
+}
+
+wait_greeter_input() {
+  greeter_console wait greeter --timeout 180 \
+    || die "tilo-greeter never answered on its console ($TILO_CONSOLE)"
+  local attempts="${TILO_GREETER_INPUT_ATTEMPTS:-120}" i
   for i in $(seq 1 "$attempts"); do
     greeter_accepts_input && return 0
     vm_running || die "qemu exited before the greeter accepted input"
     sleep 1
   done
-  python3 "$TILO_OS_DIR/dev/installer-console.py" --socket "$TILO_CONSOLE" \
-    check greeter /accepts_input --timeout 5 >&2 || true
+  greeter_console check greeter /accepts_input --timeout 5 >&2 || true
   die "the greeter did not accept input; nothing was typed"
+}
+
+# After Enter the greeter either leaves sign-in or exits into the session.
+check_login_submitted() {
+  local i phase
+  for i in $(seq 1 30); do
+    phase="$(greeter_console state 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("phase", ""))' 2>/dev/null)" \
+      || phase=""
+    [ "$phase" = sign-in ] || return 0
+    sleep 1
+  done
+  die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
 }
 
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
   local u="${1:-$TILO_USER}" p="${2:-$TILO_PASS}"
-  await_greeter_input
+  wait_greeter_input
   if [ "$passcode_only" -eq 1 ]; then
     p="${1:-$TILO_PASS}"
     msg "logging in with the installed user's passcode"
@@ -434,6 +455,7 @@ cmd_login() {
     cmd_type "$p"
     cmd_keys ret
     msg "passcode sent"
+    check_login_submitted
     return
   fi
   msg "logging in as $u"
@@ -449,6 +471,7 @@ cmd_login() {
   cmd_type "$p"
   cmd_keys ret
   msg "credentials sent"
+  check_login_submitted
 }
 
 cmd_serial() {
@@ -467,7 +490,9 @@ cmd_wait_greeter_return() {
   local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
   msg "waiting for Tilo logout to return to the greeter ..."
   for i in $(seq 1 "$attempts"); do
-    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+    # The compositor's portal backend name, not its /proc entry, which turns
+    # non-dumpable once it holds identity keys.
+    if gssh "! busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
       msg "greeter returned after logout (~$i s)"
       return 0
     fi
