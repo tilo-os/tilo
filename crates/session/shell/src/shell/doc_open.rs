@@ -986,6 +986,21 @@ mod tests {
         );
     }
 
+    /// Keep the machine's own desktop entries and `mimeapps.list` defaults
+    /// out: a host with an office suite installed would otherwise answer for
+    /// `.docx`, and a video player for `.mkv`.
+    fn without_host_apps(dir: &Path, env: &mut tilo_test_env::ScopedEnv) {
+        let data = dir.join("host-data");
+        let config = dir.join("host-config");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        env.set("XDG_DATA_HOME", &data)
+            .set("XDG_DATA_DIRS", &data)
+            .set("XDG_CONFIG_HOME", &config)
+            .set("XDG_CONFIG_DIRS", &config);
+        crate::shell::host_apps::invalidate_cache();
+    }
+
     fn reset_session_state() {
         launcher::invalidate_app_cache();
         launcher::clear_pending_placements();
@@ -1245,6 +1260,7 @@ mod tests {
             install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
+            without_host_apps(tmp.path(), &mut env);
             launcher::invalidate_app_cache();
 
             assert_eq!(
@@ -1271,6 +1287,7 @@ mod tests {
             install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
+            without_host_apps(tmp.path(), &mut env);
             launcher::invalidate_app_cache();
 
             let log = install_recording_launcher(tmp.path(), &mut env);
