@@ -152,7 +152,8 @@ exec bash "$gate"
             self.assertIn('--compress', arguments)
             self.assertEqual(arguments[arguments.index('--compress') + 1], 'zstd')
             self.assertIn('--omit-drivers', arguments)
-            self.assertEqual(set(arguments[arguments.index('--omit-drivers') + 1].split()), {'xfs'})
+            self.assertEqual(set(arguments[arguments.index('--omit-drivers') + 1].split()),
+                             {'amdgpu', 'nouveau', 'xe', 'xfs'})
             self.assertIn('--add-drivers', arguments)
             self.assertEqual(set(arguments[arguments.index('--add-drivers') + 1].split()), {'ext4'})
 
