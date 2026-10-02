@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 75169792
+bytes = 76939264
 
 [bundles.desktop.rebaseline]
-run = 55796
-measured = 74377176
-reason = "the previous budget was the exact run 55499 measurement with no headroom, so any added byte failed main"
+run = 56596
+measured = 76128538
+reason = "app-sdk run 56582 measured current main at 76024068 bytes; run 56596 adds governed browser voice and Chat call controls for 104470 bytes, with the standard 1% headroom"
