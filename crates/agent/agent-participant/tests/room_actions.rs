@@ -1,10 +1,13 @@
-//! Page actions on a room's records, answered by the host.
+//! Page actions on records nobody has open, answered by the host.
 //!
-//! The host runs `tilo_relay::agents::start`, whose app-serving plane also
-//! answers the room's records ([`tilo_agent_participant::RoomActions`]). The
-//! host holds none of the room's channel keys and a page never writes in the
-//! clear, so the host neither receives a page's record nor commits a change
-//! of its own: an action that would write through it is refused.
+//! The host runs `tilo_relay::agents::start`, whose app-serving plane now
+//! also answers the room's records ([`tilo_agent_participant::RoomActions`]).
+//! A browser session creates a Sheets and a Slides record and closes them;
+//! no agent exists. The page then lists the room's catalogue, runs a record's
+//! action through the host, retries it under the same id, reuses the id for
+//! another request, is asked to confirm a destructive action, and cancels an
+//! invocation queued behind another. Every change the host makes arrives as
+//! an ordinary durable change authored by the host device.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -13,27 +16,33 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::indexing_slicing,
     clippy::panic,
+    clippy::too_many_lines,
     clippy::future_not_send,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
-    InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    ActionHostError, CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
 };
+use tilo_actions::{ConfirmationPolicy, InvocationId};
 use tilo_agent_participant::{AgentHost, HostedApp, ModelChoice, Seed, record_provider};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::daemon::{Relay, RelayIdentity};
@@ -43,6 +52,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const SHEETS: &str = "so.tilo.sheets";
+const SLIDES: &str = "so.tilo.slides";
 
 struct Hosted {
     relay: Relay,
@@ -96,11 +106,15 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
     Hosted { relay, web, agents }
 }
 
+/// A document checkpoint: its hash and its bytes.
+type Checkpoint = ([u8; 32], Vec<u8>);
+
 /// A browser session speaking the remote-action vocabulary to the host.
 struct Browser {
     peer: PeerHandle,
     events: PeerEvents,
     host_key: [u8; 32],
+    documents: BTreeMap<DocumentRoute, Vec<Checkpoint>>,
     answers: Vec<RemoteActionMessage>,
     correlation: u64,
 }
@@ -124,6 +138,7 @@ impl Browser {
             peer,
             events,
             host_key: host.cert.device_public_key,
+            documents: BTreeMap::new(),
             answers: Vec::new(),
             correlation: 0,
         }
@@ -132,6 +147,18 @@ impl Browser {
     fn pump(&mut self) {
         for event in self.events.drain() {
             match event {
+                PeerEvent::Document(document) => {
+                    if let Some(mutation) = document.mutation() {
+                        let bytes = match mutation {
+                            collab_types::DocumentMutation::Snapshot(bytes)
+                            | collab_types::DocumentMutation::Incremental(bytes) => bytes,
+                        };
+                        self.documents
+                            .entry(document.route.clone())
+                            .or_default()
+                            .push((document.author, bytes));
+                    }
+                }
                 PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
                     self.answers
                         .push(RemoteActionFrame::decode(&frame).unwrap().message);
@@ -187,9 +214,7 @@ impl Browser {
         .await
     }
 
-    async fn invoke(&mut self, request: InvokeRequest) -> InvocationReceipt {
-        let invocation = request.invocation;
-        self.send(RemoteActionMessage::Invoke(request));
+    async fn receipt(&mut self, invocation: InvocationId) -> InvocationReceipt {
         self.answer("receipt", |answer| match answer {
             RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
                 Some(receipt.clone())
@@ -198,86 +223,431 @@ impl Browser {
         })
         .await
     }
+
+    async fn invoke(&mut self, request: InvokeRequest) -> InvocationReceipt {
+        let invocation = request.invocation;
+        self.send(RemoteActionMessage::Invoke(request));
+        self.receipt(invocation).await
+    }
+
+    /// Create `app`'s record the way a page does, then close it: nobody has
+    /// it open afterwards.
+    fn create(&mut self, app: &str) -> DocumentRoute {
+        let mut page =
+            HostedApp::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+        let route = DocumentRoute {
+            app_id: app.into(),
+            cluster_id: ROOM.into(),
+            record: page.record().to_owned(),
+        };
+        let mutation = page.take_mutation().unwrap();
+        self.peer.publish(route.clone(), &mutation).unwrap();
+        // The host never echoes a device's own change back to it.
+        let bytes = match mutation {
+            collab_types::DocumentMutation::Snapshot(bytes)
+            | collab_types::DocumentMutation::Incremental(bytes) => bytes,
+        };
+        self.documents
+            .entry(route.clone())
+            .or_default()
+            .push(([0; 32], bytes));
+        page.close();
+        route
+    }
+
+    /// The record at `route` as this page has received it.
+    fn mount(&mut self, route: &DocumentRoute) -> HostedApp {
+        self.pump();
+        let changes = self.documents.get(route).cloned().unwrap_or_default();
+        HostedApp::open(
+            &common::catalogue(),
+            &route.app_id,
+            ROOM,
+            "ada",
+            false,
+            Seed::Existing {
+                record: ui::record::RecordId::parse(&route.record).unwrap(),
+                changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),
+            },
+        )
+        .unwrap()
+    }
 }
 
-/// Readable and sealed documents among the room's retained bodies.
-async fn retained_documents(hosted: &Hosted) -> (usize, usize) {
-    let bodies = hosted
-        .relay
-        .room_records()
-        .retained(workspace())
-        .await
+fn sheet_names(app: &HostedApp) -> Vec<String> {
+    let body: serde_json::Value = app
+        .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
-    common::retained_documents(
-        bodies
-            .into_iter()
-            .map(|retained| (retained.author, retained.body)),
-    )
+    body["wb"]["sheets"]
+        .as_array()
+        .map(|sheets| {
+            sheets
+                .iter()
+                .map(|sheet| sheet["name"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> InvokeRequest {
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: provider.into(),
+            address,
+        },
+        argument,
+        context: None,
+        confirmation: None,
+        revision: None,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_host_neither_receives_nor_writes_a_record_in_the_clear() {
+async fn every_listed_themes_action_is_one_the_host_can_run() {
     common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-
-    // 1. A page's new record waits for the room's channel keys.
-    let mut page =
-        HostedApp::open(&common::catalogue(), SHEETS, ROOM, "ada", false, Seed::New).unwrap();
-    let sheets = DocumentRoute {
-        app_id: SHEETS.into(),
-        cluster_id: ROOM.into(),
-        record: page.record().to_owned(),
-    };
-    browser
-        .peer
-        .publish(sheets.clone(), &page.take_mutation().unwrap())
+    let themes = browser.create("so.tilo.themes");
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let provider = record_provider(&themes);
+    let page = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
         .unwrap();
-    page.close();
-
-    // 2. The session handles commands in order: once the catalogue answers,
-    // the publish ran, and the host has listed nothing of the record because
-    // nothing of it reached the host.
-    let listed = browser.catalogue(CatalogueQuery::default()).await.unwrap();
-    let sheets_provider = record_provider(&sheets);
-    assert!(
-        listed
-            .providers
-            .iter()
-            .all(|provider| provider.provider != sheets_provider),
-        "{:?}",
-        listed.providers
+    // The catalogue offers only what the record's door runs: a listed action
+    // may fail, need confirmation or other arguments, but is never unknown.
+    let new_theme = page
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .filter(|action| action.action_label == "New theme");
+    assert_eq!(
+        new_theme.count(),
+        1,
+        "a launch-only action is not offered on an open record"
     );
-    assert_eq!(retained_documents(&hosted).await, (0, 0));
-
-    // 3. The room's "open an app" action would write a new record through
-    // the host, which cannot seal it: refused, and nothing committed.
-    let opened = browser
-        .invoke(InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: format!("workspace:{ROOM}"),
-                address: ActionAddress::new(format!("app.{SHEETS}"), "open"),
+    for action in page.rows.iter().filter_map(|row| row.action.as_ref()) {
+        let mut arguments = serde_json::Map::new();
+        for param in action.params.iter().filter(|param| param.required) {
+            arguments.insert(param.name.to_string(), "Dusk".into());
+        }
+        let receipt = browser
+            .invoke(InvokeRequest {
+                confirmation: Some(Confirmation::Confirmed),
+                ..request(
+                    &provider,
+                    action.address.clone(),
+                    InvokeArgument::Json(arguments),
+                )
+            })
+            .await;
+        assert_ne!(
+            receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionHostError::UnknownAction
             },
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
+            "{:?} is listed but unknown",
+            action.address
+        );
+    }
+    let retained = hosted
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
+    common::isolate_device();
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let host_key = host.cert.device_public_key;
+
+    let sheets = browser.create(SHEETS);
+    let slides = browser.create(SLIDES);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let sheets_provider = record_provider(&sheets);
+    let slides_provider = record_provider(&slides);
+
+    // 1. The catalogue: every record of the room is a provider, and with no
+    // provider named the recent records' actions are listed with the room's
+    // "open an app" actions.
+    let page = browser.catalogue(CatalogueQuery::default()).await.unwrap();
+    let providers: Vec<&str> = page.providers.iter().map(|p| p.provider.as_str()).collect();
+    assert!(
+        providers.contains(&sheets_provider.as_str()),
+        "{providers:?}"
+    );
+    assert!(
+        providers.contains(&slides_provider.as_str()),
+        "{providers:?}"
+    );
+    assert!(
+        providers.contains(&format!("workspace:{ROOM}").as_str()),
+        "{providers:?}"
+    );
+    let sheets_page = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(sheets_provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap();
+    let new_sheet = sheets_page
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.address.action == "new-sheet")
+        .expect("Sheets offers New sheet")
+        .address
+        .clone();
+
+    // 2. Invoke on a record nobody has open: the host mounts it, runs the
+    // action and commits the change as its own.
+    let add = request(
+        &sheets_provider,
+        new_sheet.clone(),
+        InvokeArgument::Text("Budget".into()),
+    );
+    let receipt = browser.invoke(add.clone()).await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{receipt:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        browser.pump();
+        let by_host = browser
+            .documents
+            .get(&sheets)
+            .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key));
+        if by_host {
+            let app = browser.mount(&sheets);
+            let names = sheet_names(&app);
+            app.close();
+            if names.iter().filter(|name| *name == "Budget").count() == 1 {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the host's change never arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 3. Idempotency: the same request under the same id reports the
+    // original and runs nothing; another request under it is a conflict.
+    let retry = browser.invoke(add.clone()).await;
+    assert_eq!(retry, receipt);
+    let mut other = add.clone();
+    other.argument = InvokeArgument::Text("Other".into());
+    let conflict = browser.invoke(other).await;
+    assert_eq!(
+        conflict.status,
+        ReceiptStatus::Rejected {
+            error: ActionHostError::InvocationConflict
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let app = browser.mount(&sheets);
+    assert_eq!(
+        sheet_names(&app)
+            .iter()
+            .filter(|name| name.as_str() == "Budget")
+            .count(),
+        1,
+        "a retry never runs the action twice: {:?}",
+        sheet_names(&app)
+    );
+    assert!(!sheet_names(&app).contains(&"Other".to_owned()));
+    app.close();
+
+    // 4. Confirmation: a destructive action is refused without the caller's
+    // explicit confirmation, and nothing ran; confirmed, it runs.
+    let slides_page = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(slides_provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap();
+    let destructive = slides_page
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| {
+            action.contract.confirmation == ConfirmationPolicy::Confirm
+                && action.params.is_empty()
+                && matches!(action.input, tilo_actions::InputSpec::None)
+        })
+        .expect("Slides offers a destructive action")
+        .address
+        .clone();
+    let unconfirmed = request(&slides_provider, destructive.clone(), InvokeArgument::None);
+    let refused = browser.invoke(unconfirmed.clone()).await;
+    assert_eq!(
+        refused.status,
+        ReceiptStatus::Rejected {
+            error: ActionHostError::ConfirmationRequired
+        }
+    );
+    let confirmed = InvokeRequest {
+        confirmation: Some(Confirmation::Confirmed),
+        ..unconfirmed
+    };
+    let ran = browser.invoke(confirmed).await;
+    assert!(
+        !matches!(
+            ran.status,
+            ReceiptStatus::Rejected {
+                error: ActionHostError::ConfirmationRequired
+            }
+        ),
+        "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
+    );
+
+    // 5. Cancel: an invocation queued behind another is cancelled before it
+    // starts and never runs; a finished one cannot be cancelled.
+    // The first job mounts a record the host has never mounted, which keeps
+    // the service busy while the cancel for the second arrives.
+    let busy_route = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let slow = request(
+        &record_provider(&busy_route),
+        new_sheet.clone(),
+        InvokeArgument::Text("Busy".into()),
+    );
+    let queued = request(
+        &sheets_provider,
+        new_sheet,
+        InvokeArgument::Text("Never".into()),
+    );
+    browser.send(RemoteActionMessage::Invoke(slow.clone()));
+    browser.send(RemoteActionMessage::Invoke(queued.clone()));
+    browser.send(RemoteActionMessage::Cancel {
+        invocation: queued.invocation,
+    });
+    let cancel = browser
+        .answer("cancel", |answer| match answer {
+            RemoteActionMessage::CancelResponse { invocation, result }
+                if *invocation == queued.invocation =>
+            {
+                Some(result.clone())
+            }
+            _ => None,
         })
         .await;
-    let ReceiptStatus::Rejected {
-        error: ActionHostError::Refused { reason },
-    } = opened.status
-    else {
+    let queued_receipt = browser.receipt(queued.invocation).await;
+    let slow_receipt = browser.receipt(slow.invocation).await;
+    assert!(
+        !matches!(slow_receipt.status, ReceiptStatus::Accepted),
+        "{slow_receipt:?}"
+    );
+    match cancel {
+        Ok(()) => {
+            assert!(
+                matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
+                "{queued_receipt:?}"
+            );
+            browser.send(RemoteActionMessage::Observe {
+                invocation: queued.invocation,
+            });
+            let observed = browser
+                .answer("observe", |answer| match answer {
+                    RemoteActionMessage::Update { invocation, state }
+                        if *invocation == queued.invocation =>
+                    {
+                        Some(state.clone())
+                    }
+                    _ => None,
+                })
+                .await
+                .expect("the page owns its invocation");
+            assert!(matches!(
+                observed.receipt().status,
+                ReceiptStatus::Cancelled { .. }
+            ));
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let app = browser.mount(&sheets);
+            assert!(!sheet_names(&app).contains(&"Never".to_owned()));
+            app.close();
+        }
+        Err(error) => panic!("the queued invocation was not cancellable: {error:?}"),
+    }
+    browser.send(RemoteActionMessage::Cancel {
+        invocation: add.invocation,
+    });
+    let finished = browser
+        .answer("cancel finished", |answer| match answer {
+            RemoteActionMessage::CancelResponse { invocation, result }
+                if *invocation == add.invocation =>
+            {
+                Some(result.clone())
+            }
+            _ => None,
+        })
+        .await;
+    assert!(matches!(
+        finished,
+        Err(ActionHostError::NotCancellable { .. })
+    ));
+
+    // 6. The room's "open an app" action creates a record through the host.
+    let opened = browser
+        .invoke(request(
+            &format!("workspace:{ROOM}"),
+            ActionAddress::new(format!("app.{SHEETS}"), "open"),
+            InvokeArgument::None,
+        ))
+        .await;
+    let ReceiptStatus::Completed { output } = opened.status else {
         panic!("{opened:?}");
     };
-    assert!(reason.contains("end-to-end encrypted"), "{reason}");
-    assert_eq!(retained_documents(&hosted).await, (0, 0));
+    assert!(
+        output.value.unwrap()["provider"]
+            .as_str()
+            .unwrap()
+            .starts_with("record:so.tilo.sheets:")
+    );
 
+    let retained = hosted
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;

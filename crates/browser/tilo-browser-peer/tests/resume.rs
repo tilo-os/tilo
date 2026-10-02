@@ -73,7 +73,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut steward = steward::Steward::start(&host, &root).await;
+    let mut steward = steward::Steward::start(&host.relay, &root).await;
     let listen = host.web.addr;
 
     let author = start_peer(
@@ -127,7 +127,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     drop(host.web);
     host.relay.shutdown().await;
     let host = start_host(&root, &host_device, state.path(), listen).await;
-    steward.reconnect(&host, &root).await;
+    steward.reconnect(&host.relay, &root).await;
     author.reconnect().unwrap();
     ready(&[&author]).await;
     author

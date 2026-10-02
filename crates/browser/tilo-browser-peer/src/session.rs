@@ -171,6 +171,9 @@ pub struct RouteStatus {
     pub last_seq: Option<u64>,
     /// Local store state, as reported with [`PeerHandle::set_local_state`].
     pub local: Option<LocalState>,
+    /// Sealed documents that arrived before this device held the route's
+    /// keys; they open once the keys do.
+    pub awaiting_keys: usize,
 }
 
 /// Everything a snapshot is derived from.
@@ -1780,11 +1783,15 @@ impl Task {
         for frame in frames {
             let now = crate::clock::now_ns();
             self.doc_seq = now.max(self.doc_seq.saturating_add(1));
+            let Some(cipher) = self.ciphers.get_mut(&route) else {
+                self.fail("signature-rejected", "the route's channel keys went away");
+                return delivered;
+            };
             let signed = match sign_frame(
                 &route,
                 frame,
                 self.signer.as_ref(),
-                self.ciphers.get_mut(&route),
+                cipher,
                 self.doc_seq,
                 now,
             )
@@ -1974,11 +1981,15 @@ impl Task {
                 let changes = self.channels.open(&route, now);
                 self.absorb(changes);
                 if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
-                    let held = self.held_inbound.entry(route).or_default();
+                    let held = self.held_inbound.entry(route.clone()).or_default();
                     if held.len() >= MAX_HELD_DOCUMENTS {
                         held.pop_front();
                     }
                     held.push_back((body, author));
+                    let count = held.len();
+                    self.update(|status| {
+                        status.routes.entry(route).or_default().awaiting_keys = count;
+                    });
                     return;
                 }
                 self.open_document(&body, author);
@@ -2094,6 +2105,11 @@ impl Task {
                 for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
                     self.open_document(&body, author);
                 }
+                self.update(|status| {
+                    if let Some(status) = status.routes.get_mut(&route) {
+                        status.awaiting_keys = 0;
+                    }
+                });
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
                 }

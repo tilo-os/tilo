@@ -130,6 +130,52 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     };
     publish(&session, &seal(&steward, 1, "from the laptop"));
 
+    // Publishing only queues the frames for the host. Until it retains the
+    // genesis, the room's replay names no governor and reads as ungoverned,
+    // so let a fresh member's replay prove all three are held first.
+    let observer = enrol(&root, "observer", DeviceCapabilities::member());
+    let observer_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let observer_client = RelayClient::connect(
+        observer_endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        observer.cert.clone(),
+        observer.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let observer_session = RelayCoeditSession::join(
+        observer_client,
+        workspace(),
+        observer.key.verifying_key().to_bytes(),
+    )
+    .unwrap();
+    let (mut hello, mut genesis, mut sealed) = (false, false, false);
+    let retained_by = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !(hello && genesis && sealed) {
+        let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
+            .await
+            .expect("the host to retain the laptop's frames")
+            .expect("observer session open");
+        let Inbound::Delta { author, data } = inbound else {
+            continue;
+        };
+        if author != laptop_device {
+            continue;
+        }
+        match postcard::from_bytes::<NeighbourMsg>(&data) {
+            Ok(NeighbourMsg::IdentityHello { .. }) => hello = true,
+            Ok(NeighbourMsg::MlsGovernance { .. }) => genesis = true,
+            Ok(NeighbourMsg::AppDocument { .. }) => sealed = true,
+            _ => {}
+        }
+    }
+    observer_session.close().await;
+
     // The browser joins the room over HTTPS and opens the note.
     let peer = start_peer(
         Host::Https(host.https()),

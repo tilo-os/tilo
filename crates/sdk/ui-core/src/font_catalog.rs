@@ -43,6 +43,43 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
     })
 }
 
+/// Keep one face per family, style, weight and stretch. A system can install
+/// the same face twice (Fedora ships Noto Sans both static and variable), and
+/// a query takes whichever was discovered first, which is directory order.
+/// The face with the lowest source path stays.
+pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
+    let mut kept: HashMap<_, (fontdb::ID, PathBuf, u32)> = HashMap::new();
+    let mut remove = Vec::new();
+    for face in db.faces() {
+        let path = match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => path.clone(),
+            fontdb::Source::Binary(_) => continue,
+        };
+        let key = (
+            face.families
+                .iter()
+                .map(|(name, _)| name.to_lowercase())
+                .collect::<Vec<_>>(),
+            face.style,
+            face.weight,
+            face.stretch,
+        );
+        match kept.get_mut(&key) {
+            Some(existing) if (&path, face.index) < (&existing.1, existing.2) => {
+                remove.push(existing.0);
+                *existing = (face.id, path, face.index);
+            }
+            Some(_) => remove.push(face.id),
+            None => {
+                kept.insert(key, (face.id, path, face.index));
+            }
+        }
+    }
+    for id in remove {
+        db.remove_face(id);
+    }
+}
+
 /// A font system over an already verified database, with Tilo's fallback.
 #[cfg_attr(
     test,
@@ -167,6 +204,7 @@ impl FontCatalog {
         let mut db = bundle.db.clone();
         if self.system {
             discover(&mut db);
+            drop_duplicate_faces(&mut db);
             let remove: Vec<_> = db
                 .faces()
                 .filter(|face| {

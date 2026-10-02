@@ -214,7 +214,6 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
@@ -430,7 +429,6 @@ wasmi_collections = { version = "1", default-features = false, features = ["std"
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_ir = { version = "1", default-features = false, features = ["simd"] }
 wasmparser = { version = "0.239", default-features = false, features = ["features", "simd", "std", "validate"] }
-web-time = { version = "1", default-features = false, features = ["serde"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }

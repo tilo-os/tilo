@@ -85,7 +85,9 @@ jobs:
       image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
     env:
       CARGO_HOME: /cargo-home
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+      # Both disk-class slots have the memory for four compiler processes;
+      # one left the aarch64 workspace build alone at 130 minutes.
+      CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       # Keep dev and test fingerprints compatible. The all-target check and
       # example links can then reuse dependencies emitted by nextest instead

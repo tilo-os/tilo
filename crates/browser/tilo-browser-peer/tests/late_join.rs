@@ -54,7 +54,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host, &root).await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
 
     let author = start_peer(
         Host::Https(host.https()),

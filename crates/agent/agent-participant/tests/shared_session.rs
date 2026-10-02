@@ -7,10 +7,11 @@
 //! certified under the user's root through the ordinary certification flow
 //! (the laptop approves it), and a root-signed delegation the host enforces.
 //!
-//! The browser spawns the agent through the host's remote actions. The room
-//! has no channel keys, so neither the page nor the agent writes a document:
-//! the page holds its record, the host retains no document, and the agent's
-//! supervision (status, delegation, pause and stop) works without one.
+//! The browser spawns the agent through the host's remote actions; the agent
+//! opens the browser's record and edits it through the app's own action;
+//! the browser receives the durable change in host order and sees the
+//! agent's cursor; the agent sees the browser's cursor; pause, resume and
+//! stop hold, release and end the agent.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -29,6 +30,8 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -36,7 +39,7 @@ mod common;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -50,16 +53,17 @@ use tilo_agent_participant::{
     AgentIdentity, AgentParticipant, AgentSupervisor, DirectPlanner, HostedApp, ParticipantConfig,
     Seed, SupervisorHost,
 };
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle, certify};
+use tilo_browser_peer::{DocumentRoute, Host, LiveState, PeerEvent, PeerHandle, certify};
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentDelegation, AgentScope, AgentStatus, AgentsStatus, MESSAGE_ACTION,
-    PAUSE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
-    agent_resource,
+    PAUSE_ACTION, RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE,
+    TaskState, agent_resource,
 };
+use tilo_relay_protocol::live::{LiveFrame, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -236,8 +240,47 @@ async fn status(
     serde_json::from_value(completed(&receipt)).unwrap()
 }
 
+/// Apply every durable change of `route` the browser receives, checking
+/// each was authored by `author`, until the record contains `text`.
+async fn receive_until(
+    agent: &mut AgentParticipant,
+    events: &tilo_browser_peer::PeerEvents,
+    route: &DocumentRoute,
+    page: &mut HostedApp,
+    author: [u8; 32],
+    text: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !body(page).contains(text) {
+        assert!(
+            Instant::now() < deadline,
+            "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}\nagent channels: {}",
+            body(page),
+            agent.control().info().tasks,
+            agent.known_records(),
+            agent.app(route).map(body),
+            agent.peer().status().channels,
+        );
+        agent.pump();
+        for event in events.drain() {
+            if let PeerEvent::Document(document) = event
+                && document.route == *route
+            {
+                assert_eq!(document.author, author, "only the agent edits here");
+                page.apply(&document.mutation().unwrap()).unwrap();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn body(app: &HostedApp) -> String {
+    app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
+        .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
+async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
@@ -261,6 +304,7 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
+    let _steward = steward::Steward::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -307,8 +351,7 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
     });
 
     // 2. The browser: a certified device over HTTPS, with Scratchpad
-    // mounted from its component on a new record. The room has no channel
-    // keys, so the page holds the record instead of writing it in the clear.
+    // mounted from its component on a new record, committed to the host.
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let browser = start_peer(
         Host::Https(host.https()),
@@ -329,7 +372,12 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
     browser
         .publish(route.clone(), &page.take_mutation().unwrap())
         .unwrap();
-    let durable = browser.barrier().unwrap();
+    let receipt = browser.barrier().unwrap();
+    wait_for("the page's record to be durable", || async {
+        receipt.try_recv().ok()
+    })
+    .await
+    .unwrap();
 
     // 3. The browser spawns the agent through the host, with a task that
     // edits the page's record through Scratchpad's own action.
@@ -367,52 +415,135 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
     )
     .unwrap();
 
-    // 4. The agent takes the task up, but nothing it or the page wrote
-    // reaches the host or the page in the clear: the page's change stays
-    // held, and the host retains no document at all.
-    let host_key = host_cert.device_public_key;
-    wait_for("the agent to take its task up", || {
-        agent.pump();
-        let started = control
-            .info()
-            .tasks
-            .first()
-            .is_some_and(|task| task.state != TaskState::Queued);
-        async move { started.then_some(()) }
-    })
+    // 4. The agent's edit reaches the browser as durable changes in host
+    // order, authored by the agent's device.
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Drafted by the agent",
+    )
     .await;
-    let after = status(&browser, host_key, &mut agent).await;
-    assert_eq!(
-        after.agents[0].device,
-        hex::encode(agent_cert.device_public_key)
-    );
-    let carried =
-        AgentDelegation::decode(&hex::decode(&after.agents[0].delegation).unwrap()).unwrap();
+    let status_after = status(&browser, host_cert.device_public_key, &mut agent).await;
+    let info = &status_after.agents[0];
+    assert_eq!(info.status, AgentStatus::Waiting);
+    assert_eq!(info.tasks[0].state, TaskState::Completed);
+    assert_eq!(info.tasks[0].steps[0].action, "edit");
+    assert_eq!(info.device, hex::encode(agent_cert.device_public_key));
+    let carried = AgentDelegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
-    assert!(
-        durable.try_recv().is_err(),
-        "the page's record is held for the room's keys"
-    );
-    let retained = host
-        .relay
-        .room_records()
-        .retained(workspace())
-        .await
+
+    // 5. The browser's live session over WebTransport sees the agent's
+    // cursor: presence of kind agent, focused on the record.
+    let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
+    browser
+        .live_grant_then(
+            workspace(),
+            Box::new(move |grant| {
+                let _ = grant_tx.send(grant);
+            }),
+        )
         .unwrap();
+    let grant = grant_rx.await.unwrap().unwrap();
+    let url: url::Url = format!("https://127.0.0.1:{}/moq/live", host.web.addr.port())
+        .parse()
+        .unwrap();
+    let trust =
+        tilo_moq::carrier::Trust::Fingerprints(vec![host.web.certificate_sha256.clone().unwrap()]);
+    let own_namespace = tilo_moq::live::namespace_path(&grant.room, &grant.publisher).unwrap();
+    let mut live =
+        tilo_moq::live::peer::Peer::connect(&url, &trust, &grant.token, Some(&own_namespace))
+            .await
+            .unwrap();
+    let agent_namespace =
+        tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_cert.device_public_key))
+            .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut track = None;
+    let presence = loop {
+        assert!(
+            Instant::now() < deadline,
+            "the agent's cursor never reached the browser"
+        );
+        agent.pump();
+        let Some(subscribed) = track.as_mut() else {
+            if let Ok(Some(broadcast)) =
+                tokio::time::timeout(Duration::from_millis(200), live.member(&agent_namespace))
+                    .await
+            {
+                track = broadcast
+                    .track(tilo_moq::live::PRESENCE_TRACK)
+                    .unwrap()
+                    .subscribe(None)
+                    .await
+                    .ok();
+            }
+            continue;
+        };
+        if let Ok(Ok(Some(datagram))) =
+            tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
+        {
+            match LiveFrame::decode(&datagram.payload).unwrap() {
+                LiveFrame::Presence(presence) => break presence,
+                LiveFrame::Ops(_) => {}
+            }
+        }
+    };
+    let participant = presence.participant.expect("the agent says what it is");
+    assert_eq!(participant.kind, ParticipantKind::Agent);
+    assert_eq!(participant.label, "Writer helper");
+    assert_eq!(participant.color, [0x7c, 0x3a, 0xed]);
     assert_eq!(
-        common::retained_documents(retained.into_iter().map(|kept| (kept.author, kept.body))),
-        (0, 0),
-        "the host retains no document from the page or the agent"
-    );
-    assert!(
-        !browser_events
-            .drain()
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Document(document) if document.route == route)),
-        "no document reaches the page in the clear"
+        presence.focus.map(|focus| (focus.app, focus.record)),
+        Some((SCRATCHPAD.to_owned(), route.record.clone()))
     );
 
-    // 5. The host keeps the agent to its delegated rooms.
+    // 6. The browser's cursor, published over WebTransport, reaches the
+    // agent (an iroh peer) through the host's bridge.
+    let browser_key = browser_device.cert.device_public_key;
+    let mut page_live = LiveState::starting_now();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let seen = loop {
+        assert!(
+            Instant::now() < deadline,
+            "the browser's cursor never reached the agent"
+        );
+        let frame = page_live
+            .publish_presence(tilo_clock::unix_now_ns() / 1_000_000, |presence| {
+                presence.focus = Some(LiveRecord {
+                    app: SCRATCHPAD.into(),
+                    record: route.record.clone(),
+                });
+                presence.pointer = Some([12.0, 34.0]);
+                presence.participant = Some(LiveParticipant {
+                    kind: ParticipantKind::Person,
+                    label: "Ada".into(),
+                    color: [0x0e, 0xa5, 0xe9],
+                    activity: None,
+                });
+            })
+            .unwrap();
+        live.publish_presence(&frame);
+        agent.pump();
+        if let Some(member) = agent
+            .remote_members()
+            .into_iter()
+            .find(|member| member.publisher == browser_key && member.presence.is_some())
+        {
+            break member;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let seen = seen.presence.unwrap();
+    assert_eq!(seen.pointer, Some([12.0, 34.0]));
+    assert_eq!(
+        seen.participant.map(|participant| participant.kind),
+        Some(ParticipantKind::Person)
+    );
+
+    // 7. The host keeps the agent to its delegated rooms.
     agent
         .peer()
         .join(tilo_relay_protocol::room_workspace_id(OTHER_ROOM).unwrap())
@@ -429,8 +560,9 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
     })
     .await;
 
-    // 6. Pause holds the next task, stop ends the agent.
+    // 8. Pause holds the next task, resume releases it, stop ends the agent.
     let agent_id = agent_resource("writer");
+    let host_key = host_cert.device_public_key;
     completed(
         &call(
             &browser,
@@ -459,9 +591,39 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
         )
         .await,
     );
+    for _ in 0..30 {
+        agent.pump();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let held = status(&browser, host_key, &mut agent).await;
     assert_eq!(held.agents[0].status, AgentStatus::Paused);
     assert_eq!(held.agents[0].tasks[1].state, TaskState::Queued);
+    assert!(
+        !browser_events
+            .drain()
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Document(document) if document.route == route)),
+        "a paused agent edits nothing"
+    );
+    completed(
+        &call(
+            &browser,
+            host_key,
+            Some(&mut agent),
+            ActionAddress::new(&agent_id, RESUME_ACTION),
+            InvokeArgument::None,
+        )
+        .await,
+    );
+    receive_until(
+        &mut agent,
+        &browser_events,
+        &route,
+        &mut page,
+        agent_cert.device_public_key,
+        "Second draft",
+    )
+    .await;
     completed(
         &call(
             &browser,
@@ -487,6 +649,22 @@ async fn an_agent_beside_a_browser_writes_nothing_in_the_clear() {
         "a stopped agent takes no task: {refused:?}"
     );
 
+    // Every edit the host carried, the page's and the agent's, is sealed.
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, sealed) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    assert!(sealed > 0);
+
+    drop(live);
     agent.close();
     page.close();
     browser.close();

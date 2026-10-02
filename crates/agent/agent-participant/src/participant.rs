@@ -317,9 +317,10 @@ impl AgentParticipant {
     }
 
     fn step(&mut self) {
-        // The host answers `Ready` after replaying the room's records, so a
-        // task never starts on a room the agent has only half seen.
-        if !self.ready || !self.control.may_act() {
+        // The host answers `Ready` after replaying the room's records, and a
+        // sealed record opens once the agent holds its keys, so a step never
+        // runs on a room the agent has only half seen.
+        if !self.ready || !self.control.may_act() || self.keys_pending() {
             return;
         }
         if self.running.is_none() {
@@ -404,6 +405,17 @@ impl AgentParticipant {
                 self.control.finish(&id, Err(error));
             }
         }
+    }
+
+    /// Whether a record of the room the agent may work on has arrived sealed
+    /// and opens once the agent holds its channel keys: until then the room
+    /// is only half seen.
+    fn keys_pending(&self) -> bool {
+        self.peer.status().routes.iter().any(|(route, status)| {
+            status.awaiting_keys > 0
+                && route.cluster_id == self.room
+                && self.identity.delegation.permits_app(&route.app_id)
+        })
     }
 
     fn perform(&mut self, step: &Step) -> Result<Option<ActionOutput>, String> {
