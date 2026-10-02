@@ -123,6 +123,12 @@ require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabili
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs.service "ExecStop=/usr/bin/fusermount3 -u -z /var/workspace"
+# The FUSE mount (or Tier 1 bind) must reach the host: no directive that
+# gives the service its own mount namespace, in the unit or a drop-in.
+if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/fs.service.d/*.conf 2>/dev/null \
+    | grep -Eq '^(PrivateIPC|PrivateTmp|PrivateDevices|PrivateMounts|PrivateUsers|ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|ProtectControlGroups|ProtectProc|ReadOnlyPaths|ReadWritePaths|InaccessiblePaths|TemporaryFileSystem|BindPaths|BindReadOnlyPaths|MountFlags)='; then
+  die "fs.service gets a private mount namespace, so /var/workspace would never reach the host"
+fi
 # The room store volume: prepared before the daemon, which serves FUSE unless
 # the preparation announced a mounted store.
 require_exec /usr/libexec/tilo-store-volume
