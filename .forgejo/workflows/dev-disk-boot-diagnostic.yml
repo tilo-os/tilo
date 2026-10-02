@@ -207,7 +207,41 @@ jobs:
             # Reuse the candidate's installed disk. bootc fetches changed layers;
             # the original disk remains immutable underneath this overlay.
             old_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id')
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c 'mount -o remount,rw /boot && bootc switch $UPGRADE_IMAGE'"
+            # Noninteractive bootc can stay silent while fetching or sealing.
+            # Keep one switch running, report its I/O and storage, and bound it
+            # before the whole job expires so finish() can collect evidence.
+            cat > "$TILO_RUN/guest-switch.sh" <<'GUEST_SWITCH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mount -o remount,rw /boot
+          timeout --kill-after=10s 20m bootc switch "$1" &
+          switch_pid=$!
+          (
+            while kill -0 "$switch_pid" 2>/dev/null; do
+              printf '\nTILO_SWITCH_PROGRESS time=%s\n' "$(date -u +%FT%TZ)"
+              df -h /sysroot /var /boot
+              df -i /sysroot /var /boot
+              ps -C bootc -o pid,etime,time,stat,wchan:24 || true
+              for pid in $(pgrep -x bootc || true); do
+                printf 'bootc pid=%s\n' "$pid"
+                cat "/proc/$pid/io" 2>/dev/null || true
+              done
+              sleep 15
+            done
+          ) &
+          observer_pid=$!
+          trap 'kill "$observer_pid" 2>/dev/null || true; wait "$observer_pid" 2>/dev/null || true' EXIT
+          result=0
+          wait "$switch_pid" || result=$?
+          printf 'TILO_SWITCH_DONE exit_code=%s\n' "$result"
+          exit "$result"
+          GUEST_SWITCH
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              "$TILO_RUN/guest-switch.sh" "$TILO_USER@127.0.0.1:/tmp/guest-switch.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-switch.sh '$UPGRADE_IMAGE'" \
+              | tee "$TILO_RUN/image-switch.log"
             ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
             ready=false
             for attempt in $(seq 1 120); do
@@ -375,6 +409,7 @@ jobs:
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/kernel.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-phases.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-performance.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/image-switch.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-build.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/dev-uki-boot.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop.ppm
