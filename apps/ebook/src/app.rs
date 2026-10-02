@@ -5948,6 +5948,22 @@ impl ui::search::capability::SearchSource for BooksApp {
     }
 }
 
+impl BooksApp {
+    fn overlay_open_book_actions(
+        resource: &mut tilo_actions::Resource,
+        book_id: &str,
+        ctx: &crate::actions::BookResourceCtx,
+    ) {
+        if resource.id.as_str() == book_id {
+            *resource = crate::actions::current_book_actions(resource.clone(), ctx);
+            return;
+        }
+        for child in &mut resource.children {
+            Self::overlay_open_book_actions(child, book_id, ctx);
+        }
+    }
+}
+
 impl ui::resources::PublishesResources for BooksApp {
     /// Standalone / `--shots` / unit tests publish the library roots. When the
     /// framework hosts the surface, [`tilo_resource::publish`] already owns the
@@ -5958,37 +5974,20 @@ impl ui::resources::PublishesResources for BooksApp {
                 return;
             };
             let book_id = format!("ebook.book:{}", ctx.book_id);
-            fn overlay(
-                resource: &mut tilo_actions::Resource,
-                book_id: &str,
-                ctx: &crate::actions::BookResourceCtx,
-            ) {
-                if resource.id.as_str() == book_id {
-                    *resource = crate::actions::current_book_actions(resource.clone(), ctx);
-                    return;
-                }
-                for child in &mut resource.children {
-                    overlay(child, book_id, ctx);
-                }
-            }
-            overlay(root, &book_id, &ctx);
+            Self::overlay_open_book_actions(root, &book_id, &ctx);
             root.children
                 .extend(crate::actions::live_reading_resources(&ctx));
         };
 
         if self.actions.is_hosted() {
-            // Hosted: framework owns the library door; surface only exports the
-            // open book's live overlay (+ reading-selection extras) so DFS
-            // resolve does not prefer a nested document book without Views.
+            // Hosted: framework owns the library door; surface only exports
+            // reading-selection extras. Open-book View overlays stay on
+            // `resource()` lookup so DFS can still resolve without republishing
+            // ebook.book beside ResourceRoot.
             let Some(ctx) = self.current_book_resource_context() else {
                 return Vec::new();
             };
-            let mut resources = Vec::new();
-            if let Some(book) = self.publish_resource(doc, &format!("ebook.book:{}", ctx.book_id)) {
-                resources.push(book);
-            }
-            resources.extend(crate::actions::live_reading_resources(&ctx));
-            return resources;
+            return crate::actions::live_reading_resources(&ctx);
         }
         let state =
             <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
