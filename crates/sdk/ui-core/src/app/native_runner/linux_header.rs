@@ -39,6 +39,9 @@ pub(super) struct LiveHeader {
     /// The bar changed since it was last painted. It reports no widget
     /// damage, so the frame after repaints the whole window.
     repaint: bool,
+    /// A fullscreen window has no frame: the bar neither draws, takes
+    /// input, nor insets the content until the window leaves fullscreen.
+    hidden: bool,
 }
 
 /// What the runner still has to do after the bar saw an event.
@@ -78,7 +81,9 @@ impl Decorations {
     }
 
     pub(super) fn draw(&mut self, app: &mut App, scene: &mut Scene, transform: Affine) {
-        if let Self::Bar(header) = self {
+        if let Self::Bar(header) = self
+            && !header.hidden
+        {
             let (text, theme, presence) = (&mut app.text_renderer, &app.theme, &app.presence_ctx);
             header.bar.draw(scene, transform, text, theme, presence);
             header
@@ -89,8 +94,8 @@ impl Decorations {
 
     pub(super) fn route(&mut self, app: &mut App, window: &Window, event: &WindowEvent) -> Routed {
         match self {
-            Self::Bar(header) => header.route(app, window, event),
-            Self::Unsettled | Self::Host => Routed {
+            Self::Bar(header) if !header.hidden => header.route(app, window, event),
+            Self::Bar(_) | Self::Unsettled | Self::Host => Routed {
                 consumed: false,
                 close: false,
             },
@@ -109,6 +114,7 @@ impl LiveHeader {
             window: Rect::ZERO,
             pointer: Point::ORIGIN,
             repaint: true,
+            hidden: false,
         }
     }
 
@@ -117,6 +123,20 @@ impl LiveHeader {
         let size =
             crate::scale::logical_size((physical.width, physical.height), window.scale_factor());
         let bounds = Rect::new(0.0, 0.0, size.0, size.1);
+        let hidden = window.fullscreen().is_some();
+        if hidden != self.hidden {
+            self.hidden = hidden;
+            self.repaint = true;
+            // Lay the bar out again (or not) for the new state.
+            self.window = Rect::ZERO;
+        }
+        if hidden {
+            if app.layout.safe_area.top != 0.0 {
+                app.layout.safe_area.top = 0.0;
+                app.layout.layout_dirty = true;
+            }
+            return;
+        }
         let key = app.host_commands_key();
         let mut rebuilt = false;
         if self.key != Some(key) && self.bar.modal_capture().is_none() {
