@@ -12,6 +12,9 @@ published actions. This script only sets up and tears down what is around it:
   mcp APP     the MCP endpoint for that session on stdio: what an agent
               (`.cursor/mcp.json`, Claude Code, a model harness) runs.
   status APP  whether the session is up, and its paths.
+  report APP  what the agent made and how, from the app's own views (its
+              `history`, `inspect` and `look` actions, where it publishes
+              them), written to target/agent-runs/APP-TIME.
   stop APP    stop the session and remove its runtime directory.
 
 Everything lives under target/agent-loop/APP (state, logs) and a private
@@ -292,6 +295,107 @@ def mcp(args) -> int:
     return 1
 
 
+class McpClient:
+    """The session's MCP endpoint as an agent uses it: newline-delimited
+    JSON-RPC over the stdio of `session.py mcp`."""
+
+    def __init__(self, session: Session):
+        self.process = subprocess.Popen(
+            [sys.executable, str(pathlib.Path(__file__).resolve()), "mcp", session.name],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=open(session.root / "logs" / "report-mcp.log", "w"),
+            text=True,
+            bufsize=1,
+        )
+        self.next_id = 0
+        self.request("initialize", {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "agent-loop-report", "version": "1"},
+        })
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def send(self, message: dict) -> None:
+        assert self.process.stdin is not None
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def request(self, method: str, params: dict) -> dict:
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
+        assert self.process.stdout is not None
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                sys.exit("FAIL: the MCP endpoint closed")
+            message = json.loads(line)
+            if message.get("id") == self.next_id:
+                return message.get("result", message)
+
+    def tool(self, name: str, arguments: dict) -> tuple:
+        """The tool's JSON answer and the images it carried."""
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        blocks = result.get("content", [])
+        text = blocks[0].get("text", "") if blocks else ""
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            value = {"error": text}
+        images = [block for block in blocks if block.get("type") == "image"]
+        return value, images
+
+    def close(self) -> None:
+        self.process.terminate()
+
+
+def report(args) -> int:
+    """What the agent made and how, from the app's own views: its history,
+    an inspection and a final look, written to target/agent-runs/."""
+    import base64
+
+    session = Session(app_name(args.app))
+    if not session.state_file.exists():
+        sys.exit(f"no {session.name} session is running")
+    client = McpClient(session)
+    apps, _ = client.tool("tilo_list_apps", {})
+    peers = [app["peer_id"] for app in apps.get("apps", [])]
+    if not peers:
+        sys.exit("FAIL: the app is not running in the session")
+    out = TARGET / "agent-runs" / f"{session.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    out.mkdir(parents=True, exist_ok=True)
+    page, _ = client.tool("tilo_query", {"peer_id": peers[-1]})
+    written = []
+    for resource in page.get("resources", []):
+        detail, _ = client.tool("tilo_query", {"peer_id": peers[-1], "parent_resource": resource["resource"]})
+        actions = {}
+        for entry in detail.get("resources", []):
+            if entry.get("resource") == resource["resource"]:
+                actions = entry.get("actions", {})
+        for view in ("history", "inspect", "look"):
+            if view not in actions:
+                continue
+            value, images = client.tool("tilo_invoke", {
+                "peer_id": peers[-1],
+                "resource": resource["resource"],
+                "action": view,
+                "arguments": {"size": 1024} if view == "look" else {},
+            })
+            stem = f"{resource['kind']}-{view}"
+            output = value.get("update", {}).get("output", {}).get("value", value)
+            (out / f"{stem}.json").write_text(json.dumps(output, indent=2))
+            written.append(f"{stem}.json")
+            for index, image in enumerate(images):
+                name = f"{stem}{'' if index == 0 else f'-{index}'}.png"
+                (out / name).write_bytes(base64.b64decode(image["data"]))
+                written.append(name)
+    client.close()
+    print(f"{out}")
+    for name in written:
+        print(f"  {name}")
+    return 0 if written else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -304,6 +408,7 @@ def main() -> int:
         ("stop", stop, "stop the session"),
         ("status", status, "report the session"),
         ("mcp", mcp, "the MCP endpoint on stdio"),
+        ("report", report, "record history, inspection and a final look"),
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("app", help="the app name or directory")

@@ -97,6 +97,86 @@ pub(crate) fn fill(
     }
 }
 
+/// The footprint of a round brush dragged along `samples`: the union of its
+/// tip at each sample, width following pressure and taper. Unlike one
+/// outline around the whole stroke it cannot fold over itself where a wide
+/// brush turns tightly.
+/// `taper_floor` is how wide the brush is where it lands and lifts, as a
+/// share of its full width: low for a pointed brush, near one for a loaded
+/// wash brush that lands flat.
+pub(crate) fn brush_footprint(
+    samples: &[crate::brush::Sample],
+    size: f32,
+    taper_floor: f32,
+    grid: (usize, usize),
+    margin: f32,
+) -> Coverage {
+    let (width, height) = grid;
+    let total = crate::brush::length(samples);
+    let floor = taper_floor.clamp(0.0, 1.0);
+    let radius = |sample: &crate::brush::Sample| {
+        // `taper` eases from 0.35 to 1; stretch that onto floor..=1.
+        let eased = (crate::brush::taper(sample.distance, total, size) - 0.35) / 0.65;
+        (size * 0.5 * (0.4 + 0.6 * sample.pressure) * (floor + (1.0 - floor) * eased)).max(0.5)
+    };
+    let mut min = (f32::INFINITY, f32::INFINITY);
+    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for sample in samples {
+        let r = radius(sample);
+        min = (min.0.min(sample.x - r), min.1.min(sample.y - r));
+        max = (max.0.max(sample.x + r), max.1.max(sample.y + r));
+    }
+    let area = Area::around(min, max, margin.max(1.0), width, height);
+    let empty = Coverage {
+        area,
+        values: vec![0.0; area.width().saturating_mul(area.height())],
+    };
+    if area.is_empty() {
+        return empty;
+    }
+    let (ox, oy) = (float(area.x0), float(area.y0));
+    let mut builder = tiny_skia::PathBuilder::new();
+    let mut last: Option<(f32, f32)> = None;
+    for sample in samples {
+        let r = radius(sample);
+        // A dab every third of a radius covers the stroke without gaps.
+        if let Some((x, y)) = last
+            && (sample.x - x).hypot(sample.y - y) < r / 3.0
+        {
+            continue;
+        }
+        builder.push_circle(sample.x - ox, sample.y - oy, r);
+        last = Some((sample.x, sample.y));
+    }
+    if let Some(end) = samples.last() {
+        builder.push_circle(end.x - ox, end.y - oy, radius(end));
+    }
+    let (Some(path), Ok(mask_width), Ok(mask_height)) = (
+        builder.finish(),
+        u32::try_from(area.width()),
+        u32::try_from(area.height()),
+    ) else {
+        return empty;
+    };
+    let Some(mut mask) = tiny_skia::Mask::new(mask_width, mask_height) else {
+        return empty;
+    };
+    mask.fill_path(
+        &path,
+        tiny_skia::FillRule::Winding,
+        true,
+        tiny_skia::Transform::identity(),
+    );
+    Coverage {
+        area,
+        values: mask
+            .data()
+            .iter()
+            .map(|value| f32::from(*value) / 255.0)
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

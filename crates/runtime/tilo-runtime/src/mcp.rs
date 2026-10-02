@@ -596,6 +596,26 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             self.detail =
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
         }
+        // Every connection is one agent run, so its edits are attributed to
+        // it in history and undo, whatever transport it came over. A host
+        // that names the run itself (the HTTP endpoint) has done so already.
+        if self.run.is_none() {
+            let label: String = params
+                .pointer("/clientInfo/name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or("MCP agent")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(64)
+                .collect();
+            self.run = Some(tilo_actions::ActionGroup {
+                id: format!("mcp:{}", uuid::Uuid::new_v4()),
+                label,
+                kind: "agent-run".into(),
+            });
+        }
         Ok(
             json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
         )

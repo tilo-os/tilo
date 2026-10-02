@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use crate::brush::{Sample, length, smooth, taper};
 use crate::colour::{Rgb, encode8, from_linear};
 use crate::engine::{Blend, Canvas, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
-use crate::grid::{Area, at, cell, float, key, read, smoothstep};
+use crate::grid::{Area, at, box_blur, cell, float, key, read, smoothstep};
 use crate::ground::{fbm, hash01, mix};
 use crate::mask::{Coverage, fill};
 
@@ -381,8 +381,11 @@ impl OilLayer {
                 let under = self.colour_at(x, y);
                 let wander = fbm(float(x) / grain, float(y) / grain, seed ^ 0x5c4b, 3);
                 let paint = region.paint.colour.scale(0.92 + 0.16 * wander);
+                // Into wet paint the two mix; over dry paint this covers.
+                let wet_under = read(&self.wet, width, x, y, 0.0) * cover;
+                let mixing = settings.get("blend") * wet_under * 0.8;
                 let colour = if cover > 0.0 {
-                    under.lerp(paint, deposit)
+                    under.lerp(paint, deposit * (1.0 - mixing))
                 } else {
                     paint
                 };
@@ -412,6 +415,20 @@ impl OilLayer {
         if coverage.is_empty() {
             return;
         }
+        // Paint laid wet into wet is worked into its neighbour: its edge
+        // feathers over half a brush instead of stopping at the outline.
+        let coverage = if region.wet {
+            let area = coverage.area;
+            let soft = box_blur(
+                &coverage.values,
+                area.width(),
+                area.height(),
+                cell(brush * 0.5, 256).max(1),
+            );
+            Coverage { area, values: soft }
+        } else {
+            coverage
+        };
         self.scrub(settings, region, &coverage, seed);
         let area = coverage.area;
         let (cx, cy) = (
@@ -458,8 +475,8 @@ impl OilLayer {
                 let piece_seed = mix(seed ^ mix(key(row)) ^ piece.rotate_left(17));
                 // Each brushload is mixed a little differently on the
                 // palette: slightly lighter or darker, warmer or cooler.
-                let value = 0.88 + 0.24 * hash01(piece_seed, 41, 0);
-                let warmth = (hash01(piece_seed, 43, 0) - 0.5) * 0.08;
+                let value = 0.94 + 0.12 * hash01(piece_seed, 41, 0);
+                let warmth = (hash01(piece_seed, 43, 0) - 0.5) * 0.05;
                 let base = region.paint.colour.scale(value);
                 let colour =
                     Rgb::new(base.r * (1.0 + warmth), base.g, base.b * (1.0 - warmth)).clamp();
