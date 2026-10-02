@@ -533,7 +533,7 @@
                           }
                         },
                         "additionalProperties": false,
-                        "description": "A colour gradient across a mark."
+                        "description": "Instead of `fill`; on an oil layer the brush is remixed along it."
                       },
                       "stroke": {
                         "type": [
@@ -1327,7 +1327,7 @@
                   }
                 },
                 "additionalProperties": false,
-                "description": "A colour gradient across a mark."
+                "description": "Instead of `fill`; on an oil layer the brush is remixed along it."
               },
               "stroke": {
                 "type": [
@@ -2158,7 +2158,7 @@
                                 }
                               },
                               "additionalProperties": false,
-                              "description": "A colour gradient across a mark."
+                              "description": "Instead of `fill`; on an oil layer the brush is remixed along it."
                             },
                             "stroke": {
                               "type": [

@@ -109,7 +109,8 @@ pub struct Style {
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<String>,
-    /// A gradient fill, drawn instead of `fill` on plain layers.
+    /// A gradient fill, drawn instead of `fill` on plain layers. On an oil
+    /// layer the brush is remixed along it as the shape is laid in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<Gradient>,
     /// Outline or stroke colour.
