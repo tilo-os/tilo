@@ -420,6 +420,15 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   exit 1
 fi
 
+for preset_wants in multi-user.target.wants/ModemManager.service \
+    graphical.target.wants/power-profiles-daemon.service \
+    multi-user.target.wants/virtqemud.service; do
+  grep -Fq "/etc/systemd/system/$preset_wants" "$repo/os/Containerfile" || {
+    echo "the preset still starts $preset_wants before login" >&2
+    exit 1
+  }
+done
+
 for demand_activated in bluetooth ModemManager fwupd power-profiles-daemon systemd-homed; do
   if grep -Fq "systemctl enable $demand_activated.service" "$repo/os/Containerfile"; then
     echo "$demand_activated is still started before login instead of on demand" >&2
