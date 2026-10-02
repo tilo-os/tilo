@@ -85,6 +85,28 @@ impl ProjectDoc {
         Self::read_v2(doc).unwrap_or_else(Project::blank)
     }
 
+    /// Set the source image path and the project name. Other adjustments stay.
+    pub fn set_source(doc: &mut AutoCommit, path: &str, name: &str) {
+        Self::seed(doc);
+        let root = Self::root_map(doc);
+        let metadata = Self::map(doc, &root, METADATA);
+        let name = if name.is_empty() {
+            "Untitled image"
+        } else {
+            name
+        };
+        put_if_changed(doc, &metadata, "name", name);
+        let operations = Self::map(doc, &root, OPERATIONS);
+        Self::write_operation(
+            doc,
+            &operations,
+            "source",
+            &Operation::Source {
+                path: path.to_string(),
+            },
+        );
+    }
+
     /// Compatibility upsert for local UI code. Missing rows are never
     /// interpreted as deletes, so a stale frame cannot remove remote nodes.
     /// Resource actions use the narrower mutation methods below.

@@ -12,6 +12,7 @@ pub const ADD_ADJUSTMENT_TYPE: &str = "image-editor.add-adjustment";
 pub const REMOVE_ADJUSTMENT_TYPE: &str = "image-editor.remove-adjustment";
 pub const UPDATE_ADJUSTMENT_TYPE: &str = "image-editor.update-adjustment";
 pub const RECONNECT_INPUT_TYPE: &str = "image-editor.reconnect-input";
+pub const SET_SOURCE_TYPE: &str = "image-editor.set-source";
 pub const OPERATION_TYPE: &str = "image-editor.operation";
 /// Unified document action type for the framework resource APPLY path.
 pub const IMAGE_EDITOR_ACTION_TYPE: &str = "image-editor.action";
@@ -36,6 +37,7 @@ pub enum EditorOperation {
 }
 pub fn register(r: &mut ActionRegistry) {
     r.register::<ImageEditorAction>(IMAGE_EDITOR_ACTION_TYPE);
+    r.register::<SetSource>(SET_SOURCE_TYPE);
     r.register::<AddAdjustment>(ADD_ADJUSTMENT_TYPE);
     r.register::<RemoveAdjustment>(REMOVE_ADJUSTMENT_TYPE);
     r.register::<UpdateAdjustment>(UPDATE_ADJUSTMENT_TYPE);
@@ -162,6 +164,27 @@ impl Action for ReconnectInput {
     }
 }
 
+/// Point the project at an opened image and name it. Other adjustments stay.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SetSource {
+    pub path: String,
+    pub name: String,
+}
+
+impl Action for SetSource {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if self.path.is_empty() {
+            return Err(ActionError::Refused("an opened image needs a path".into()));
+        }
+        ProjectDoc::set_source(doc, &self.path, &self.name);
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
 /// One document vocabulary for the project resource. Historical envelopes keep
 /// the per-edit type ids registered beside this.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -170,6 +193,7 @@ pub enum ImageEditorAction {
     Remove(RemoveAdjustment),
     Update(UpdateAdjustment),
     Reconnect(ReconnectInput),
+    SetSource(SetSource),
 }
 
 impl Action for ImageEditorAction {
@@ -179,6 +203,7 @@ impl Action for ImageEditorAction {
             Self::Remove(action) => action.apply(doc),
             Self::Update(action) => action.apply(doc),
             Self::Reconnect(action) => action.apply(doc),
+            Self::SetSource(action) => action.apply(doc),
         }
     }
     fn locus(&self) -> ExecutionLocus {
@@ -187,6 +212,7 @@ impl Action for ImageEditorAction {
             Self::Remove(action) => action.locus(),
             Self::Update(action) => action.locus(),
             Self::Reconnect(action) => action.locus(),
+            Self::SetSource(action) => action.locus(),
         }
     }
 }
@@ -216,6 +242,12 @@ impl AsEditorAction for UpdateAdjustment {
 impl AsEditorAction for ReconnectInput {
     fn as_editor_action(&self) -> ImageEditorAction {
         ImageEditorAction::Reconnect(self.clone())
+    }
+}
+
+impl AsEditorAction for SetSource {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::SetSource(self.clone())
     }
 }
 
@@ -531,6 +563,49 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EditorOp
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use tilo_actions::Action;
+
+    #[test]
+    fn set_source_records_the_opened_image_without_replacing_adjustments() {
+        let mut doc = AutoCommit::new();
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        SetSource {
+            path: "/photos/harbour.jpg".into(),
+            name: "harbour".into(),
+        }
+        .apply(&mut doc)
+        .expect("source applies");
+        let project = ProjectDoc::read(&doc);
+        assert_eq!(source_path(&project), "/photos/harbour.jpg");
+        assert_eq!(project.name, "harbour");
+        assert!(project.graph.nodes.contains_key("exposure-1"));
+    }
+
+    #[test]
+    fn opening_an_image_sets_the_source_without_rewriting_adjustments() {
+        let mut doc = AutoCommit::new();
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        SetSource {
+            path: "/photos/harbour.jpg".into(),
+            name: "Harbour".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let project = ProjectDoc::read(&doc);
+        assert_eq!(source_path(&project), "/photos/harbour.jpg");
+        assert_eq!(project.name, "Harbour");
+        assert!(project.operations.contains_key("exposure-1"));
+    }
 
     /// Each editable step is a resource publishing canonical actions whose
     /// typed parameter surfaces build JSON that touches only their own node.
