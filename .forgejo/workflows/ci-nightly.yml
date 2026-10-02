@@ -69,11 +69,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The whole-workspace target tree does not fit beside a generic
+        # slot's caches; the disk classes have room for it.
         include:
           - arch: x86_64
-            runner: runner
+            runner: runner-disk-100g
           - arch: aarch64
-            runner: runner-arm64
+            runner: runner-disk-100g-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
