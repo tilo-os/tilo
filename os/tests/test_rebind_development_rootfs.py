@@ -34,10 +34,11 @@ class TransformTests(unittest.TestCase):
             self.assertNotIn('--volume', args)
             self.assertNotIn('/bin/sh', args)
             self.assertEqual(args[args.index('--omit') + 1].split(), sorted(transform.OMITTED_MODULES))
-            self.assertEqual(args[args.index('--omit-drivers') + 1].split(), ['xfs'])
+            self.assertEqual(args[args.index('--omit-drivers') + 1].split(),
+                             ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertEqual(args[args.index('--add-drivers') + 1].split(), ['ext4'])
             self.assertEqual(args[args.index('--compress') + 1], 'zstd')
-        with self.subTest(phase="lenovo_83ed_omits_unrelated_gpu_drivers_only"):
+        with self.subTest(phase="every_profile_omits_the_same_drivers"):
             board = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
                                                'lenovo-83ed')
             generic = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
@@ -45,7 +46,7 @@ class TransformTests(unittest.TestCase):
             self.assertEqual(board[board.index('--omit-drivers') + 1].split(),
                              ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertEqual(generic[generic.index('--omit-drivers') + 1].split(),
-                             ['xfs'])
+                             ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertEqual(transform.omitted_drivers('lenovo-83ed'),
                              ['amdgpu', 'nouveau', 'xe', 'xfs'])
             self.assertNotIn('msm', transform.omitted_drivers('lenovo-83ed'))
