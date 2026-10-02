@@ -166,6 +166,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one hosted extras check covers problems, preview pages, and overlay"
+    )]
     #[test]
     fn hosted_resources_keep_live_extras_without_workspace_root() {
         let published =
@@ -214,6 +218,7 @@ mod tests {
             "standalone stays on the full action tree"
         );
 
+        let pages = [blank_page(), blank_page()];
         app.stage_live_extras_for_test(
             vec![
                 Diagnostic {
@@ -235,7 +240,7 @@ mod tests {
                     hints: Vec::new(),
                 },
             ],
-            vec![blank_page(), blank_page()],
+            &pages,
         );
         assert!(
             app.live_diagnostic_count_for_test() > 0,

@@ -601,7 +601,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: synced().1,
         registry: tilo_actions::ActionRegistry::new(),
-        resources: |_doc| resources(&TypstResourceCtx {
+        resources: |_| resources(&TypstResourceCtx {
             diagnostics: &[],
             page_count: 0,
         }),
