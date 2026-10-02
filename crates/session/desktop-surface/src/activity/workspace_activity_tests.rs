@@ -178,10 +178,12 @@ mod workspace_activity {
             }
         }
         let mut tree = causal_room();
-        // Layout/setup commits are omitted from the feed; rename so there is
-        // a Change row to select and attempt restore against.
+        // Layout/setup commits are omitted from the feed; rename the room so
+        // there is a Change row to select and attempt restore against.
+        // `causal_room` is a room projection doc (not a desktop_doc workspaces
+        // list), so write the name on the room document directly.
         tree.workspaces[0].name = "Design studio".into();
-        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+        tree.doc.put(ROOT, "name", "Design studio").unwrap();
         tilo_resource::history::commit_stamped(&mut tree.doc);
         let mut pane = RoomActivityPane::new();
         pane.refresh(&mut tree);

@@ -2023,7 +2023,9 @@ mod tests {
             assert_eq!(activity.view, view);
             assert!(activity.in_surface);
             let pane = surface.activity.as_ref().unwrap().pane();
-            assert_eq!(pane.entries().len(), 2);
+            // Initial open is Setup/View and omitted; the rename is the one
+            // feed-visible Change.
+            assert_eq!(pane.entries().len(), 1);
             assert_eq!(pane.replay_unavailable_checkpoints(), 0);
         }
         tree.workspaces[0].name = "Updated while open".into();
@@ -2034,7 +2036,7 @@ mod tests {
             3_000,
         ));
         surface.update(&mut state, &ui::automerge::ROOT);
-        assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 3);
+        assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
         handle
             .dispatch(
                 &Command::CloseWorkspaceActivity {

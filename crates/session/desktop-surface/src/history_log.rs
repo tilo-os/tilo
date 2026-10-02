@@ -267,6 +267,9 @@ mod tests {
             width: tilo_desktop_model::WindowWidth::Normal,
             maximized: false,
         });
+        // Tab opens are View and omitted from the explorer feed; rename so
+        // Grace still authors a feed-visible Change.
+        tree.workspaces[0].name = "Studio · shared".into();
         let mut peer = log.fork();
         assert!(record(&mut peer, &stored(&tree), "Grace", 2_000));
         log.merge_incoming(&mut peer).unwrap();
@@ -305,14 +308,20 @@ mod tests {
         pane.begin_view(snapshot.active.raw());
         pane.refresh(&mut snapshot);
         let entries = pane.entries();
-        assert_eq!(entries.len(), 3, "{entries:?}");
+        // Setup (first open) is omitted from the explorer feed; Grace's rename
+        // and Ada's close remain as Change rows.
+        assert_eq!(entries.len(), 2, "{entries:?}");
         assert!(
             entries.iter().any(|entry| entry.author.name == "Grace"),
             "a peer's change is theirs: {entries:?}"
         );
         assert_eq!(
             pane.replay_checkpoint_names(),
-            vec![vec!["Studio".to_owned()]; 3],
+            vec![
+                vec!["Studio".to_owned()],
+                vec!["Studio · shared".to_owned()],
+                vec!["Studio · shared".to_owned()],
+            ],
             "every change replays as the room it changed"
         );
         assert_eq!(pane.replay_unavailable_checkpoints(), 0);
