@@ -398,6 +398,23 @@ class ProvenanceTests(unittest.TestCase):
                     json.dumps(value).encode()).decode()})
             good = proof.checked_slsa_attestation(wrapped(statement), digest, [], "lenovo-83ed")
             self.assertEqual(good["firmware_candidate"], candidate)
+            current = copy.deepcopy(statement)
+            metadata = current["predicate"]["runDetails"]["metadata"]
+            metadata["invocationID"] = metadata.pop("invocationId")
+            current["predicate"]["buildDefinition"]["resolvedDependencies"].extend([
+                {"uri": "registry.tilo.so/tilo/tilo-fex-payload-candidate@sha256:" + "1" * 64},
+                {"uri": "registry.tilo.so/tilo/tilo-development-windows-guest@sha256:" + "2" * 64}])
+            normalized = proof.checked_slsa_attestation(wrapped(current), digest, [], "lenovo-83ed")
+            self.assertEqual(normalized["invocation_id"], "123")
+            self.assertEqual(normalized["firmware_candidate"], candidate)
+            for name, change in (
+                ("duplicate firmware", lambda d: d["predicate"]["buildDefinition"]["resolvedDependencies"].append({"uri": candidate})),
+                ("ambiguous invocation", lambda d: d["predicate"]["runDetails"]["metadata"].update(invocationId="456"))):
+                with self.subTest(name=name):
+                    bad = copy.deepcopy(current)
+                    change(bad)
+                    with self.assertRaisesRegex(ValueError, "does not uniquely bind"):
+                        proof.checked_slsa_attestation(wrapped(bad), digest, [], "lenovo-83ed")
             for name, change in (
                 ("profile", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(hardwareProfile="other")),
                 ("architecture", lambda d: d["predicate"]["buildDefinition"]["externalParameters"].update(architecture="x86_64")),
