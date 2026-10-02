@@ -13,10 +13,10 @@
 //!   desktop, the most recently changed next, up to [`DEFAULT_ROWS_RECORDS`];
 //!   naming a record's provider lists every action that record publishes.
 //! - **Invoke.** The record is mounted headless ([`HostedApp`]) from what the
-//!   host retains, the action runs through the app's own door (availability,
-//!   confirmation and argument binding exactly as for a person), and the
-//!   change is signed by the host and committed as the host's own change, so
-//!   every page receives it as an ordinary durable change.
+//!   service opened of it, the action runs through the app's own door
+//!   (availability, confirmation and argument binding exactly as for a
+//!   person), and the change is sealed and signed as the host device's own,
+//!   so every page receives it as an ordinary durable change.
 //! - **Tickets.** Invocation ids are idempotent: a retry reports the original
 //!   invocation, a different request under a used id is a conflict, and a
 //!   refused invocation is forgotten (nothing ran). An invocation is
@@ -26,8 +26,10 @@
 //! Only the host user's own devices are served: the principal must be the
 //! person whose root the host chains to. Agents use their own mounts.
 //!
-//! The records come through a [`RoomRecordsLink`] the host supplies (its
-//! retained bodies and an in-process commit), attached once the relay runs.
+//! The service joins each room as the host's own device ([`RoomMember`], from
+//! the [`RoomRecordsLink`] the host supplies): a member of the room's
+//! channels like any other, admitted by the room's steward. It reads only
+//! records it holds keys for and writes nothing in the clear.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
