@@ -2265,11 +2265,10 @@ COPY \
     os/usr/lib/tilo/web-engine-entitled.conf \
     /usr/lib/tilo/
 
-# hidepid on /proc + the boot self-check that ASSERTS what's actually active.
+# The boot self-check that ASSERTS what's actually active.
 COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
-    os/usr/lib/systemd/system/tilo-hidepid.service \
     /usr/lib/systemd/system/
 
 # ---------------------------------------------------------------------------
@@ -2400,13 +2399,21 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
 # pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
 # socket-activated rather than always-on. Time sync, firewall, Bluetooth,
-# modem, power, homed, hardening, boot assessment, automatic bootc updates and
+# homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers. joycond is not enabled here:
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
     restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
+    # Fedora's presets start these at boot, ordered before multi-user.target or
+    # graphical.target. They start on demand instead: ModemManager and
+    # power-profiles-daemon when a client calls their D-Bus names, virtqemud
+    # from its sockets. Removing only the target wants keeps the D-Bus aliases
+    # and sockets that activate them.
+    rm /etc/systemd/system/multi-user.target.wants/ModemManager.service \
+       /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
+       /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
@@ -2422,7 +2429,6 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-fs-cloud.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
-    systemctl enable tilo-hidepid.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \

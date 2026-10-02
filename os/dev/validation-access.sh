@@ -31,8 +31,11 @@ set -euo pipefail
 die() { printf 'validation-access: %s\n' "$*" >&2; exit 1; }
 
 # Build tools only; nothing from this container reaches the extension except
-# what it assembles from the snapshot's openssh-server RPM.
-TOOLS_IMAGE="${TILO_VALIDATION_TOOLS_IMAGE:-registry.fedoraproject.org/fedora:44}"
+# what it assembles from the snapshot's openssh-server RPM. The default is the
+# digest-pinned Fedora base mirrored in our registry, which the image build has
+# already pulled, not a public registry tag.
+base_ref="$(sed -n 's/^BASE_REF=//p' "$(dirname "${BASH_SOURCE[0]}")/../base-snapshot.env")"
+TOOLS_IMAGE="${TILO_VALIDATION_TOOLS_IMAGE:-$base_ref}"
 EXTENSION=tilo-validation
 UNIT=tilo-validation-ssh.service
 
@@ -42,6 +45,8 @@ outdir=$2 image=$3 rpms_ref=$4
 [[ $rpms_ref =~ @sha256:[0-9a-f]{64}$ ]] || die "RPMS_REF must be digest-pinned: $rpms_ref"
 podman image exists "$image" || die "$image is not in rootless Podman storage"
 podman image exists "$rpms_ref" || podman pull -q "$rpms_ref" >/dev/null
+[[ $TOOLS_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || die "the tools image must be digest-pinned: $TOOLS_IMAGE"
+podman image exists "$TOOLS_IMAGE" || podman pull -q "$TOOLS_IMAGE" >/dev/null
 
 rm -rf "$outdir"
 mkdir -p "$outdir/work"

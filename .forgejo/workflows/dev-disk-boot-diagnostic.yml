@@ -24,6 +24,10 @@ on:
         description: "Lower ptrace scope in the disposable dev guest and trace the greeter after a reboot."
         required: false
         default: "false"
+      verity_samples:
+        description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
+        required: false
+        default: ""
 
 jobs:
   boot:
@@ -41,6 +45,7 @@ jobs:
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
       CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
       CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
+      VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -126,6 +131,18 @@ jobs:
             sleep 1
           done
           [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
+          read -r -a samples <<< "$VERITY_SAMPLES"
+          for sample in "${samples[@]}"; do
+            [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {
+              echo '::error::verity_samples contains an invalid object path'
+              exit 1
+            }
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sha256sum '/sysroot/composefs/objects/$sample' >/dev/null" || {
+              echo "::error::native KVM could not read composefs object $sample"
+              exit 1
+            }
+            echo "::notice::native KVM read composefs object $sample"
+          done
           if [[ $CAPTURE_FAULT_PC == true ]]; then
             sshpass -p "$TILO_PASS" scp -q -P 2222 \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
