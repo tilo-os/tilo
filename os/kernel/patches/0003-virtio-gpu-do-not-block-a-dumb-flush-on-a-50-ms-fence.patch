@@ -1,28 +1,79 @@
 From: Tilo <tilo@tilo.so>
-Subject: virtio-gpu: do not block a dumb flush on a 50 ms fence
+Subject: virtio-gpu: do not block atomic commit on an unsignaled dumb fence
 
-The synchronous dirtyfb commit waits up to 50 ms for a fence allocated
-in the same flush, after that flush has already been sent to the host.
-When the host does not signal the fence, every virtual present stalls
-for that timeout. The compositor then schedules the next paint one
-refresh past the late retirement, about 67 ms after the previous one.
+The synchronous dirtyfb commit used to wait up to 50 ms for a fence
+allocated in the same flush, after that flush had already been sent to
+the host. Removing the wait left the fence pending. The next atomic
+commit then waits for it: about 60 ms when the host replies, and 1-2 s
+when it does not. The present queue stays full for that wait, so an
+overview or workspace transition paints no frames.
 
-The atomic commit still waits for the CRTC vblank timer. The driver
-keeps its own fence reference until the host signals it.
+Complete that one fence when notify returns and the host has not already
+signaled it. Do not use the control-queue reply helper: it also signals
+every earlier fence on the context, including virgl work still running.
+The cursor path waited with no timeout; retire that fence the same way.
 
 --- a/drivers/gpu/drm/virtio/virtgpu_plane.c
 +++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
-@@ -224,8 +224,11 @@ static void virtio_gpu_resource_flush(struct drm_plane *plane,
+@@ -195,6 +195,34 @@
+ 	virtio_gpu_panic_notify(vgdev);
+ }
+ 
++static void virtio_gpu_retire_flush_fence(struct virtio_gpu_fence *fence)
++{
++	struct virtio_gpu_fence *curr;
++	unsigned long flags;
++	bool found = false;
++
++	if (!fence || !fence->drv)
++		return;
++	/*
++	 * Complete only this fence. The control-queue reply path also signals
++	 * every earlier fence on the context, which would retire virgl work
++	 * that is still running.
++	 */
++	spin_lock_irqsave(&fence->drv->lock, flags);
++	list_for_each_entry(curr, &fence->drv->fences, node) {
++		if (curr == fence) {
++			found = true;
++			break;
++		}
++	}
++	if (found) {
++		dma_fence_signal_locked(&fence->f);
++		list_del(&fence->node);
++		dma_fence_put(&fence->f);
++	}
++	spin_unlock_irqrestore(&fence->drv->lock, flags);
++}
++
+ static void virtio_gpu_resource_flush(struct drm_plane *plane,
+ 				      uint32_t x, uint32_t y,
+ 				      uint32_t width, uint32_t height)
+@@ -223,8 +251,14 @@
  					      width, height, objs,
  					      vgplane_st->fence);
  		virtio_gpu_notify(vgdev);
 -		dma_fence_wait_timeout(&vgplane_st->fence->f, true,
 -				       msecs_to_jiffies(50));
 +		/*
-+		 * The flush is already queued. Waiting out this fence blocks the
-+		 * guest's atomic commit for 50 ms when the host does not signal it.
-+		 * The commit's vblank wait is the refresh clock.
++		 * The next atomic commit waits on this fence. A missing host reply
++		 * left that wait at about 60 ms, and at 1-2 s when the reply never
++		 * arrived, so the compositor painted no animation frames. The flush
++		 * is already queued.
 +		 */
++		if (dma_fence_wait_timeout(&vgplane_st->fence->f, true, 0) <= 0)
++			virtio_gpu_retire_flush_fence(vgplane_st->fence);
  	} else {
  		virtio_gpu_cmd_resource_flush(vgdev, bo->hw_res_handle, x, y,
  					      width, height, NULL, NULL);
+@@ -472,7 +506,8 @@
+ 			 plane->state->crtc_h,
+ 			 0, 0, objs, vgplane_st->fence);
+ 		virtio_gpu_notify(vgdev);
+-		dma_fence_wait(&vgplane_st->fence->f, true);
++		if (dma_fence_wait_timeout(&vgplane_st->fence->f, true, 0) <= 0)
++			virtio_gpu_retire_flush_fence(vgplane_st->fence);
+ 	}
+ 
+ 	if (plane->state->fb != old_state->fb) {
