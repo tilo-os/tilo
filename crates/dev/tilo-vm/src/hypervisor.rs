@@ -436,7 +436,7 @@ pub fn domain_xml_with_uuid(
     Ok(format!(
         "<domain type='{domain_type}'>
   <name>{name}</name>{uuid}
-  <memory unit='MiB'>{memory}</memory>
+  <memory unit='MiB'>{memory}</memory>{memory_backing}
   <vcpu>{cpus}</vcpu>
   <os firmware='efi'>
     <type arch='{arch}' machine='{machine}'>hvm</type>
@@ -484,6 +484,11 @@ pub fn domain_xml_with_uuid(
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
         video = video_model(vm.entry),
+        memory_backing = if vm.entry.gl {
+            "\n  <memoryBacking>\n    <source type='memfd'/>\n    <access mode='shared'/>\n  </memoryBacking>"
+        } else {
+            ""
+        },
         gl = if vm.entry.gl {
             "\n    <graphics type='egl-headless'/>"
         } else {
@@ -2099,6 +2104,10 @@ mod tests {
             xml.contains(
                 "<video><model type='virtio' blob='on'><acceleration accel3d='yes'/><resolution x='5120' y='2880'/></model></video>"
             ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<memoryBacking>\n    <source type='memfd'/>\n    <access mode='shared'/>\n  </memoryBacking>"),
             "{xml}"
         );
     }
