@@ -279,8 +279,6 @@ fn body(app: &HostedApp) -> String {
         .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-
 /// Open a sealed live frame with `peer`'s channel keys.
 async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -295,6 +293,7 @@ async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
     LiveFrame::decode(&rx.await.ok()??).ok()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
