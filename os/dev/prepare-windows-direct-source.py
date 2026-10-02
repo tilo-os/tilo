@@ -11,6 +11,7 @@ extents. The guest proof is produced by a separate VM install procedure.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import importlib.util
@@ -294,6 +295,66 @@ def finalize_source(args):
     print(f"VM source final GPT identities match Windows plan: {raw}")
 
 
+@contextmanager
+def exclusive_source(path):
+    """Windows sharing rules refuse any open QEMU or other file handle."""
+    require(platform.system() == 'Windows', 'reusing an allocated source requires native Windows')
+    import msvcrt
+    create = ctypes.windll.kernel32.CreateFileW
+    create.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                       ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    create.restype = ctypes.c_void_p
+    handle = create(str(path), 0xC0000000, 0, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise OSError('VM source cannot be locked exclusively; stop its VM before resetting')
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY)
+    except Exception:
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise
+    with os.fdopen(fd, 'r+b', buffering=0) as stream:
+        yield stream
+
+
+def reset_template(args):
+    """Reuse an owned VM disk's allocation while discarding its installed GPT entries."""
+    plan = direct.load_plan(args.plan)
+    manifest = direct.load_json(args.manifest)
+    require(args.confirm_source_disk_guid == manifest.get('source_disk_guid'),
+            'reset confirmation differs from the owned VM disk GUID')
+    require(args.source_raw.is_file() and not args.source_raw.is_symlink()
+            and args.source_raw.stat().st_size == plan['windows_disk']['size_bytes'],
+            'reset target must be the regular VM raw file matching the reviewed plan')
+    preserved = direct.normalized(manifest.get('preserved_partitions'))
+    wanted = direct.normalized(plan['preserve_partitions'])
+    require({row['partuuid']: {k: v for k, v in row.items() if k != 'number'} for row in preserved}
+            == {row['partuuid']: {k: v for k, v in row.items() if k != 'number'} for row in wanted},
+            'reset manifest differs from the reviewed preserved Windows identities')
+    require(manifest.get('target_partitions') == [
+        {k: row[k] for k in ('offset_bytes', 'role', 'size_bytes', 'type_guid')}
+        for row in plan['target_partitions']], 'reset target geometry differs from the reviewed plan')
+    # Verify before acquiring an exclusive writable handle. A second check on
+    # that handle binds the exact GPT that is about to be changed.
+    verify_template(args)
+    with exclusive_source(args.source_raw) as stream:
+        disk_guid, current = direct.read_gpt(stream, args.source_raw.stat().st_size)
+        require(disk_guid == manifest['source_disk_guid'], 'source GUID changed before reset')
+        require(all(row in current for row in preserved), 'preserved GPT changed before reset')
+        final = [row for row in current if row not in preserved]
+        require(not final or sorted(
+            (row['offset_bytes'], row['size_bytes'], row['type_guid']) for row in final)
+            == sorted((row['offset_bytes'], row['size_bytes'], row['type_guid'])
+                      for row in plan['target_partitions']),
+            'installed GPT geometry changed before reset')
+        require([preserved_sample(stream, row) for row in preserved] == manifest['preserved_samples'],
+                'preserved source content changed before reset')
+        write_template(stream, plan, rows=preserved, disk_guid=uuid.UUID(disk_guid))
+        _, after = direct.read_gpt(stream, args.source_raw.stat().st_size)
+        require(direct.same_gpt_content(after, preserved), 'reset GPT readback differs')
+    verify_template(args)
+    print('Owned VM source reset; allocation reused, previous installed target is obsolete')
+
+
 def verified_ci_image(image, key, children, kind, command_json=None, key_arg=None):
     return provenance.verify_ci_image(image, key, children, kind, command_json, key_arg)
 
@@ -373,6 +434,13 @@ def main(argv=None):
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--source-raw", type=Path, required=True)
     verify.set_defaults(handler=verify_template)
+    reset = commands.add_parser('reset-template',
+        help='discard an owned VM install and reuse its existing allocated blocks; never a physical drive')
+    reset.add_argument('--plan', type=Path, required=True)
+    reset.add_argument('--manifest', type=Path, required=True)
+    reset.add_argument('--source-raw', type=Path, required=True)
+    reset.add_argument('--confirm-source-disk-guid', required=True)
+    reset.set_defaults(handler=reset_template)
     finalize = commands.add_parser("finalize", help="bind VM-installed GPT identities to Windows' reviewed final entries")
     finalize.add_argument("--plan", type=Path, required=True)
     finalize.add_argument("--source-raw", type=Path, required=True)
