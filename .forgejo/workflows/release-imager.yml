@@ -450,18 +450,20 @@ jobs:
             > "dist/tilo-installer/$stem.qcow2.sha256"
           test "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" = \
             "$(sha256sum os/output/installer/qcow2/disk.qcow2 | awk '{print $1}')"
-          jq -n --arg schema tilo.whpx-ci-installer-medium.v1 \
+          jq -n --arg schema tilo.whpx-ci-installer-medium.v2 \
             --arg profile "$TILO_OFFLINE_TARGET_PROFILE" \
             --arg target "$TILO_OFFLINE_TARGET_IMAGE" \
             --arg live_base "$TILO_PUBLISHED_OS_IMAGE" \
             --arg build_revision "$(git rev-parse HEAD)" \
+            --arg os_source_revision "${TILO_EXPECTED_OS_SOURCE_REVISION:-$(git rev-parse HEAD)}" \
             --arg run_id "$GITHUB_RUN_ID" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
             --arg qcow2_sha256 "$(cat "dist/tilo-installer/$stem.qcow2.sha256")" \
             --arg archive_sha256 "$(awk '{print $1}' "$output.sha256")" \
             --arg guest_proof_sha256 "$(sha256sum dist/installer-guided-alongside-cycle/guest-install-proof.json | awk '{print $1}')" \
             '{schema:$schema,target_profile:$profile,target_image:$target,live_base_image:$live_base,
-              build_revision:$build_revision,run_id:$run_id,run_attempt:$run_attempt,
+              build_revision:$build_revision,os_source_revision:$os_source_revision,
+              run_id:$run_id,run_attempt:$run_attempt,
               qcow2_sha256:$qcow2_sha256,archive_sha256:$archive_sha256,
               guest_proof_sha256:$guest_proof_sha256}' \
             > "dist/tilo-installer/$stem.whpx-source.json"
