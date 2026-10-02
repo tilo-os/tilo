@@ -94,12 +94,13 @@ fi
 
 if grep -Fq 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0' "$common" \
   && [ "$(grep -Fc '$(console_qemu_args)' "$vm")" -eq 3 ] \
+  && grep -Fq 'check greeter /accepts_input' "$vm" \
   && grep -Fq 'rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"' "$vm" \
   && grep -Fq 'if [ "$s" = "-" ]; then IFS= read -r s || true; fi' "$vm" \
   && ! grep -Fq 'org.tilo.console.0' "$repo/os/Containerfile.installer"; then
-  ok 'every VM boot attaches the host-only console port, and secrets can be typed from stdin'
+  ok 'the installer, target and disk boots attach the console port, login waits for the greeter to accept input, and secrets can be typed from stdin'
 else
-  bad 'a VM boot lacks the console channel, or unlock secrets must travel on argv'
+  bad 'a boot lacks the console channel, login can type before the greeter accepts input, or unlock secrets must travel on argv'
 fi
 
 [ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \

@@ -5,8 +5,11 @@
 //!
 //! The greeter publishes no actions of its own yet; `actions list` answers
 //! with its (empty) tree rather than pretending, and signing in stays on the
-//! keyboard. `state_dump` never includes the passcode or any PAM prompt
-//! text beyond what the screen already shows.
+//! keyboard. `accepts_input` says when that keyboard reaches the form: the
+//! process and its console come up before the compositor maps the window and
+//! focuses it, and keys typed before then are lost. `state_dump` never
+//! includes the passcode or any PAM prompt text beyond what the screen
+//! already shows.
 
 use automerge::AutoCommit;
 use console_control::{Request, catalog, wire};
@@ -83,6 +86,7 @@ impl GreeterApp {
             })),
             "session": self.sessions.get(self.selected_session).map(|session| session.name.clone()),
             "status": self.status,
+            "accepts_input": self.phase == AuthPhase::Idle && self.keyboard_focus,
             "image": { "composefs": console_control::booted_composefs() },
         })
     }
@@ -103,6 +107,7 @@ mod tests {
         let state = ask(&mut app, r#"{"op":"state_dump"}"#);
         assert_eq!(state["state"]["app"], "greeter");
         assert_eq!(state["state"]["phase"], "sign-in");
+        assert_eq!(state["state"]["accepts_input"], false);
         assert_eq!(
             ask(&mut app, r#"{"op":"actions_enumerate"}"#)["answer"]["count"],
             0
@@ -114,5 +119,26 @@ mod tests {
         assert_eq!(invoked["err"]["code"], "unknown_action");
         let typed = ask(&mut app, r#"{"op":"type","text":"hunter2"}"#);
         assert_eq!(typed["err"]["code"], "not_implemented");
+    }
+
+    #[test]
+    fn sign_in_accepts_input_only_while_the_window_has_the_keyboard() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Personal);
+        app.keyboard_focus = true;
+        assert_eq!(
+            ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+            true
+        );
+        app.phase = AuthPhase::Authenticating;
+        assert_eq!(
+            ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+            false
+        );
+        app.phase = AuthPhase::Idle;
+        app.keyboard_focus = false;
+        assert_eq!(
+            ask(&mut app, r#"{"op":"state_dump"}"#)["state"]["accepts_input"],
+            false
+        );
     }
 }
