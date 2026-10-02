@@ -13,13 +13,13 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ChangeHash};
 use vello::kurbo::{Point, Rect};
 
-use ui::icons::Icon;
 use ui::ImageStore;
+use ui::icons::Icon;
 
 use crate::account::AccountStore;
 use crate::actions::{
-    move_action, purge_action, save_draft_action, set_read_action, set_starred_action, MailAction,
-    MAIL_ACTION_TYPE,
+    MAIL_ACTION_TYPE, MailAction, move_action, purge_action, save_draft_action, set_read_action,
+    set_starred_action,
 };
 use crate::engine::EngineRequest;
 use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
@@ -1167,9 +1167,10 @@ mod tests {
                 st.toggle_bulk_selection(*id);
             }
             assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::MarkRead), 2);
-            assert!(ids
-                .iter()
-                .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read)));
+            assert!(
+                ids.iter()
+                    .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
+            );
             assert_eq!(st.selected_bulk_ids(), ids);
         }
 
