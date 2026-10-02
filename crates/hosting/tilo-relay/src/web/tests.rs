@@ -195,22 +195,25 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let (owner_key, owner) = device(&signer, 64, DeviceCapabilities::member());
     let (guest_key, guest) = device(&other_root, 65, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    let rooms = relay.rooms().unwrap();
+    let (relay, rooms) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host.clone(),
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        let rooms = relay.rooms().unwrap().clone();
+        (relay, rooms)
+    };
     let room = rooms.create("Legacy window test").await.unwrap();
     rooms.enter(&room.room, &owner).await.unwrap();
     let invitation = rooms
@@ -432,6 +435,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         )
         .await
         .unwrap();
+    drop(rooms);
     assert_eq!(
         post(addr, wire::INPUT_ROUTE, Some(guest_token), input(vec![]))
             .await
