@@ -122,8 +122,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Pinning the unpacked base's directory times to the epoch adds one RUN.
 # The single virtio Cage wrapper COPY brings the reviewed rootfs to 151.
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
-[ "$instructions" -le 152 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 152)" >&2
+# Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
+# kernel image identity into that layer's cache key adds one ARG (153).
+[ "$instructions" -le 153 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
   exit 1
 }
 
