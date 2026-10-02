@@ -1517,7 +1517,7 @@ pub(crate) fn publish_document_children(state: &crate::resource::ChatState) -> V
                 .channel_messages
                 .iter()
                 .find(|(id, _)| id == &ch.id)
-                .map_or(&[], |(_, messages)| messages.as_slice());
+                .map_or(&[][..], |(_, messages)| messages.as_slice());
             workspace = workspace.with_child(publish_channel_document(
                 &state.me,
                 &state.participants,

@@ -71,7 +71,7 @@ impl Resource for Settings {
                     ScalarValue::F64(n) => SettingValue::Float(*n),
                     _ => continue,
                 },
-                _ => continue,
+                Value::Object(_) => continue,
             };
             values.push((key, typed));
         }

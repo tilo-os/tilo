@@ -866,25 +866,26 @@ impl ui::resources::PublishesResources for SpeedTestApp {
         if self.hosted && id == "speed-test:root" {
             return None;
         }
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
             "speed-test:root",
             "Internet speed test",
             &crate::resource::SpeedTestState,
         );
         root.children.extend(self.live_run_extra());
-        find(&[root], id)
+        find_resource(&[root], id)
     }
+}
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl SpeedTestApp {

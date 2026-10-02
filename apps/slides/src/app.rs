@@ -1674,7 +1674,7 @@ impl SlidesApp {
         if self.deck.title == state.deck_title && self.deck.slides == slides {
             return;
         }
-        self.deck.title = state.deck_title.clone();
+        self.deck.title.clone_from(&state.deck_title);
         self.deck.slides = slides;
         self.search_provider.refresh(&self.deck);
         self.bump_deck_revision();

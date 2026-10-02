@@ -419,6 +419,10 @@ impl DraftBodySeed {
 }
 
 impl Action for MailAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mail CRDT mutations stay in one Action::apply match"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MailAction::SetRead { ids, read } => {

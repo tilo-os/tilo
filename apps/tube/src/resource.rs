@@ -32,12 +32,13 @@ impl TubeShared {
                 .map(|(id, _)| id.clone())
                 .collect()
         };
-        let mut model = TubeModel::default();
-        model.liked = on(&self.likes);
-        model.queue = on(&self.queue);
-        model.subscriptions = on(&self.subscriptions);
-        model.settings = self.settings.clone();
-        model
+        TubeModel {
+            liked: on(&self.likes),
+            queue: on(&self.queue),
+            subscriptions: on(&self.subscriptions),
+            settings: self.settings.clone(),
+            ..Default::default()
+        }
     }
 
     /// The collaborative slice of a live model, without the fetched catalogue.
@@ -152,7 +153,7 @@ fn read_shared(doc: &Doc) -> TubeShared {
     if let Ok(Some((value, _))) = doc.get(&settings, "preferred_quality")
         && let Some(quality) = value.as_str()
     {
-        shared.settings.preferred_quality = quality.to_owned();
+        quality.clone_into(&mut shared.settings.preferred_quality);
     }
     if let Ok(Some((Value::Object(ObjType::Map), categories))) =
         doc.get(&settings, "sponsor_categories")

@@ -1385,7 +1385,7 @@ pub(crate) fn is_document_door_category(category: Category) -> bool {
     )
 }
 
-/// Section children for [`tilo_resource::publish`]: SettingsAction preference
+/// Section children for [`tilo_resource::publish`]: `SettingsAction` preference
 /// panes plus open-only navigation. Per-app notification rows, default-app
 /// handlers, accounts, and hardware sections are not shared document state.
 pub(crate) fn document_children(state: &crate::resource::SettingsState) -> Vec<Resource> {
@@ -1401,6 +1401,10 @@ pub(crate) fn document_children(state: &crate::resource::SettingsState) -> Vec<R
         .collect()
 }
 
+#[allow(
+    clippy::unreachable,
+    reason = "caller filters to document-door categories only"
+)]
 fn document_section_resource(
     category: Category,
     doc: &AutoCommit,
@@ -1418,7 +1422,9 @@ fn document_section_resource(
             category.label(),
         ),
         other => {
-            panic!("document_section_resource only builds document-door categories, got {other:?}")
+            unreachable!(
+                "document_section_resource only builds document-door categories, got {other:?}"
+            )
         }
     };
     if let Some(open) = pane_navigation_resource(category)
@@ -1456,7 +1462,7 @@ pub(crate) fn live_device_resources(
 /// yet), so a bool's flip target and an enum's fallback reflect what is set.
 ///
 /// Standalone / `--shots` / unit tests: [`tilo_resource::publish`] owns the
-/// SettingsAction door; device-local sections and live inventories are merged
+/// `SettingsAction` door; device-local sections and live inventories are merged
 /// into the same root so the palette shape stays one tree.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     provide_resources_with_accounts(doc, &[])
