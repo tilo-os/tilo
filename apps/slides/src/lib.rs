@@ -90,9 +90,10 @@ pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(SlidesApp::demo(scenario))
 }
 
+pub use actions::SlidesDeck;
+pub use resource::SlidesShell;
+
 #[cfg(test)]
 mod deck_operations_tests;
 #[cfg(test)]
 mod framework_history_tests;
-pub use actions::SlidesDeck;
-pub use resource::SlidesShell;

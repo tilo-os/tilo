@@ -68,9 +68,6 @@ pub mod search_type;
 pub mod seed;
 pub mod storage;
 pub mod stream;
-#[cfg(test)]
-mod sync;
-
 pub use app::{MusicApp, View};
 pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
 
@@ -219,3 +216,6 @@ pub fn live_shot_app() -> MusicApp {
     MusicApp::new()
 }
 pub use resource::{Music, MusicShell, launch_spec, standalone_launch};
+
+#[cfg(test)]
+mod sync;

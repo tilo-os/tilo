@@ -82,8 +82,9 @@ pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};
 
 pub mod framework_history;
-pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};
+
+#[cfg(test)]
+mod framework_history_tests;

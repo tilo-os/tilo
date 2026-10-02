@@ -82,8 +82,9 @@ pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Themes, ThemesShell};
 
 pub mod framework_history;
-pub use resource::{Themes, ThemesShell};
+
+#[cfg(test)]
+mod framework_history_tests;

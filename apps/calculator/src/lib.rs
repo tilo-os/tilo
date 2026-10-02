@@ -69,11 +69,12 @@ pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(CalculatorApp::seeded())
 }
 
+pub use resource::{Calculator, CalculatorShell};
+
+pub mod framework_history;
+
 #[cfg(test)]
 mod component_tests;
 
 #[cfg(test)]
 mod framework_history_tests;
-
-pub mod framework_history;
-pub use resource::{Calculator, CalculatorShell};

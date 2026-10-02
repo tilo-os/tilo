@@ -60,8 +60,9 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Contacts")
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Contacts, ContactsShell};
 
 pub mod framework_history;
-pub use resource::{Contacts, ContactsShell};
+
+#[cfg(test)]
+mod framework_history_tests;
