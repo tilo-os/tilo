@@ -484,23 +484,45 @@ trap cleanup EXIT
 # over HTTP installs. So a local registry is started and the image published to
 # it; this is a new requirement of dropping bib.
 REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=(); SOURCE_POLICY=""
+# Ready only when this answers. A container named tilo-disk-registry can be
+# exited while its port mapping still exists, and that name used to count as
+# success even though 127.0.0.1:5000 was refusing connections.
+registry_v2_up() {
+  curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$1/v2/" >/dev/null 2>&1
+}
 start_registry() {
-  local want="${TILO_DISK_REG_PORT:-5000}" port
-  # An already-present registry container of ours is authoritative: reuse it on
-  # whatever port it was published on.
+  local want="${TILO_DISK_REG_PORT:-5000}" port running started=false
   if podman container exists tilo-disk-registry 2>/dev/null; then
-    [ "$(podman inspect -f '{{.State.Running}}' tilo-disk-registry)" = true ] \
-      || podman start tilo-disk-registry >/dev/null
-    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)"
+    running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
+    if [ "$running" != true ]; then
+      podman start tilo-disk-registry >/dev/null 2>&1 || true
+      running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
+      started=true
+    fi
+    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)" || true
     port="${port##*:}"
     [ -n "$port" ] || port="$want"
-    echo "localhost:$port"; return
+    # Only a container we just started needs a moment to accept connections.
+    # One that was already up, or that stayed exited, is checked once.
+    if [ "$started" = true ] && [ "$running" = true ]; then
+      for _ in $(seq 1 30); do
+        registry_v2_up "$port" && break
+        sleep 1
+      done
+    fi
+    if registry_v2_up "$port"; then
+      echo "localhost:$port"
+      return
+    fi
+    msg "replacing tilo-disk-registry; http://127.0.0.1:$port/v2/ is not answering" >&2
+    podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
   fi
   # Someone else's registry already listening (the composefs spike leaves one on
   # :5000) is fine to push to — one local registry is as good as another.
-  if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
+  if registry_v2_up "$want"; then
     msg "reusing the registry already listening on :$want" >&2
-    echo "localhost:$want"; return
+    echo "localhost:$want"
+    return
   fi
   for port in $(seq "$want" $(( want + 9 ))); do
     podman run -d --name tilo-disk-registry -p "$port:5000" \
@@ -509,12 +531,13 @@ start_registry() {
         continue
       }
     for _ in $(seq 1 30); do
-      curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
+      registry_v2_up "$port" && break
       sleep 1
     done
-    if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
+    if registry_v2_up "$port"; then
       msg "started a registry on :$port for the install source" >&2
-      echo "localhost:$port"; return
+      echo "localhost:$port"
+      return
     fi
     podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
   done
