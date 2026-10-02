@@ -414,6 +414,13 @@ arch)
     fi
     stage=install-dependencies
     dist/ci/install-build-deps.sh arch
+    # Arch's rustup keeps toolchains per user, and the compiler cache turns
+    # auto-install off and probes rustc outside this checkout: install the
+    # pinned toolchain as the default for root and for the package builder.
+    useradd --create-home builder
+    toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+    rustup default "$toolchain"
+    su builder -c "cd /workspace && rustup toolchain install && rustup default '$toolchain'"
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
@@ -424,7 +431,6 @@ arch)
     # in this userspace while retaining its portable Rust implementation.
     export TILO_BLAKE3_PURE=1
     stage=prepare-arch-builder
-    useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'
