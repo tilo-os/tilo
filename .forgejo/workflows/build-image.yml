@@ -2535,7 +2535,13 @@ jobs:
             ./os/tests/validation_drive_qemu.sh
           fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
-          trap './os/dev/vm.sh stop || true' EXIT
+          # Any failing check leaves the guest's own account of it in the log:
+          # failed units and this boot's warnings (the gate user reads the
+          # system journal through wheel), before the VM goes away.
+          dump_guest() {
+            ./os/dev/vm.sh ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
+          }
+          trap 'rc=$?; [ "$rc" -eq 0 ] || dump_guest; ./os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
           # The display was selected for this host above; every gate below is
           # mandatory in both modes.
