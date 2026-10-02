@@ -24,7 +24,7 @@ use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, HttpClient, HttpFuture, PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{admitted, enrol, ready, route, start_host, start_peer, wait_for, workspace};
 
 /// Holds `/events` polls while paused and counts sessions.
 struct Gated {
@@ -116,6 +116,12 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     author.join(workspace()).unwrap();
     observer.join(workspace()).unwrap();
     ready(&[&author, &observer]).await;
+    // Both hold the channel's keys before the flood: what follows measures
+    // the host's queue, not admission.
+    author.open_route(route()).unwrap();
+    observer.open_route(route()).unwrap();
+    admitted(&author).await;
+    admitted(&observer).await;
 
     paused.store(true, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_millis(100)).await;
