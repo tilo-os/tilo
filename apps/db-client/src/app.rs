@@ -1276,23 +1276,19 @@ impl DbClientApp {
         self.dirty = true;
     }
 
-    /// Replace the shared SQL buffer. Hosted sessions submit
-    /// [`DbAction::ReplaceEditorSql`](crate::actions::DbAction::ReplaceEditorSql);
-    /// standalone tests keep the direct splice.
+    /// Replace the shared SQL buffer through
+    /// [`DbAction::ReplaceEditorSql`](crate::actions::DbAction::ReplaceEditorSql).
+    /// Hosted sessions use the framework dispatcher; standalone uses the local host.
     fn replace_editor_sql(&mut self, doc: &mut AutoCommit, sql: &str) {
-        if self.actions.is_hosted() {
-            let action = crate::actions::DbAction::ReplaceEditorSql {
-                sql: sql.to_string(),
-            };
-            self.actions.dispatch_with_context(
-                doc,
-                crate::actions::DB_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
-            );
-        } else {
-            EditorDoc::set_sql(doc, sql);
-        }
+        let action = crate::actions::DbAction::ReplaceEditorSql {
+            sql: sql.to_string(),
+        };
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::DB_ACTION_TYPE,
+            &action,
+            tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
+        );
     }
 
     /// Show the saved connections the framework resource holds.
@@ -4228,6 +4224,26 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
         Engine::Sqlite => sem.info,
         Engine::Postgres => theme.accent_primary,
         Engine::MySql => sem.warning,
+    }
+}
+
+#[cfg(test)]
+mod editor_sql_tests {
+    use super::*;
+
+    #[test]
+    fn a_standalone_sql_edit_is_submitted_through_the_action() {
+        let mut app = DbClientApp::new();
+        assert!(!app.actions.is_hosted());
+        let mut doc = automerge::AutoCommit::new();
+        app.replace_editor_sql(&mut doc, "select 1");
+        assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "select 1");
+        let recorded = app
+            .actions
+            .local
+            .last_dispatched()
+            .expect("the SQL edit is submitted through the action sink");
+        assert_eq!(recorded.type_id.as_str(), crate::actions::DB_ACTION_TYPE);
     }
 }
 
