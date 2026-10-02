@@ -364,7 +364,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Text.GetText -- 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
   && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \
