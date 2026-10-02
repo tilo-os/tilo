@@ -918,10 +918,12 @@ jobs:
       # pulls, layer extraction and small stages queued behind each other on
       # the critical path, so it lets four operations run at once.
       #
-      # No garbage collection: the builder lives for this job only, and its
-      # default policy (keep 40% of the disk free) pruned the compile step's
-      # results between steps, so the rootfs step compiled the workspace
-      # again (runs 48581, 49019, 49047).
+      # Publications use fresh state and keep their compile results between
+      # steps (the default collector previously caused duplicate compiles).
+      # Dev builds start with seeded state and retain Cargo target trees.
+      # Disabling collection there exhausted the store while packaging the
+      # runtime bundle (runs 56917, 56944). Keep most of the store available
+      # for caches, with room for the next stage's output and layer snapshots.
       - name: Set up buildx (docker-container driver for cache export)
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
@@ -933,7 +935,18 @@ jobs:
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
-              gc = false
+              gc = ${{ github.event_name == 'workflow_call' && 'true' || 'false' }}
+              reservedSpace = "40%"
+              maxUsedSpace = "75%"
+              minFreeSpace = "20%"
+
+      - name: Record builder storage before image stages
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
+          docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
 
       # A board build's layers include its private firmware, so its layer
       # cache must never reach the public registry.
