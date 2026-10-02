@@ -231,8 +231,8 @@ jobs:
               sleep 1
             done
             [[ $ready == true ]] || { echo '::error::generated dev UKI did not reboot'; exit 1; }
-            ./os/dev/vm.sh ssh 'bootctl status --no-pager' > "$TILO_RUN/dev-uki-boot.log"
-            grep -q 'tilo-dev-diagnostic.efi' "$TILO_RUN/dev-uki-boot.log"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootctl status --no-pager" > "$TILO_RUN/dev-uki-boot.log"
+            grep -Eq '^[[:space:]]*Current Entry: tilo-dev-diagnostic[.]efi$' "$TILO_RUN/dev-uki-boot.log"
           fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
