@@ -1272,12 +1272,78 @@ impl MapsApp {
             || self.model.route.is_some()
     }
 
+    /// Publish a sample or offline map through the existing map actions.
+    /// Live empty maps stay unpublished until a later action.
+    fn publish_durable(&mut self, doc: &mut AutoCommit) {
+        let places = self.model.places.clone();
+        let recents = self.model.recents.clone();
+        let regions = self.model.regions.clone();
+        let route = self.model.route.clone();
+        let transit = self.model.transit.clone();
+        let mode = self.model.mode;
+        let transit_time = self.model.transit_time;
+        let origin = self.model.origin;
+        let origin_name = self.model.origin_name.clone();
+        let dest = self.model.dest;
+        let dest_name = self.model.dest_name.clone();
+        if !places.is_empty() {
+            self.dispatch_map(doc, &MapsAction::UpsertPlaces { places });
+        }
+        for query in recents.into_iter().rev() {
+            self.dispatch_map(doc, &MapsAction::CommitSearch { query });
+        }
+        self.dispatch_map(doc, &MapsAction::SetTravelMode { mode });
+        self.dispatch_map(
+            doc,
+            &MapsAction::SetTransitTime {
+                value: transit_time,
+            },
+        );
+        for region in regions {
+            self.dispatch_map(doc, &MapsAction::AddRegion(region));
+        }
+        if let Some(route) = route {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetRoute {
+                    route,
+                    origin,
+                    origin_name: origin_name.clone(),
+                    dest,
+                    dest_name: dest_name.clone(),
+                    mode,
+                },
+            );
+        }
+        if !transit.is_empty() {
+            self.dispatch_map(
+                doc,
+                &MapsAction::SetTransit {
+                    transit,
+                    origin,
+                    origin_name,
+                    dest,
+                    dest_name,
+                },
+            );
+        }
+    }
+
+    fn dispatch_map(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
+        self.actions.dispatch_with_context(
+            doc,
+            MAPS_ACTION_TYPE,
+            action,
+            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
+        );
+    }
+
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
         // Test/standalone callers may invoke an action before the widget's
         // first sync. Seed once only; ordinary interactions never mirror local
         // presentation back into an existing document.
         if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() && self.has_durable_map() {
-            MapsDoc::save(doc, &self.model);
+            self.publish_durable(doc);
         }
         self.actions.dispatch_with_context(
             doc,
@@ -5216,7 +5282,7 @@ impl Widget for MapsApp {
                 // publish on the offline path.
                 MapsDoc::apply_durable(state, &mut self.model);
             } else {
-                MapsDoc::save(state, &self.model);
+                self.publish_durable(state);
             }
             self.loaded = true;
         }
