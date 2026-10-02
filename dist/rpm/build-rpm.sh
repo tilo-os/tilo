@@ -111,7 +111,7 @@ for socket in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
         "$app_stage/systemd-user/$socket.socket"
 done
-install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
+install -pm 0644 "$repo_root/os/usr/share/user-tmpfiles.d/tilo-model-manager.conf" \
     "$app_stage/user-tmpfiles/tilo-model-manager.conf"
 mkdir -p "$app_stage/profile.d"
 install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
