@@ -115,6 +115,8 @@ pub struct Endpoint<H> {
     watch: Option<Arc<WatchLease>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
     open_files: Arc<crate::mcp::OpenFiles>,
+    /// Where sessions read the content actions produced.
+    media: std::sync::OnceLock<Arc<dyn crate::MediaReader>>,
 }
 
 /// The only body `POST /watch` accepts.
@@ -174,7 +176,16 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             watch,
             sessions: Mutex::new(HashMap::new()),
             open_files: Arc::default(),
+            media: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Let sessions answer with the content actions produced, read from
+    /// `media`. Set once, before the endpoint serves.
+    pub fn serve_media(&self, media: Option<Arc<dyn crate::MediaReader>>) {
+        if let Some(media) = media {
+            let _ = self.media.set(media);
+        }
     }
 
     /// Number of live sessions.
@@ -331,7 +342,8 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
                 .with_agent_run(agent_run_id(&id), client_label(initialize))
                 .with_computer(self.computer.clone())
-                .with_open_files(Arc::clone(&self.open_files)),
+                .with_open_files(Arc::clone(&self.open_files))
+                .with_media(self.media.get().cloned()),
         ));
         let now = Instant::now();
         let session = Session {

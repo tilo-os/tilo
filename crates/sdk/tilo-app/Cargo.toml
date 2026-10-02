@@ -72,6 +72,8 @@ name = "it"
 path = "tests/it.rs"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# `render` stores the picture it answers with.
+tilo-content = { version = "0.1.0", path = "../../system/content" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

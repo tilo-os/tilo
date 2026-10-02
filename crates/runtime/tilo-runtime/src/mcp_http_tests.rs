@@ -32,6 +32,8 @@ struct StubHost {
     /// Observations a started invocation stays accepted for before it
     /// succeeds.
     running_for: Arc<std::sync::atomic::AtomicUsize>,
+    /// What a finished invocation produced.
+    output: Arc<StdMutex<tilo_actions::ActionOutput>>,
 }
 
 impl StubHost {
@@ -127,7 +129,7 @@ impl ActionHost for StubHost {
             if started && !running {
                 InvocationUpdate::Succeeded {
                     invocation: *id,
-                    output: tilo_actions::ActionOutput::default(),
+                    output: self.output.lock().unwrap().clone(),
                 }
             } else {
                 InvocationUpdate::Accepted { invocation: *id }
@@ -344,6 +346,44 @@ fn each_session_is_its_own_attributed_agent_run() {
     assert!(groups.iter().all(|group| group.kind == "agent-run"));
     assert_eq!(groups[0].label, "Researcher");
     assert_eq!(groups[1].label, "Writer");
+}
+
+/// A stdio connection (one `--connect` client, as `.cursor/mcp.json` runs)
+/// is also its own agent run, named by the client at `initialize`, so its
+/// edits are attributed in history like an HTTP session's.
+#[test]
+fn each_stdio_connection_is_its_own_attributed_agent_run() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    run(async {
+        for name in ["Painter", "Critic"] {
+            let mut server =
+                crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+            server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}))
+                .await
+                .unwrap();
+            tool(
+                &mut server,
+                "tilo_invoke",
+                json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+            )
+            .await;
+        }
+    });
+    let groups: Vec<_> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.clone().unwrap().group.unwrap())
+        .collect();
+    assert_eq!(groups.len(), 2);
+    assert_ne!(groups[0].id, groups[1].id);
+    assert_eq!(
+        (groups[0].label.as_str(), groups[1].label.as_str()),
+        ("Painter", "Critic")
+    );
+    assert!(groups.iter().all(|group| group.kind == "agent-run"));
 }
 
 #[test]
@@ -720,6 +760,117 @@ fn an_invocation_answers_with_its_result_once_it_finishes() {
         );
     });
     assert_eq!(invoked.lock().unwrap().len(), 3);
+}
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nthe-look";
+
+/// The content service as the stub app `so.tilo.test` reads it: a picture
+/// it stored and something that is not an image.
+struct StoredByTestApp;
+
+impl crate::MediaReader for StoredByTestApp {
+    fn read(&self, app_id: &str, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(match (app_id, hash) {
+            ("so.tilo.test", "look") => Some(PNG.to_vec()),
+            ("so.tilo.test", "notes") => Some(b"plain text".to_vec()),
+            _ => None,
+        })
+    }
+}
+
+/// An action that produced a picture is answered with the picture, as an
+/// MCP image block beside the JSON, both when it finishes within the call
+/// and when `tilo_status` reports it later; what is not an image, or not
+/// readable with the producing app's own scope, is only named.
+#[test]
+fn an_action_that_produced_an_image_answers_with_it() {
+    use base64::Engine as _;
+    let host = StubHost::default();
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"revision":"r1","width":4,"height":3})),
+        resources: vec![
+            "tilo.content:look".into(),
+            "tilo.content:notes".into(),
+            "tilo.content:elsewhere".into(),
+        ],
+    };
+    let running_for = Arc::clone(&host.running_for);
+    let mut server = crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let target = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
+    let images = |reply: &Value| -> Vec<Value> {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .cloned()
+            .collect()
+    };
+    run(async {
+        let reply = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        let shown = images(&reply);
+        assert_eq!(shown.len(), 1, "{reply}");
+        assert_eq!(shown[0]["mimeType"], "image/png");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(shown[0]["data"].as_str().unwrap())
+                .unwrap(),
+            PNG
+        );
+        let text = reply["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("tilo.content:look")
+                && !text.contains(shown[0]["data"].as_str().unwrap())
+        );
+        assert_eq!(
+            reply["structuredContent"]["update"]["output"]["value"]["revision"],
+            "r1"
+        );
+
+        running_for.store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        let mut later = target.clone();
+        later["wait_ms"] = json!(0);
+        let accepted = tool(&mut server, "tilo_invoke", later).await;
+        assert!(
+            images(&accepted).is_empty(),
+            "nothing is shown before it finishes"
+        );
+        running_for.store(0, std::sync::atomic::Ordering::SeqCst);
+        let id = accepted["structuredContent"]["invocation_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let status = tool(&mut server, "tilo_status", json!({"invocation_id": id})).await;
+        assert_eq!(images(&status).len(), 1, "{status}");
+
+        let batch = tool(
+            &mut server,
+            "tilo_invoke",
+            json!({"peer_id":71,"calls":[
+                {"resource":"test.note:1","action":tilo_resource::APPLY},
+                {"resource":"test.note:1","action":tilo_resource::APPLY}
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            images(&batch).len(),
+            2,
+            "each call of a batch shows its own: {batch}"
+        );
+    });
+    let mut blind = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        let reply = tool(&mut blind, "tilo_invoke", target).await;
+        assert!(
+            images(&reply).is_empty(),
+            "without a content service nothing is read"
+        );
+    });
 }
 
 #[test]

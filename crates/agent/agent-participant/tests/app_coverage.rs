@@ -153,7 +153,7 @@ fn projected_controls_are_invocable_headless() {
 /// Custom-drawn nodes an app describes without a position. Their verbs
 /// still work (a projected control carries the position); pointing at them
 /// does not. May only fall: give the node `with_bounds` and lower this.
-const MAX_UNPLACED_CONTROLS: usize = 96;
+const MAX_UNPLACED_CONTROLS: usize = 88;
 
 /// Adapted apps (a legacy root mounted through `AdaptedRoot`) export their
 /// controls, and every projected control resolves to a point a person could

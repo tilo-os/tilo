@@ -5754,7 +5754,8 @@ fn rebuild_running_dev_app(
         }
         match candidate {
             Ok(DevCandidate::Built(executable)) => {
-                if let Some(running) = child.as_ref()
+                if in_place
+                    && let Some(running) = child.as_ref()
                     && reload_running_dev_app(running)
                 {
                     eprintln!("[tilo-app] build succeeded; reloading the open windows");
@@ -5769,9 +5770,7 @@ fn rebuild_running_dev_app(
                         &request.forwarded,
                     );
                 } else {
-                    eprintln!("[tilo-app] build succeeded; opening the app");
-                    *child =
-                        spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+                    restart_dev_app(child, &plan.app_dir, &executable, &request.forwarded);
                 }
             }
             Ok(DevCandidate::Superseded) => {
@@ -7284,6 +7283,26 @@ fn rustc_target_libdir(app_dir: &Path) -> Option<PathBuf> {
 /// Ask the running app to swap the contents of the windows it already has.
 ///
 /// The process stays. A new process would be a new window.
+/// Without in-place reload the running app is the old build and cannot load
+/// the new one, so it is replaced by `executable`.
+fn restart_dev_app(
+    child: &mut Option<Child>,
+    app_dir: &Path,
+    executable: &Path,
+    forwarded: &[OsString],
+) {
+    if child
+        .as_ref()
+        .is_some_and(|running| !child_has_exited(running))
+    {
+        eprintln!("[tilo-app] build succeeded; restarting the app");
+    } else {
+        eprintln!("[tilo-app] build succeeded; opening the app");
+    }
+    stop_dev_child(child);
+    *child = spawn_dev_binary_reported(app_dir, executable, forwarded);
+}
+
 fn reload_running_dev_app(child: &Child) -> bool {
     let Ok(pid) = i32::try_from(child.id()) else {
         return false;

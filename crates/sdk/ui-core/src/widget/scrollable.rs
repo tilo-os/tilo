@@ -187,6 +187,10 @@ pub struct Scrollable {
     /// compact or shorter. Long-form setup pages use it to end their initial
     /// frame between blocks without wasting space on a normal-height dialog.
     compact_bottom_content_inset: Option<(f32, f32)>,
+    /// Stable semantic key for the scroll group. Without one the group's id
+    /// follows its layout node, so no control inside it has a durable
+    /// identity and none is published as an action resource.
+    semantic_key: Option<String>,
 }
 
 impl Scrollable {
@@ -234,6 +238,7 @@ impl Scrollable {
             content_gutter: 0.0,
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
+            semantic_key: None,
         }
     }
     pub fn new_vertical() -> Self {
@@ -267,6 +272,14 @@ impl Scrollable {
             }
             self.content_min_viewport_height = Some(minimum);
         }
+        self
+    }
+
+    /// Give the scroll group a stable semantic key, so the controls it
+    /// scrolls keep durable identities and stay reachable as actions.
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
         self
     }
 
@@ -1725,7 +1738,11 @@ impl Widget for Scrollable {
     /// The meaningful label belongs to whatever it wraps.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Group))
+        let node = AccessNode::new(Role::Group);
+        Some(match &self.semantic_key {
+            Some(key) => node.with_semantic_key(key.clone()),
+            None => node,
+        })
     }
 
     fn take_structure_dirty(&mut self) -> bool {

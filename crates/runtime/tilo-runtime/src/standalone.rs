@@ -223,6 +223,13 @@ impl RuntimeServices for Standalone {
             },
         )
     }
+
+    fn media(&self) -> Option<Arc<dyn crate::MediaReader>> {
+        Some(Arc::new(profile::BlobMedia::new(
+            &self.blob_socket,
+            &self.room,
+        )))
+    }
 }
 
 /// The broker's action door as one more local caller, standing for no app
