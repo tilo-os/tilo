@@ -227,12 +227,20 @@ def profile_owners(session: Session) -> list:
     for entry in pathlib.Path("/proc").iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid():
             continue
+        # The daemon makes itself non-dumpable, so only its command line is
+        # readable; its environment and executable link are not.
         try:
-            environ = (entry / "environ").read_bytes()
-            exe = os.readlink(entry / "exe")
+            argv = (entry / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
-        if marker in environ.split(b"\0") and pathlib.Path(exe).name.startswith("tilo-runtime"):
+        try:
+            environ = (entry / "environ").read_bytes().split(b"\0")
+        except OSError:
+            environ = []
+        named = [b"--profile", str(session.profile).encode()]
+        serves = marker in environ or any(argv[i : i + 2] == named for i in range(len(argv)))
+        program = pathlib.Path(argv[0].decode(errors="replace")).name if argv else ""
+        if serves and program.startswith("tilo-runtime"):
             owners.append(int(entry.name))
     return owners
 
