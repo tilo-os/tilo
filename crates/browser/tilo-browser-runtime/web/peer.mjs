@@ -171,15 +171,31 @@ export function createLiveLayer(peer, runtime, room, {
   const previewSeq = new Map();
 
   const setState = next => { if (state !== next) { state = next; emit('state', {state}); } };
+  // A live frame leaves only sealed with the channel keys of the record it
+  // names; one this device cannot seal is dropped, never sent in the clear.
+  // Sealing and opening run in the session's order, so frames keep theirs.
+  const sealed = bytes => peer.sealLive(room, bytes).then(frame => frame ?? null, () => null);
+  const opened = (payload, handle) => {
+    peer.openLive(room, payload).then(frame => { if (frame) handle(frame); }, () => {});
+  };
+  const publishSealed = (bytes, publish) => {
+    if (!session) return false;
+    const current = session;
+    void sealed(bytes).then(frame => { if (frame && session === current) publish(current, frame); });
+    return true;
+  };
   const publisher = createPresencePublisher({
     encode: value => runtime.encodeLivePresence(JSON.stringify(value)),
-    send: bytes => session?.publishPresence(bytes) ?? false,
+    send: bytes => publishSealed(bytes, (current, frame) => current.publishPresence(frame)),
     now,
     wallNow,
     onPublish: value => emit('publish', value),
   });
 
   function onPresence(from, payload, receivedAtMs) {
+    opened(payload, frame => presenceOpened(from, frame, receivedAtMs));
+  }
+  function presenceOpened(from, payload, receivedAtMs) {
     let decoded;
     try { decoded = JSON.parse(runtime.decodeLiveFrame(payload)); } catch { return; }
     if (decoded.kind !== 'presence') return;
@@ -198,6 +214,9 @@ export function createLiveLayer(peer, runtime, room, {
     }
   }
   function onOps(publisherId, payload) {
+    opened(payload, frame => opsOpened(publisherId, frame));
+  }
+  function opsOpened(publisherId, payload) {
     let decoded;
     try { decoded = JSON.parse(runtime.decodeLiveFrame(payload)); } catch { return; }
     const perRecord = previews.get(publisherId) ?? new Map();
@@ -361,14 +380,19 @@ export function createLiveLayer(peer, runtime, room, {
       const key = recordKey(record);
       const seq = (previewSeq.get(key) ?? 0) + 1;
       previewSeq.set(key, seq);
-      return session.publishOps(runtime.liveRecordTrack(JSON.stringify(record)),
-        runtime.encodeLivePreview(JSON.stringify(record), BigInt(seq), JSON.stringify(ops)));
+      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      return publishSealed(runtime.encodeLivePreview(JSON.stringify(record), BigInt(seq), JSON.stringify(ops)),
+        (current, frame) => current.publishOps(track, frame));
     },
     endPreview(record) {
       if (!session) return;
       const track = runtime.liveRecordTrack(JSON.stringify(record));
-      session.publishOps(track, runtime.encodeLivePreviewEnd(JSON.stringify(record)));
-      session.closeOps(track);
+      const current = session;
+      void sealed(runtime.encodeLivePreviewEnd(JSON.stringify(record))).then(frame => {
+        if (session !== current) return;
+        if (frame) current.publishOps(track, frame);
+        current.closeOps(track);
+      });
       previewSeq.delete(recordKey(record));
     },
     /** Receive previews for a record from every member (also once a

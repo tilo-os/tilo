@@ -5399,10 +5399,11 @@ async fn handle_live(
     if !subscribed.contains(&workspace_id) {
         return Ok(None);
     }
-    let Ok(decoded) = crate::live::LiveFrame::decode(&frame) else {
+    // Only a sealed frame is relayed; its content is never read here.
+    let Ok(sealed) = crate::live::SealedLiveFrame::decode(&frame) else {
         return Ok(None);
     };
-    let presence = matches!(decoded, crate::live::LiveFrame::Presence(_));
+    let presence = sealed.kind == crate::live::LiveKind::Presence;
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return Ok(None);
     };
