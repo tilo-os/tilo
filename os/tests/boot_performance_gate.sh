@@ -113,6 +113,9 @@ kernel_gaps() {
   local log
   log="$(journalctl -k -b -o short-monotonic --no-pager 2>/dev/null)" || return 0
   [ -n "$log" ] || return 0
+  # The clock can include time before the kernel ran (firmware, loading the
+  # UKI): the first message's timestamp is that share.
+  awk -F'[][]' 'NR == 1 { printf "kernel log starts at %.3fs\n", $2 + 0; exit }' <<<"$log"
   printf 'kernel log, longest gaps before the initrd:\n'
   awk -F'[][]' -v end="${initrd_us_for_gaps:-0}" '
     { t = $2 + 0 }

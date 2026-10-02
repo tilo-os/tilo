@@ -73,6 +73,7 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
   TILO_TEST_USERSPACE_US=18000000 "$repo/os/tests/boot_performance_gate.sh" \
   >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
+grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
 if grep -Fq 'after the initrd' "$work/gaps.err"; then
   echo 'kernel gap report reached past the initrd start' >&2
   exit 1
