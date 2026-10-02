@@ -28,6 +28,24 @@ pub const PIN_PALETTE: &str = "palette";
 /// Pin id for the accent colour.
 pub const PIN_ACCENT: &str = "accent";
 
+/// Pin id for corner radius.
+pub const PIN_SHAPE: &str = "shape";
+
+/// Pin id for the spacing scale.
+pub const PIN_DENSITY: &str = "density";
+
+/// Pin id for the font family.
+pub const PIN_TYPE: &str = "type";
+
+/// Pin id for the duration scale.
+pub const PIN_MOTION: &str = "motion";
+
+/// Pin id for elevation and glass.
+pub const PIN_MATERIAL: &str = "material";
+
+/// Pin id for icon size.
+pub const PIN_ICONS: &str = "icons";
+
 /// Oldest distribution-defaults schema this build still opens.
 pub const DISTRIBUTION_DEFAULTS_SCHEMA_MIN: u32 = 1;
 
@@ -75,7 +93,8 @@ fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
 
 /// Policy pins on a distribution-defaults document.
 ///
-/// Only [`PIN_PALETTE`] and [`PIN_ACCENT`] take effect. Accessibility fields
+/// Pins name fields of the shared theme document: palette, accent, shape,
+/// density, type, motion, material, and icons. Accessibility fields
 /// (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
 /// `reduce_motion`) are not pinnable: a document may name them and they are
 /// ignored.
@@ -107,7 +126,47 @@ impl DistributionPolicy {
     /// Whether the accent pin is set on a schema this build admits.
     #[must_use]
     pub fn pins_accent(&self) -> bool {
-        self.admits_schema() && self.pins.iter().any(|pin| pin == PIN_ACCENT)
+        self.pins_named(PIN_ACCENT)
+    }
+
+    /// Whether corner radius is pinned.
+    #[must_use]
+    pub fn pins_shape(&self) -> bool {
+        self.pins_named(PIN_SHAPE)
+    }
+
+    /// Whether spacing is pinned.
+    #[must_use]
+    pub fn pins_density(&self) -> bool {
+        self.pins_named(PIN_DENSITY)
+    }
+
+    /// Whether the font is pinned.
+    #[must_use]
+    pub fn pins_type(&self) -> bool {
+        self.pins_named(PIN_TYPE)
+    }
+
+    /// Whether the duration scale is pinned.
+    #[must_use]
+    pub fn pins_motion(&self) -> bool {
+        self.pins_named(PIN_MOTION)
+    }
+
+    /// Whether elevation and glass are pinned.
+    #[must_use]
+    pub fn pins_material(&self) -> bool {
+        self.pins_named(PIN_MATERIAL)
+    }
+
+    /// Whether icon size is pinned.
+    #[must_use]
+    pub fn pins_icons(&self) -> bool {
+        self.pins_named(PIN_ICONS)
+    }
+
+    fn pins_named(&self, name: &str) -> bool {
+        self.admits_schema() && self.pins.iter().any(|pin| pin == name)
     }
 
     fn admits_schema(&self) -> bool {
@@ -427,6 +486,7 @@ struct PreparedDistribution {
     accent: [u8; 3],
     pins_palette: bool,
     pins_accent: bool,
+    policy: DistributionPolicy,
 }
 
 fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistribution> {
@@ -449,6 +509,7 @@ fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistr
         accent: defaults.accent.unwrap_or(palette_accent),
         pins_palette: defaults.policy.pins_palette(),
         pins_accent: defaults.policy.pins_accent(),
+        policy: defaults.policy.clone(),
         theme,
     })
 }
@@ -495,6 +556,9 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         } else if pin_palette {
             theme = apply_repaired_accent(theme, user_accent);
         }
+        if let Some(layer) = &distribution {
+            merge_shared_roles(&mut theme, user, &layer.theme, &layer.policy, pin_palette);
+        }
     }
 
     if let Some(tint) = stack
@@ -522,6 +586,92 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .with_ui_scale(access.ui_scale)
         .with_text_scale(access.text_scale)
         .with_reduce_motion(access.reduce_motion)
+}
+
+/// Built-in defaults, distribution defaults, and the user theme carry the
+/// same roles. A pin keeps the distribution value for that role; every
+/// other role stays with whichever layer is on top.
+fn merge_shared_roles(
+    theme: &mut Theme,
+    user: &Theme,
+    distribution: &Theme,
+    policy: &DistributionPolicy,
+    palette_pinned: bool,
+) {
+    // Palette pin already selected `distribution` as the colour track.
+    // Copy the user's unpinned roles onto it. Otherwise `theme` is the
+    // user theme; copy pinned roles back from the distribution.
+    let from_distribution = !palette_pinned;
+    let take = |pinned: bool| {
+        if from_distribution { pinned } else { !pinned }
+    };
+    if take(policy.pins_shape()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        theme.tokens.radii = src.tokens.radii.clone();
+        theme.radius_standard = src.radius_standard;
+    }
+    if take(policy.pins_density()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        theme.tokens.spacing = src.tokens.spacing;
+        theme.padding_standard = src.padding_standard;
+        theme.gap_standard = src.gap_standard;
+    }
+    if take(policy.pins_type()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        theme
+            .tokens
+            .typography
+            .sans_family
+            .clone_from(&src.tokens.typography.sans_family);
+    }
+    if take(policy.pins_motion()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        theme.tokens.motion = src.tokens.motion;
+    }
+    if take(policy.pins_material()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        copy_material(theme, src);
+    }
+    if take(policy.pins_icons()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        copy_icons(theme, src);
+    }
+}
+
+fn copy_material(dst: &mut Theme, src: &Theme) {
+    dst.tokens.elevation = src.tokens.elevation;
+    dst.tokens.colors.surfaces.glass_blur_px = src.tokens.colors.surfaces.glass_blur_px;
+}
+
+fn copy_icons(dst: &mut Theme, src: &Theme) {
+    dst.tokens.metrics.icon_sm = src.tokens.metrics.icon_sm;
+    dst.tokens.metrics.icon_md = src.tokens.metrics.icon_md;
+    dst.tokens.metrics.icon_lg = src.tokens.metrics.icon_lg;
+    dst.tokens.metrics.icon_label_gap = src.tokens.metrics.icon_label_gap;
 }
 
 fn apply_repaired_accent(theme: Theme, accent: [u8; 3]) -> Theme {
@@ -1009,6 +1159,78 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn distribution_and_the_user_share_the_motion_role() {
+        let mut spec = CustomThemeSpec {
+            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
+            id: "slow".into(),
+            name: "Slow".into(),
+            dark_base: true,
+            accent: [12, 120, 220],
+            accent_hover: [8, 96, 190],
+            surface_base: [9, 18, 30],
+            surface_raised: [18, 32, 48],
+            text_primary: [238, 244, 250],
+            text_dim: [170, 184, 199],
+            border: [48, 68, 88],
+            success: [50, 190, 110],
+            warning: [230, 170, 50],
+            danger: [225, 75, 80],
+            info: [70, 165, 230],
+            radius_px: 8.0,
+            spacing_px: 12.0,
+            font: "Inter".into(),
+            motion_scale: 0.5,
+            material_scale: 1.0,
+            icon_scale: 1.5,
+        };
+        let stock = Theme::light().tokens.motion.durations.base_ms;
+        let only = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec.clone()),
+                ..DistributionDefaults::default()
+            }),
+            ..ThemeLayerStack::default()
+        });
+        assert_eq!(only.name, "Slow");
+        assert_eq!(only.tokens.motion.durations.base_ms, stock / 2);
+        assert!((only.tokens.metrics.icon_md - 30.0).abs() < 0.01);
+
+        let user_wins = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec.clone()),
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(user_wins.bg_app, Theme::light().bg_app);
+        assert_eq!(user_wins.tokens.motion.durations.base_ms, stock);
+
+        spec.motion_scale = 0.5;
+        let pinned = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec),
+                policy: DistributionPolicy {
+                    pins: vec![PIN_MOTION.into()],
+                    ..DistributionPolicy::default()
+                },
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(
+            pinned.bg_app,
+            Theme::light().bg_app,
+            "colour stays the user's"
+        );
+        assert_eq!(
+            pinned.tokens.motion.durations.base_ms,
+            stock / 2,
+            "motion pin keeps the distribution scale"
+        );
+    }
+
+    #[test]
     fn old_settings_open_and_out_of_band_spacing_is_clamped() {
         let legacy = Theme::resolved_from_settings(r#"{"appearance":{"theme":"Light"}}"#);
         assert_eq!(legacy.name, Theme::light().name);
@@ -1040,6 +1262,9 @@ mod tests {
             radius_px: 8.0,
             spacing_px: 2.0,
             font: "Inter".into(),
+            motion_scale: 1.0,
+            material_scale: 1.0,
+            icon_scale: 1.0,
         };
         assert!(spec.validate().is_ok(), "2 px is inside the admitted range");
         let clamped = resolve_theme_layers(&ThemeLayerStack {
