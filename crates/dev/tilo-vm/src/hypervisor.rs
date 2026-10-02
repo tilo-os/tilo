@@ -258,6 +258,11 @@ pub trait Hypervisor {
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    /// A power-button event can suspend an ARM guest rather than power it off.
+    /// Prefer an explicit guest shutdown when this adapter has that behaviour.
+    fn guest_shutdown_first(&self) -> bool {
+        false
+    }
     /// Commands that unregister a VM that is off from the hypervisor. The
     /// files it owns ([`vm_files`]) are removed by the caller.
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
@@ -1054,6 +1059,10 @@ impl Hypervisor for Whpx {
 
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         vec![Self::qmp(vm, "system_powerdown")]
+    }
+
+    fn guest_shutdown_first(&self) -> bool {
+        true
     }
 
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
