@@ -3129,7 +3129,9 @@ jobs:
     needs: [plan, ensure-rpms]
     if: ${{ !cancelled() && needs.ensure-rpms.result == 'success' && needs.plan.outputs.boards != '' && needs.plan.outputs.boards != '[]' }}
     runs-on: runner-quality
-    timeout-minutes: 60
+    # The wait ends when the aarch64 lane publishes or ends; that lane may
+    # queue for a native slot before its own build, so allow the ceiling.
+    timeout-minutes: 180
     steps:
       - name: Install registry tools
         run: |
