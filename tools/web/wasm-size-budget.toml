@@ -1,13 +1,20 @@
 # Byte size of each web bundle's module (pkg/tilo_browser_runtime_bg.wasm).
-# The app-sdk workflow fails when a bundle grows past its budget. Budgets may
-# only decrease: tools/web/wasm_size_ratchet.py check-budget compares them
-# with the base revision. When a bundle shrinks, the lane prints the lower
-# budget to commit.
+# The app-sdk workflow fails when a bundle grows past its budget. A budget is
+# a measurement plus `headroom`, rounded up to 64 KiB, so a commit adding a
+# few bytes passes and real growth fails. Budgets may only decrease:
+# tools/web/wasm_size_ratchet.py check-budget compares them with the base
+# revision, and a raise needs a rebaseline record. When a bundle shrinks, the
+# lane prints the lower budget to commit.
+headroom = 0.01
 
-# All web-capable Tilo apps (31), as the app-sdk web lane builds them:
-# `tilo-app build --target web --bundle desktop --release apps/calculator`,
-# measured on the SDK integration branch with feat/sdk-apps and
-# feat/sdk-complete merged. (`build.sh --profile release` optimizes less and
-# comes out about 2 MB larger.)
+# All web-capable Tilo apps, as the app-sdk web lane builds them:
+# `tilo-app build --target web --bundle desktop --release apps/calculator`.
+# (`build.sh --profile release` optimizes less and comes out about 2 MB
+# larger.)
 [bundles.desktop]
-bytes = 67430997
+bytes = 76742656
+
+[bundles.desktop.rebaseline]
+run = 56288
+measured = 75954743
+reason = "feature growth: Activity history and retained notifications (#2070); reduction tracked in #2091"
