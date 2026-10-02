@@ -13,6 +13,7 @@ mod center;
 mod history;
 mod log;
 mod model;
+mod persistence;
 mod stack;
 
 pub use center::{CenterLayout, CenterOutcome, NotificationCenter, RowControl};
@@ -26,6 +27,7 @@ pub use model::{
     NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,
     lock_suppressed_label,
 };
+pub use persistence::{decode_history, encode_history};
 pub use stack::NotificationStack;
 
 /// What the banner stack and the notification centre need from the desktop
