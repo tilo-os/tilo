@@ -7646,7 +7646,10 @@ pub fn run() {
         {
             metrics.note_retirement(serial, retired_at);
             if serial > frame_clock_retired_serial {
-                frame_clock.note_presented(retired_at);
+                // A virtual present can retire several intervals after the
+                // frame was admitted. The grid point after that late time
+                // would hold the waiting frame for another interval.
+                frame_clock.note_blocked_retirement(retired_at);
                 frame_clock_retired_serial = serial;
             }
         }
