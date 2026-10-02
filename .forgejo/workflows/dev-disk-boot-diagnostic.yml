@@ -176,11 +176,6 @@ jobs:
             exit 1
           }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
-          if [[ $COLD_BOOT == true && $DEV_UKI_BOOT == true ]]; then
-            # A fresh variable template would discard the UKI one-shot entry
-            # when QEMU restarts. Keep this run's initially keyless store.
-            export TILO_SECBOOT_KEYS=persist
-          fi
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
           guest_evidence() {
