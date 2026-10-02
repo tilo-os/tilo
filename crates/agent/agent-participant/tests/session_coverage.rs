@@ -165,7 +165,6 @@ fn page(
     text
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 
 /// Open a sealed live frame with `peer`'s channel keys.
 async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
@@ -181,6 +180,7 @@ async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
     LiveFrame::decode(&rx.await.ok()??).ok()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
     common::isolate_device();
     let (root, _) = UserIdentity::generate("Ada", 1);
