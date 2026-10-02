@@ -18,10 +18,11 @@
 //!   history, then commits), acknowledges them cumulatively, and hands the
 //!   session the route's content keys whenever they change.
 //!
-//! Nothing is written in the clear until the room's governance is known: a
-//! room is ungoverned only once the host finished replaying it without a
-//! governor showing up. The host carries every message as retained, opaque
-//! governance and never holds a key. Member state and the room governors
+//! Nothing is ever written in the clear: a route's writes are held until this
+//! device holds the route's content keys. A replay that names no governor
+//! does not mean the room has none, since the governor's genesis may still
+//! be on its way to the host. The host carries every message as retained,
+//! opaque governance and never holds a key. Member state and the room governors
 //! are exported for the profile's durable store, so a reloaded page keeps
 //! its access instead of asking again.
 
@@ -98,21 +99,15 @@ pub(crate) struct Changes {
     pub keys: Vec<(DocumentRoute, ChannelContentKeys)>,
     /// Messages to sign and send.
     pub outgoing: Vec<Outgoing>,
-    /// Routes that may now be written in the clear: their room turned out
-    /// to be ungoverned.
-    pub released: Vec<DocumentRoute>,
 }
 
 /// What this page knows of who governs a room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Governance {
-    /// The host has not finished replaying the room yet.
+    /// No governor has shown up yet.
     Unknown,
     /// Every channel of the room is stewarded by this device.
     Governed(Ed25519PublicKey),
-    /// The host replayed the room and nobody governs it: its routes are
-    /// written in the clear.
-    Ungoverned,
 }
 
 struct Route {
@@ -164,8 +159,6 @@ pub(crate) struct Channels {
     /// Governors the page learned from the room itself, which no genesis
     /// frame can override.
     pinned: HashMap<String, Ed25519PublicKey>,
-    /// Workspaces the host finished replaying in this session.
-    replayed: std::collections::HashSet<u64>,
     /// Genesis frames whose sender's certificate has not arrived yet.
     candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
     /// Restored member state, waiting for its route to open.
@@ -186,7 +179,6 @@ impl Channels {
             unopened: HashMap::new(),
             rooms: HashMap::new(),
             pinned: HashMap::new(),
-            replayed: std::collections::HashSet::new(),
             candidates: Vec::new(),
             saved: HashMap::new(),
             dirty: false,
@@ -242,7 +234,7 @@ impl Channels {
             .iter()
             .filter_map(|(room, governance)| match governance {
                 Governance::Governed(device) => Some((room.clone(), *device.as_bytes())),
-                Governance::Unknown | Governance::Ungoverned => None,
+                Governance::Unknown => None,
             })
             .collect();
         governors.sort();
@@ -372,12 +364,6 @@ impl Channels {
         let Ok(workspace_id) = route.workspace_id() else {
             return changes;
         };
-        if self.replayed.contains(&workspace_id)
-            && self.governance(&route.cluster_id) == Governance::Unknown
-        {
-            self.rooms
-                .insert(route.cluster_id.clone(), Governance::Ungoverned);
-        }
         let early = self.unopened.remove(&channel).unwrap_or_default();
         self.routes.insert(
             channel,
@@ -393,31 +379,6 @@ impl Channels {
             },
         );
         self.settle(channel, now_ms, &mut changes);
-        changes
-    }
-
-    /// The host finished replaying `workspace_id`: a room of it that named
-    /// no governor is ungoverned, and what waited on it may go out.
-    pub(crate) fn replayed(&mut self, workspace_id: u64) -> Changes {
-        self.replayed.insert(workspace_id);
-        let mut changes = Changes::default();
-        let rooms: Vec<String> = self
-            .routes
-            .values()
-            .filter(|route| route.workspace_id == workspace_id)
-            .map(|route| route.document.cluster_id.clone())
-            .collect();
-        for room in rooms {
-            if self.governance(&room) == Governance::Unknown {
-                self.rooms.insert(room.clone(), Governance::Ungoverned);
-                changes.released.extend(
-                    self.routes
-                        .values()
-                        .filter(|route| route.document.cluster_id == room)
-                        .map(|route| route.document.clone()),
-                );
-            }
-        }
         changes
     }
 
@@ -456,17 +417,6 @@ impl Channels {
         changes
     }
 
-    /// Whether `route` must not be written in the clear: its room is
-    /// governed, so its edits wait for this page's keys, or the page does
-    /// not know yet whether it is.
-    pub(crate) fn gated(&self, route: &DocumentRoute) -> bool {
-        self.governance(&route.cluster_id) != Governance::Ungoverned
-            || self
-                .routes
-                .get(&Self::channel(route))
-                .is_some_and(|route| route.member.is_some())
-    }
-
     /// One line per room, certificate and route for diagnostics: whom a
     /// room follows, which senders may govern, and where each route's
     /// membership stands.
@@ -477,7 +427,6 @@ impl Channels {
             let governance = match self.governance(room) {
                 Governance::Governed(device) => format!("governed by {}", short(device.as_bytes())),
                 Governance::Unknown => "unknown".to_owned(),
-                Governance::Ungoverned => "ungoverned".to_owned(),
             };
             lines.push(format!("room {room}: {governance}"));
         }
@@ -654,7 +603,6 @@ impl Changes {
     pub(crate) fn extend(&mut self, other: Self) {
         self.keys.extend(other.keys);
         self.outgoing.extend(other.outgoing);
-        self.released.extend(other.released);
     }
 }
 
@@ -778,33 +726,28 @@ mod tests {
         assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
     }
 
-    /// Nothing goes out in the clear before the host finished replaying the
-    /// room; a room it replayed without a governor is written in the clear,
-    /// until a governor shows up.
+    /// A room whose governor has not shown up is not ungoverned: a genesis
+    /// that arrives later still names it, and the route asks for access.
     #[test]
-    fn a_route_is_written_in_the_clear_only_once_its_room_is_known_ungoverned() {
+    fn a_late_genesis_still_names_the_governor_of_an_open_route() {
         let user = SigningKey::from_bytes(&[1; 32]);
         let browser = SigningKey::from_bytes(&[3; 32]);
         let laptop = SigningKey::from_bytes(&[4; 32]);
         let mut channels = Channels::new(device(&browser), device(&user));
         let note = route("note-1");
-        channels.open(&note, 0);
-        assert!(channels.gated(&note));
-        let workspace = note.workspace_id().unwrap();
-        let changes = channels.replayed(workspace);
-        assert_eq!(changes.released, std::slice::from_ref(&note));
-        assert!(!channels.gated(&note));
-        let later = route("note-2");
-        channels.open(&later, 0);
-        assert!(!channels.gated(&later));
+        let changes = channels.open(&note, 0);
+        assert!(changes.keys.is_empty() && changes.outgoing.is_empty());
+        assert_eq!(steward_of(&channels, &note), None);
 
         channels.note_cert(
             device(&laptop),
             cert(&user, &laptop, DeviceCapabilities::primary()),
             0,
         );
-        channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
-        assert!(channels.gated(&note) && channels.gated(&later));
+        let changes = channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
+        assert_eq!(requests(&changes), 1);
+        assert!(changes.keys.is_empty());
+        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
     }
 
     /// A reloaded page restores its membership: the keys it was admitted
@@ -869,6 +812,5 @@ mod tests {
         assert_eq!(requests(&changes), 0, "a reload does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
-        assert!(reloaded.gated(&note));
     }
 }

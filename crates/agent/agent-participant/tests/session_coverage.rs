@@ -23,6 +23,8 @@
 )]
 
 mod common;
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -177,6 +179,7 @@ async fn every_web_app_over_the_session() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
     let catalogue = catalogue();
 
     // The agent: its own device under the root with no capabilities, and a
@@ -633,5 +636,17 @@ async fn every_web_app_over_the_session() {
     drop(live);
     agent.close();
     browser.close();
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
     host.relay.shutdown().await;
 }

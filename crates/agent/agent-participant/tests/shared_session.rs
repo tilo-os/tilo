@@ -30,6 +30,8 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -252,11 +254,12 @@ async fn receive_until(
     while !body(page).contains(text) {
         assert!(
             Instant::now() < deadline,
-            "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}",
+            "the browser's record never carried {text:?}: {}\nagent tasks: {:?}\nagent records: {:?}\nagent's copy: {:?}\nagent channels: {}",
             body(page),
             agent.control().info().tasks,
             agent.known_records(),
             agent.app(route).map(body),
+            agent.peer().status().channels,
         );
         agent.pump();
         for event in events.drain() {
@@ -301,6 +304,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
+    let _steward = steward::Steward::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.
@@ -644,6 +648,21 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         matches!(refused.status, ReceiptStatus::Rejected { .. }),
         "a stopped agent takes no task: {refused:?}"
     );
+
+    // Every edit the host carried, the page's and the agent's, is sealed.
+    let retained = host
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, sealed) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    assert!(sealed > 0);
 
     drop(live);
     agent.close();

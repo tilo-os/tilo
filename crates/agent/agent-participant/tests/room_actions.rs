@@ -23,6 +23,8 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
+#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
+mod steward;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -309,6 +311,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let themes = browser.create("so.tilo.themes");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -357,6 +360,18 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
             action.address
         );
     }
+    let retained = hosted
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
@@ -370,6 +385,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -620,6 +636,18 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             .starts_with("record:so.tilo.sheets:")
     );
 
+    let retained = hosted
+        .relay
+        .room_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::retained_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
