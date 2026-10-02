@@ -6132,6 +6132,42 @@ impl FrameHarness {
         });
     }
 
+    /// Press the left button at `from`, move through intermediate points to
+    /// `to` and release there: a pointer drag in logical coordinates, as a
+    /// drawing or a handle drag sees it.
+    pub fn drag_at(&mut self, from: (f64, f64), to: (f64, f64)) {
+        self.pump_component_wakes();
+        let moved = |this: &mut Self, (x, y): (f64, f64)| {
+            this.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(
+                    x * this.input_scale,
+                    y * this.input_scale,
+                ),
+            });
+        };
+        moved(self, from);
+        self.send(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        for fraction in [0.25, 0.5, 0.75, 1.0] {
+            moved(
+                self,
+                (
+                    from.0 + (to.0 - from.0) * fraction,
+                    from.1 + (to.1 - from.1) * fraction,
+                ),
+            );
+        }
+        self.send(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+
     /// Direct-touch activation at logical coordinates.
     pub fn tap_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();

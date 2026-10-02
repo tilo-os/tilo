@@ -23,7 +23,8 @@ use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect, Stroke};
 use ui::vello::peniko::{Color, Fill};
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, ResourceOperation, ResourceOperationStart, Widget,
+    AppModel, EventCtx, ModelPath, ResourceOperation, ResourceOperationStart, SelectionHandle,
+    SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
@@ -103,6 +104,15 @@ enum Drag {
         now: Point,
         ids: Vec<String>,
     },
+    /// A grip of the selection frame: a uniform resize about the opposite
+    /// corner, or the rotation handle.
+    Handle {
+        handle: SelectionHandle,
+        frame: SelectionHandles,
+        start: Point,
+        now: Point,
+        ids: Vec<String>,
+    },
     Stroke {
         points: Vec<[f64; 3]>,
     },
@@ -135,6 +145,7 @@ pub struct CanvasSurface {
     cursor: Point,
     focused: bool,
     space: bool,
+    shift: bool,
     results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
 }
 
@@ -158,6 +169,7 @@ impl CanvasSurface {
             cursor: Point::ZERO,
             focused: false,
             space: false,
+            shift: false,
             results: HashMap::new(),
         }
     }
@@ -175,6 +187,15 @@ impl CanvasSurface {
         self.viewport.screen_to_content(screen)
     }
 
+    /// The frame around the selected marks.
+    fn frame(&self) -> Option<SelectionHandles> {
+        self.selection
+            .iter()
+            .filter_map(|id| self.art.mark(id).map(crate::model::Mark::bounds))
+            .reduce(|a, b| a.union(b))
+            .map(SelectionHandles::new)
+    }
+
     fn layer(&self) -> Option<String> {
         let chosen = self.tools.layer.with(Clone::clone);
         if self.art.layer(&chosen).is_some() {
@@ -189,6 +210,20 @@ impl CanvasSurface {
         if self.space || self.read_only && self.tools.tool.with(|tool| *tool != Tool::Select) {
             self.viewport.begin_pan(screen);
             self.drag = Some(Drag::Pan);
+            return;
+        }
+        let zoom = self.viewport.zoom();
+        if self.tools.tool.with(|tool| *tool == Tool::Select)
+            && let Some(frame) = self.frame()
+            && let Some(handle) = frame.handle_at(at, zoom)
+        {
+            self.drag = Some(Drag::Handle {
+                handle,
+                frame,
+                start: at,
+                now: at,
+                ids: self.selection.clone(),
+            });
             return;
         }
         self.drag = match self.tools.tool.with(|tool| *tool) {
@@ -222,7 +257,9 @@ impl CanvasSurface {
             Some(Drag::Pan) => {
                 self.moved_by_hand |= self.viewport.update_pan(screen);
             }
-            Some(Drag::Move { now, .. } | Drag::Shape { now, .. }) => *now = at,
+            Some(Drag::Move { now, .. } | Drag::Shape { now, .. } | Drag::Handle { now, .. }) => {
+                *now = at;
+            }
             Some(Drag::Stroke { points }) => {
                 let far_enough = points
                     .last()
@@ -254,6 +291,13 @@ impl CanvasSurface {
                     }));
                 }
             }
+            Drag::Handle {
+                handle,
+                frame,
+                start,
+                now,
+                ids,
+            } => self.finish_handle(handle, frame, (start, now), ids),
             Drag::Stroke { mut points } => {
                 // The pen lifts: ease the last point off as a brush does.
                 if let Some(last) = points.last_mut() {
@@ -313,6 +357,39 @@ impl CanvasSurface {
                 }));
             }
         }
+    }
+
+    /// A grip of the selection frame let go: one resize or rotation.
+    fn finish_handle(
+        &self,
+        handle: SelectionHandle,
+        frame: SelectionHandles,
+        (start, now): (Point, Point),
+        ids: Vec<String>,
+    ) {
+        if start.distance(now) < 0.5 {
+            return;
+        }
+        let edit = if handle == SelectionHandle::Rotate {
+            EditMarks {
+                ids,
+                rotate: Some(frame.rotation_for(start, now, self.shift)),
+                ..EditMarks::default()
+            }
+        } else {
+            // Scaling about each mark's centre moves the anchor;
+            // move it back so the opposite corner stays put.
+            let (scale, anchor) = frame.scale_for(handle, start, now);
+            let centre = frame.bounds.center();
+            let shift = (anchor - centre) * (1.0 - scale);
+            EditMarks {
+                ids,
+                scale: Some(scale),
+                move_by: Some([shift.x, shift.y]),
+                ..EditMarks::default()
+            }
+        };
+        self.dispatch(&CanvasAction::EditMarks(edit));
     }
 
     fn key(&mut self, key: &Key, modifiers: ui::winit::keyboard::ModifiersState) -> bool {
@@ -416,20 +493,27 @@ impl CanvasSurface {
         let accent = theme.accent_primary;
         let zoom = self.viewport.zoom().max(1e-6);
         let hair = Stroke::new(1.5 / zoom);
-        for id in &self.selection {
-            if let Some(mark) = self.art.mark(id) {
-                let mut bounds = mark.bounds();
-                if let Some(Drag::Move { start, now, .. }) = &self.drag {
-                    bounds = bounds + (*now - *start);
+        if let Some(frame) = self.frame() {
+            let preview = match &self.drag {
+                Some(Drag::Move { start, now, .. }) => Affine::translate(*now - *start),
+                Some(Drag::Handle {
+                    handle,
+                    frame,
+                    start,
+                    now,
+                    ..
+                }) => {
+                    if *handle == SelectionHandle::Rotate {
+                        let degrees = frame.rotation_for(*start, *now, self.shift);
+                        Affine::rotate_about(degrees.to_radians(), frame.bounds.center())
+                    } else {
+                        let (scale, anchor) = frame.scale_for(*handle, *start, *now);
+                        Affine::scale_about(scale, anchor)
+                    }
                 }
-                scene.stroke(
-                    &hair,
-                    to_screen,
-                    accent,
-                    None,
-                    &bounds.inflate(2.0 / zoom, 2.0 / zoom),
-                );
-            }
+                _ => Affine::IDENTITY,
+            };
+            frame.draw(scene, to_screen * preview, zoom, theme);
         }
         match &self.drag {
             Some(Drag::Shape { start, now }) => {
@@ -596,6 +680,9 @@ impl Widget for CanvasSurface {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.shift = modifiers.state().shift_key();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -750,5 +837,12 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
 
     fn read_only_changed(&mut self, read_only: bool) {
         self.read_only = read_only;
+    }
+
+    /// The landscape screenshot shows a selection with its handles.
+    fn stage(&mut self, scenario: Option<&str>) {
+        if scenario == Some("landscape") {
+            self.selection = vec!["sun".into()];
+        }
     }
 }

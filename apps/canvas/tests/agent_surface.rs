@@ -63,4 +63,18 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
             "{action} is published: {actions:?}"
         );
     }
+    let controls: Vec<&str> = surface
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["resource_kind"] == "tilo.ui.control")
+        .filter_map(|row| row["resource"].as_str())
+        .collect();
+    for control in ["canvas-brush-size", "canvas-layer", "add-layer"] {
+        let encoded = control.replace('-', "%2D");
+        assert!(
+            controls.iter().any(|id| id.contains(&encoded)),
+            "the inspector's {control} control is reachable: {controls:?}"
+        );
+    }
 }
