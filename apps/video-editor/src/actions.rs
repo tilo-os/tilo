@@ -3764,19 +3764,15 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
 /// The published project. Playhead and mix rows stay live extras on this tree
 /// so standalone callers still see them; the framework root adds them itself.
 pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
-    let label = if ctx.project.name.is_empty() {
-        "Project".to_string()
-    } else {
-        ctx.project.name.clone()
-    };
-    let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
-        "video.project",
-        &label,
-        &ctx.project,
-    );
-    root.children.extend(live_playhead_resources(ctx));
-    annotate_contracts(&mut root);
-    vec![root]
+    // Standalone / palette / tests need the timeline at the *live* playhead
+    // (clip markers, keys, trim). `tilo_resource::publish` builds document
+    // children at playhead 0 and keeps playhead doors on the surface — that
+    // path stays for the framework root; this tree is the live editor door.
+    let mut roots = project_tree(ctx);
+    for root in &mut roots {
+        annotate_contracts(root);
+    }
+    roots
 }
 
 #[derive(Clone, Copy)]
