@@ -99,6 +99,9 @@ pub struct Component {
     pub info: ComponentInfo,
     pub user_units: Vec<String>,
     pub packages: Vec<String>,
+    /// Only the manifest's installed binary targets, rather than every binary
+    /// in each package (which can include heavyweight diagnostic tools).
+    pub bins: Vec<String>,
     /// Package-qualified cargo features (`pkg/feature`).
     pub features: Vec<String>,
     /// Features only dev builds enable, normally package-qualified. A bare
@@ -168,6 +171,10 @@ impl Component {
         for package in &self.packages {
             args.push("-p".into());
             args.push(package.clone());
+        }
+        for bin in &self.bins {
+            args.push("--bin".into());
+            args.push(bin.clone());
         }
         let features = self.build_features(extra);
         if !features.is_empty() {
@@ -307,6 +314,7 @@ fn component(name: &str, entry: &toml::Table) -> Component {
         dev_build,
         user_units: strings(entry, "user_units"),
         packages: strings(entry, "packages"),
+        bins: strings(entry, "bins"),
         features: strings(entry, "features"),
         dev_features: strings(entry, "dev_features"),
         profile: text("profile").unwrap_or_else(|| "release".into()),
@@ -343,6 +351,40 @@ fn strings(entry: &toml::Table, key: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_swap_selects_only_the_installed_binary() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/components.toml");
+        let manifest = Manifest::load(&path).unwrap().unwrap();
+        let shell = manifest
+            .get("shell")
+            .unwrap()
+            .clone()
+            .with_profile(Some("dev"));
+        assert_eq!(shell.bins, ["shell"]);
+        assert_eq!(
+            shell.cargo_args(&[]),
+            [
+                "build",
+                "--locked",
+                "--profile",
+                "dev",
+                "-p",
+                "shell",
+                "--bin",
+                "shell",
+                "--features",
+                "dev-overrides"
+            ]
+        );
+        let manifest = Manifest::parse(
+            "[[component]]\nname = \"pair\"\npackages = [\"a\", \"b\"]\nbins = [\"a-cli\", \"b-cli\"]\n",
+        ).unwrap();
+        assert_eq!(
+            manifest.get("pair").unwrap().cargo_args(&[]).join(" "),
+            "build --locked --profile release -p a -p b --bin a-cli --bin b-cli"
+        );
+    }
 
     /// The component array form parses; reboot travels only when set; a profile override changes the build
     /// and its output dir; cargo and installer arguments; unknown scope is session; the repository manifest
