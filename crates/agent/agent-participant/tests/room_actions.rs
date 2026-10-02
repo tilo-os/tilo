@@ -35,7 +35,6 @@ use tilo_actions::remote::{
     InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_agent_participant::{AgentHost, HostedApp, ModelChoice, Seed, record_provider};
-use tilo_browser_peer::document::{Ciphers, open_frame};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
@@ -201,23 +200,19 @@ impl Browser {
     }
 }
 
-/// How many retained bodies of the room are documents, readable or not.
-async fn retained_documents(hosted: &Hosted) -> usize {
-    let mut ciphers = Ciphers::new();
-    hosted
+/// Readable and sealed documents among the room's retained bodies.
+async fn retained_documents(hosted: &Hosted) -> (usize, usize) {
+    let bodies = hosted
         .relay
         .room_records()
         .retained(workspace())
         .await
-        .unwrap()
-        .iter()
-        .filter(|retained| {
-            !matches!(
-                open_frame(&retained.body, retained.author, &mut ciphers),
-                Ok(None)
-            )
-        })
-        .count()
+        .unwrap();
+    common::retained_documents(
+        bodies
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -257,7 +252,7 @@ async fn the_host_neither_receives_nor_writes_a_record_in_the_clear() {
         "{:?}",
         listed.providers
     );
-    assert_eq!(retained_documents(&hosted).await, 0);
+    assert_eq!(retained_documents(&hosted).await, (0, 0));
 
     // 3. The room's "open an app" action would write a new record through
     // the host, which cannot seal it: refused, and nothing committed.
@@ -281,7 +276,7 @@ async fn the_host_neither_receives_nor_writes_a_record_in_the_clear() {
         panic!("{opened:?}");
     };
     assert!(reason.contains("end-to-end encrypted"), "{reason}");
-    assert_eq!(retained_documents(&hosted).await, 0);
+    assert_eq!(retained_documents(&hosted).await, (0, 0));
 
     drop(hosted.web);
     hosted.agents.shutdown();
