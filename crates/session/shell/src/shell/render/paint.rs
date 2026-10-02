@@ -1734,6 +1734,169 @@ impl VelloDrmBridge {
         needed > 0 && self.readback.len() == needed
     }
 
+    /// The tight RGBA of the last complete frame, when one is encoded.
+    pub(crate) fn encoded_rgba(&self) -> Option<&[u8]> {
+        self.has_complete_readback()
+            .then_some(self.readback.as_slice())
+    }
+
+    /// Render `scene` and copy only `clip` into the encoded desktop.
+    ///
+    /// The combined framebuffer is not mapped. Callers publish `clip` onto
+    /// the virtual head it meets.
+    ///
+    /// # Errors
+    /// The desktop image is missing, `clip` leaves it, or the clip copy fails.
+    pub(crate) fn refresh_encoded_clip(
+        &mut self,
+        scene: &Scene,
+        clip: vello::FineDamageRect,
+    ) -> Result<(), BridgeError> {
+        // A stale full-frame profile must not be reported for this clip.
+        self.last_phase_timing = None;
+        self.render_encoded_clip(scene, clip)?;
+        let tight = self.read_encoded_clip(clip)?;
+        self.patch_encoded_clip(clip, &tight)
+    }
+
+    fn render_encoded_clip(
+        &mut self,
+        scene: &Scene,
+        clip: vello::FineDamageRect,
+    ) -> Result<(), BridgeError> {
+        if !self.has_complete_readback() {
+            return Err(BridgeError::InvalidSize(
+                "no encoded desktop for the clip".to_owned(),
+            ));
+        }
+        let (width, height) = self.target.size;
+        let inside = clip.width > 0
+            && clip.height > 0
+            && clip.x.checked_add(clip.width).is_some_and(|x1| x1 <= width)
+            && clip
+                .y
+                .checked_add(clip.height)
+                .is_some_and(|y1| y1 <= height);
+        if !inside {
+            return Err(BridgeError::InvalidSize(
+                "clip is outside the encoded desktop".to_owned(),
+            ));
+        }
+        let revision = self
+            .target
+            .last_successful_revision
+            .map_or(1, |revision| revision.saturating_add(1));
+        let previous = self.target.last_successful_revision;
+        let regions = [clip];
+        let damage = SceneDamage {
+            revision,
+            previous_revision: previous,
+            regions: Some(&regions),
+        };
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.target.render_until(scene, damage, deadline)?;
+        Ok(())
+    }
+
+    fn read_encoded_clip(&self, clip: vello::FineDamageRect) -> Result<Vec<u8>, BridgeError> {
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let tight_row = clip.width.saturating_mul(4);
+        let padded = tight_row.div_ceil(align).saturating_mul(align);
+        let size = u64::from(padded).saturating_mul(u64::from(clip.height));
+        if size == 0 {
+            return Err(BridgeError::InvalidSize("empty clip readback".to_owned()));
+        }
+        let buffer = self.target.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tilo-desktop-drm-clip-readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            self.target
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("tilo-desktop-drm-clip-copy"),
+                });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: clip.x,
+                    y: clip.y,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(clip.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: clip.width,
+                height: clip.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = self.target.queue.submit(Some(encoder.finish()));
+        self.target
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(Duration::from_secs(1)),
+            })
+            .map_err(|error| BridgeError::Map(format!("clip copy: {error:?}")))?;
+        let tight = {
+            let mapped = Self::map_device_readback(&self.target.device, &buffer)?;
+            tight_clip_rows(&mapped, padded, clip)
+        };
+        buffer.unmap();
+        tight
+    }
+
+    fn patch_encoded_clip(
+        &mut self,
+        clip: vello::FineDamageRect,
+        tight: &[u8],
+    ) -> Result<(), BridgeError> {
+        let scene_w = usize::try_from(self.target.size.0).unwrap_or(0);
+        let row = usize::try_from(clip.width).unwrap_or(0).saturating_mul(4);
+        let origin_x = usize::try_from(clip.x).unwrap_or(0);
+        let origin_y = usize::try_from(clip.y).unwrap_or(0);
+        let rows = usize::try_from(clip.height).unwrap_or(0);
+        if scene_w == 0 || row == 0 || rows == 0 {
+            return Err(BridgeError::InvalidSize(
+                "encoded clip does not fit the desktop".to_owned(),
+            ));
+        }
+        for row_index in 0..rows {
+            let src_off = row_index.saturating_mul(row);
+            let Some(src) = tight.get(src_off..src_off.saturating_add(row)) else {
+                break;
+            };
+            let dest_off = origin_y
+                .saturating_add(row_index)
+                .saturating_mul(scene_w)
+                .saturating_add(origin_x)
+                .saturating_mul(4);
+            let Some(dest) = self
+                .readback
+                .get_mut(dest_off..dest_off.saturating_add(row))
+            else {
+                break;
+            };
+            dest.copy_from_slice(src);
+        }
+        Ok(())
+    }
+
     /// Fast overview clips stay under this edge. A 1080p panel plus its
     /// shadow outset is taller than 1024, and rejecting that clip made the
     /// fade GPU-read both outputs.
@@ -4258,6 +4421,32 @@ struct CompositedPixel<'a> {
     second: [u8; 4],
     x: u32,
     y: u32,
+}
+
+fn tight_clip_rows(
+    mapped: &[u8],
+    padded: u32,
+    clip: vello::FineDamageRect,
+) -> Result<Vec<u8>, BridgeError> {
+    let row = usize::try_from(clip.width).unwrap_or(0).saturating_mul(4);
+    let stride = usize::try_from(padded).unwrap_or(0);
+    let rows = usize::try_from(clip.height).unwrap_or(0);
+    if row == 0 || stride < row || rows == 0 {
+        return Err(BridgeError::InvalidSize(
+            "clip readback row does not fit".to_owned(),
+        ));
+    }
+    let mut tight = Vec::with_capacity(row.saturating_mul(rows));
+    for row_index in 0..rows {
+        let start = row_index.saturating_mul(stride);
+        let Some(src) = mapped.get(start..start.saturating_add(row)) else {
+            return Err(BridgeError::Map(
+                "clip readback row is outside the mapped buffer".to_owned(),
+            ));
+        };
+        tight.extend_from_slice(src);
+    }
+    Ok(tight)
 }
 
 impl CompositedPixel<'_> {
