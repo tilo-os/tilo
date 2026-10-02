@@ -162,6 +162,13 @@ impl DocumentReplica {
     }
 }
 
+/// Optional action-based undo/redo payloads for outside-consequence spans.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommittedSpanInverse {
+    pub undo_via: Option<tilo_actions::EncodedAction>,
+    pub redo_via: Option<tilo_actions::EncodedAction>,
+}
+
 /// One reversible action on the undo/redo stacks.
 ///
 /// **Collab-safe, change-based undo.** Rather than snapshotting the whole
@@ -512,8 +519,7 @@ impl UndoLog {
             metadata,
             author,
             instance_id,
-            None,
-            None,
+            CommittedSpanInverse::default(),
         )
     }
 
@@ -527,8 +533,7 @@ impl UndoLog {
         metadata: Option<String>,
         author: Option<UserId>,
         instance_id: Option<InstanceId>,
-        undo_via: Option<tilo_actions::EncodedAction>,
-        redo_via: Option<tilo_actions::EncodedAction>,
+        inverse: CommittedSpanInverse,
     ) -> bool {
         if after == before {
             // Nothing to undo, but the baseline moves up all the same — same
@@ -548,8 +553,8 @@ impl UndoLog {
                 widget_metadata: metadata,
                 author,
                 instance_id,
-                undo_via,
-                redo_via,
+                undo_via: inverse.undo_via,
+                redo_via: inverse.redo_via,
             },
         );
         if let Some(instance) = instance_id {
@@ -1234,8 +1239,10 @@ impl State {
             metadata,
             author,
             None,
-            undo_via,
-            redo_via,
+            CommittedSpanInverse {
+                undo_via,
+                redo_via,
+            },
         )
     }
 
