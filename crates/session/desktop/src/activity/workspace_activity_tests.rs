@@ -181,7 +181,7 @@ mod workspace_activity {
         // Layout/setup commits are omitted from the feed; rename so there is
         // a Change row to select and attempt restore against.
         tree.workspaces[0].name = "Design studio".into();
-        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree);
+        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
         tilo_resource::history::commit_stamped(&mut tree.doc);
         let mut pane = RoomActivityPane::new();
         pane.refresh(&mut tree);
