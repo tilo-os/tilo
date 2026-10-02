@@ -348,6 +348,44 @@ fn each_session_is_its_own_attributed_agent_run() {
     assert_eq!(groups[1].label, "Writer");
 }
 
+/// A stdio connection (one `--connect` client, as `.cursor/mcp.json` runs)
+/// is also its own agent run, named by the client at `initialize`, so its
+/// edits are attributed in history like an HTTP session's.
+#[test]
+fn each_stdio_connection_is_its_own_attributed_agent_run() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    run(async {
+        for name in ["Painter", "Critic"] {
+            let mut server =
+                crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into());
+            server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}))
+                .await
+                .unwrap();
+            tool(
+                &mut server,
+                "tilo_invoke",
+                json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+            )
+            .await;
+        }
+    });
+    let groups: Vec<_> = invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.context.clone().unwrap().group.unwrap())
+        .collect();
+    assert_eq!(groups.len(), 2);
+    assert_ne!(groups[0].id, groups[1].id);
+    assert_eq!(
+        (groups[0].label.as_str(), groups[1].label.as_str()),
+        ("Painter", "Critic")
+    );
+    assert!(groups.iter().all(|group| group.kind == "agent-run"));
+}
+
 #[test]
 fn a_contract_asking_for_confirmation_is_confirmed_by_the_admitted_call() {
     for (policy, expected) in [

@@ -13,12 +13,12 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::brush::{ink_outline, smooth};
+use crate::brush::smooth;
 use crate::colour::{encode8, from_linear};
 use crate::engine::{Blend, Canvas, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
 use crate::grid::{Area, at, box_blur, cell, extract, float, smoothstep, store};
 use crate::ground::fbm;
-use crate::mask::{Coverage, fill};
+use crate::mask::{Coverage, brush_footprint, fill};
 
 /// The watercolour engine.
 pub struct Watercolour {
@@ -148,8 +148,7 @@ impl WaterLayer {
         match mark {
             Mark::Stroke(stroke) => {
                 let samples = smooth(&stroke.points, 0.75);
-                let outline = ink_outline(&samples, size);
-                fill(&[outline], width, height, margin, false)
+                brush_footprint(&samples, size, 0.8, (width, height), margin)
             }
             Mark::Fill(region) => fill(&region.contours, width, height, margin, false),
         }

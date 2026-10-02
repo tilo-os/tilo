@@ -81,6 +81,15 @@ pub enum ViewOp {
     Inspect(Inspect),
     Media,
     Export(Export),
+    History(HistoryView),
+}
+
+/// The artwork's history: who changed what, in order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryView {
+    /// The most recent versions to list, 1 to 500 (default 100).
+    pub last: Option<u32>,
 }
 
 /// The parameter type a property's schema describes.
@@ -343,7 +352,16 @@ impl Resource for ArtworkResource {
         export.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
-        vec![look, inspect, media, export]
+        let mut history = view("history", "Artwork history", params_of::<HistoryView>(), |args| {
+            ViewOp::History(read_args(args).unwrap_or_default())
+        })
+        .with_description(
+            "List the artwork's versions, oldest first: each change's action, the agent run or person it belongs to, and when.",
+        );
+        history.contract.result = ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
+        vec![look, inspect, media, export, history]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {

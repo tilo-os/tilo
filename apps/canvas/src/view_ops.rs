@@ -302,3 +302,24 @@ pub fn media(art: &Artwork) -> Value {
         "plain_layers": "a layer with no medium draws crisp vector art; pigment:<name> resolves against every palette there",
     })
 }
+
+/// The versions of the document, oldest first, as an agent reads them.
+pub fn history(doc: &mut ui::automerge::AutoCommit, view: &crate::resource::HistoryView) -> Value {
+    let last = usize::try_from(view.last.unwrap_or(100).clamp(1, 500)).unwrap_or(100);
+    let versions = ui::tilo_resource::history::versions(doc);
+    let total = versions.len();
+    let listed: Vec<Value> = versions
+        .iter()
+        .skip(total.saturating_sub(last))
+        .map(|version| {
+            let context = version.context.as_ref();
+            json!({
+                "change": version.hash.to_string().get(..12).unwrap_or_default(),
+                "action": context.map(|context| context.action_label.clone()).or_else(|| version.summary()),
+                "group": context.and_then(|context| context.group.as_ref()).map(|group| group.label.clone()),
+                "time_ms": version.time_ms,
+            })
+        })
+        .collect();
+    json!({"versions": listed, "total": total})
+}

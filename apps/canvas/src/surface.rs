@@ -401,6 +401,10 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 })
             }
+            ViewOp::History(view) => Ok(ActionOutput {
+                value: Some(view_ops::history(doc, view)),
+                resources: Vec::new(),
+            }),
             ViewOp::Media => Ok(ActionOutput {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),

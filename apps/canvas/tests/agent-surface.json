@@ -3662,6 +3662,32 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "history",
+    "resource_kind": "canvas.artwork",
+    "label": "Artwork history",
+    "description": "List the artwork's versions, oldest first: each change's action, the agent run or person it belongs to, and when.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "last",
+        "ty": "integer",
+        "required": false,
+        "description": "The most recent versions to list, 1 to 500 (default 100).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "The most recent versions to list, 1 to 500 (default 100)."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "inspect",
     "resource_kind": "canvas.artwork",
     "label": "Inspect marks",
