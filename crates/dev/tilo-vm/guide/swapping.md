@@ -37,6 +37,16 @@ iterating on logic, not for performance or timing work. The layer's
 provenance records the profile. `--profile` applies only to
 `--from worktree` components, not to apps or CI builds.
 
+Inside the VM, native GNU/Linux builds with `--profile dev` or
+`--profile test` use the LLVM linker bundled with Rust. The C compiler
+frontend and the target's existing linker flags, including hardening, are
+preserved. This avoids GNU ld's memory pressure when linking large debug
+binaries. The first build after switching linkers can rebuild cached outputs;
+later builds reuse the same driver and each worktree's own build directory.
+An explicit `CARGO_TARGET_<TRIPLE>_LINKER` environment variable on the daemon
+overrides this choice. Other profiles and host builds keep their existing
+linker selection.
+
 ## Builders (`--from worktree`, the default)
 
 `--builder vm` (default) works from every host:
