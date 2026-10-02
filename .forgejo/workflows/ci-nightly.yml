@@ -61,7 +61,9 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Check complete workspace formatting
-        run: cargo fmt --all --check
+        # Workspace members only: --all also formats path dependencies, and
+        # the vendor/ forks must stay byte-identical to their upstream trees.
+        run: cargo fmt --check
 
   complete:
     strategy:
