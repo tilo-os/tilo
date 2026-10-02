@@ -78,28 +78,7 @@ impl ResourceApp for App {
                 Dropdown::from_state(ids.clone(), &target).with_id("canvas-layer"),
             ))
         });
-        let summary = cx
-            .text(|art| {
-                art.layers
-                    .iter()
-                    .rev()
-                    .map(|layer| {
-                        let medium = if layer.medium.is_empty() {
-                            "plain"
-                        } else {
-                            layer.medium.as_str()
-                        };
-                        format!(
-                            "{} · {medium} · {}",
-                            layer.name,
-                            art.marks_of(&layer.id).count()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .with_id("canvas-layers")
-            .dimmed();
+        let summary = layer_panel(cx);
         let inspector = inspector(cx, &tools, layer_choice, summary);
         Box::new(
             Column::new()
@@ -122,7 +101,17 @@ impl ResourceApp for App {
                             Container::new()
                                 .with_no_padding()
                                 .with_width(340.0)
-                                .with_child(Box::new(inspector)),
+                                .with_child(Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_fill_remaining_height()
+                                        .push(Box::new(
+                                            Scrollable::new_vertical()
+                                                .with_semantic_key("canvas-inspector")
+                                                .fill_parent_height()
+                                                .with_child(Box::new(inspector)),
+                                        )),
+                                )),
                         )),
                 )),
         )
@@ -154,12 +143,118 @@ impl ResourceApp for App {
     }
 }
 
+/// A layer as its row shows it.
+#[derive(Clone, Default, PartialEq)]
+struct LayerRow {
+    id: String,
+    name: String,
+    medium: String,
+    visible: bool,
+    marks: usize,
+}
+
+/// One row per layer, top first: its name, medium and marks, and controls
+/// bound to the layer actions, rebuilt whenever the layers change.
+fn layer_panel(cx: &ViewCx<ArtworkResource>) -> Element {
+    let rows = cx.value(|art: &Artwork| {
+        art.layers
+            .iter()
+            .rev()
+            .map(|layer| LayerRow {
+                id: layer.id.clone(),
+                name: layer.name.clone(),
+                medium: if layer.medium.is_empty() {
+                    "plain".into()
+                } else {
+                    layer.medium.clone()
+                },
+                visible: layer.visible,
+                marks: art.marks_of(&layer.id).count(),
+            })
+            .collect::<Vec<_>>()
+    });
+    cx.switch(&rows, |cx, rows| {
+        let mut list = Column::new()
+            .with_no_padding()
+            .with_gap(6.0)
+            .with_id("canvas-layers");
+        for row in rows {
+            list = list.push(layer_row(cx, row));
+        }
+        Box::new(list)
+    })
+}
+
+/// A layer's name, medium and marks over its controls; each control's
+/// accessible name says which layer it acts on.
+fn layer_row(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
+    let named = |id: &str| {
+        ui::i18n::I18nManager::format(
+            id,
+            &[
+                ("name", row.name.clone().into()),
+                ("visible", if row.visible { "yes" } else { "no" }.into()),
+            ],
+        )
+    };
+    let visibility = if row.visible {
+        "canvas-layer-hide"
+    } else {
+        "canvas-layer-show"
+    };
+    let buttons = [
+        (
+            visibility,
+            "canvas-layer-visibility-name",
+            ArtworkResource::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible)),
+        ),
+        (
+            "canvas-layer-up",
+            "canvas-layer-up-name",
+            ArtworkResource::MOVE_LAYER.with((row.id.clone(), "forward".into())),
+        ),
+        (
+            "canvas-layer-down",
+            "canvas-layer-down-name",
+            ArtworkResource::MOVE_LAYER.with((row.id.clone(), "backward".into())),
+        ),
+        (
+            "canvas-layer-remove",
+            "canvas-layer-remove-name",
+            ArtworkResource::REMOVE_LAYER.with(row.id.clone()),
+        ),
+    ];
+    let mut controls = Row::new().with_gap(4.0);
+    for (label, name, invoke) in buttons {
+        controls = controls.push(Box::new(
+            cx.button(label, invoke).with_accessible_name(&named(name)),
+        ));
+    }
+    let label = ui::i18n::I18nManager::format(
+        "canvas-layer-row",
+        &[
+            ("name", row.name.clone().into()),
+            ("medium", row.medium.clone().into()),
+            ("marks", row.marks.into()),
+        ],
+    );
+    let title = Text::new(&label);
+    let title = if row.visible { title } else { title.dimmed() };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_gap(2.0)
+            .push(Box::new(title))
+            .push(Box::new(controls)),
+    )
+}
+
 /// The inspector: colour, brush, layers and adding layers.
 fn inspector(
     cx: &ViewCx<ArtworkResource>,
     tools: &surface::Tools,
     layer_choice: Element,
-    summary: Text,
+    summary: Element,
 ) -> Column {
     let add = |label: &str, name: &str, medium: &str| {
         cx.button(
@@ -180,7 +275,7 @@ fn inspector(
             Slider::from_state(&tools.size).with_id("canvas-brush-size"),
         )))
         .push(layer_choice)
-        .push(Box::new(summary))
+        .push(summary)
         .push(Box::new(add("canvas-add-plain-layer", "Ink", "")))
         .push(Box::new(add("canvas-add-oil-layer", "Oil", "oil")))
         .push(Box::new(add(

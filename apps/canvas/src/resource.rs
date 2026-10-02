@@ -35,6 +35,14 @@ impl ArtworkResource {
     /// `add-layer`: its name and medium (empty for plain).
     pub const ADD_LAYER: ActionRef<Self, (String, String)> =
         ActionRef::new("add-layer", &["name", "medium"]);
+    /// `edit-layer` showing or hiding a layer.
+    pub const SET_LAYER_VISIBLE: ActionRef<Self, (String, bool)> =
+        ActionRef::new("edit-layer", &["id", "visible"]);
+    /// `edit-layer` moving a layer `front`, `back`, `forward` or `backward`.
+    pub const MOVE_LAYER: ActionRef<Self, (String, String)> =
+        ActionRef::new("edit-layer", &["id", "to"]);
+    /// `remove-layer` by id.
+    pub const REMOVE_LAYER: ActionRef<Self, String> = ActionRef::new("remove-layer", &["id"]);
     /// `arrange`: marks, then `front`, `back`, `forward` or `backward`.
     pub const ARRANGE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("arrange", &["ids", "to"]);

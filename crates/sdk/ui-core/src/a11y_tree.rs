@@ -1223,6 +1223,32 @@ mod tests {
 
             assert!(tree.action_resources().is_empty());
         }
+
+        // Case `controls_in_a_scroll_region_are_published_only_under_a_key`.
+        {
+            let published = |scroll: crate::widget::Scrollable| {
+                let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go", None)));
+                let node_map = layout(&mut scroll);
+                let mut tree = SemanticTree::new();
+                tree.refresh(&scroll, &node_map, None, &[]);
+                tree.action_resources()
+                    .iter()
+                    .map(|resource| resource.id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert!(
+                published(crate::widget::Scrollable::new_vertical()).is_empty(),
+                "an unkeyed scroll group follows its layout node"
+            );
+            let keyed =
+                published(crate::widget::Scrollable::new_vertical().with_semantic_key("pane"));
+            assert!(
+                keyed
+                    .iter()
+                    .any(|id| id.contains("pane") && id.contains("go")),
+                "a keyed scroll group keeps its controls durable, got {keyed:?}"
+            );
+        }
     }
 
     #[test]
