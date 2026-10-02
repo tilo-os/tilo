@@ -476,6 +476,7 @@ a11y-notifications-cleared = Benachrichtigungen gelöscht
 a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
 a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
 a11y-notifications = Benachrichtigungen
+notification-action-open = Öffnen
 notification-center-title = Benachrichtigungen
 notification-center-empty = Keine neuen Benachrichtigungen
 notification-center-cleared = Benachrichtigungen gelöscht
