@@ -136,8 +136,20 @@ impl Handles {
 
 /// `page` with its rows grouped by resource and each action reduced to a
 /// signature: `{"save-as": "Save document as (path?)"}`. With `handles`,
-/// long resource ids are named by their session handles.
-pub fn compact_page(page: &CataloguePage, mut handles: Option<&mut Handles>) -> Value {
+/// long resource ids are named by their session handles. Descriptions are
+/// included; an `open` reply leaves them out, because that reply is read
+/// again on every later turn.
+pub fn compact_page(page: &CataloguePage, handles: Option<&mut Handles>) -> Value {
+    compact_described(page, handles, true)
+}
+
+/// [`compact_page`], omitting each action's description when `describe` is
+/// false. The label, parameters and risk stay: that is what a call needs.
+pub fn compact_described(
+    page: &CataloguePage,
+    mut handles: Option<&mut Handles>,
+    describe: bool,
+) -> Value {
     /// One resource of the page: its head and its actions, in page order.
     struct Group {
         id: String,
@@ -160,9 +172,10 @@ pub fn compact_page(page: &CataloguePage, mut handles: Option<&mut Handles>) -> 
             group.head.insert("children".into(), Value::Bool(true));
         }
         if let Some(action) = &row.action {
-            group
-                .actions
-                .insert(action.address.action.clone(), signature(action).into());
+            group.actions.insert(
+                action.address.action.clone(),
+                signature(action, describe).into(),
+            );
         }
     }
     let resources = groups
@@ -208,13 +221,14 @@ fn resource_head(row: &CatalogueRow, handles: Option<&mut Handles>) -> Map<Strin
 
 /// One line an agent can act on: label, parameters, and only the contract
 /// facts that change what it should do.
-fn signature(action: &ActionDescriptor) -> String {
+fn signature(action: &ActionDescriptor, describe: bool) -> String {
     let mut line = action.action_label.clone();
-    if let Some(description) = action
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|description| !description.is_empty())
+    if describe
+        && let Some(description) = action
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|description| !description.is_empty())
     {
         line.push_str(" — ");
         line.push_str(&first_sentence(description));
