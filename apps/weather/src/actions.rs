@@ -191,7 +191,7 @@ pub fn provide_resources(state: &WeatherModel, live: bool) -> Vec<Resource> {
             reason: "Network refresh is disabled for this weather view".into(),
         }
     };
-    replace_action_contract(&mut root, "refresh", refresh_availability.clone());
+    replace_action_contract(&mut root, "refresh", refresh_availability);
     for child in &mut root.children {
         replace_action_contract(child, "refresh", location_refresh.clone());
     }

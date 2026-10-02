@@ -157,7 +157,7 @@ impl WeatherApp {
 
     /// Show the saved places the framework resource already holds.
     /// An empty projection does not wipe a library that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::WeatherModel) {
+    pub(crate) fn adopt_resource_state(&self, state: &crate::model::WeatherModel) {
         if state.locations.is_empty() && !self.core.borrow().model.locations.is_empty() {
             return;
         }
@@ -766,18 +766,7 @@ impl ui::resources::PublishesResources for WeatherApp {
         if self.actions.is_hosted() && id == "weather.locations" {
             return None;
         }
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
+        find_resource(&self.publish_resources(doc), id)
     }
 }
 
@@ -2606,4 +2595,16 @@ mod history_round1_tests {
         assert!(!app.core.borrow().is_fetching());
         assert!(app.core.borrow().model.snapshots.contains_key(&other));
     }
+}
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }

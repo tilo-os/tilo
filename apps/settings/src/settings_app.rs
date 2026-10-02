@@ -460,10 +460,13 @@ impl SettingsApp {
 
     /// Preference panes read the document in their own sync. An empty
     /// projection must not wipe unsynced local pane state.
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_ref_mut,
+        reason = "ResourceSurface adopt hook kept for API parity; panes sync from the document"
+    )]
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::SettingsState) {
-        if state.values.is_empty() {
-            return;
-        }
+        let _ = state;
     }
 
     /// Test-only: mark the surface hosted without a real framework dispatcher.
@@ -2177,7 +2180,7 @@ impl ui::search::capability::SearchSource for SettingsApp {
 impl ui::resources::PublishesResources for SettingsApp {
     /// Standalone / `--shots` / unit tests publish the full tree. When the
     /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// SettingsAction preference door — keep only live device extras.
+    /// `SettingsAction` preference door — keep only live device extras.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
             return crate::actions::live_device_resources(doc, self.account_resource_inventory());

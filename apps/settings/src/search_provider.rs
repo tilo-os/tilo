@@ -10,7 +10,7 @@
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
 //! already exported to Ctrl+K as *actions* through the app's
-//! [``](); giving pane results a
+//! [`PublishesResources`](ui::resources::PublishesResources); giving pane results a
 //! distinct `Settings` kind keeps the two groups apart in the palette.
 
 use tilo_actions::{ActionAddress, Resource};
