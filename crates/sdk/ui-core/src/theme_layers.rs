@@ -1159,7 +1159,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn distribution_and_the_user_share_the_motion_role() {
         let mut spec = CustomThemeSpec {
             schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
