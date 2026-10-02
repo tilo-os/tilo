@@ -188,7 +188,10 @@ mod workspace_activity {
         assert!(
             !pane.entries().is_empty(),
             "expected a feed-visible rename, got {:?}",
-            pane.entries().iter().map(|e| e.summary.as_str()).collect::<Vec<_>>()
+            pane.entries()
+                .iter()
+                .map(|e| e.summary.as_str())
+                .collect::<Vec<_>>()
         );
         pane.timeline.set_selection(Some((0, 0)));
         assert!(!pane.timeline.begin_naming_selection());
