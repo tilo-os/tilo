@@ -565,6 +565,10 @@ fn enrolled_fingerprint(username: &str) -> bool {
         && fingerprint_list_has_enrollment(&String::from_utf8_lossy(&output.stdout))
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent lifecycle flags: bootstrap, rebuild, focus reset, keyboard focus"
+)]
 pub struct GreeterApp {
     sessions: Vec<Session>,
     selected_session: usize,
@@ -636,6 +640,10 @@ pub struct GreeterApp {
     /// Queued console requests (see [`console`]); `None` in shots and tests
     /// that do not exercise the console.
     console: Option<console_control::ConsoleServer>,
+    /// Whether the compositor has given this window the keyboard. Until it
+    /// has, keys typed at the greeter go nowhere, so the console reports
+    /// sign-in as accepting input only once this is set.
+    keyboard_focus: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -742,6 +750,7 @@ impl GreeterApp {
             backdrop_deadline: None,
             shot_time: None,
             console: None,
+            keyboard_focus: false,
         }
     }
 
@@ -1801,6 +1810,11 @@ impl Widget for GreeterApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::Focused(focused) => self.keyboard_focus = *focused,
+            WindowEvent::KeyboardInput { .. } => self.keyboard_focus = true,
+            _ => {}
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -2025,6 +2039,15 @@ mod tests {
     }
 
     fn dispatch_enter(app: &mut GreeterApp, state: &mut AutoCommit, focused: &str) -> bool {
+        dispatch(app, state, focused, &enter_event())
+    }
+
+    fn dispatch(
+        app: &mut GreeterApp,
+        state: &mut AutoCommit,
+        focused: &str,
+        event: &WindowEvent,
+    ) -> bool {
         use std::collections::HashMap;
         use taffy::AvailableSpace;
 
@@ -2048,7 +2071,7 @@ mod tests {
         let mut handled = false;
         let mut focus_target = None;
         app.handle_event(
-            &enter_event(),
+            event,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
@@ -2061,6 +2084,25 @@ mod tests {
             },
         );
         handled
+    }
+
+    #[test]
+    fn console_reports_input_only_once_the_compositor_focuses_the_window() {
+        let accepts = |app: &GreeterApp| {
+            app.console_state()["accepts_input"]
+                .as_bool()
+                .expect("sign-in state reports whether it accepts input")
+        };
+        let mut app = GreeterApp::with_sessions(test_sessions());
+        let mut state = AutoCommit::new();
+        assert!(!accepts(&app), "a window nobody focused receives no keys");
+        dispatch(&mut app, &mut state, "", &WindowEvent::Focused(true));
+        assert!(accepts(&app));
+        dispatch(&mut app, &mut state, "", &WindowEvent::Focused(false));
+        assert!(!accepts(&app));
+        // A key can only arrive at the focused window.
+        dispatch(&mut app, &mut state, "", &named_key_event(NamedKey::Tab));
+        assert!(accepts(&app));
     }
 
     /// How a widget identifies itself in a tree dump: its `test_id` when it
