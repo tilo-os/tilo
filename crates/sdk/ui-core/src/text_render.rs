@@ -2317,6 +2317,27 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, style.size, color, transform);
     }
 
+    /// How far below the origin [`Self::draw_style`], given the same
+    /// arguments, puts the first line's baseline: what places text by its
+    /// baseline rather than its line box.
+    pub fn first_baseline_style(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> f32 {
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        if text.is_empty() {
+            return style.size * 0.8;
+        }
+        let max_width = self.collapse_unused_max_width(text, max_width, style, true);
+        let runs = self.shaped_runs(text, max_width, style);
+        runs.first()
+            .and_then(|run| run.glyphs.first())
+            .map_or(style.size * 0.8, |glyph| glyph.y)
+    }
+
     fn make_shape_key(&self, text: &str, max_width: Option<f32>, style: &TextStyle) -> ShapeKey {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
