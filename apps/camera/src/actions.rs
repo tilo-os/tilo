@@ -484,6 +484,10 @@ pub(crate) fn bound_mode_facing_actions(facing: Facing, recording: bool) -> Vec<
 }
 
 /// Capture-settings Document child for [`tilo_resource::publish`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "settings surface lists every capture preference inline"
+)]
 pub(crate) fn settings_document_resource(settings: &Settings) -> Resource {
     let mut node = Resource::new("camera.settings", "camera.settings", "Capture settings");
     for resolution in Resolution::ALL {

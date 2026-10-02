@@ -4025,7 +4025,7 @@ impl Widget for StoreApp {
             .iter()
             .filter(|report| {
                 !matches!(
-                    state.get(path, &report_note_key(&report.app_id)),
+                    state.get(path, report_note_key(&report.app_id)),
                     Ok(Some((Value::Object(ObjType::Text), _)))
                 )
             })

@@ -141,7 +141,7 @@ fn valid_case_id(value: &str) -> bool {
 }
 
 fn note_at(doc: &Doc, app_id: &str) -> String {
-    ui::doc::read_text(doc, &ROOT, &format!("{REPORT_NOTE_KEY_PREFIX}{app_id}"))
+    ui::doc::read_text(doc, &ROOT, format!("{REPORT_NOTE_KEY_PREFIX}{app_id}"))
         .unwrap_or_default()
         .chars()
         .take(MAX_REPORT_NOTE_CHARS)

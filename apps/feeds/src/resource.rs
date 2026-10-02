@@ -380,7 +380,7 @@ mod tests {
             door[0]
                 .children
                 .iter()
-                .any(|child| child.id.as_str() == actions::feed_resource_id(feed_id)),
+                .any(|child| child.id.as_str() == crate::actions::feed_resource_id(feed_id)),
             "publish children carry per-feed document ops"
         );
 

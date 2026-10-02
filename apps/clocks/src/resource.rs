@@ -197,7 +197,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn attach_hosted_surface_does_not_republish_the_collection_root() {
         let mut app = ClocksApp::scenario("running");
         let mut state = ui::State::new();

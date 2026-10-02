@@ -1,5 +1,6 @@
 use super::*;
 use tilo_automerge::ApplyIncoming;
+use ui::tilo_actions::{ExecutionMode, ResultSpec};
 
 /// An offline sample map is published by map actions, not a whole-model write.
 #[test]

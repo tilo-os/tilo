@@ -218,7 +218,7 @@ mod tests {
         seed: ui::automerge::AutoCommit::new(),
         registry: {
             let mut registry = ActionRegistry::new();
-            Passwords::register(&mut registry);
+            <Passwords as ui::tilo_resource::Resource>::register(&mut registry);
             registry
         },
         resources: |doc| {
