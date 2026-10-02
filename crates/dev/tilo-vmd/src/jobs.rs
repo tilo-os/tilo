@@ -257,6 +257,11 @@ impl Daemon {
         let mut cargo = Command::new("cargo");
         cargo.args(component.cargo_args(&extra)).current_dir(src);
         cargo_env(&mut cargo, job.color, sccache);
+        if matches!(component.profile.as_str(), "dev" | "test")
+            && let (_, Some(target)) = toolchain()
+        {
+            crate::linker::configure(&mut cargo, &self.root, &target)?;
+        }
         eprintln!(
             "tilo-vmd: cargo {} (in {})",
             component.cargo_args(&extra).join(" "),

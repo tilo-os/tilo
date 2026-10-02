@@ -98,8 +98,17 @@ fn start_session_and_learn_offset(
         .expect("session construction");
     session.add_viewer(VIEWER_PEER, false);
 
+    // Both sides are in-process and share `origin` (the reference the wire ts
+    // is measured from). Bracket the handshake with receiver readings: the
+    // learned offset is then bounded by the handshake call alone, not by how
+    // long the viewer's decoder takes to start on a loaded host.
+    let origin = session.origin();
+    let origin_ns = || u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let before_send = origin_ns();
+    let handshake = session.stream_start_msg();
+    let receiver_ns_at_recv = origin_ns();
     // The sender-side monotonic-ns feeds the receiver's clock-offset handshake.
-    let sender_ns_at_send: u64 = match session.stream_start_msg() {
+    let sender_ns_at_send: u64 = match handshake {
         NeighbourMsg::SurfaceStreamStart {
             surface,
             source_peer,
@@ -127,20 +136,20 @@ fn start_session_and_learn_offset(
     let mut view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
     view.restart_stream(session.chosen_codec().wire_label(), Some((w, h)));
 
-    // Both sides are in-process and share `origin` (the reference the wire ts
-    // is measured from), so the clock-offset handshake is trivially near-zero.
-    let origin = session.origin();
-
-    let receiver_ns_at_recv = u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    assert!(
+        (before_send..=receiver_ns_at_recv).contains(&sender_ns_at_send),
+        "the sender stamps the handshake on the shared clock while it is built"
+    );
     metrics.set_clock_offset(sender_ns_at_send, receiver_ns_at_recv);
     assert!(
         metrics.clock_offset_ns().is_some(),
         "handshake must have populated clock offset"
     );
     let learned_offset = metrics.clock_offset_ns().unwrap();
+    let handshake_ns = i128::from(receiver_ns_at_recv.saturating_sub(before_send));
     assert!(
-        learned_offset.abs() < 10_000_000,
-        "loopback clock offset should be < 10 ms, got {learned_offset} ns"
+        (0..=handshake_ns).contains(&learned_offset),
+        "loopback clock offset {learned_offset} ns exceeds the {handshake_ns} ns handshake"
     );
     (session, metrics, view, origin)
 }

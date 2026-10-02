@@ -279,7 +279,7 @@ def medium_path(work, profile):
     return work / profile / f"tilo-installer-{profile}-aarch64.qcow2"
 
 
-def verify_identity(data, work, profile, imager_id):
+def verify_identity(data, work, profile, imager_id, imager_revision):
     spec = importlib.util.spec_from_file_location("windows_direct_provenance",
                                                   HERE / "windows-direct-provenance.py")
     provenance = importlib.util.module_from_spec(spec)
@@ -289,7 +289,9 @@ def verify_identity(data, work, profile, imager_id):
         data["cosign_command_json"], data["cosign_key_arg"])
     expected = data["lenovo_image"] if profile == "lenovo-83ed" else None
     require(identity["run_id"] == str(imager_id)
-            and identity["build_revision"] == data["source_revision"]
+            and identity["build_revision"] == imager_revision
+            and identity.get("os_source_revision", identity["build_revision"])
+            == data["source_revision"]
             and identity["live_base_image"] == data["generic_image"]
             and (expected is None or identity["target_image"] == expected),
             f"signed {profile} medium differs from pinned CI runs or images")
@@ -343,13 +345,16 @@ def fetch(data, work, progress):
     require(record.get("workflow_id") == "release-imager.yml", "wrong imager workflow")
     imager_id = record.get("id")
     require(type(imager_id) is int and imager_id > 0, "imager internal run ID is invalid")
+    imager_revision = record.get("commit_sha")
+    require(type(imager_revision) is str and REV.fullmatch(imager_revision),
+            "imager checkout revision is invalid")
     for profile in PROFILES:
         directory = work / profile
         ci = directory / "ci"
         ci.mkdir(parents=True, exist_ok=True)
         medium = medium_path(work, profile)
         if progress.done("medium-" + profile, [medium]):
-            identity = verify_identity(data, work, profile, imager_id)
+            identity = verify_identity(data, work, profile, imager_id, imager_revision)
             require(progress.data["steps"]["medium-" + profile][str(medium)]
                     == identity["qcow2_sha256"],
                     "retained medium checkpoint differs from signed CI identity")
@@ -365,7 +370,7 @@ def fetch(data, work, progress):
         cycle = directory / "cycle.zip"
         download_artifact(data["imager_run"], f"tilo-installer-full-cycle-aarch64-{profile}", cycle)
         extract_named(cycle, ["guest-install-proof.json"], ci)
-        identity = verify_identity(data, work, profile, imager_id)
+        identity = verify_identity(data, work, profile, imager_id, imager_revision)
         require((ci / (stem + ".qcow2.zst.sha256")).read_text().split()[0]
                 == identity["archive_sha256"]
                 and (ci / (stem + ".qcow2.sha256")).read_text().split()[0]
@@ -377,7 +382,7 @@ def fetch(data, work, progress):
         # ZIPs are redundant once the exact qcow2 has a durable checkpoint.
         archive.unlink()
         cycle.unlink()
-    return ({profile: verify_identity(data, work, profile, imager_id)
+    return ({profile: verify_identity(data, work, profile, imager_id, imager_revision)
              for profile in PROFILES}, os_ids)
 
 

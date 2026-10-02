@@ -64,6 +64,14 @@ attempt. The verified qcow2 and signed sidecars are retained in the work
 directory; the downloaded ZIPs are removed after verification. There is no
 raw media conversion.
 
+The v2 signed medium identity records the installer checkout as
+`build_revision` and the pinned OS source as `os_source_revision`. The imager
+can use a newer main checkout with installer fixes while consuming an older
+signed OS image; its workflow requires that OS source to be an ancestor. The
+wrapper checks the installer revision against the selected imager run and the
+OS revision against both signed OS runs. Legacy v1 media require the same
+revision for both. Both media must still share one installer checkout and run.
+
 Run `prepare` only after the realized plan has been reviewed and allocation
 has completed. The `source_raw` path may be new or may name an existing **empty**
 sparse template, provided the backend verifies its GPT, preserved samples, and

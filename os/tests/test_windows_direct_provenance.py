@@ -264,6 +264,33 @@ class ProvenanceTests(unittest.TestCase):
                     self.assertIn("verify-blob", runner.call_args.args[0])
                 generic = dict(board, target_profile="generic", target_image=base,
                                qcow2_sha256="f" * 64)
+                updated = {**identity, "schema": "tilo.whpx-ci-installer-medium.v2",
+                           "os_source_revision": "c" * 40, "build_revision": "8" * 40}
+                path.write_text(json.dumps(updated))
+                with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
+                        returncode=0, stderr="", stdout="")):
+                    updated_board = proof.signed_medium_identity(path, ci_proof, key)
+                    for revision in (None, "invalid"):
+                        path.write_text(json.dumps({**updated, "os_source_revision": revision}))
+                        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+                            proof.signed_medium_identity(path, ci_proof, key)
+                updated_generic = {**generic, "build_revision": "8" * 40,
+                                   "os_source_revision": "c" * 40}
+                pair_args = ({"first_boot_verified": False,
+                              "installer_medium_sha256": "d" * 64},
+                             {"first_boot_verified": True,
+                              "installer_medium_sha256": "f" * 64},
+                             image.split("@", 1)[1], base.split("@", 1)[1], base, "c" * 40)
+                proof.checked_medium_pair(updated_board, updated_generic, *pair_args)
+                with self.assertRaisesRegex(ValueError, "source revision differs"):
+                    proof.checked_medium_pair(updated_board,
+                                              {**updated_generic, "os_source_revision": "9" * 40},
+                                              *pair_args)
+                with self.assertRaisesRegex(ValueError, "paired WHPX"):
+                    proof.checked_medium_pair(updated_board,
+                                              {**updated_generic, "build_revision": "7" * 40},
+                                              *pair_args)
+                path.write_text(json.dumps(identity))
                 proof.checked_medium_pair(board, generic,
                                           {"first_boot_verified": False,
                                            "installer_medium_sha256": "d" * 64},

@@ -149,6 +149,16 @@ jobs:
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
           bash tools/ci/require-pdf-sandbox.sh
 
+      # The governed browser voice test drives two real Chromium profiles, as
+      # in check.yml. Installing it adds packages and upgrades none in the
+      # pinned image, so the renderer behind the visual goldens is unchanged.
+      - name: Prepare governed browser voice fixture
+        run: |
+          dnf install -y --setopt=install_weak_deps=False chromium
+          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
+          npm ci --prefix scripts/moq-browser
+          node scripts/moq-browser/build.mjs
+
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 

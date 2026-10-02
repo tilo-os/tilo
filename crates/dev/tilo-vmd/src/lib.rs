@@ -12,6 +12,7 @@ mod fsutil;
 pub mod input;
 pub mod jobs;
 pub mod layers;
+mod linker;
 pub mod locks;
 pub mod packages;
 pub mod server;
