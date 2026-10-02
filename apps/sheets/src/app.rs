@@ -6544,11 +6544,12 @@ impl ui::widget::controls::ActionControls for SheetsApp {
         self.palette.take_control_invocation()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        use ui::widget::Widget as _;
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
         if self.palette.is_open() {
-            self.palette.control_action_bindings()
-        } else {
-            Vec::new()
+            bindings.extend(self.palette.control_action_bindings());
         }
+        bindings
     }
 }
 
@@ -10686,6 +10687,29 @@ mod tests {
                 &root,
             ));
             assert_eq!(app.active_sheet, 1);
+        }
+
+        // Case `semantic_toolbar_controls_are_inventoried_action_bindings`.
+        {
+            use ui::widget::controls::ActionControls as _;
+
+            let (app, _doc) = seeded_app();
+            let bound: std::collections::HashSet<_> = app
+                .control_action_bindings()
+                .into_iter()
+                .map(|binding| binding.control_id)
+                .collect();
+            for target in [
+                "sheets.toolbar.formula-view",
+                "sheets.name-box",
+                "sheets.formula-bar",
+                "sheets.new-sheet",
+            ] {
+                assert!(
+                    bound.contains(target),
+                    "{target} has no action binding: {bound:?}"
+                );
+            }
         }
     }
 }
