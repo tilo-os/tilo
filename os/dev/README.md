@@ -400,6 +400,12 @@ published cohort tag/digest and Lenovo disk job. Fetch the config with
 The command records explicit developer CI evidence and never authorizes a disk
 write. It is distinct from release Cosign/SLSA verification; the physical copy
 guard still requires source/VM evidence and its separate developer admission.
+`python3 os/dev/forgejo-dev-installer-metadata.py INTERNAL_RUN_ID` reads the
+source and disk checksums from the successful installer run's authenticated
+artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
+and binds the assembly source to the live run. This avoids a full disk download
+when rechecking provenance. The downloaded disk still needs its full SHA-256
+check; metadata verification alone does not prove its contents or bootability.
 For generic encrypted targets, `--resume` repeats the boot check against the
 completed install without copying the OS again. A Lenovo board install can use
 `--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
