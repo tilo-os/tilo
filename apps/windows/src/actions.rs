@@ -114,7 +114,7 @@ fn effect(
 
 /// Standalone / contract-test tree: manager root with live catalogue children.
 /// Prefer [`crate::resource::provide_resources`] / surface `publish_resources`
-/// once document state is available — this keeps SampleProvider fixtures working.
+/// once document state is available — this keeps `SampleProvider` fixtures working.
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
     let apps = catalogue.apps.iter().map(app_resource).collect();
     vec![manager_resource(catalogue, apps)]

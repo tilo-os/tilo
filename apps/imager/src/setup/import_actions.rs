@@ -534,7 +534,7 @@ pub enum ImportDocumentAction {}
 
 impl ui::tilo_actions::Action for ImportDocumentAction {
     fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ui::tilo_actions::ActionError> {
-        match *self {}
+        match self {}
     }
 }
 

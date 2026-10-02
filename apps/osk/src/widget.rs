@@ -2826,18 +2826,7 @@ impl ui::resources::PublishesResources for OskWidget {
         if self.is_hosted() && id == crate::actions::KEYBOARD_RESOURCE_ID {
             return None;
         }
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id).or_else(|| {
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
             self.is_hosted().then(|| {
                 crate::resource::live_extras(self)
                     .into_iter()
@@ -4867,3 +4856,15 @@ mod framework_history_tests;
 #[cfg(test)]
 #[path = "visual_review.rs"]
 mod visual_review;
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}

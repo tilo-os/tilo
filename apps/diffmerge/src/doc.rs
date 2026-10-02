@@ -52,8 +52,7 @@ impl MergeState {
         let shared = SharedMerge::read(doc);
         let title = shared
             .as_ref()
-            .map(SharedMerge::title)
-            .unwrap_or_else(|| "Diff & Merge".into());
+            .map_or_else(|| "Diff & Merge".into(), SharedMerge::title);
         let mut model = shared
             .as_ref()
             .map(SharedMerge::into_model)

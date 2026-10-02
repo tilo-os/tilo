@@ -3177,18 +3177,7 @@ impl ui::resources::PublishesResources for WindowsApp {
         if self.is_hosted() && id == actions::MANAGER_RESOURCE_ID {
             return None;
         }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id).or_else(|| {
+        find_resource(&self.publish_resources(doc), id).or_else(|| {
             self.is_hosted().then(|| {
                 crate::resource::live_extras(self)
                     .into_iter()
@@ -3849,4 +3838,16 @@ mod tests {
             );
         }
     }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }

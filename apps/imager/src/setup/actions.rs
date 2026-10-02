@@ -868,7 +868,7 @@ pub enum SetupDocumentAction {}
 
 impl ui::tilo_actions::Action for SetupDocumentAction {
     fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ui::tilo_actions::ActionError> {
-        match *self {}
+        match self {}
     }
 }
 

@@ -290,7 +290,7 @@ impl MergeView {
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
             if let Some(shared) = SharedMerge::read(doc) {
-                self.adopt_shared(shared, doc);
+                self.adopt_shared(&shared, doc);
             } else {
                 self.model = MergeModel::default();
                 self.shared = None;
@@ -326,10 +326,10 @@ impl MergeView {
         }
     }
 
-    fn adopt_shared(&mut self, shared: SharedMerge, doc: &AutoCommit) {
-        self.base_label = shared.base_label.clone();
-        self.ours_label = shared.ours_label.clone();
-        self.theirs_label = shared.theirs_label.clone();
+    fn adopt_shared(&mut self, shared: &SharedMerge, doc: &AutoCommit) {
+        self.base_label.clone_from(&shared.base_label);
+        self.ours_label.clone_from(&shared.ours_label);
+        self.theirs_label.clone_from(&shared.theirs_label);
         self.shared = Some(shared.clone());
         self.model = shared.into_model();
         crate::doc::apply_resolutions(&mut self.model, doc);

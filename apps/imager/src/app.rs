@@ -799,7 +799,7 @@ impl ImagerApp {
             return;
         }
         if state.source.is_some() {
-            self.source = state.source.clone();
+            self.source.clone_from(&state.source);
         }
         let profile_changed = state.profile.hostname != self.profile.hostname
             || state.profile.keyboard != self.profile.keyboard
