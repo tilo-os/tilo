@@ -135,10 +135,34 @@ kernel_gaps() {
 }
 initrd_us_for_gaps="$(systemctl show --property=InitRDTimestampMonotonic --value 2>/dev/null || true)"
 case "$initrd_us_for_gaps" in ''|*[!0-9]*) initrd_us_for_gaps=0 ;; esac
+# The guest's CPU time stolen by its host since boot. A slow phase with high
+# steal is host contention (another VM or build on the same host), not the
+# image; with near-zero steal the time is the guest's own.
+cpu_steal() {
+  local stat="${TILO_PROC_STAT:-/proc/stat}" hz
+  [ -r "$stat" ] || return 0
+  hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+  awk -v hz="$hz" -v up_us="$entered_us" '
+    $1 == "cpu" { steal = $9 }
+    $1 ~ /^cpu[0-9]+$/ { cpus++ }
+    END {
+      if (steal == "" || cpus == 0) exit
+      s = steal / hz
+      printf "cpu steal since boot: %.3fs over %d CPUs (%.0f%% of %.3fs)\n",
+        s, cpus, 100 * s / (cpus * up_us / 1e6), up_us / 1e6 }' "$stat"
+}
+# Within half the budget the total is enough; a closer or failing boot also
+# names where its time went.
+if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" ]; then
+  cpu_steal
+  kernel_gaps
+  systemd-analyze critical-chain graphical.target 2>/dev/null | head -14 || true
+fi
 if [ "$entered_us" -gt "$budget_us" ]; then
   printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
     "$seconds" "$milliseconds" "$budget_seconds" >&2
   boot_phases >&2
+  cpu_steal >&2
   kernel_gaps >&2
   systemd-analyze critical-chain graphical.target >&2 || true
   systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true

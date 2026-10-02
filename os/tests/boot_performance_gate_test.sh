@@ -83,6 +83,18 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19000000 TILO_TEST_INITRD_US=4000000 \
   TILO_TEST_USERSPACE_US=14000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/phases"
 grep -Fq 'phases: kernel 4.000s, initrd 10.000s, userspace to greeter 5.000s' "$work/phases"
 
+# 4 CPUs, 1000 ticks of steal at 100 Hz = 10 s of 76 CPU-seconds.
+printf 'cpu  100 0 100 1000 0 0 0 1000 0 0\ncpu0 1 0 0 0\ncpu1 1 0 0 0\ncpu2 1 0 0 0\ncpu3 1 0 0 0\n' >"$work/stat"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=19000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/steal"
+grep -Fq 'cpu steal since boot: 10.000s over 4 CPUs (13% of 19.000s)' "$work/steal"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=5000000 \
+  "$repo/os/tests/boot_performance_gate.sh" >"$work/fast"
+if grep -Fq 'cpu steal' "$work/fast"; then
+  echo 'a boot well inside the budget printed contention diagnostics' >&2
+  exit 1
+fi
+
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
   echo 'boot performance gate accepted a greeter that became usable over budget' >&2
