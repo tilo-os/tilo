@@ -34,9 +34,13 @@ mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod history;
 #[cfg(target_arch = "wasm32")]
-mod live_view;
-#[cfg(target_arch = "wasm32")]
 mod host_services;
+#[cfg(target_arch = "wasm32")]
+#[allow(
+    dead_code,
+    reason = "LIVE_V1 helpers for the desktop_host path; module is wired for snapshot/apply exports while that host is not yet linked into the page runtime"
+)]
+mod live_view;
 #[cfg(target_arch = "wasm32")]
 mod page_authors;
 #[cfg(target_arch = "wasm32")]
