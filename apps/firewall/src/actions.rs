@@ -271,6 +271,11 @@ fn rule_label(r: &Rule) -> String {
 /// Push the stored configuration through `firewall-cmd` / the host apply path.
 /// Published from [`crate::resource::Firewall::local_operations`] so hosted
 /// surfaces keep the palette row without a second config root.
+///
+/// # Panics
+///
+/// Panics only if serializing the empty-string operation payload fails, which
+/// the JSON encoder does not.
 #[allow(
     clippy::expect_used,
     reason = "the empty string operation payload is always serializable"

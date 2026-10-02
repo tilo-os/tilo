@@ -2716,6 +2716,17 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // drag worked. An action and a click must not
                         // disagree about what they did.
                         next.set_param_at(field.param(), at, v);
+                        // If a curve still owns the playhead value, the
+                        // constant write was a no-op for playback — key the
+                        // authored instant so `param_at` and the picture agree.
+                        if (next.param_at(field.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                field.param(),
+                                at,
+                                v,
+                                next.key_interp_at(field.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));
@@ -2752,6 +2763,14 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // As the inspector's slider does — see the grade
                         // actions above for why the constant is not enough.
                         next.set_param_at(axis.param(), at, v);
+                        if (next.param_at(axis.param(), at) - v).abs() >= 1e-9 {
+                            next.set_key_at(
+                                axis.param(),
+                                at,
+                                v,
+                                next.key_interp_at(axis.param(), at).unwrap_or_default(),
+                            );
+                        }
                         encode(&clip_field_patch_action(&base, &next))
                     },
                 ));

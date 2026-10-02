@@ -10218,6 +10218,11 @@ impl WordProcessorWidget {
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
+        // Resource view openers (editor / compact) from RichText::local_operations.
+        // The editing surface is already this window; accept without further work.
+        if type_id == "tilo.rich-text.view" {
+            return Ok(true);
+        }
         // A delivered invocation by a participant (an agent task) moves only
         // that participant's view: its own `move-caret`/`select-*`/
         // `find-text`, and `go-to` on its own search hits, cells or comments.
@@ -10381,6 +10386,8 @@ impl Widget for WordProcessorWidget {
         &[
             crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
             crate::actions::view_ops::WORD_PROCESSOR_VIEW_OPERATION_TYPE,
+            // Published via tilo_document::RichText::local_operations (editor/compact).
+            "tilo.rich-text.view",
         ]
     }
 

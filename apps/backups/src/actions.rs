@@ -435,9 +435,7 @@ pub fn provide_resources_with_unavailable_reason(
     unavailable_reason: Option<&str>,
 ) -> Vec<Resource> {
     let unavailable_reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
-    let state = crate::resource::BackupsState {
-        policy: policy.clone(),
-    };
+    let state = crate::resource::BackupsState { policy: *policy };
     let mut backups = ui::tilo_resource::publish::<crate::resource::Backups>(
         BACKUPS_RESOURCE_ID,
         "Backups",

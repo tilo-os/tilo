@@ -3201,7 +3201,7 @@ impl ui::resources::PublishesResources for ImageEditorApp {
     ///
     /// Retained toolbar / empty-state buttons are not layout children, so their
     /// `tilo.control:*` resources must be published here or host clicks never
-    /// resolve after ActionEmitter emit.
+    /// resolve after `ActionEmitter` emit.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut out = if self.actions.is_hosted() {
             Vec::new()

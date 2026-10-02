@@ -2767,6 +2767,7 @@ impl CallbackBinding {
     /// Whether `route` is the broker route this binding names.
     pub(crate) fn matches_route(&self, route: &crate::collaboration::RouteSpec) -> bool {
         self.broker_route().as_ref() == Some(route)
+            || self.admission_route().as_ref() == Some(route)
     }
     pub(crate) fn drain_owned_tree(
         &self,
