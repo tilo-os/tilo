@@ -303,12 +303,13 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
             let mut tree = state.tree_mut();
             // Bootstrap writes are setup/layout and omitted from the feed;
             // rename so the explorer has a Change row to show.
+            let tree = &mut *tree;
             if let Some(ws) = tree.desktop.workspaces.first_mut() {
                 ws.name = format!("{} · live", ws.name);
             }
             tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
             tilo_resource::history::commit_stamped(&mut tree.doc);
-            h.host.room_activity_mut().refresh(&mut *tree);
+            h.host.room_activity_mut().refresh(tree);
         }
         h.host
             .room_activity_mut()
