@@ -214,15 +214,13 @@ async fn maintain(commands: &mpsc::Sender<NetCmd>, running: &Arc<Running>) -> Re
                 }
                 retry = later(Duration::from_millis(200));
             }
-            None if now >= retry => {
-                if install_carrier(running).is_err() {
-                    running.retire();
-                    failures = failures.saturating_add(1);
-                    if failures >= 3 {
-                        return Err("native carrier retry budget exhausted".into());
-                    }
-                    retry = later(Duration::from_millis(200 << failures));
+            None if now >= retry && install_carrier(running).is_err() => {
+                running.retire();
+                failures = failures.saturating_add(1);
+                if failures >= 3 {
+                    return Err("native carrier retry budget exhausted".into());
                 }
+                retry = later(Duration::from_millis(200 << failures));
             }
             None => {}
         }
