@@ -81,12 +81,6 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
             portability.render_web()
         );
     }
-    let script = web_build_script(&app_dir)?;
-    let output = request.output.as_ref().map_or_else(
-        || app_dir.join("target/web"),
-        |path| crate::absolute_from(&app_dir, path),
-    );
-    let work = app_dir.join("target/web-build");
     let started = Instant::now();
     let outcome = crate::targets::build(&app_dir, &app_bundle(false))?;
     let output = match &request.output {
@@ -143,48 +137,6 @@ pub(crate) fn package_web(start: &Path, _request: &PackageRequest) -> Result<Pac
          `tilo-app package --target web` writes that bundle in the layout Cloud serves",
         app_dir.display()
     )
-    .with_context(|| spec.manifest_path.display().to_string())?;
-
-    let staging = tempfile::Builder::new()
-        .prefix(".tilo-app-package-")
-        .tempdir_in(output_parent)
-        .with_context(|| format!("creating a staging area in {}", output_parent.display()))?;
-    let payload = staging.path().join("payload");
-    std::fs::create_dir(&payload).context("creating staged payload")?;
-    std::fs::write(payload.join(module_name), &module_bytes).context("staging the module")?;
-    let web_assets = spec.app_dir.join("assets/web");
-    if web_assets.is_dir() {
-        let assets = payload.join("assets");
-        std::fs::create_dir(&assets).context("creating staged assets")?;
-        crate::copy_payload_tree(&web_assets, &assets)?;
-    }
-    let staged = staging.path().join("package.tapp");
-    let identity = crate::signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = crate::resource_kinds::declared_in(&spec.app_dir)?;
-    let packed =
-        crate::pack::pack_manifest(manifest, resource_kinds, &payload, &staged, &identity)?;
-    let entrypoints = vec![PathBuf::from(module_name)];
-    let size = crate::within_budget(
-        &payload,
-        &entrypoints,
-        packed.bytes,
-        (budget, crate::PackagePlatform::Web),
-        &output,
-    )?;
-    std::fs::rename(&staged, &output)
-        .with_context(|| format!("publishing package to {}", output.display()))?;
-    eprintln!(
-        "[tilo-app] packaged {} ({}, {} bytes, for {})",
-        output.display(),
-        packed.id,
-        packed.bytes,
-        build.abi
-    );
-    Ok(PackageOutcome {
-        output,
-        entrypoints,
-        size,
-    })
 }
 
 /// How `dev --platform web` serves the page.
