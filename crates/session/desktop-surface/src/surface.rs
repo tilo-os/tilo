@@ -39,10 +39,16 @@ use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
     self, ActivityCloseReason, Admitted, Application, Command, DesktopPan, HistoryDirection,
-    HistoryState, Presentation, RouteIds, ScrollAction, ScrollState, Snapshot,
+    HistoryState, NotificationsState, PaneState, Presentation, RouteIds, ScrollAction, ScrollState,
+    Snapshot,
 };
 
+mod history;
+mod notices;
 mod search;
+
+pub use history::HistorySource;
+pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -182,7 +188,8 @@ impl DesktopHandle {
     /// the presented desktop cannot make.
     pub fn dispatch(&self, command: &Command, generation: &str) -> Result<(), String> {
         let mut shared = self.shared.borrow_mut();
-        let admitted = navigation::admit(command, generation, &shared.tree)?;
+        let capabilities = shared.presentation.capabilities();
+        let admitted = navigation::admit_with(command, generation, &shared.tree, &capabilities)?;
         let presentation = &shared.presentation;
         match (&admitted, command) {
             (Admitted::Pan(strip, _), _)
@@ -253,6 +260,57 @@ impl DesktopHandle {
     pub fn mint_id(&self) -> u64 {
         self.shared.borrow_mut().minter.mint()
     }
+
+    /// Focus the window showing `tab`, on the next update pass. False when
+    /// no window shows it.
+    pub fn focus_tab(&self, tab: TabId) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let Some(ids) = route_of(&shared.tree, tab) else {
+            return false;
+        };
+        shared.queue.push(Admitted::Select(ids));
+        true
+    }
+
+    /// Focus a window of application `app_id` in the active workspace (the
+    /// focused one when it is that application's), on the next update pass.
+    /// False when the workspace has none.
+    pub fn focus_app(&self, app_id: &str) -> bool {
+        let tab = self.read(|tree| {
+            let shows = |tab: &Tab| {
+                matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id: id, .. } if id == app_id)
+            };
+            if let Some(active) = navigation::active_route(tree)
+                && find_tab(tree, active.strip, active.tab).is_some_and(|(_, tab)| shows(tab))
+            {
+                return Some(active.tab);
+            }
+            tree.active_workspace()?
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| shows(tab))
+                .map(|tab| tab.id)
+        });
+        tab.is_some_and(|tab| self.focus_tab(tab))
+    }
+}
+
+/// Where `tab` is in `tree`.
+fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
+    tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().any(|t| t.id == tab).then_some(RouteIds {
+                    workspace: workspace.id,
+                    strip: strip.id,
+                    group: group.id,
+                    tab,
+                })
+            })
+        })
+    })
 }
 
 /// A widget-side follow-up to a command already applied to the tree.
@@ -298,6 +356,12 @@ pub struct DesktopSurface {
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
     platform: ui::platform::PlatformConventions,
+    /// The host's retained workspace history, when it keeps one.
+    history: Option<Box<dyn HistorySource>>,
+    /// The history pane, while the surface draws it.
+    activity: Option<history::HistoryOverlay>,
+    /// The banners and centre, when the host installed notifications.
+    notices: Option<notices::NotificationLayer>,
 }
 
 /// Time the update pass may spend building deferred tabs in one frame. At
@@ -369,9 +433,195 @@ impl DesktopSurface {
             search: tilo_desktop_search::DesktopSearch::new(),
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
+            history: None,
+            activity: None,
+            notices: None,
         };
         surface.show_active_strip();
         (surface, DesktopHandle { shared })
+    }
+
+    /// Read workspace history from `source`: Catch up, Explore, Replay and
+    /// Tasks then open the shared history pane over the strip.
+    pub fn set_history_source(&mut self, source: Box<dyn HistorySource>) {
+        self.history = Some(source);
+        let mut shared = self.shared.borrow_mut();
+        let mut next = shared.presentation.clone();
+        next.retained_history = true;
+        shared.present(next);
+    }
+
+    /// Show `notifications`' banners over the strip, and its centre when a
+    /// `notification-center` command opens it.
+    pub fn set_notifications(&mut self, notifications: DesktopNotifications) {
+        self.notices = Some(notices::NotificationLayer::new(notifications));
+        self.structure_dirty = true;
+        self.refresh_notifications();
+    }
+
+    /// Show applications' notifications from `inbox` (the other half of
+    /// the [`AppNotifier`] the host's services hand them), attributed to the
+    /// window that posted each. Choosing one focuses that application's
+    /// window and hands the application its activation.
+    pub fn set_app_notifications(&mut self, inbox: AppInbox) {
+        if let Some(layer) = self.notices.as_mut() {
+            layer.inbox = Some(inbox);
+        }
+    }
+
+    /// Open or close the notification centre, as the host's own control
+    /// does.
+    pub fn set_notification_center(&mut self, open: bool) {
+        if let Some(layer) = self.notices.as_mut() {
+            layer.set_center_open(open);
+            self.refresh_notifications();
+        }
+    }
+
+    /// Retire banners that ran out, open what the centre asked to, and
+    /// record what the notifications show.
+    fn refresh_notifications(&mut self) {
+        let Some(layer) = self.notices.as_mut() else {
+            return;
+        };
+        let notifications = layer.notifications().clone();
+        if let Some(inbox) = layer.inbox.as_mut() {
+            let shared = self.shared.borrow();
+            let tree = &shared.tree;
+            inbox.drain(&notifications, &|tab| {
+                let ids = route_of(tree, tab)?;
+                let (workspace, model) = find_tab(tree, ids.strip, tab)?;
+                match &model.tile {
+                    tilo_desktop_model::TileContent::LocalApp { app_id, label, .. } => {
+                        Some((app_id.clone(), label.clone(), Some(workspace.id.raw())))
+                    }
+                    _ => None,
+                }
+            });
+        }
+        layer.tick();
+        let mut open_app = layer.open_app.take();
+        for outcome in layer.notifications().take_outcomes() {
+            let NotificationOutcome::Activated { notification, .. } = outcome else {
+                continue;
+            };
+            if let Some(uri) = layer
+                .inbox
+                .as_mut()
+                .and_then(|inbox| inbox.take_activation(notification.id))
+            {
+                ui::notify::report_activation(&uri);
+            }
+            if let Some(app) = notification.app_id {
+                open_app = Some(app);
+            }
+        }
+        let (active, retained) = layer.notifications().counts();
+        let state = NotificationsState {
+            active,
+            retained,
+            center_open: layer.center_open(),
+        };
+        let handle = DesktopHandle {
+            shared: Rc::clone(&self.shared),
+        };
+        if let Some(app) = open_app
+            && !handle.focus_app(&app)
+        {
+            self.shared.borrow_mut().queue.push(Admitted::Launch(app));
+        }
+        let mut shared = self.shared.borrow_mut();
+        let mut next = shared.presentation.clone();
+        next.notifications = Some(state);
+        shared.present(next);
+    }
+
+    /// Open, follow or close the history pane as the presentation asks, and
+    /// carry what the person did in it back into the presentation.
+    fn sync_activity(&mut self) {
+        if let Some(overlay) = self.activity.as_mut() {
+            let exit = overlay.take_exit();
+            if exit.dismissed || exit.open.is_some() {
+                overlay.finish();
+                self.activity = None;
+                self.structure_dirty = true;
+                let mut shared = self.shared.borrow_mut();
+                let tab = exit
+                    .open
+                    .as_ref()
+                    .zip(self.history.as_ref())
+                    .and_then(|(target, source)| source.resource_tab(&shared.tree, target));
+                let mut next = shared.presentation.clone();
+                next.activity = None;
+                next.pane = None;
+                next.activity_close_reason = Some(if exit.open.is_some() {
+                    ActivityCloseReason::ResourceOpened
+                } else {
+                    ActivityCloseReason::Dismissed
+                });
+                shared.present(next);
+                if let Some(ids) = tab.and_then(|tab| route_of(&shared.tree, tab)) {
+                    shared.queue.push(Admitted::Select(ids));
+                }
+                return;
+            }
+            // A view chosen inside the pane is the presented view.
+            let view = overlay.view();
+            if view != overlay.shown {
+                overlay.shown = view;
+                let mut shared = self.shared.borrow_mut();
+                let mut next = shared.presentation.clone();
+                if let Some((workspace, _)) = next.activity {
+                    next.activity = Some((workspace, view));
+                }
+                shared.present(next);
+            }
+        }
+        let wanted = self.shared.borrow().presentation.activity;
+        match (wanted, self.history.as_mut()) {
+            (Some((workspace, view)), Some(source)) => {
+                let shared = self.shared.borrow();
+                match self.activity.as_mut() {
+                    Some(overlay) if overlay.workspace == workspace => {
+                        overlay.set_view(view);
+                        overlay.shown = view;
+                        overlay.follow(source.as_mut(), &shared.tree, shared.revision);
+                    }
+                    _ => {
+                        if let Some(mut old) = self.activity.take() {
+                            old.finish();
+                        }
+                        self.activity = history::HistoryOverlay::open(
+                            source.as_mut(),
+                            &shared.tree,
+                            shared.revision,
+                            workspace,
+                            view,
+                        );
+                        self.structure_dirty = true;
+                    }
+                }
+            }
+            _ => {
+                if let Some(mut old) = self.activity.take() {
+                    old.finish();
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        let pane = self.activity.as_ref().map(|overlay| PaneState {
+            playing: overlay.playing(),
+            partial: overlay.partial(),
+        });
+        let mut shared = self.shared.borrow_mut();
+        let mut next = shared.presentation.clone();
+        if wanted.is_some() && pane.is_none() && self.history.is_some() {
+            // The host retains no history for this workspace.
+            next.activity = None;
+            next.activity_close_reason = Some(ActivityCloseReason::Dismissed);
+        }
+        next.pane = pane;
+        shared.present(next);
     }
 
     fn shown_row(&mut self) -> Option<&mut GroupRow> {
@@ -710,6 +960,12 @@ impl DesktopSurface {
                             next.activity_close_reason = Some(ActivityCloseReason::Dismissed);
                         }
                         shared.present(next);
+                        continue;
+                    }
+                    Admitted::NotificationCenter(open) => {
+                        if let Some(layer) = self.notices.as_mut() {
+                            layer.set_center_open(open);
+                        }
                         continue;
                     }
                     _ => continue,
@@ -1269,7 +1525,21 @@ impl Widget for DesktopSurface {
             self.shared.borrow().revision != before || search_was_open != self.search.is_open();
         let row_changed = self.shown_row().is_some_and(|row| row.update(state, path));
         self.refresh_presentation();
-        changed || row_changed || self.structure_dirty
+        let activity_was_open = self.activity.is_some();
+        self.sync_activity();
+        self.refresh_notifications();
+        if !self.shared.borrow().queue.is_empty() {
+            // The pane or the centre opened a window.
+            let (doc, root) = ui::doc::document(state, path);
+            self.apply_commands(doc, root);
+            self.show_active_strip();
+            self.present();
+            self.refresh_presentation();
+        }
+        changed
+            || row_changed
+            || self.structure_dirty
+            || activity_was_open != self.activity.is_some()
     }
 
     fn build_layout(
@@ -1283,8 +1553,22 @@ impl Widget for DesktopSurface {
             .shown_row()
             .map(|row| row.build_layout(taffy, theme, node_map));
         let search = self.search_layout(taffy, theme, node_map);
-        // The row, when shown, is always the first child.
-        let children: Vec<NodeId> = row.into_iter().chain(search).collect();
+        let activity = self
+            .activity
+            .as_mut()
+            .map(|overlay| overlay.build_layout(taffy, theme, node_map));
+        let notices = self
+            .notices
+            .as_mut()
+            .map(|layer| layer.build_layout(taffy, theme, node_map));
+        // The row, when shown, is always the first child, then search, the
+        // history pane and the notifications, each when present.
+        let children: Vec<NodeId> = row
+            .into_iter()
+            .chain(search)
+            .chain(activity)
+            .chain(notices)
+            .collect();
         let node = taffy.parent_node(
             Style {
                 display: ui::taffy::Display::Flex,
@@ -1317,12 +1601,25 @@ impl Widget for DesktopSurface {
         } else {
             None
         };
-        if self.search.is_open()
-            && let Some(&palette) = nodes.get(usize::from(has_row))
+        let mut next = usize::from(has_row);
+        if self.search.is_open() {
+            if let Some(&palette) = nodes.get(next) {
+                self.search
+                    .palette_mut()
+                    .apply_layout(taffy, palette, inner);
+            }
+            next = next.saturating_add(1);
+        }
+        if let Some(overlay) = self.activity.as_mut() {
+            if let Some(&pane) = nodes.get(next) {
+                overlay.apply_layout(taffy, pane, inner);
+            }
+            next = next.saturating_add(1);
+        }
+        if let Some(layer) = self.notices.as_mut()
+            && let Some(&notices) = nodes.get(next)
         {
-            self.search
-                .palette_mut()
-                .apply_layout(taffy, palette, inner);
+            layer.apply_layout(taffy, notices, inner);
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
@@ -1384,7 +1681,7 @@ impl Widget for DesktopSurface {
         if let Some(row) = self.shown_row() {
             row.draw(scene, transform, text, theme, presence);
         }
-        self.draw_search(scene, transform, text, theme, presence);
+        self.draw_overlays(scene, transform, text, theme, presence);
     }
 
     fn draw_with_presence(
@@ -1402,10 +1699,23 @@ impl Widget for DesktopSurface {
         if let Some(row) = self.shown_row() {
             row.draw_with_presence(scene, transform, text, theme, presence, permissions);
         }
-        self.draw_search(scene, transform, text, theme, presence);
+        self.draw_overlays(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(layer) = self.notices.as_mut()
+            && layer.route(event, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(overlay) = self.activity.as_mut() {
+            // The pane is modal: nothing under it takes input while it is
+            // open.
+            overlay.route(event, ctx.scale_factor, *ctx.modifiers);
+            *ctx.handled = true;
+            return;
+        }
         if self.search_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -1439,11 +1749,15 @@ impl Widget for DesktopSurface {
             .search
             .is_open()
             .then(|| self.search.palette() as &dyn Widget);
+        let activity = self.activity.as_ref().map(|o| o as &dyn Widget);
+        let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
         self.shown
             .and_then(|strip| self.rows.get(&strip))
             .map(|row| row as &dyn Widget)
             .into_iter()
             .chain(search)
+            .chain(activity)
+            .chain(notices)
             .collect()
     }
 
@@ -1454,7 +1768,13 @@ impl Widget for DesktopSurface {
             .and_then(|strip| self.rows.get_mut(&strip))
             .map(|row| row as &mut (dyn Widget + '_));
         let search = open.then(|| self.search.palette_mut() as &mut (dyn Widget + '_));
-        row.into_iter().chain(search).collect()
+        let activity = self.activity.as_mut().map(|o| o as &mut (dyn Widget + '_));
+        let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
+        row.into_iter()
+            .chain(search)
+            .chain(activity)
+            .chain(notices)
+            .collect()
     }
 
     fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
@@ -1489,7 +1809,11 @@ impl Widget for DesktopSurface {
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         let row = self.shown_row().is_some_and(Widget::take_structure_dirty);
-        own || row
+        let activity = self
+            .activity
+            .as_mut()
+            .is_some_and(Widget::take_structure_dirty);
+        own || row || activity
     }
 }
 
@@ -1513,6 +1837,25 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
 }
 
 impl DesktopSurface {
+    /// The search palette, then the history pane, then the banners and
+    /// centre over everything.
+    fn draw_overlays(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.draw_search(scene, transform, text, theme, presence);
+        if let Some(overlay) = self.activity.as_mut() {
+            overlay.draw(scene, transform, text, theme, presence);
+        }
+        if let Some(layer) = self.notices.as_mut() {
+            layer.draw(scene, transform, text, theme, presence);
+        }
+    }
+
     /// Traversal reaches only active tabs; lifecycle must reach them all.
     fn each_host(
         &mut self,
@@ -1594,6 +1937,217 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    struct RetainedHistory {
+        log: Rc<std::cell::RefCell<AutoCommit>>,
+    }
+
+    impl HistorySource for RetainedHistory {
+        fn workspace_history(
+            &mut self,
+            tree: &DesktopTree,
+            workspace: WorkspaceId,
+        ) -> Option<crate::activity::ActivitySnapshot> {
+            let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room;
+            let history = crate::history_log::room_history(self.log.borrow().clone(), room);
+            let mut desktop = tree.clone();
+            desktop.active = workspace;
+            crate::activity::ActivitySnapshot::new(desktop, history.doc).ok()
+        }
+
+        fn record_histories(
+            &mut self,
+            _: &DesktopTree,
+            _: WorkspaceId,
+        ) -> Vec<crate::activity::DetachedRecordHistory> {
+            Vec::new()
+        }
+
+        fn host(&self) -> Rc<dyn crate::activity::ActivityHost> {
+            Rc::new(crate::activity::UnavailableActivityHost)
+        }
+
+        fn revision(&self) -> u64 {
+            use automerge::transaction::Transactable as _;
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            self.log.borrow().base_heads().hash(&mut hasher);
+            hasher.finish()
+        }
+    }
+
+    #[test]
+    fn retained_history_navigation_opens_real_views_and_follows_new_changes() {
+        let (mut surface, handle) = desktop(1);
+        let mut tree = handle.read(Clone::clone);
+        let workspace = tree.active;
+        let mut retained = AutoCommit::new();
+        assert!(crate::history_log::record(
+            &mut retained,
+            &serde_json::to_value(&tree).unwrap(),
+            "Ada",
+            1_000,
+        ));
+        tree.workspaces[0].name = "Renamed".into();
+        assert!(crate::history_log::record(
+            &mut retained,
+            &serde_json::to_value(&tree).unwrap(),
+            "Ada",
+            2_000,
+        ));
+        let saved = retained.save();
+        let log = Rc::new(std::cell::RefCell::new(AutoCommit::load(&saved).unwrap()));
+        surface.set_history_source(Box::new(RetainedHistory {
+            log: Rc::clone(&log),
+        }));
+        let mut state = AutoCommit::new();
+        for view in [
+            navigation::ActivityView::CatchUp,
+            navigation::ActivityView::Explore,
+            navigation::ActivityView::Replay,
+        ] {
+            handle
+                .dispatch(
+                    &Command::WorkspaceActivity {
+                        generation: "g".into(),
+                        workspace: workspace.raw().to_string(),
+                        view,
+                    },
+                    "g",
+                )
+                .unwrap();
+            surface.update(&mut state, &ui::automerge::ROOT);
+            let snapshot = handle.snapshot("g", vec![]);
+            let activity = snapshot.workspace_activity.unwrap();
+            assert_eq!(activity.view, view);
+            assert!(activity.in_surface);
+            let pane = surface.activity.as_ref().unwrap().pane();
+            // Initial open is Setup/View and omitted; the rename is the one
+            // feed-visible Change.
+            assert_eq!(pane.entries().len(), 1);
+            assert_eq!(pane.replay_unavailable_checkpoints(), 0);
+        }
+        tree.workspaces[0].name = "Updated while open".into();
+        assert!(crate::history_log::record(
+            &mut log.borrow_mut(),
+            &serde_json::to_value(&tree).unwrap(),
+            "Ada",
+            3_000,
+        ));
+        surface.update(&mut state, &ui::automerge::ROOT);
+        assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
+        handle
+            .dispatch(
+                &Command::CloseWorkspaceActivity {
+                    generation: "g".into(),
+                    workspace: workspace.raw().to_string(),
+                },
+                "g",
+            )
+            .unwrap();
+        surface.update(&mut state, &ui::automerge::ROOT);
+        assert!(surface.activity.is_none());
+        assert!(handle.snapshot("g", vec![]).workspace_activity.is_none());
+    }
+
+    #[test]
+    fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
+        struct Relaunch;
+        impl TileSource for Relaunch {
+            fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+                TileHost::new(TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: String::new(),
+                })
+            }
+            fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+                (app == "so.tilo.clocks").then(|| Tab {
+                    id,
+                    title: "Clocks".into(),
+                    tile: tilo_desktop_model::TileContent::LocalApp {
+                        app_id: app.into(),
+                        label: "Clocks".into(),
+                        note: String::new(),
+                    },
+                })
+            }
+        }
+        let mut minter = IdMinter::new(7);
+        let tree = seed_tree(&mut minter, "Desk", Vec::new());
+        let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Relaunch));
+        let notifications = DesktopNotifications::default();
+        let mut notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+        notice.app_id = Some("so.tilo.clocks".into());
+        notice.app_name = Some("Clocks".into());
+        notifications.restore_history(vec![notice]);
+        surface.set_notifications(notifications.clone());
+        surface.set_notification_center(true);
+        surface
+            .notices
+            .as_mut()
+            .unwrap()
+            .apply(crate::notifications::CenterOutcome::OpenApp {
+                app_id: "so.tilo.clocks".into(),
+                label: "Clocks".into(),
+            });
+        let mut state = AutoCommit::new();
+        surface.update(&mut state, &ui::automerge::ROOT);
+        assert!(handle.focus_app("so.tilo.clocks"));
+        assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
+        assert_eq!(notifications.counts(), (0, 1));
+    }
+
+    #[test]
+    fn notification_navigation_shows_expired_real_banners_in_the_center() {
+        let (mut surface, handle) = desktop(1);
+        let notifications = DesktopNotifications::default();
+        surface.set_notifications(notifications.clone());
+        assert_eq!(notifications.counts(), (0, 0));
+        let notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
+        let id = notice.id;
+        let expires = notice.created_at + notice.dismiss_after;
+        notifications.post(notice);
+        assert!(notifications.expire(expires));
+        handle
+            .dispatch(
+                &Command::NotificationCenter {
+                    generation: "g".into(),
+                    open: true,
+                },
+                "g",
+            )
+            .unwrap();
+        let mut state = AutoCommit::new();
+        surface.update(&mut state, &ui::automerge::ROOT);
+        let snapshot = handle.snapshot("g", vec![]);
+        assert_eq!(
+            snapshot.notifications,
+            Some(NotificationsState {
+                active: 0,
+                retained: 1,
+                center_open: true,
+            })
+        );
+        assert_eq!(notifications.log().history()[0].id, id);
+        handle
+            .dispatch(
+                &Command::NotificationCenter {
+                    generation: "g".into(),
+                    open: false,
+                },
+                "g",
+            )
+            .unwrap();
+        surface.update(&mut state, &ui::automerge::ROOT);
+        assert!(
+            !handle
+                .snapshot("g", vec![])
+                .notifications
+                .unwrap()
+                .center_open
+        );
+        assert_eq!(notifications.counts(), (0, 1));
     }
 
     fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {

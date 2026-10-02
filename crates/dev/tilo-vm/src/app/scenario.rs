@@ -56,6 +56,7 @@ struct Plan {
     external_target: Option<PathBuf>,
     skip_target_boot: bool,
     layout: Layout,
+    filesystem: Option<String>,
     unlock: Unlock,
     username: String,
     graphics: crate::scenario::Graphics,
@@ -186,6 +187,7 @@ impl Plan {
             "scenario": "install",
             "medium": self.medium,
             "layout": self.layout.name(),
+            "filesystem": self.filesystem,
             "encrypt": self.unlock.name(),
             "username": self.username,
             "graphics": self.graphics,
@@ -733,6 +735,7 @@ impl App {
             external_target,
             skip_target_boot: args.skip_target_boot,
             layout: args.layout,
+            filesystem: args.filesystem.clone(),
             unlock: args.encrypt,
             username: username.to_owned(),
             graphics: args.graphics,
@@ -970,6 +973,7 @@ impl App {
         let install = Instant::now();
         let choices = Choices {
             layout: plan.layout,
+            filesystem: plan.filesystem.clone(),
             unlock: plan.unlock,
             username: plan.username.clone(),
             full_name: if plan.username == "scenario" {
@@ -1561,6 +1565,7 @@ mod tests {
             external_target: None,
             skip_target_boot: false,
             layout,
+            filesystem: None,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
             graphics: crate::scenario::Graphics::Software,

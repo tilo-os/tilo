@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod workspace_activity {
     use super::*;
+    use crate::activity::ActivitySnapshot;
     use automerge::{
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},
     };
-    use tilo_desktop::activity::ActivitySnapshot;
     use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
     fn causal_room() -> ActivitySnapshot {
@@ -178,8 +178,23 @@ mod workspace_activity {
             }
         }
         let mut tree = causal_room();
+        // Layout/setup commits are omitted from the feed; rename the room so
+        // there is a Change row to select and attempt restore against.
+        // `causal_room` is a room projection doc (not a desktop_doc workspaces
+        // list), so write the name on the room document directly.
+        tree.workspaces[0].name = "Design studio".into();
+        tree.doc.put(ROOT, "name", "Design studio").unwrap();
+        tilo_resource::history::commit_stamped(&mut tree.doc);
         let mut pane = RoomActivityPane::new();
         pane.refresh(&mut tree);
+        assert!(
+            !pane.entries().is_empty(),
+            "expected a feed-visible rename, got {:?}",
+            pane.entries()
+                .iter()
+                .map(|e| e.summary.as_str())
+                .collect::<Vec<_>>()
+        );
         pane.timeline.set_selection(Some((0, 0)));
         assert!(!pane.timeline.begin_naming_selection());
         let heads = tree.doc.get_heads();

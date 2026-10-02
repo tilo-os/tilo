@@ -1429,7 +1429,11 @@ pub struct DrmScanout {
     /// Diagnostic only: completion clears it and logs only anomalously slow
     /// retirements, keeping the normal 144 Hz path silent.
     flip_queued_at: Option<std::time::Instant>,
-    /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
+    /// Whether the page-flip path is in use. Virtual connectors start `false`
+    /// because they never signal vblank; a flip there blocks in the kernel
+    /// until that wait times out and holds the DRM file description, so the
+    /// next frame cannot start. A physical connector latches this `false`
+    /// only when a flip fails as unsupported, then uses `dirty_framebuffer`.
     use_pageflip: bool,
     /// Output-local rectangles to flush. Empty means the whole mode.
     /// A transition that only moves the overview panel must not flush both
@@ -1680,6 +1684,7 @@ impl DrmScanout {
                 }
             };
 
+        let use_pageflip = connector_uses_pageflip(&card, connector);
         Ok(Self {
             card,
             pci_bus_id,
@@ -1691,7 +1696,7 @@ impl DrmScanout {
             front: 0,
             flip_pending: false,
             flip_queued_at: None,
-            use_pageflip: true,
+            use_pageflip,
             damage_clips: Vec::new(),
             width,
             height,
@@ -2199,7 +2204,9 @@ impl DrmScanout {
         // This is the single-output entry point, just like `present_into`: retire a previous
         // event before deciding whether a new history transaction may target the back buffer.
         self.drain_flip_events();
-        if !self.xrgb_damage_available() || (self.use_pageflip && self.flip_pending) {
+        if !self.xrgb_damage_available()
+            || pending_pageflip_refuses_frame(self.use_pageflip, self.flip_pending)
+        {
             return Ok(());
         }
         if !bridge.xrgb_history_available() {
@@ -2354,7 +2361,7 @@ impl DrmScanout {
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
     {
-        if self.use_pageflip && self.flip_pending {
+        if pending_pageflip_refuses_frame(self.use_pageflip, self.flip_pending) {
             // Previous flip not yet retired — drop this frame (natural vsync throttle); the next one supersedes it.
             return Ok(false);
         }
@@ -3067,6 +3074,33 @@ fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
     dirty_ok && flip_ok
 }
 
+/// Virtual CRTCs do not signal vblank. Page-flipping one waits out the kernel
+/// helper (about 50 ms) inside the ioctl and holds the shared DRM file
+/// description, so the logic thread cannot start the next frame until that
+/// acceptance returns. Publish those scanouts with `dirty_framebuffer` on the
+/// buffer already being scanned out.
+fn pageflip_for_connector(interface: connector::Interface) -> bool {
+    !matches!(interface, connector::Interface::Virtual)
+}
+
+/// Whether this connector should queue page flips. A connector that cannot be
+/// reread keeps the physical default: dropping page flips on a real panel
+/// would tear, and a virtual connector is still reported when the card answers.
+fn connector_uses_pageflip(card: &Card, connector: connector::Handle) -> bool {
+    match card.get_connector(connector, false) {
+        Ok(info) => pageflip_for_connector(info.interface()),
+        Err(_) => true,
+    }
+}
+
+/// A page flip that the kernel has not accepted yet owns both dumb buffers.
+/// The next frame has to wait, or it would write a buffer the CRTC still
+/// scans. A virtual scanout never takes that path: `dirty_framebuffer`
+/// returns when the clip is accepted, and the following frame may start.
+fn pending_pageflip_refuses_frame(use_pageflip: bool, flip_pending: bool) -> bool {
+    use_pageflip && flip_pending
+}
+
 /// A mapped scanout buffer becomes presentable only after the producer says
 /// every pixel write completed. Keep this decision explicit and testable:
 /// render/readback errors are frame drops, never permission to expose the
@@ -3122,6 +3156,28 @@ mod tests {
         assert!(is_display_connector(connector::Interface::HDMIA));
         assert!(!is_display_connector(connector::Interface::Writeback));
         assert!(!is_display_connector(connector::Interface::Unknown));
+    }
+
+    #[test]
+    fn virtual_scanout_presents_the_next_frame_without_waiting_for_vblank() {
+        // Phase `a_virtual_connector_publishes_without_waiting_for_vblank`.
+        assert!(
+            !pageflip_for_connector(connector::Interface::Virtual),
+            "a virtual CRTC has no vblank; page-flipping it stalls the next frame"
+        );
+        // Phase `a_panel_connector_still_waits_until_its_page_flip_is_accepted`.
+        assert!(pageflip_for_connector(connector::Interface::HDMIA));
+        assert!(pageflip_for_connector(connector::Interface::DisplayPort));
+        assert!(pageflip_for_connector(connector::Interface::USB));
+        assert!(pending_pageflip_refuses_frame(true, true));
+        assert!(!pending_pageflip_refuses_frame(true, false));
+        // The clip upload (`present_no_drain_result`) and the single-output
+        // interaction path (`present_scene_damage`) both ask this gate.
+        // Phase `a_transition_clip_starts_while_a_virtual_flip_would_still_be_pending`.
+        let virtual_pageflip = pageflip_for_connector(connector::Interface::Virtual);
+        assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
+        // Phase `an_interaction_frame_starts_before_virtual_flip_acceptance`.
+        assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
     }
 
     #[test]

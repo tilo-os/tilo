@@ -20,8 +20,11 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+mod legacy;
 mod live;
 mod sessions;
+#[cfg(test)]
+mod tests;
 mod tls;
 
 pub use tls::TlsSource;
@@ -42,6 +45,7 @@ use tilo_moq::live::fallback::{
     FallbackError, FallbackStream, MAX_SEND_BYTES, session_id,
 };
 use tilo_relay_protocol::certify::CertifyReply;
+use tilo_relay_protocol::legacy_window::InputRequest;
 use tilo_relay_protocol::live::LiveFrame;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
@@ -82,10 +86,12 @@ pub struct WebHandle {
     /// `http://localhost:port` of the plain loopback listener, if any.
     pub plain_origin: Option<String>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    legacy: Arc<legacy::LegacyWindows>,
 }
 
 impl Drop for WebHandle {
     fn drop(&mut self) {
+        self.legacy.close();
         for task in &self.tasks {
             task.abort();
         }
@@ -95,6 +101,7 @@ impl Drop for WebHandle {
 struct Web {
     sessions: Arc<Sessions>,
     grants: Arc<live::LiveGrants>,
+    legacy: Arc<legacy::LegacyWindows>,
     live: LiveRelay,
     host_info: HostInfo,
     allowed_origins: Vec<String>,
@@ -140,28 +147,18 @@ impl Relay {
         let sessions = Sessions::new(context.clone());
         let grants = live::LiveGrants::new();
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
-        let bridge_relay = live.clone();
-        let _ = context
-            .relay
-            .live_bridge
-            .set(Arc::new(move |workspace, from, frame| {
-                let room = live_room(workspace);
-                let publisher = hex::encode(from);
-                match LiveFrame::decode(frame) {
-                    Ok(LiveFrame::Presence(_)) => {
-                        bridge_relay.inject_presence(&room, &publisher, frame);
-                    }
-                    Ok(LiveFrame::Ops(ops)) => {
-                        let record = hex::encode(ops.record().digest());
-                        bridge_relay.inject_ops(&room, &publisher, &record, frame);
-                    }
-                    Err(_) => {}
-                }
-            }));
+        let legacy =
+            legacy::LegacyWindows::new(live.clone(), context.relay.own_cert.device_public_key);
+        let _ = context.relay.live_bridge.set(Arc::new(Bridge {
+            live: live.clone(),
+            legacy: legacy.clone(),
+        }));
         let tasks_bridge = bridge_browser_presence(&live, &grants, &context);
+        let tasks_legacy = tokio::spawn(maintain_legacy(legacy.clone(), context.clone()));
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             grants: grants.clone(),
+            legacy: legacy.clone(),
             live,
             host_info: HostInfo {
                 host_cert: context.relay.own_cert,
@@ -172,7 +169,7 @@ impl Relay {
             features: self.web_features(),
             rooms: self.rooms().cloned(),
         });
-        let mut tasks = vec![tasks_bridge];
+        let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
         tasks.push(
             match self.voice_carrier(&config.tls, addr, identity.pinned_sha256.clone()) {
@@ -212,6 +209,7 @@ impl Relay {
             certificate_sha256: identity.pinned_sha256,
             plain_origin,
             tasks,
+            legacy,
         })
     }
 }
@@ -261,6 +259,185 @@ impl Relay {
             pinned_sha256.into_iter().collect(),
         ))
     }
+}
+
+/// What the relay's sessions hand the browser plane: native members' live
+/// frames, and the legacy windows sessions share with this host.
+struct Bridge {
+    live: LiveRelay,
+    legacy: Arc<legacy::LegacyWindows>,
+}
+
+impl crate::peer::BrowserBridge for Bridge {
+    fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]) {
+        let room = live_room(workspace_id);
+        let publisher = hex::encode(from);
+        match LiveFrame::decode(frame) {
+            Ok(LiveFrame::Presence(_)) => {
+                self.live.inject_presence(&room, &publisher, frame);
+            }
+            Ok(LiveFrame::Ops(ops)) => {
+                let record = hex::encode(ops.record().digest());
+                self.live.inject_ops(&room, &publisher, &record, frame);
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]) {
+        self.legacy
+            .observe_presence(workspace_id, from, user, payload);
+    }
+}
+
+/// Look after the legacy windows on the live relay for as long as the
+/// listener runs: replays, indexes, and the departure of their sessions.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::daemon::WebContext) {
+    let mut tick = tokio::time::interval(legacy::MAINTAIN_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        for (workspace_id, device) in legacy.publishers() {
+            let workspace = context
+                .relay
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned();
+            let (here, authority) = match workspace {
+                Some(workspace) => {
+                    let runtime = workspace.lock().await;
+                    (
+                        runtime.has_subscriber(&device),
+                        runtime.room_authority.clone(),
+                    )
+                }
+                None => (false, None),
+            };
+            let revoked = context
+                .relay
+                .revocations
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_revoked(&device);
+            let writable = match authority {
+                Some(authority) => match authority.rooms() {
+                    Some(rooms) => matches!(
+                        rooms.legacy_writer_role(authority.room(), device).await,
+                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
+                    ),
+                    None => false,
+                },
+                None => true,
+            };
+            if revoked || !writable {
+                legacy.revoke(workspace_id, device, std::time::Instant::now());
+                continue;
+            }
+            legacy.present(workspace_id, device, here, std::time::Instant::now());
+        }
+        legacy.maintain(std::time::Instant::now());
+    }
+}
+
+/// Forward a member's input to the session streaming the window, if the
+/// member may drive it: admitted to the room now and, in a room this relay
+/// governs, its owner or an editor (a viewer only watches); in a room it
+/// does not govern, a device of the publishing session's own user.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn legacy_input(
+    web: &Web,
+    member: &crate::auth::AuthenticatedPeer,
+    request: InputRequest,
+) -> Result<Response<Body>, Response<Body>> {
+    let refused = || status(StatusCode::FORBIDDEN, "you may not drive this window");
+    let relay = &web.sessions.context().relay;
+    let InputRequest {
+        workspace_id,
+        publisher,
+        surface,
+        events,
+    } = request;
+    if !live::admitted(
+        &web.sessions,
+        member.device_public_key,
+        member.user_public_key,
+        workspace_id,
+    )
+    .await
+    {
+        return Err(refused());
+    }
+    let publisher_user = web
+        .legacy
+        .publisher_user(workspace_id, publisher, surface)
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "no such window"))?;
+    let workspace = relay
+        .workspaces
+        .lock()
+        .await
+        .get(&workspace_id)
+        .cloned()
+        .ok_or_else(refused)?;
+    let authority = workspace.lock().await.room_authority.clone();
+    let governed = match authority {
+        Some(authority) => Some((
+            authority.rooms().ok_or_else(refused)?,
+            authority.room().to_owned(),
+        )),
+        None => None,
+    };
+    let may = match governed {
+        Some((rooms, room)) => matches!(
+            rooms
+                .legacy_writer_role(&room, member.device_public_key)
+                .await,
+            Some(collab_types::role::Role::Owner | collab_types::role::Role::Editor)
+        ),
+        None => member.user_public_key == publisher_user,
+    };
+    if !may {
+        return Err(refused());
+    }
+    if events.is_empty() {
+        return Ok(reply(StatusCode::NO_CONTENT, Vec::new()));
+    }
+    let payloads = web
+        .legacy
+        .input(
+            workspace_id,
+            publisher,
+            surface,
+            events,
+            &relay.own_cert,
+            std::time::Instant::now(),
+        )
+        .map_err(|_| status(StatusCode::NOT_FOUND, "no such window"))?;
+    let workspace = workspace.lock().await;
+    for payload in payloads {
+        let delivered = workspace.route_lossy(
+            &publisher,
+            crate::Envelope::Presence {
+                workspace_id,
+                payload,
+            },
+        );
+        if !delivered {
+            return Err(status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the window's session is not reachable",
+            ));
+        }
+    }
+    Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
 }
 
 /// Browser presence frames the live relay forwarded, waiting to reach iroh
@@ -683,6 +860,20 @@ async fn route(
                 .await
                 .map(|grant| encoded(&grant))
                 .ok_or_else(|| status(StatusCode::FORBIDDEN, "not admitted to this workspace"))
+        }
+        "/live/legacy-input" => {
+            let session = authed()?;
+            let request: InputRequest = decode(&bytes)?;
+            if !request.valid() {
+                return Err(status(StatusCode::BAD_REQUEST, "input out of bounds"));
+            }
+            if !request.supported() {
+                return Err(status(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "the native peer has no wheel or clipboard input endpoint",
+                ));
+            }
+            legacy_input(web, &session.peer, request).await
         }
         "/rooms" => {
             let session = authed()?;

@@ -627,11 +627,11 @@ grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
   && ok 'initramfs supports Ext4 roots'
 grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
   || bad 'initramfs cannot mount a supported Ext4 root'
-grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
   && ok 'initramfs excludes non-root XFS filesystem parser'
-grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
   || bad 'initramfs carries non-root XFS filesystem attack surface'
-grep -Fq "printf '%s\\n' xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
+grep -Fq "printf '%s\\n' amdgpu nouveau xe xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
   "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
 grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
@@ -723,30 +723,22 @@ grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
   || bad 'security audit does not read kernel diagnostics through the journal'
 [ "$fail" -ne 0 ] || ok 'read-only security audit has a bounded runtime sandbox'
 
-hidepid_unit="$repo/os/usr/lib/systemd/system/tilo-hidepid.service"
-for ordering in \
-  'Before=systemd-user-sessions.service greetd.service' \
-  'TimeoutStartSec=5'; do
-  grep -Fqx "$ordering" "$hidepid_unit" \
-    || bad "global hidepid remount is not bounded before login: $ordering"
-done
-for required in \
-  'TimeoutStartSec=5' \
-  'NoNewPrivileges=yes' \
-  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
-  'AmbientCapabilities=' \
-  'MemoryDenyWriteExecute=yes' \
-  'RestrictAddressFamilies=AF_UNIX' \
-  'SystemCallArchitectures=native' \
-  'SystemCallFilter=@system-service @mount' \
-  'SystemCallFilter=~@debug @keyring @network-io @obsolete @resources'; do
-  grep -Fqx "$required" "$hidepid_unit" \
-    || bad "global /proc remount sandbox is missing: $required"
-done
-if grep -Eq '^(PrivateMounts|ProtectSystem|ProtectProc)=' "$hidepid_unit"; then
-  bad 'hidepid helper uses a private mount namespace, so its /proc remount cannot be global'
+# /proc stays a plain mount: hidepid hides PID 1 from every unprivileged
+# process, so libsystemd unit lookups fail (sd_pid_get_unit -> ESRCH) and
+# at-spi-bus-launcher cannot start the AT-SPI bus. Services under their own
+# users get a private hidepid view instead, and processes holding identity
+# keys turn non-dumpable, which keeps their environ and memory root-only.
+if grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" 2>/dev/null | grep -q .; then
+  bad "a global hidepid /proc remount is back: $(grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" | tr '\n' ' ')"
 fi
-[ "$fail" -ne 0 ] || ok 'global hidepid remount retains only its required mount privilege'
+for unit in tilo-relay tilo-fs-replica tilo-local-model; do
+  grep -Fqx 'ProtectProc=invisible' "$repo/os/usr/lib/systemd/system/$unit.service" \
+    || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
+done
+grep -Fq 'libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0)' \
+  "$repo/crates/collab/tilo-user-identity/src/persist.rs" \
+  || bad 'identity key holders no longer turn non-dumpable'
+[ "$fail" -ne 0 ] || ok 'process visibility: per-service ProtectProc, non-dumpable key holders, no global hidepid'
 
 rollback_harden_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-harden.service"
 rollback_exec="$repo/crates/system/tilo-rollback/src/exec.rs"

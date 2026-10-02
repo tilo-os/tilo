@@ -1,10 +1,13 @@
 """Contract checks for the Windows direct-install orchestration boundary."""
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.request
+import zipfile
 from unittest import mock
 
 
@@ -37,6 +40,41 @@ class OrchestratorContract(unittest.TestCase):
         })
         self.config = self.work / "input.json"
         self.config.write_text(json.dumps(self.inputs), encoding="utf-8")
+
+    def test_artifact_download_streams_and_retains_only_complete_zip(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("proof.json", "{}")
+        payload = archive.getvalue()
+
+        class BoundedResponse(io.BytesIO):
+            def read(self, size=-1):
+                if not 0 < size <= 1024 * 1024:
+                    raise AssertionError("artifact download must use bounded reads")
+                return super().read(size)
+
+        destination = self.work / "artifact.zip"
+        metadata = [{"id": 17, "name": "proof", "expired": False}]
+        with mock.patch.object(module, "fgj_run", return_value={"id": 9001}), \
+                mock.patch.object(module, "command", side_effect=[json.dumps(metadata).encode(), b"test-token\n"]), \
+                mock.patch.object(module.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = BoundedResponse(payload)
+            module.download_artifact(101, "proof", destination)
+            request = opener.return_value.open.call_args.args[0]
+            self.assertEqual(request.full_url,
+                             "https://code.tilo.so/api/v1/repos/tilo/tilo/actions/artifacts/17/zip")
+        self.assertEqual(destination.read_bytes(), payload)
+        self.assertFalse(destination.with_suffix(".zip.part").exists())
+
+    def test_artifact_redirect_does_not_forward_forgejo_credentials(self):
+        request = urllib.request.Request("https://code.tilo.so/archive",
+                                         headers={"Authorization": "token secret"})
+        redirected = module.ArtifactRedirect().redirect_request(
+            request, None, 302, "Found", {}, "https://storage.example/signed")
+        self.assertIsNone(redirected.get_header("Authorization"))
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            module.ArtifactRedirect().redirect_request(
+                request, None, 302, "Found", {}, "http://storage.example/signed")
 
     def test_input_rejects_mutable_image_and_relative_source(self):
         data = module.pinned_config(self.config)
@@ -89,6 +127,7 @@ class OrchestratorContract(unittest.TestCase):
         self.assertEqual(generic[generic.index("--target-disk") + 1],
                          str(self.work / "generic" / "generic-source.raw"))
         self.assertNotIn("--skip-target-boot", generic)
+        self.assertEqual(generic[generic.index("--filesystem") + 1], "ext4")
         self.assertIn("--credentials-stdin", generic)
         self.assertEqual(board[board.index("--target-disk") + 1], str(data["source_raw"]))
         self.assertIn("--skip-target-boot", board)

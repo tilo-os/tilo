@@ -38,6 +38,23 @@ thread_local! {
     static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
         const { RefCell::new(std::collections::VecDeque::new()) };
     static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Mounts presenting a desktop, which applications' notifications wake.
+    static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
+        const { RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+/// Schedule a frame for every desktop: an application posted or withdrew a
+/// notification. Runs inside application code, so it reaches the mounts
+/// only through the event loop.
+fn wake_desktops() {
+    let ids = DESKTOPS.with_borrow(Clone::clone);
+    LOOP.with_borrow(|proxy| {
+        if let Some(proxy) = proxy {
+            for id in ids {
+                let _ = proxy.send_event(id);
+            }
+        }
+    });
 }
 
 #[derive(serde::Deserialize)]
@@ -299,7 +316,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     if let Some(p) = LOOP.with_borrow(Clone::clone) {
         return Ok(p);
     }
-    crate::host_services::install();
+    crate::host_services::install(Arc::new(wake_desktops));
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
@@ -378,6 +395,7 @@ pub fn mount(
 #[wasm_bindgen]
 pub fn close(id: u64) -> Result<JsValue, JsValue> {
     REQUESTS.with_borrow_mut(|r| r.remove(&id));
+    DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
     let Some(mut mount) = MOUNTS.with_borrow_mut(|m| m.remove(&id)) else {
         return Ok(js_sys::Array::new().into());
     };
@@ -619,8 +637,9 @@ fn present_desktop(
         InstanceViewStore::with_store(Rc::clone(&dyn_store), &config.device, &config.room)
             .map_err(error)?,
     );
+    let dyn_history_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
-    let (surface, handle, shared, persistence) = crate::desktop::mount(
+    let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         crate::desktop::Inputs {
             owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
             views,
@@ -640,6 +659,19 @@ fn present_desktop(
         }),
     )
     .map_err(error)?;
+    surface.set_history_source(Box::new(crate::history::PageHistory::new(
+        &config.room,
+        config.peer,
+        config.author(),
+        Rc::clone(&dyn_history_store),
+        shared.clone(),
+        Rc::clone(&persistence.history),
+    )));
+    surface.set_notifications(persistence.notifications.clone());
+    if let Some(inbox) = crate::host_services::notification_inbox() {
+        surface.set_app_notifications(inbox);
+    }
+    DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     Ok(Presentation {
         root: Root::Desktop(Box::new(surface)),
         stores: Rc::clone(&shared.stores),
@@ -867,6 +899,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 notify: Arc::new(move || {
                     let _ = wake.send_event(id);
                 }),
+                author: config.author(),
             },
         );
         if !attached {
@@ -1693,6 +1726,107 @@ pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
+/// Where the desktop shows each member's legacy window right now: `[{key,
+/// rect: [x0, y0, x1, y1]}]` for windows whose active tab shows one in the
+/// shown strip, in the surface's CSS pixels; empty while search covers the
+/// desktop. `None` for a single application.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .map(|d| {
+                let windows: Vec<serde_json::Value> = if d.handle.search_open() {
+                    Vec::new()
+                } else {
+                    d.handle
+                        .shown_tabs()
+                        .into_iter()
+                        .filter_map(|(tab, rect)| {
+                            Some(serde_json::json!({
+                                "key": d.shared.peer_window_of(tab)?,
+                                "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                            }))
+                        })
+                        .collect()
+                };
+                serde_json::to_string(&windows).map_err(error)
+            })
+            .transpose()
+    })
+}
+
+/// Show exactly `windows` (`[{key, app, title}]` JSON), the legacy windows
+/// other members stream, as desktop windows: a new key opens a window
+/// beside the focused one, a key no longer listed closes its window. The
+/// page draws each stream over its window's content
+/// ([`desktop_peer_windows`]).
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
+    let wanted: Vec<crate::desktop::PeerWindow> = serde_json::from_str(windows).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let (launch, close) = desktop
+            .handle
+            .read(|tree| desktop.shared.reconcile_peer_windows(tree, wanted));
+        if launch.is_empty() && close.is_empty() {
+            return Ok(());
+        }
+        for tab in close {
+            let route = desktop.handle.read(|tree| {
+                tree.workspaces.iter().find_map(|workspace| {
+                    workspace.strips.iter().find_map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .find(|group| group.tabs.iter().any(|t| t.id == tab))
+                            .map(|group| tilo_desktop_surface::navigation::Route {
+                                workspace: workspace.id.0.to_string(),
+                                strip: strip.id.0.to_string(),
+                                group: group.id.to_string(),
+                                tab: tab.to_string(),
+                            })
+                    })
+                })
+            });
+            if let Some(route) = route {
+                let command = tilo_desktop_surface::navigation::Command::Close {
+                    generation: desktop.generation.clone(),
+                    route,
+                };
+                // A window the person already closed is gone either way.
+                let _ = desktop.handle.dispatch(&command, &desktop.generation);
+            }
+            desktop.shared.closed_peer_window(tab);
+        }
+        for app in launch {
+            let command = tilo_desktop_surface::navigation::Command::Launch {
+                generation: desktop.generation.clone(),
+                app,
+            };
+            desktop
+                .handle
+                .dispatch(&command, &desktop.generation)
+                .map_err(error)?;
+        }
+        desktop.shared.wake();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// Changes whenever the desktop tree or what the desktop presents beside it
 /// (pan, scroll, history, activity) does, so the page republishes
 /// navigation only when something moved. `0` for a single application.
@@ -2100,6 +2234,7 @@ pub fn modifiers(
 /// Follow `document.visibilityState`.
 #[wasm_bindgen]
 pub fn visible(id: u64, visible: bool) {
+    crate::host_services::set_hidden(!visible);
     MOUNTS.with_borrow_mut(|mounts| {
         if let Some(m) = mounts.get_mut(&id) {
             m.hidden = !visible;

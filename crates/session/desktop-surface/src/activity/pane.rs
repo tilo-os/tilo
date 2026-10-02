@@ -126,8 +126,15 @@ const SELECTOR_H: f64 = 28.0;
 /// Minimum pointer target (HIG §9.6). A chip's hit rect is at least this
 /// tall even where its painted pill is the 28 px Selector.
 const MIN_TARGET: f64 = 32.0;
+/// Facet written onto setup, view and layout rows so the feed can omit
+/// them without dropping them from replay.
+const FEED_OMIT_FACET: &str = "tilo.feed";
 const EXPLORER_LEFT_W: f64 = 180.0;
 const EXPLORER_DETAIL_W: f64 = 240.0;
+
+pub const HISTORY_COMPARE: &str = "history.compare";
+pub const HISTORY_UNDO: &str = "history.undo";
+pub const HISTORY_RESTORE: &str = "history.restore";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -247,6 +254,7 @@ struct AccessControl {
 enum DetailAction {
     Open,
     Compare,
+    Restore,
     Undo,
     UndoTask,
     Split,
@@ -258,6 +266,7 @@ impl DetailAction {
         t(match self {
             Self::Open => "activity-detail-open",
             Self::Compare => "activity-detail-compare",
+            Self::Restore => "activity-detail-restore",
             Self::Undo => "activity-detail-undo",
             Self::UndoTask => "activity-detail-undo-task",
             Self::Split => "activity-detail-split",
@@ -321,7 +330,18 @@ fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEnt
     rows.into_iter()
         .map(WorkspaceHistoryEntry::timeline_entry)
         .filter(|entry| !author_is_local(&entry.author, local))
+        .filter(is_feed_change)
         .collect()
+}
+
+fn is_feed_change(entry: &HistoryEntry) -> bool {
+    !entry.context.as_ref().is_some_and(|context| {
+        context.is_housekeeping()
+            || context
+                .facets
+                .iter()
+                .any(|facet| facet.key == FEED_OMIT_FACET && facet.value == "omit")
+    })
 }
 
 fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<ResumeSnapshot> {
@@ -840,6 +860,7 @@ impl RoomActivityPane {
                 // the timeline. Keep the operation chips, but never repeat an
                 // `author:any` row inside the embedded widget.
                 t.set_show_author_pill(false);
+                t.set_show_day_headings(true);
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
@@ -1271,6 +1292,38 @@ impl RoomActivityPane {
 
     pub fn replay_is_playing(&self) -> bool {
         self.view == ActivityView::Replay && self.replay_playing
+    }
+
+    /// Diff, restore and undo for the selected explorer row — the same
+    /// door search, agents and assistive technology use.
+    pub fn selection_history_actions(&self) -> Vec<(&'static str, String)> {
+        let Some(detail) = self.selection_detail() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if detail.can_compare {
+            out.push((HISTORY_COMPARE, t("activity-history-compare")));
+            out.push((HISTORY_RESTORE, t("activity-history-restore")));
+        }
+        if detail.can_undo && self.selected_agent_run().is_none() {
+            out.push((HISTORY_UNDO, t("activity-history-undo")));
+        }
+        out
+    }
+
+    pub fn apply_selection_history_action(
+        &mut self,
+        id: &str,
+        tree: &mut impl ActivityTree,
+        records: Option<&RecordStore>,
+    ) -> RoomActivityOutcome {
+        let action = match id {
+            HISTORY_COMPARE => DetailAction::Compare,
+            HISTORY_RESTORE => DetailAction::Restore,
+            HISTORY_UNDO => DetailAction::Undo,
+            _ => return RoomActivityOutcome::default(),
+        };
+        self.apply_detail_action(action, tree, records)
     }
 
     pub fn selection_detail(&self) -> Option<HistorySelectionDetail> {
@@ -2481,11 +2534,18 @@ impl RoomActivityPane {
         self.feed_coverage.excluded_apps = apps;
     }
 
+    /// A host bounded the retained desktop document's history projection.
+    /// Call after refreshing records, which rebuilds the other coverage counts.
+    pub fn mark_desktop_history_capped(&mut self) {
+        self.feed_coverage.capped_records = self.feed_coverage.capped_records.saturating_add(1);
+    }
+
     pub fn feed_coverage(&self) -> &FeedCoverage {
         &self.feed_coverage
     }
 
     fn install_rows(&mut self, mut rows: Vec<HistoryEntry>) {
+        rows.retain(is_feed_change);
         let prior_selection = self.selected_ids();
         let local = self.local_user();
         let digest_rows: Vec<HistoryEntry> = rows
@@ -2667,7 +2727,7 @@ impl RoomActivityPane {
 
     fn shows_chip_rows(&self) -> bool {
         self.view == ActivityView::Explore
-            && self.sheet.height() > self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H + 140.0
+            && self.sheet.height() > self.header_h() + VIEW_ROW_H + CHIP_ROW_H + 140.0
     }
 
     fn chrome_height(&self) -> f64 {
@@ -2675,7 +2735,7 @@ impl RoomActivityPane {
             return self.header_h();
         }
         if self.shows_chip_rows() {
-            self.header_h() + VIEW_ROW_H + 2.0 * CHIP_ROW_H
+            self.header_h() + VIEW_ROW_H + CHIP_ROW_H
         } else {
             self.header_h() + VIEW_ROW_H
         }
@@ -3215,6 +3275,7 @@ impl RoomActivityPane {
         for action in [
             DetailAction::Open,
             DetailAction::Compare,
+            DetailAction::Restore,
             DetailAction::Undo,
             DetailAction::UndoTask,
             DetailAction::Split,
@@ -3227,7 +3288,7 @@ impl RoomActivityPane {
             }
             let enabled = match action {
                 DetailAction::Open => !detail.resources.is_empty(),
-                DetailAction::Compare => detail.can_compare,
+                DetailAction::Compare | DetailAction::Restore => detail.can_compare,
                 DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
                 DetailAction::UndoTask => self.can_undo_agent_run(),
                 DetailAction::Split => self.split_candidate().is_some(),
@@ -4619,7 +4680,7 @@ impl RoomActivityPane {
         }
     }
 
-    /// Paint the Period and Author filter chip rows beneath the header.
+    /// Paint labelled Time and People filters on one row.
     fn draw_filter_chip_rows(
         &mut self,
         scene: &mut Scene,
@@ -4628,6 +4689,18 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         let y = self.sheet.y0 + self.header_h() + VIEW_ROW_H;
+        let x0 = self.sheet.x0 + 12.0;
+        let x1 = self.sheet.x1 - 12.0;
+        let mid = x0 + ((x1 - x0) * 0.48).max(160.0);
+        let row_h = CHIP_ROW_H;
+        let time_x = draw_filter_axis_label(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(x0, y, mid - 8.0, y + row_h),
+            &t("activity-filter-time"),
+        );
         let periods: Vec<(Period, String)> = Period::ALL.iter().map(|p| (*p, p.label())).collect();
         let selected = self.period;
         self.period_rects = draw_chip_row(
@@ -4635,12 +4708,7 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(
-                self.sheet.x0 + 12.0,
-                y,
-                self.sheet.x1 - 12.0,
-                y + CHIP_ROW_H,
-            ),
+            Rect::new(time_x, y, mid - 8.0, y + row_h),
             &periods,
             |p| *p == selected,
         );
@@ -4648,6 +4716,14 @@ impl RoomActivityPane {
         if self.author_offset >= self.contributors.len() {
             self.author_offset = 0;
         }
+        let people_x = draw_filter_axis_label(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(mid, y, x1, y + row_h),
+            &t("activity-filter-people"),
+        );
         let mut people: Vec<(Option<String>, String)> = vec![(None, t("activity-people-everyone"))];
         people.extend(
             self.contributors
@@ -4656,28 +4732,17 @@ impl RoomActivityPane {
                 .map(|c| (Some(c.clone()), c.clone())),
         );
         let picked = self.author.clone();
-        let y2 = y + CHIP_ROW_H;
         let mut page = draw_chip_row_paginated(
             scene,
             transform,
             tr,
             theme,
-            Rect::new(
-                self.sheet.x0 + 12.0,
-                y2,
-                self.sheet.x1 - 12.0,
-                y2 + CHIP_ROW_H,
-            ),
+            Rect::new(people_x, y, x1, y + row_h),
             &people,
             |a| *a == picked,
         );
         if self.author_offset > 0 && page.more_rect.is_none() {
-            let row = Rect::new(
-                self.sheet.x0 + 12.0,
-                y2,
-                self.sheet.x1 - 12.0,
-                y2 + CHIP_ROW_H,
-            );
+            let row = Rect::new(people_x, y, x1, y + row_h);
             page.more_rect = draw_more_row(
                 scene,
                 transform,
@@ -5164,6 +5229,13 @@ impl RoomActivityPane {
                 // paint as an external edit and discarding the result.
                 self.last_heads = tree.document_mut().get_heads();
                 outcome.compared = self.comparison.is_some();
+            }
+            DetailAction::Restore => {
+                if let Some(id) = self.selected_ids().last().copied()
+                    && self.revert_to_with_records(tree, records, &id)
+                {
+                    outcome.reverted = true;
+                }
             }
             DetailAction::Undo => {
                 if let Some(request) = self.selection_undo_request() {
@@ -5687,6 +5759,13 @@ impl RoomActivityPane {
                 // paint as an external edit and discarding the result.
                 self.last_heads = tree.document_mut().get_heads();
                 outcome.compared = self.comparison.is_some();
+            }
+            ActivityFocus::Detail(DetailAction::Restore) => {
+                if let Some(id) = self.selected_ids().last().copied()
+                    && self.revert_to_with_records(tree, records, &id)
+                {
+                    outcome.reverted = true;
+                }
             }
             ActivityFocus::Detail(DetailAction::Undo) => {
                 if let Some((start, end)) = self.timeline.selection()
@@ -7603,6 +7682,33 @@ fn small_count_to_f64(n: usize) -> f64 {
     }
 }
 
+/// Dim axis label at the start of a filter group. Returns the x where
+/// the chips begin.
+fn draw_filter_axis_label(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+    label: &str,
+) -> f64 {
+    let size = type_size(tr, theme.tokens.typography.scale.sm);
+    let (lw, lh) = tr.measure(label, size, None);
+    tr.draw_text(
+        scene,
+        label,
+        size,
+        theme.tokens.colors.text_dim,
+        at(
+            transform,
+            row.x0,
+            row.y0 + (row.height() - f64::from(lh)) / 2.0,
+        ),
+        None,
+    );
+    row.x0 + f64::from(lw) + 8.0
+}
+
 /// Chips that would overflow the row are neither painted nor returned,
 /// so a click cannot select one the user cannot see.
 fn draw_chip_row<T: Clone>(
@@ -7846,6 +7952,19 @@ fn describe_room_changes(
                 entry.summary = summary;
             }
             entry.op_class = op_class;
+            if !room_event_belongs_in_feed(&patches) {
+                let mut context = entry.context.take().unwrap_or_default();
+                if !context
+                    .facets
+                    .iter()
+                    .any(|facet| facet.key == FEED_OMIT_FACET)
+                {
+                    context
+                        .facets
+                        .push(ui::tilo_actions::ActionFacet::new(FEED_OMIT_FACET, "omit"));
+                }
+                entry.context = Some(context);
+            }
         } else if is_room_bookkeeping(&patches) {
             entry.context = Some(
                 entry
@@ -8172,6 +8291,64 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
         counts.record(p);
     }
     counts.describe()
+}
+
+/// Content, membership and permission changes stay in the feed. Setup
+/// (the workspace's own first writes), a plain open, and window layout
+/// do not — they are durable, but they are not "what people did".
+fn room_event_belongs_in_feed(patches: &[automerge::Patch]) -> bool {
+    let mut counts = PatchCounts::default();
+    for p in patches {
+        counts.record(p);
+    }
+    counts.feed_kind().belongs_in_feed()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoomEventKind {
+    Change,
+    Setup,
+    View,
+    Layout,
+}
+
+impl RoomEventKind {
+    fn belongs_in_feed(self) -> bool {
+        matches!(self, Self::Change)
+    }
+}
+
+impl PatchCounts {
+    fn feed_kind(&self) -> RoomEventKind {
+        if self.workspaces_removed > 0 && self.workspaces_added == 0 {
+            return RoomEventKind::Change;
+        }
+        if self.workspaces_added > 0 {
+            return RoomEventKind::Setup;
+        }
+        if self.room_set && self.owner_set {
+            return RoomEventKind::Setup;
+        }
+        if !self.grants.is_empty() || self.revokes > 0 {
+            return RoomEventKind::Change;
+        }
+        if self.owner_set || self.room_set {
+            return RoomEventKind::Setup;
+        }
+        if !self.names.is_empty() {
+            return RoomEventKind::Change;
+        }
+        if self.tabs_added > 0 {
+            return RoomEventKind::View;
+        }
+        if self.tabs_removed > 0 {
+            return RoomEventKind::Change;
+        }
+        if self.groups_moved > 0 || self.geometry > 0 || self.active_switched {
+            return RoomEventKind::Layout;
+        }
+        RoomEventKind::Change
+    }
 }
 
 /// The map key of the object a patch lands in — `"capabilities"`, `"tabs"`,

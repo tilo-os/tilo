@@ -127,6 +127,15 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
          "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
          "$INSTALLER_CONTEXT/rootfs/usr/share/tilo"
 cp -a "$TILO_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
+# The base image's Containerfile assigns executable modes to its libexec
+# programs. This overlay replaces those files from the checkout, whose Git
+# modes (or Windows filesystem) may omit the execute bits. Normalize scripts
+# before COPY so the live session and privileged installer helpers can run.
+while IFS= read -r -d '' installer_program; do
+  if [ "$(head -c 2 "$installer_program")" = '#!' ]; then
+    chmod 0755 "$installer_program"
+  fi
+done < <(find "$INSTALLER_CONTEXT/rootfs/usr/libexec" -type f -print0)
 # `bootc install to-filesystem` otherwise picks the first ESP on the backing
 # disk, which can be Windows' ESP rather than the ESP mounted at /target/boot/efi.
 # Build the pinned corrected bootc once per source revision and put it in the

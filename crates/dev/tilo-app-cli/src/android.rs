@@ -1286,6 +1286,20 @@ pub struct Keystore {
     pub key_pass: String,
 }
 
+/// The signing tools read the keystore passwords from these variables of
+/// their own environment, never from argv, which other users can list.
+const STORE_PASS_ENV: &str = "TILO_ANDROID_SIGNING_STORE_PASS";
+const KEY_PASS_ENV: &str = "TILO_ANDROID_SIGNING_KEY_PASS";
+
+impl Keystore {
+    fn password_env(&self) -> [(&'static str, &str); 2] {
+        [
+            (STORE_PASS_ENV, self.store_pass.as_str()),
+            (KEY_PASS_ENV, self.key_pass.as_str()),
+        ]
+    }
+}
+
 /// Which key signs a build.
 #[derive(Debug, Clone, Default)]
 pub enum Signing {
@@ -1405,8 +1419,9 @@ fn generate_keystore(tools: &Toolchain, keystore: &Keystore, dname: &str) -> Res
             .arg("-genkeypair")
             .arg("-keystore")
             .arg(&keystore.path)
-            .args(["-storetype", "PKCS12", "-storepass", &keystore.store_pass])
-            .args(["-keypass", &keystore.key_pass, "-alias", &keystore.alias])
+            .args(["-storetype", "PKCS12", "-storepass:env", STORE_PASS_ENV])
+            .args(["-keypass:env", KEY_PASS_ENV, "-alias", &keystore.alias])
+            .envs(keystore.password_env())
             .args(["-keyalg", "RSA", "-keysize", "4096", "-validity", "10000"])
             .args(["-dname", dname]),
     )
@@ -1702,9 +1717,10 @@ fn link_apk(
             .args(["sign", "--ks"])
             .arg(&keystore.path)
             .arg("--ks-pass")
-            .arg(format!("pass:{}", keystore.store_pass))
+            .arg(format!("env:{STORE_PASS_ENV}"))
             .arg("--key-pass")
-            .arg(format!("pass:{}", keystore.key_pass))
+            .arg(format!("env:{KEY_PASS_ENV}"))
+            .envs(keystore.password_env())
             .arg("--ks-key-alias")
             .arg(&keystore.alias)
             .arg("--out")
@@ -1966,11 +1982,12 @@ fn build_bundle(
             .arg("-keystore")
             .arg(&keystore.path)
             .args([
-                "-storepass",
-                &keystore.store_pass,
-                "-keypass",
-                &keystore.key_pass,
+                "-storepass:env",
+                STORE_PASS_ENV,
+                "-keypass:env",
+                KEY_PASS_ENV,
             ])
+            .envs(keystore.password_env())
             .args([
                 "-sigalg",
                 "SHA256withRSA",

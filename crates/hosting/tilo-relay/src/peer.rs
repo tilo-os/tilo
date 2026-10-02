@@ -223,8 +223,8 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Also hands validated live frames to the browser live relay, when the
-    /// host serves browsers.
+    /// Also hands validated live frames and devices' presence to the
+    /// browser plane, when the host serves browsers.
     pub live_bridge: Option<LiveBridge>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
@@ -236,8 +236,16 @@ pub struct PeerContext {
     pub compactor: Option<crate::compaction::Compactor>,
 }
 
-/// Receives every validated live frame: workspace, stamped sender, frame.
-pub type LiveBridge = Arc<dyn Fn(u64, [u8; 32], &[u8]) + Send + Sync>;
+/// The host's browser plane, as the relay's sessions feed it.
+pub trait BrowserBridge: Send + Sync {
+    /// A validated live frame: workspace, stamped sender, frame.
+    fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]);
+    /// The presence payload a subscribed device (`from`, of `user`) sent.
+    fn presence(&self, workspace_id: u64, from: [u8; 32], user: [u8; 32], payload: &[u8]);
+}
+
+/// Receives what sessions hand the browser plane, see [`BrowserBridge`].
+pub type LiveBridge = Arc<dyn BrowserBridge>;
 
 /// Agent devices by device key: their verified delegation, or `None` once
 /// the agent was withdrawn. An agent device is confined to its delegated
@@ -5401,7 +5409,7 @@ async fn handle_live(
     if let Some(bridge) = session.live_bridge
         && ws.lock().await.is_live_member(&peer.device_public_key)
     {
-        bridge(workspace_id, peer.device_public_key, &frame);
+        bridge.live(workspace_id, peer.device_public_key, &frame);
     }
     let stamped = Envelope::Live {
         workspace_id,
@@ -5544,7 +5552,30 @@ async fn handle_presence(
         let map = session.workspaces.lock().await;
         map.get(&workspace_id).cloned()
     };
+    let mut legacy_writer = false;
     if let Some(ws) = ws {
+        if session.live_bridge.is_some() {
+            let authority = {
+                let runtime = ws.lock().await;
+                if runtime.has_subscriber(&peer.device_public_key)
+                    && session_peer_authorized(peer, session)
+                {
+                    legacy_writer = true;
+                }
+                runtime.room_authority.clone()
+            };
+            if let Some(authority) = authority {
+                legacy_writer &= match authority.rooms() {
+                    Some(rooms) => matches!(
+                        rooms
+                            .legacy_writer_role(authority.room(), peer.device_public_key)
+                            .await,
+                        Some(collab_types::Role::Owner | collab_types::Role::Editor)
+                    ),
+                    None => false,
+                };
+            }
+        }
         let mut wr = ws.lock().await;
         // A device sends presence only to say hello, to ask for a baseline
         // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
@@ -5554,6 +5585,17 @@ async fn handle_presence(
             wr.request_checkpoint(&peer.device_public_key);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env);
+    }
+    if legacy_writer
+        && let (Some(bridge), crate::auth::PeerRole::Device, Envelope::Presence { payload, .. }) =
+            (session.live_bridge, peer.role, &env)
+    {
+        bridge.presence(
+            workspace_id,
+            peer.device_public_key,
+            peer.user_public_key,
+            payload,
+        );
     }
     Ok(None)
 }
