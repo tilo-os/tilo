@@ -40,7 +40,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
-    let mut args = args.peekable();
+    let mut args = args;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => {
