@@ -300,6 +300,17 @@ mod tests {
         reason = "one assertion covers publish ownership and hosted playhead extras"
     )]
     fn hosted_resources_keep_playhead_extras_without_project_root() {
+        fn find_clip(resources: &[tilo_actions::Resource]) -> Option<String> {
+            for resource in resources {
+                if resource.kind == "video.clip" {
+                    return Some(resource.id.as_str().to_owned());
+                }
+                if let Some(found) = find_clip(&resource.children) {
+                    return Some(found);
+                }
+            }
+            None
+        }
         let published = ui::tilo_resource::publish::<VideoProject>(
             "video.project",
             "Project",
@@ -386,17 +397,6 @@ mod tests {
             "standalone playhead nests split/trim on playhead-clip rows"
         );
 
-        fn find_clip(resources: &[tilo_actions::Resource]) -> Option<String> {
-            for resource in resources {
-                if resource.kind == "video.clip" {
-                    return Some(resource.id.as_str().to_owned());
-                }
-                if let Some(found) = find_clip(&resource.children) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         app.set_framework_hosted(true);
         assert!(app.is_framework_hosted());
         assert!(ui::resources::resource(&app, &state.doc, "video.project").is_none());

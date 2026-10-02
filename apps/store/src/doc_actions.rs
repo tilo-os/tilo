@@ -329,6 +329,10 @@ mod tests {
 
     /// Report drafts and notes are replayable document resources that converge without interleaving.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn report_drafts_are_bounded_replayable_and_converge() {
         // Case `report_draft_is_a_replayable_document_resource`.
         {

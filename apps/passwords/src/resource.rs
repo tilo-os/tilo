@@ -251,6 +251,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn resource_publish_owns_vault_door_and_hosted_keeps_only_live_extras() {
         let mut doc = AutoCommit::new();
         PasswordsAction::SetFilter {

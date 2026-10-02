@@ -600,6 +600,10 @@ mod tests {
 
     /// Ctrl+K publishes the library tree; delete removes exactly one row; malformed ids are no-ops.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn snippet_tree_and_actions_touch_exactly_the_addressed_row() {
         // Case `ctrl_k_publishes_the_library_and_snippet_tree`.
         // Ctrl+K publishes a bounded contextual root; a stable id lazily resolves

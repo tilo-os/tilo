@@ -346,6 +346,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn resource_publish_owns_channel_and_message_document_ops_and_hosted_keeps_no_second_door() {
         let doc = seed_doc();
         let state = Chat::read(&doc).expect("seeded chat state");
