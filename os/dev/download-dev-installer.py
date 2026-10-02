@@ -163,4 +163,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (ValueError, OSError, KeyError, struct.error, zlib.error,
+            subprocess.SubprocessError) as error:
+        raise SystemExit(f'CI installer download: {error}') from None
