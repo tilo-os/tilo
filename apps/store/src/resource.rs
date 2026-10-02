@@ -304,7 +304,7 @@ mod tests {
         app.set_flatpak_available(true);
         app.set_items(crate::shots::fixture_catalog());
         let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ROOT);
+        app.sync(&mut seeded, &ui::automerge::ROOT);
         assert!(!app.is_hosted(), "standalone stays on the local host");
         let standalone = app.publish_resources(&seeded);
         assert_eq!(standalone[0].kind, "store.catalog");

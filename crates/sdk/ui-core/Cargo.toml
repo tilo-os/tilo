@@ -96,7 +96,6 @@ notifications = ["native", "tilo-host/notifications"]
 [dependencies]
 mime_guess.workspace = true
 fnv.workspace = true
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.

@@ -20,7 +20,6 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
