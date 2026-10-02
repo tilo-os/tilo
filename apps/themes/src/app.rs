@@ -747,6 +747,33 @@ impl ThemesApp {
                     );
                 }
             }
+            {
+                let m = crate::model::motion_scale_from_norm(self.customizer.motion() as f32);
+                if (m - current.motion_scale).abs() > f32::EPSILON {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_motion_action(&selected, m),
+                    );
+                }
+            }
+            {
+                let m = crate::model::material_scale_from_norm(self.customizer.material() as f32);
+                if (m - current.material_scale).abs() > f32::EPSILON {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_material_action(&selected, m),
+                    );
+                }
+            }
+            {
+                let m = crate::model::icon_scale_from_norm(self.customizer.icon() as f32);
+                if (m - current.icon_scale).abs() > f32::EPSILON {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_icon_action(&selected, m),
+                    );
+                }
+            }
             let f = self.customizer.font();
             if FONTS.contains(&f.as_str()) && f != current.font {
                 self.perform_action(

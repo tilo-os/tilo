@@ -51,6 +51,7 @@ ReadWritePaths=/var/lib/tilo-relay
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
+ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

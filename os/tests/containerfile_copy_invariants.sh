@@ -69,13 +69,15 @@ containerfile="$repo/os/Containerfile"
 # deliberate additions.
 # The virtio-only Cage session wrapper is installed as a single executable;
 # physical GPU sessions still use the ordinary greeter command.
+# tilo-hidepid.service is a deliberate removal: a global hidepid /proc hides
+# PID 1 from unprivileged processes and breaks libsystemd unit lookups.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=ac3a205ea1c8fb16b404e853af9a86f6d58dc33eeb5718c5c7e13badcf5917e0
+expected_contract=ab2ea6df3dd0a7ce6da607076c57c0ad97c6bd36cefe26e3e7b36df872094ac7
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
