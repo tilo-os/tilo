@@ -419,14 +419,17 @@ jobs:
             ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
             desktop_ready=false
             for attempt in $(seq 1 60); do
-              if ./os/dev/vm.sh ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && test "$(wc -l < "$HOME/.local/state/tilo/session-logs/frame-trace.csv")" -gt 1'; then
+              # The CSV records ticks after event-loop dispatch returns and may
+              # stay buffered while an already painted desktop is idle. Require
+              # a completed render-thread presentation, not a flushed loop tick.
+              if ./os/dev/vm.sh ssh 'busctl --user --timeout=3 status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && grep -Eq "^FRAME-LIFECYCLE serial=[1-9][0-9]* event=render-retired " "$HOME/.local/state/tilo/session-logs/latest.log"'; then
                 desktop_ready=true
                 break
               fi
               sleep 1
             done
             if [[ $desktop_ready != true ]]; then
-              echo '::error::native desktop did not satisfy portal and frame-trace readiness; preserving each predicate in desktop-readiness.log and frame-trace.csv'
+              echo '::error::native desktop did not own its portal and complete a presentation; preserving evidence in desktop-readiness.log, desktop-session.log and frame-trace.csv'
               exit 1
             fi
             ./os/dev/vm.sh cmd "screendump $TILO_RUN/desktop.ppm" >/dev/null
