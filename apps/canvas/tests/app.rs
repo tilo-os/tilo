@@ -93,6 +93,40 @@ fn look_and_inspect_answer_through_the_host_door() {
     assert_eq!(listed["layers_top_first"][0]["marks"], 1);
 }
 
+/// Every framework app answers `render`, the whole window as a stored
+/// picture, so an agent can see what a person sees through the door it acts
+/// through, in the palette the window is drawn in.
+#[test]
+fn render_shows_the_whole_app_through_the_host_door() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.harness().set_theme(ui::Theme::light());
+    let render: ActionRef<ArtworkResource, ()> = ActionRef::new("render", &[]);
+    let output = app
+        .operate(render.invoke())
+        .unwrap()
+        .expect("a render finishes at once");
+    let value = output.value.unwrap();
+    assert_eq!(value["theme"], ui::Theme::light().name, "{value}");
+    assert!(
+        value["revision"]
+            .as_str()
+            .is_some_and(|revision| !revision.is_empty())
+    );
+    // The app's own content: the window less the framework's history bar.
+    let (width, height) = <App as ui::prelude::ResourceApp>::SHOT_VIEWPORT;
+    assert_eq!(value["width"].as_u64(), Some(width.into()));
+    assert!(
+        value["height"]
+            .as_u64()
+            .is_some_and(|drawn| drawn > u64::from(height) / 2 && drawn <= height.into())
+    );
+    let hash = ui::tilo_actions::content_hash(output.resources.first().unwrap()).unwrap();
+    let png = tilo_content::ContentStore::for_app()
+        .read(hash)
+        .expect("readable");
+    assert!(png.starts_with(b"\x89PNG"));
+}
+
 /// The production root satisfies the Tilo-native contract: every control
 /// that can cause an effect is bound to a published action.
 #[test]
