@@ -113,10 +113,11 @@ runs:
               # of GB of it would only outlast the Docker client's timeout.
               keep_state=true
               # It also becomes the next golden state when this build is
-              # promoted, so bound it within the job as well: a board build
-              # needs about twice the rootfs free in the store.
+              # promoted, so bound it within the job as well, relative to the
+              # store (200 or 300 GiB): a board build needs about twice the
+              # rootfs free, and a tighter bound drops cargo's target caches.
               if ! grep -q '^\[worker\.oci\]' "$config"; then
-                printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "90GB"\n  minFreeSpace = "70GB"\n' >> "$config"
+                printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "40%%"\n  minFreeSpace = "23%%"\n' >> "$config"
               fi
               echo "::notice::BuildKit builder $name starts from the slot's seeded state"
             fi

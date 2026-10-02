@@ -122,28 +122,16 @@ mod identity_fs_tests {
                 "publication returned while the deliberately blocked publisher was unfinished"
             );
             std::fs::write(&release, b"release").expect("release publisher");
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
-            while std::time::Instant::now() < deadline {
-                if log.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            // The publisher writes its log line by line, so the log existing
+            // says nothing about it being complete. The worker retires only
+            // after the publisher has exited, which is the event to wait on;
+            // the budget is a backstop and a stall reports the attempt history.
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
+                .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
             let arguments = std::fs::read_to_string(&log).expect("background publication");
             assert!(arguments.contains("publish-authority"));
             assert!(arguments.contains(cache.to_str().unwrap()));
             assert!(arguments.contains(acl.to_str().unwrap()));
-            // The released publisher only has to exit; the budget is a
-            // backstop, and a stall reports the worker's attempt history.
-            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
-                |report| {
-                    panic!(
-                        "the publisher worker must retire before its fixture is removed: {report}"
-                    )
-                },
-            );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.

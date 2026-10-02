@@ -14,7 +14,7 @@
 set -euo pipefail
 
 if grep -qw 'tilo.install' /proc/cmdline 2>/dev/null; then
-  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-installer
+  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-installer
 else
-  exec env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter
+  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter
 fi

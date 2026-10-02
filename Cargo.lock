@@ -5029,6 +5029,7 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-automerge-fork",
+ "tilo-startup-metrics",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
@@ -15478,6 +15479,7 @@ name = "tilo-joined-room"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "channel-crypto",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -15498,6 +15500,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "tracing",

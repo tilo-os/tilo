@@ -57,6 +57,8 @@ const DECODE_WAIT: Duration = Duration::from_millis(150);
 enum Event {
     Sample(gst::Sample),
     Error(String),
+    /// Every buffer pushed before end-of-stream has come out.
+    Eos,
 }
 
 /// Initialise `GStreamer` once for the process.
@@ -404,16 +406,22 @@ impl Running {
                 .build(),
         );
         let bus = pipeline.bus().ok_or("pipeline has no bus")?;
-        let error_tx = Mutex::new(tx);
+        let bus_tx = Mutex::new(tx);
         bus.set_sync_handler(move |_bus, msg| {
-            if let gst::MessageView::Error(err) = msg.view() {
-                let src = msg
-                    .src()
-                    .map_or_else(|| "pipeline".to_string(), |s| s.name().to_string());
-                let text = format!("{src}: {}", err.error());
-                if let Ok(tx) = error_tx.lock() {
-                    let _ = tx.send(Event::Error(text));
+            let event = match msg.view() {
+                gst::MessageView::Error(err) => {
+                    let src = msg
+                        .src()
+                        .map_or_else(|| "pipeline".to_string(), |s| s.name().to_string());
+                    Some(Event::Error(format!("{src}: {}", err.error())))
                 }
+                gst::MessageView::Eos(_) => Some(Event::Eos),
+                _ => None,
+            };
+            if let Some(event) = event
+                && let Ok(tx) = bus_tx.lock()
+            {
+                let _ = tx.send(event);
             }
             gst::BusSyncReply::Drop
         });
@@ -433,6 +441,7 @@ impl Running {
         match self.events.recv_timeout(timeout) {
             Ok(Event::Sample(s)) => Ok(Some(s)),
             Ok(Event::Error(e)) => Err(e),
+            Ok(Event::Eos) => Err("pipeline reached end of stream".into()),
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => Err("pipeline stopped".into()),
         }
@@ -445,6 +454,7 @@ impl Running {
             match ev {
                 Event::Sample(s) => out.push(s),
                 Event::Error(e) => return Err(e),
+                Event::Eos => return Err("pipeline reached end of stream".into()),
             }
         }
         Ok(out)
@@ -836,6 +846,43 @@ impl RealtimeEncoder {
         samples.extend(self.running.drain().map_err(RealtimeError::Pipeline)?);
         if !samples.is_empty() {
             self.first_output_seen = true;
+        }
+        Ok(samples
+            .iter()
+            .filter_map(|s| self.unit_from_sample(s))
+            .collect())
+    }
+
+    /// End the stream and return every unit still in flight, in order.
+    ///
+    /// [`Self::encode`] hands late output back with the next frame; after
+    /// the last frame there is no next call, so a recording that stops
+    /// collects the rest here.
+    ///
+    /// # Errors
+    ///
+    /// [`RealtimeError::Pipeline`] when the encoder fails or does not drain.
+    pub fn finish(self) -> Result<Vec<EncodedUnit>, RealtimeError> {
+        self.running
+            .appsrc
+            .end_of_stream()
+            .map_err(|e| RealtimeError::Pipeline(format!("end of stream: {e:?}")))?;
+        let mut samples = Vec::new();
+        loop {
+            match self.running.events.recv_timeout(startup_timeout()) {
+                Ok(Event::Sample(s)) => samples.push(s),
+                Ok(Event::Eos) => break,
+                Ok(Event::Error(e)) => return Err(RealtimeError::Pipeline(e)),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(RealtimeError::Pipeline(format!(
+                        "the encoder did not drain within {:?}",
+                        startup_timeout()
+                    )));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(RealtimeError::Pipeline("pipeline stopped".into()));
+                }
+            }
         }
         Ok(samples
             .iter()

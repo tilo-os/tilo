@@ -73,6 +73,33 @@ fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
         .is_ok_and(|elapsed| elapsed >= AWAY_RECAP_AFTER)
 }
 
+fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model::DesktopTree) {
+    let people = tree.collaborators.iter().chain(
+        tree.workspaces
+            .iter()
+            .flat_map(|ws| ws.collaborators.iter()),
+    );
+    for person in people {
+        let Some(rgb) = person
+            .cursor_color
+            .as_deref()
+            .and_then(ui::presence::parse_hex_color)
+        else {
+            continue;
+        };
+        authors.set_color_override(&person.id, rgb);
+        let handle = automerge::ActorId::from(person.id.as_bytes()).to_hex_string();
+        authors.register(
+            &handle,
+            ui::history_source::author_coloured(
+                participant_display_label(&person.name),
+                ui::history_source::short_id(&person.id),
+                rgb,
+            ),
+        );
+    }
+}
+
 const SHEET_MAX_W: f64 = 560.0;
 /// Narrowest the sheet gets before it takes the whole viewport instead —
 /// below this the content behind it is too thin to be worth preserving
@@ -348,7 +375,7 @@ fn draw_resume_card(
         None,
         &RoundedRect::new(rect.x0, rect.y0 + 8.0, rect.x0 + 3.0, rect.y1 - 8.0, 1.5),
     );
-    let (r, g, b) = ui::widget::history::hue_to_rgb(resume.author.avatar_hue);
+    let (r, g, b) = resume.author.rgb();
     let initial = resume
         .author
         .name
@@ -1925,6 +1952,7 @@ impl RoomActivityPane {
             return;
         }
         self.last_heads = heads;
+        seed_roster_colours(self.source.authors_mut(), tree);
 
         // Bind the local automerge actor to the Tilo identity, or local user
         // id; a peer's actor stays unresolved until collaboration says who.
@@ -1939,13 +1967,13 @@ impl RoomActivityPane {
             // editing from this device and acting through a receipt is one
             // colour, not one per key.
             if let Some(principal) = principal {
-                let hue = ui::history_source::stable_hue(&principal);
+                let rgb = self.source.authors().colour_for(&principal);
                 self.source.authors_mut().register(
                     &actor,
-                    ui::widget::HistoryAuthor::new(
+                    ui::history_source::author_coloured(
                         principal,
-                        hue,
                         ui::history_source::short_id(&actor),
+                        rgb,
                     ),
                 );
             }
@@ -1978,10 +2006,10 @@ impl RoomActivityPane {
             else {
                 continue;
             };
-            entry.author = ui::widget::HistoryAuthor::new(
+            entry.author = ui::history_source::author_coloured(
                 participant_display_label(actor),
-                ui::history_source::stable_hue(actor),
                 ui::history_source::short_id(actor),
+                self.source.authors().colour_for(actor),
             );
         }
         let represented_receipts = entries
@@ -1999,10 +2027,10 @@ impl RoomActivityPane {
                 let actor = receipt.actor.clone();
                 entries.push(HistoryEntry {
                     id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
-                    author: ui::widget::HistoryAuthor::new(
+                    author: ui::history_source::author_coloured(
                         participant_display_label(&actor),
-                        ui::history_source::stable_hue(&actor),
                         ui::history_source::short_id(&actor),
+                        self.source.authors().colour_for(&actor),
                     ),
                     op_class: OpClass::EditMeta,
                     artifact_kind: ArtifactKind::Cluster,
@@ -3932,7 +3960,7 @@ impl RoomActivityPane {
         draw_replay_pointers(scene, transform, tr, theme, canvas, frame, self.sheet);
 
         let info = Rect::new(canvas.x0, canvas.y1 + 8.0, canvas.x1, self.sheet.y1 - 10.0);
-        let (r, g, b) = ui::widget::history::hue_to_rgb(frame.author.avatar_hue);
+        let (r, g, b) = frame.author.rgb();
         scene.fill(
             Fill::NonZero,
             transform,
@@ -7032,7 +7060,7 @@ fn draw_presence_trail(
     for (index, frame) in slice.iter().enumerate() {
         let x = x0 + step * (index as f64 + 0.5);
         if frame.pointers.is_empty() {
-            let (r, g, b) = ui::widget::history::hue_to_rgb(frame.author.avatar_hue);
+            let (r, g, b) = frame.author.rgb();
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -7224,7 +7252,7 @@ fn draw_brief_card(
             if action_y + 24.0 > rect.y1 - 28.0 {
                 break;
             }
-            let (r, g, b) = ui::widget::history::hue_to_rgb(action.author.avatar_hue);
+            let (r, g, b) = action.author.rgb();
             let initial = action
                 .author
                 .name
@@ -7457,7 +7485,7 @@ fn draw_brief_author_stack(
     let visible = authors.len().min(2);
     for (index, author) in authors.iter().take(visible).enumerate() {
         let avatar_x = x + small_count_to_f64(index) * 12.0;
-        let (red, green, blue) = ui::widget::history::hue_to_rgb(author.avatar_hue);
+        let (red, green, blue) = author.rgb();
         let initial = author
             .name
             .chars()

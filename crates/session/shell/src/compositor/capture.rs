@@ -938,6 +938,18 @@ impl CaptureExecutor {
         let path = recording.path.clone();
         let frames = recording.frames;
         let mut output = recording.output;
+        // The encoder may still hold the last frames; a failure to drain
+        // them must not cost the frames already written.
+        match recording.encoder.finish() {
+            Ok(tail) => {
+                for unit in tail {
+                    output.write_access_unit(&unit.data)?;
+                }
+            }
+            Err(error) => {
+                tracing::warn!("capture: recording ends without its last frames: {error}");
+            }
+        }
         for track in &mut recording.audio_tracks {
             if let Ok(bytes) = track.capture.drain(true)
                 && !bytes.is_empty()
@@ -1494,12 +1506,12 @@ fn record_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut recording.renderer, &frame_scene);
-        let nalus = recording
+        let units = recording
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode frame: {error}"))?;
-        if !nalus.is_empty() {
-            recording.output.write_access_unit(&nalus)?;
+        for unit in units {
+            recording.output.write_access_unit(&unit.data)?;
         }
         recording.frames = recording.frames.saturating_add(1);
         recording.last_frame = Instant::now();
@@ -1533,19 +1545,19 @@ fn record_replay_frame(
             fitted
         };
         let rgba = render_capture_rgba(&mut replay.renderer, &frame_scene);
-        let access_unit = replay
+        let units = replay
             .encoder
             .encode(&rgba)
             .map_err(|error| format!("encode recent frame: {error}"))?;
-        if !access_unit.is_empty() {
-            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &access_unit);
-            replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &unit.data);
+            replay.video_bytes = replay.video_bytes.saturating_add(unit.data.len());
             replay.frames.push_back(BufferedReplayFrame {
-                access_unit,
+                access_unit: unit.data,
                 keyframe,
             });
-            trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         }
+        trim_replay_video_frames(&mut replay.frames, &mut replay.video_bytes);
         replay.last_frame = Instant::now();
     }
     drain_replay_audio(replay);

@@ -26,10 +26,21 @@ fi
   exit 1
 }
 
+# Turn accessibility on the way a screen reader does: AccessKit providers join
+# the AT-SPI bus only once org.a11y.Status.IsEnabled is true.
+busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+
+# Find the compositor through the portal backend name only it owns on the
+# session bus, not through /proc: it turns non-dumpable once it holds identity
+# keys, and a hardened /proc hides such a process even from its own user.
 shell_pid=${TILO_SHELL_PID:-}
-if [[ -z "$shell_pid" ]]; then
-  shell_pid=$(pgrep -o -f '^/usr/bin/shell --backend drm( |$)' || true)
-fi
+for _ in $(seq 1 100); do
+  [[ -z "$shell_pid" ]] || break
+  shell_pid=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+    org.freedesktop.DBus GetConnectionUnixProcessID s \
+    org.freedesktop.impl.portal.desktop.tilo 2>/dev/null | awk '$1 == "u" { print $2 }')
+  [[ -n "$shell_pid" ]] || sleep 0.1
+done
 [[ -n "$shell_pid" ]] || { echo "Tilo compositor process is absent" >&2; exit 1; }
 
 atspi_address=$(
