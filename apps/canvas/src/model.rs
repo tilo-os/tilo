@@ -98,7 +98,8 @@ pub struct Gradient {
     pub kind: String,
     pub from: [f64; 2],
     pub to: [f64; 2],
-    /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`.
+    /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`; a stop's alpha
+    /// (`#ffd27a00`) fades the paint out, for a glow or mist.
     pub stops: Vec<(f64, String)>,
 }
 
@@ -109,7 +110,8 @@ pub struct Style {
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<String>,
-    /// A gradient fill, drawn instead of `fill` on plain layers.
+    /// A gradient fill, drawn instead of `fill` on plain layers. On an oil
+    /// layer the brush is remixed along it as the shape is laid in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<Gradient>,
     /// Outline or stroke colour.

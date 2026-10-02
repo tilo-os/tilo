@@ -39,6 +39,7 @@ pub mod brush;
 pub mod colour;
 pub mod composite;
 pub mod engine;
+pub mod field;
 mod grid;
 pub mod ground;
 mod mask;
@@ -52,6 +53,7 @@ pub use colour::{Paint, Pigment, Rgb, parse_paint};
 pub use engine::{
     Blend, Canvas, Engines, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Preset, Settings, Stroke,
 };
+pub use field::{ColourField, FieldKind};
 pub use ground::{Heightfield, Texture};
 pub use painter::{LayerPainter, Painted};
 
