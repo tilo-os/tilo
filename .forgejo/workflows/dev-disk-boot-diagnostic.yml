@@ -265,6 +265,15 @@ jobs:
               grep -Eq '^[[:space:]]*Current Entry: tilo-dev-diagnostic[.]efi$' "$TILO_RUN/dev-uki-boot.log"
             fi
           fi
+          # Measure the actual boot before diagnostic instrumentation restarts
+          # greetd; its new activation timestamp would include host probe time.
+          if [[ $CHECK_BOOT_PERFORMANCE == true ]]; then
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              os/tests/boot_performance_gate.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-gate.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-gate.sh" > "$TILO_RUN/boot-performance.log" 2>&1
+          fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
             [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {
@@ -333,13 +342,6 @@ jobs:
             echo '::error::native KVM guest did not keep a graphical greeter'
             exit 1
           }
-          if [[ $CHECK_BOOT_PERFORMANCE == true ]]; then
-            sshpass -p "$TILO_PASS" scp -q -P 2222 \
-              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-              os/tests/boot_performance_gate.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-gate.sh"
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-gate.sh" > "$TILO_RUN/boot-performance.log" 2>&1
-          fi
           if [[ $CHECK_DESKTOP == true ]]; then
             if [[ $OVERRIDE_SESSION_WRAPPER == true ]]; then
               sshpass -p "$TILO_PASS" scp -q -P 2222 \
