@@ -261,6 +261,9 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                         "font",
                         "radius_norm",
                         "spacing_norm",
+                        "motion_scale",
+                        "material_scale",
+                        "icon_scale",
                         "order",
                         "dark_base",
                     ]
@@ -277,6 +280,14 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                         .is_some_and(|v| v.is_finite() && v >= 0. && v <= f64::from(u32::MAX))
                 {
                     return Err("Invalid order".into());
+                }
+                if matches!(
+                    key.as_str(),
+                    "motion_scale" | "material_scale" | "icon_scale"
+                ) && !read_number(doc, &row, &key)
+                    .is_some_and(|v| v.is_finite() && (0.0..=4.0).contains(&v))
+                {
+                    return Err(format!("Invalid {key}"));
                 }
             }
         }
