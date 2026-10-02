@@ -424,6 +424,18 @@ completed install without copying the OS again. A Lenovo board install can use
 the generic scenario must cover full encrypted boot and the board source still
 requires an independent boot-file/root audit before physical use.
 
+To reinstall into an owned Windows raw VM source, stop its VM and run
+`prepare-windows-direct-source.py reset-template --plan PLAN --manifest MANIFEST
+--source-raw RAW --confirm-source-disk-guid GUID`. Use the original template
+manifest and its disk GUID. The command validates the reviewed geometry and
+synthetic Windows preservation samples, acquires an exclusive Windows file
+handle, clears the first and last MiB of each reviewed disposable Tilo extent
+to invalidate old filesystem headers, then restores the template GPT. Bulk
+payload bytes and allocated blocks remain for overwrite by the next install,
+avoiding a second large target. Synthetic Windows payload bytes stay unchanged.
+Previous installation proofs become obsolete for this source. This command is
+for file-backed VM sources only; it never opens a physical drive.
+
 ## Configuration (env vars)
 
 `TILO_DISTROBOX` `TILO_IMAGE` `TILO_OUTPUT` `TILO_DISK` `TILO_RUN`
