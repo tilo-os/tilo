@@ -206,7 +206,7 @@ impl Native {
 
     /// Admit the room's deltas and hand the governor's call answers to the
     /// participations, as the shell's actor does, until `done`.
-    async fn receive_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+    async fn receive_until(&mut self, what: &str, done: impl Fn(&Self) -> bool + Send + Sync) {
         tilo_test_env::within(what, async {
             while !done(self) {
                 let inbound = tokio::select! {
