@@ -20,8 +20,8 @@ use ui::widget::Element;
 
 use crate::doc::ViewDoc;
 use crate::files_app::{
-    folder_palette_operations, load_published_places, published_place_resources,
-    published_template_resources, FileExplorerWidget,
+    FileExplorerWidget, folder_palette_operations, load_published_places,
+    published_place_resources, published_template_resources,
 };
 
 /// Collaborative view preferences and favourite paths.
@@ -214,25 +214,27 @@ fn view_declarations() -> Vec<ActionDecl<FileExplorer>> {
 }
 
 fn bookmark_declarations() -> Vec<ActionDecl<FileExplorer>> {
-    vec![ActionDecl::new(
-        "set-bookmarks",
-        "Set bookmarks",
-        vec![ActionParam::required(
-            "paths",
-            ParamType::Array,
-            "Favourite folder paths, in order",
-        )],
-        |args, _| {
-            let paths = args
-                .array("paths")
-                .ok_or_else(|| "missing bookmark paths".to_owned())?
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect();
-            Ok(FilesDocAction::SetBookmarks { paths })
-        },
-    )
-    .describe("Replace the shared places and bookmarks order.")]
+    vec![
+        ActionDecl::new(
+            "set-bookmarks",
+            "Set bookmarks",
+            vec![ActionParam::required(
+                "paths",
+                ParamType::Array,
+                "Favourite folder paths, in order",
+            )],
+            |args, _| {
+                let paths = args
+                    .array("paths")
+                    .ok_or_else(|| "missing bookmark paths".to_owned())?
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect();
+                Ok(FilesDocAction::SetBookmarks { paths })
+            },
+        )
+        .describe("Replace the shared places and bookmarks order."),
+    ]
 }
 
 /// Framework app: the files widget is the surface over [`FileExplorer`].

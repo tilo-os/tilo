@@ -10,7 +10,7 @@ use ui::tilo_actions::{ActionSpec, EncodedAction};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{register, ImageEditorAction, IMAGE_EDITOR_ACTION_TYPE};
+use crate::actions::{IMAGE_EDITOR_ACTION_TYPE, ImageEditorAction, register};
 use crate::app::ImageEditorApp;
 use crate::doc::ProjectDoc;
 use crate::model::Project;
