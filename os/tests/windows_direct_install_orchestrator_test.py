@@ -107,6 +107,19 @@ class OrchestratorContract(unittest.TestCase):
         manifest["target_partitions"][0]["offset_bytes"] += 512
         self.assertFalse(module.template_matches_plan(manifest, plan, preserved))
 
+    def test_completed_install_resumes_but_incomplete_record_is_refused(self):
+        data = module.pinned_config(self.config)
+        out = self.work / "generic" / "scenario"
+        out.mkdir(parents=True)
+        record = out / "install.json"
+        record.write_text(json.dumps({"steps": ["install", "power-off"]}))
+        args = module.scenario_argv(data, self.work, "generic", data["source_raw"], out)
+        self.assertIn("--resume", args)
+        self.assertIn("--keep", args)
+        record.write_text(json.dumps({"steps": ["install"]}))
+        with self.assertRaisesRegex(ValueError, "did not complete"):
+            module.scenario_argv(data, self.work, "generic", data["source_raw"], out)
+
     def test_forgejo_run_must_be_successful_and_host_pinned(self):
         response = {"run": {"index_in_repo": 101, "id": 9001, "status": "success"}}
         with mock.patch.object(module, "command", return_value=json.dumps(response)) as invoked:

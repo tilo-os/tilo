@@ -315,6 +315,9 @@ pub struct InstallScenarioArgs {
     /// Installed root filesystem; omitted leaves the installer's default unchanged.
     #[arg(long, value_parser = ["btrfs", "ext4", "xfs"])]
     pub filesystem: Option<String>,
+    /// Resume verification of a completed retained Windows raw-target install in --out. Does not reinstall.
+    #[arg(long, requires_all = ["out", "target_disk", "keep"], conflicts_with = "dry_run")]
+    pub resume: bool,
     /// How the always-on disk encryption unlocks: passphrase (no TPM) or tpm-pin (software TPM; the installer offers it only for a verified boot chain).
     #[arg(long, value_enum, default_value = "passphrase")]
     pub encrypt: crate::scenario::Unlock,
