@@ -70,9 +70,13 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
     }
 }
 fn read_scale(doc: &AutoCommit, r: &ObjId, key: &str) -> f32 {
+    read_authored(doc, r, key, 1.0, 4.0)
+}
+
+fn read_authored(doc: &AutoCommit, r: &ObjId, key: &str, default: f32, max: f64) -> f32 {
     read_number(doc, r, key)
-        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 4.0)
-        .map_or(1.0, |value| value as f32)
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= max)
+        .map_or(default, |value| value as f32)
 }
 
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
@@ -112,6 +116,9 @@ fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
         motion_scale: read_scale(doc, r, "motion_scale"),
         material_scale: read_scale(doc, r, "material_scale"),
         icon_scale: read_scale(doc, r, "icon_scale"),
+        chrome_weight: read_scale(doc, r, "chrome_weight"),
+        motion_character: read_scale(doc, r, "motion_character"),
+        material_tint: read_authored(doc, r, "material_tint", 0.0, 1.0),
         order,
     })
 }
@@ -137,6 +144,9 @@ fn put_record(doc: &mut AutoCommit, r: &ObjId, s: &ThemeSpec) {
     put_f64(doc, r, "motion_scale", f64::from(s.motion_scale));
     put_f64(doc, r, "material_scale", f64::from(s.material_scale));
     put_f64(doc, r, "icon_scale", f64::from(s.icon_scale));
+    put_f64(doc, r, "chrome_weight", f64::from(s.chrome_weight));
+    put_f64(doc, r, "motion_character", f64::from(s.motion_character));
+    put_f64(doc, r, "material_tint", f64::from(s.material_tint));
     let _ = ui::doc::put_if_changed(doc, r, "order", u64::from(s.order));
 }
 
@@ -264,6 +274,9 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                         "motion_scale",
                         "material_scale",
                         "icon_scale",
+                        "chrome_weight",
+                        "motion_character",
+                        "material_tint",
                         "order",
                         "dark_base",
                     ]
@@ -283,11 +296,21 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                 }
                 if matches!(
                     key.as_str(),
-                    "motion_scale" | "material_scale" | "icon_scale"
+                    "motion_scale"
+                        | "material_scale"
+                        | "icon_scale"
+                        | "chrome_weight"
+                        | "motion_character"
                 ) && !read_number(doc, &row, &key)
                     .is_some_and(|v| v.is_finite() && (0.0..=4.0).contains(&v))
                 {
                     return Err(format!("Invalid {key}"));
+                }
+                if key == "material_tint"
+                    && !read_number(doc, &row, &key)
+                        .is_some_and(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+                {
+                    return Err("Invalid material_tint".into());
                 }
             }
         }

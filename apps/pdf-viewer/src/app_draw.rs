@@ -2273,9 +2273,9 @@ impl PdfApp {
         theme: &Theme,
     ) -> Vec<(SearchHit, Rect)> {
         let s = self.search_rect;
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, base, c.surfaces.glass, None, &s);
-        chrome::bar_edge(scene, base, c.surfaces.glass, s.x0, s.x1, s.y1);
+        let glass = theme.material_glass();
+        scene.fill(Fill::NonZero, base, glass, None, &s);
+        chrome::bar_edge(scene, base, glass, s.x0, s.x1, s.y1);
 
         let lay = self.search_layout(tr);
         self.draw_search_field(scene, base, tr, theme, &lay);
