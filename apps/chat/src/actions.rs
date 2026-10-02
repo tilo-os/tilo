@@ -2281,11 +2281,11 @@ fn build_call_resource(
     let mut call = Resource::new(
         format!("chat.call:{}", ch.id),
         "chat.call",
-        format!("Call: {}", channel_label(ch)),
+        crate::i18n::t_args("chat-call-title", &[("channel", channel_label(ch).into())]),
     )
     .with_action(view_operation(
         "open",
-        "Open call conversation",
+        &crate::i18n::t("chat-call-open"),
         &ChatOperation::OpenChannel {
             workspace: workspace_id.into(),
             channel: ch.id.clone(),
@@ -2294,27 +2294,31 @@ fn build_call_resource(
     for (id, label, command) in [
         (
             "join",
-            "Join muted",
+            "chat-call-join",
             Command::Join {
                 channel_id: ch.id.clone(),
             },
         ),
-        ("leave", "Leave call", Command::Leave),
-        ("mute", "Mute microphone", Command::SetMuted { muted: true }),
+        ("leave", "chat-call-leave-action", Command::Leave),
+        (
+            "mute",
+            "chat-call-mute-action",
+            Command::SetMuted { muted: true },
+        ),
         (
             "unmute",
-            "Request microphone",
+            "chat-call-unmute-action",
             Command::SetMuted { muted: false },
         ),
-        ("status", "Call status", Command::Status),
+        ("status", "chat-call-status", Command::Status),
     ] {
-        call = call.with_action(voice_operation(id, label, &ch.id, command));
+        call = call.with_action(voice_operation(id, &crate::i18n::t(label), &ch.id, command));
     }
     call.with_action(ActionSpec::prompted_operation(
         "select-input",
-        "Select microphone",
-        "Input",
-        "Input from call status",
+        crate::i18n::t("chat-call-select-input"),
+        crate::i18n::t("chat-call-input"),
+        crate::i18n::t("chat-call-input-hint"),
         OperationKind::Effect,
         CHAT_OPERATION_TYPE,
         {

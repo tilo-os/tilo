@@ -26,8 +26,8 @@ use tilo_moq::relay::{
 use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
-    self as protocol, CallOperation, CallState, Directions, MAX_PARTICIPANTS, PARTICIPATION_TTL,
-    VoiceGrant, VoiceParticipant,
+    self as protocol, CallOperation, CallState, CallSummary, Directions, MAX_PARTICIPANTS,
+    PARTICIPATION_TTL, VoiceGrant, VoiceParticipant,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
@@ -742,6 +742,59 @@ impl Rooms {
             }
         }
         Ok(grant)
+    }
+
+    /// The calls of `room` for `peer`, a member, with who is in each.
+    pub(crate) async fn voice_calls(
+        &self,
+        room: &str,
+        peer: &AuthenticatedPeer,
+    ) -> Result<Vec<CallSummary>, String> {
+        let governed = self.room(room).await.map_err(|error| error.to_string())?;
+        let policy = Policy::read(governed.lock().await.peer())?;
+        if !policy
+            .access
+            .member_devices
+            .contains(&peer.device_public_key)
+            && !policy
+                .access
+                .member_user_roots
+                .contains(&peer.user_public_key)
+        {
+            return Err("not a member of the room".into());
+        }
+        let Some(calls) = policy.calls else {
+            return Ok(Vec::new());
+        };
+        let state = self.inner.calls.state();
+        Ok(calls
+            .calls
+            .iter()
+            .map(|(call, entry)| {
+                let mut participants: Vec<VoiceParticipant> = state
+                    .in_call(call)
+                    .map(|(id, participation)| VoiceParticipant {
+                        device_public_key: participation.device,
+                        user_public_key: participation.user,
+                        namespace: protocol::namespace(call, id),
+                        publishes: participation.directions.publish,
+                    })
+                    .collect();
+                participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
+                CallSummary {
+                    state: CallState {
+                        call: *call,
+                        epoch: entry.epoch,
+                        active: entry.phase == CallPhaseV1::Active,
+                        allowed: from_v1(entry.allowed),
+                    },
+                    app_id: entry.binding.app_id.clone(),
+                    record_id: entry.binding.record_id.clone(),
+                    channel_id: entry.binding.channel_id.clone(),
+                    participants,
+                }
+            })
+            .collect())
     }
 
     /// End `participation` of `peer` in `call`.
