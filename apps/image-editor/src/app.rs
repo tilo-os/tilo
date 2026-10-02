@@ -2850,10 +2850,24 @@ impl Widget for ImageEditorApp {
             return Ok(Some(started));
         }
         if request.type_id == CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(started) = button.start_operation(op, doc, path)? {
-                    return Ok(Some(started));
+            let started = {
+                let mut found = None;
+                for button in self.retained_buttons_mut() {
+                    if let Some(started) = button.start_operation(op, doc, path)? {
+                        found = Some(started);
+                        break;
+                    }
                 }
+                found
+            };
+            if let Some(started) = started {
+                // View/effect handlers queue into `toolbar_pending`; run them
+                // before returning so a host click opens the picker in the
+                // same tick (sync may not run until the next relayout).
+                if let Some(command) = self.toolbar_pending.take() {
+                    self.run_toolbar(doc, command);
+                }
+                return Ok(Some(started));
             }
         }
         if let Some(started) = self.admit_resource_operation(
@@ -3184,22 +3198,41 @@ impl ui::resources::PublishesResources for ImageEditorApp {
     /// door already owns the project. A project that matches the document is
     /// read from the document; an edit that has not been written yet stays on
     /// the widget so the palette still shows it.
+    ///
+    /// Retained toolbar / empty-state buttons are not layout children, so their
+    /// `tilo.control:*` resources must be published here or host clicks never
+    /// resolve after ActionEmitter emit.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
-        }
-        vec![self.project_resource(doc)]
+        let mut out = if self.actions.is_hosted() {
+            Vec::new()
+        } else {
+            vec![self.project_resource(doc)]
+        };
+        out.extend(self.control_resources(doc));
+        out
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if self.actions.is_hosted() && id == crate::actions::PROJECT_RESOURCE_ID {
             return None;
         }
-        find_resource(&self.project_resource(doc), id)
+        self.control_resources(doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id)
+            .or_else(|| find_resource(&self.project_resource(doc), id))
     }
 }
 
 impl ImageEditorApp {
+    fn control_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut out = Vec::new();
+        for (_, button) in &self.toolbar {
+            out.extend(ui::resources::resources(button, doc));
+        }
+        out.extend(ui::resources::resources(&self.empty_open, doc));
+        out
+    }
+
     fn project_resource(&self, doc: &AutoCommit) -> tilo_actions::Resource {
         let stored = <crate::resource::ImageEditor as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_else(|_| self.project.clone());

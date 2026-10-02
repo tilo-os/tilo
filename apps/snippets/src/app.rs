@@ -746,6 +746,10 @@ impl SnippetsApp {
                 for s in self.library.snippets.clone() {
                     self.perform_action(doc, &SnippetsAction::CreateSnippet { snippet: s });
                 }
+                // Seeding is not a user undo bracket; discard so a later toolbar
+                // star records exactly one boundary (and Ctrl+Z does not wipe
+                // the library).
+                let _ = self.actions.take_committed();
             } else {
                 // A peer is already sharing — adopt their library.
                 let next = Library { snippets: remote };

@@ -6149,16 +6149,27 @@ mod tests {
             "screen readers receive the same whole-snapshot contract as sighted users"
         );
         let resources = ui::resources::resources(&f.app, &f.state.doc);
-        assert_eq!(resources.len(), 2, "policy and catalog are driveable");
+        let flat = tilo_actions::flatten(&resources);
         assert!(
             resources
                 .iter()
-                .any(|resource| resource.kind == "backups.policy")
+                .any(|resource| resource.kind == "backups.workspace"),
+            "workspace catalog is driveable: {:?}",
+            resources
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
         );
         assert!(
-            resources
-                .iter()
-                .any(|resource| resource.kind == "backups.workspace")
+            flat.iter()
+                .any(|entry| entry.resource_kind == "backups.policy")
+                || resources.iter().any(|resource| {
+                    resource
+                        .children
+                        .iter()
+                        .any(|child| child.kind == "backups.policy")
+                }),
+            "policy Document ops ride the published workspace child",
         );
         assert!(
             tilo_actions::flatten(&resources)
