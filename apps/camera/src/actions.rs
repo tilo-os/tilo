@@ -1127,12 +1127,14 @@ mod tests {
             };
             let doc = AutoCommit::new();
             let page = provide_resources(&ctx, &doc);
-            let handoffs: Vec<_> = page[0]
-                .children
-                .iter()
-                .filter(|child| matches!(child.kind.as_str(), "camera.photo" | "camera.video"))
-                .collect();
-            assert_eq!(handoffs.len(), 1);
+            assert_eq!(
+                page[0]
+                    .children
+                    .iter()
+                    .filter(|child| matches!(child.kind.as_str(), "camera.photo" | "camera.video"))
+                    .count(),
+                1
+            );
             let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
                 .expect("recent capture resolves");
             let open = recent

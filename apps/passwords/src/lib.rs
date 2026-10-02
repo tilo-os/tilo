@@ -262,6 +262,8 @@ pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo_long_list())
 }
 
+pub use resource::{Passwords, PasswordsShell, launch_spec};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,4 +371,3 @@ mod tests {
         }
     }
 }
-pub use resource::{Passwords, PasswordsShell, launch_spec};
