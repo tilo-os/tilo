@@ -307,12 +307,7 @@ pub const MAX_ARGS_SUMMARY: usize = 160;
 /// than listed. `None` for a payload that is not JSON or says nothing.
 pub fn args_summary(payload: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let value = match &value {
-        serde_json::Value::Object(fields) if fields.len() == 1 => {
-            fields.values().next().unwrap_or(&value)
-        }
-        _ => &value,
-    };
+    let value = arguments_of(&value);
     if value.is_null() || value.as_object().is_some_and(serde_json::Map::is_empty) {
         return None;
     }
@@ -322,6 +317,28 @@ pub fn args_summary(payload: &[u8]) -> Option<String> {
         out = out.chars().take(MAX_ARGS_SUMMARY).collect::<String>() + "…";
     }
     Some(out)
+}
+
+/// The arguments inside an encoded action's envelopes: a stamped
+/// operation's `op` (beside its `at` time), then an adjacently tagged
+/// operation's `args` (beside its `action` name) or an externally tagged
+/// variant's fields.
+fn arguments_of(value: &serde_json::Value) -> &serde_json::Value {
+    let serde_json::Value::Object(fields) = value else {
+        return value;
+    };
+    let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    match keys.as_slice() {
+        ["at", "op"] => fields.get("op").map_or(value, arguments_of),
+        ["action", "args"] => fields.get("args").unwrap_or(value),
+        [_] => fields
+            .values()
+            .next()
+            .filter(|fields| fields.is_object())
+            .unwrap_or(value),
+        _ => value,
+    }
 }
 
 fn brief(value: &serde_json::Value, depth: usize, out: &mut String) {
@@ -591,6 +608,8 @@ mod tests {
         assert_eq!(args_summary(b"\"Clear\""), Some("\"Clear\"".into()));
         assert_eq!(args_summary(b"{\"Clear\":{}}"), None);
         assert_eq!(args_summary(b"not json"), None);
+        let stamped = br#"{"op":{"action":"add","args":{"text":"milk"}},"at":17}"#;
+        assert_eq!(args_summary(stamped).as_deref(), Some(r#"{text:"milk"}"#));
 
         let context = ActionContext::for_resource("Paint", "r", "k", "l")
             .with_args_from_payload(payload)

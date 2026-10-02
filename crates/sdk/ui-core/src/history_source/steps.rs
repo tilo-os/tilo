@@ -20,6 +20,8 @@ use std::collections::HashSet;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue};
 use tilo_actions::ActionContext;
+/// Whether a version is the schema genesis rather than anyone's step.
+pub use tilo_doc::model::is_schema_genesis;
 use tilo_resource::history::Version;
 
 use crate::history_source::authors::AuthorDirectory;
@@ -439,6 +441,48 @@ fn touches(patch: &Patch, ids: &[String]) -> bool {
             PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } if ids.contains(key))
 }
 
+/// An item a patch writes inside: a root key, and the entry key under it.
+type Item = (String, Option<String>);
+
+fn item_of(patch: &Patch) -> Option<Item> {
+    let mut keys = patch
+        .path
+        .iter()
+        .filter_map(|(_, prop)| match prop {
+            Prop::Map(key) => Some(key.clone()),
+            Prop::Seq(_) => None,
+        })
+        .chain(match &patch.action {
+            PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => Some(key.clone()),
+            _ => None,
+        });
+    Some((keys.next()?, keys.next()))
+}
+
+/// What `item` reads at `heads`, `None` when absent.
+fn read_item(
+    doc: &AutoCommit,
+    item: &Item,
+    heads: &[ChangeHash],
+) -> Option<automerge::hydrate::Value> {
+    let (mut value, mut id) = doc.get_at(automerge::ROOT, item.0.as_str(), heads).ok()??;
+    if let (Some(entry), automerge::Value::Object(_)) = (&item.1, &value) {
+        (value, id) = doc.get_at(&id, entry.as_str(), heads).ok()??;
+    }
+    match value {
+        automerge::Value::Scalar(scalar) => {
+            Some(automerge::hydrate::Value::Scalar(scalar.into_owned()))
+        }
+        automerge::Value::Object(_) => doc.hydrate(&id, Some(heads)).ok(),
+    }
+}
+
+/// Whether `item` reads differently at the two versions. A diff is of
+/// operations: a value written back reads the same by a different one.
+fn differs(doc: &AutoCommit, item: &Item, from: &[ChangeHash], to: &[ChangeHash]) -> bool {
+    read_item(doc, item, from) != read_item(doc, item, to)
+}
+
 /// Bring the document back to `heads` as one new change: all of it, or only
 /// the items whose keys are `ids` (a mark, a layer, a field). Bookkeeping —
 /// what is undone, the checkpoints — stays as it is. Returns how many
@@ -452,8 +496,16 @@ pub fn restore(
     ids: &[String],
 ) -> Result<usize, String> {
     let current = doc.get_heads();
+    let differing: HashSet<Item> = doc
+        .diff(&current, heads)
+        .iter()
+        .filter_map(item_of)
+        .filter(|item| differs(doc, item, &current, heads))
+        .collect();
     let written = crate::state::write_revert_patches_where(doc, &current, heads, &|patch| {
-        !is_bookkeeping(patch) && (ids.is_empty() || touches(patch, ids))
+        !is_bookkeeping(patch)
+            && (ids.is_empty() || touches(patch, ids))
+            && item_of(patch).is_some_and(|item| differing.contains(&item))
     });
     if written == 0 {
         return Err(if ids.is_empty() {
@@ -483,7 +535,9 @@ pub fn changed_items(
 ) -> Vec<ItemChange> {
     let mut out: Vec<ItemChange> = Vec::new();
     for patch in doc.diff(from, to) {
-        if is_bookkeeping(&patch) {
+        if is_bookkeeping(&patch)
+            || item_of(&patch).is_some_and(|item| !differs(doc, &item, from, to))
+        {
             continue;
         }
         let mut keys = patch.path.iter().filter_map(|(_, prop)| match prop {
