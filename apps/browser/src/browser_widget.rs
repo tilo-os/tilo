@@ -1390,6 +1390,7 @@ impl BrowserWidget {
 
     /// Mark this browser as a framework-hosted surface so
     /// [`Widget::resources`] defers the document root to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.actions.set_hosted(hosted);
     }

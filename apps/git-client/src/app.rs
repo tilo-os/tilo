@@ -1136,6 +1136,7 @@ impl GitClientApp {
     /// on-screen control dispatched, for the affordance == `ActionSpec`
     /// covenant test.
     #[doc(hidden)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

@@ -403,6 +403,7 @@ impl ActionSink {
         self.local.take_committed()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         #[cfg(test)]
         if self.is_hosted() {

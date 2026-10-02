@@ -21,7 +21,6 @@ use crate::actions::{
     MAIL_ACTION_TYPE, MailAction, move_action, purge_action, save_draft_action, set_read_action,
     set_starred_action,
 };
-use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
 use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
 

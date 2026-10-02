@@ -266,6 +266,7 @@ impl SpeedTestApp {
         self.hosted = true;
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.hosted
     }
@@ -281,6 +282,7 @@ impl SpeedTestApp {
         self.actions.is_hosted()
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn has_result(&self) -> bool {
         self.result.is_some()
     }

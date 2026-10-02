@@ -131,4 +131,7 @@ pub fn app_root_for_shot_confirm(width: f64) -> Box<dyn Widget> {
     app.arm_query_confirmation_for_shots();
     Box::new(app)
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{DbClient, DbClientShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{DbClient, DbClientShell, launch_spec};

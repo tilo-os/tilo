@@ -87,4 +87,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 mod framework_history_tests;
 
 pub mod framework_history;
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Diffmerge, DiffmergeShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Diffmerge, DiffmergeShell, launch_spec};

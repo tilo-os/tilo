@@ -1324,7 +1324,6 @@ impl PdfApp {
         self.actions.attach(dispatcher);
     }
 
-    #[cfg(test)]
     pub(crate) fn is_hosted(&self) -> bool {
         self.actions.is_hosted()
     }

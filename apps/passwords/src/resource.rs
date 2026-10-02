@@ -213,6 +213,7 @@ impl ActionSink {
         }
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
         if self.framework.is_some() {
             self.last.as_ref()
@@ -238,6 +239,7 @@ pub fn provide_resources(state: &VaultState) -> Vec<PublishedResource> {
 }
 
 /// Live launch: framework host, capture-protected (secrets on screen).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<PasswordsShell>().configure_app(|app| {
         app.set_window_title(Some("Passwords".into()));

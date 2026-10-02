@@ -515,6 +515,7 @@ impl ImageEditorApp {
 
     /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
     /// deferring the project door to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.actions.is_hosted()
     }
@@ -522,6 +523,7 @@ impl ImageEditorApp {
     /// Test / attach override so [`PublishesResources`] can keep only live
     /// extras beside ResourceRoot.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.actions.set_hosted_for_test(hosted);
     }

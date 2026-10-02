@@ -509,6 +509,7 @@ impl SnippetsApp {
         self.selection = crate::model::Selection::Folder(folder.to_string());
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn snippet_count(&self) -> usize {
         self.library.snippets.len()
     }
@@ -932,6 +933,7 @@ impl SnippetsApp {
     }
 
     #[doc(hidden)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
         self.actions.last_dispatched().cloned()
     }

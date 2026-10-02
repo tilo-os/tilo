@@ -54,6 +54,7 @@ fn use_bundled_sample_media_for_captures() {
 /// * `--empty` captures the live app on a blank project;
 /// * `--narrow` captures the collapsed media bin at a narrow width;
 /// * `--import PATH` imports a real file, places it and waits for its frame.
+#[cfg(not(target_arch = "wasm32"))]
 fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<video_editor::VideoEditor>()
         .capture_scenario(capture)

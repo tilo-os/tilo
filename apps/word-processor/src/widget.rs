@@ -2677,6 +2677,7 @@ impl WordProcessorWidget {
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

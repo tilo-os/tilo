@@ -178,6 +178,7 @@ impl ActionSink {
 }
 
 /// Default live launch: the framework-hosted resource app.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<PhotosShell>()
 }

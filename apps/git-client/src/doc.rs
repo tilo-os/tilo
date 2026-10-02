@@ -93,6 +93,7 @@ impl SharedRepo {
         }
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn write(doc: &mut AutoCommit, shared: &Self) {
         let json = serde_json::to_string(shared).unwrap_or_else(|_| "{}".into());
         Self::write_json(doc, &json);

@@ -159,6 +159,7 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
 
 /// Standalone / empty-workspace door used by tests that still speak the old
 /// resource shape. Prefer [`tilo_resource::publish`] via [`provide_resources`].
+#[allow(dead_code, reason = "framework migration test helper")]
 pub(crate) fn workspace_operations() -> Resource {
     let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
     for spec in root_local_operations() {

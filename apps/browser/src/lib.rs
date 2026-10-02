@@ -80,4 +80,7 @@ mod capabilities;
 pub fn app_root() -> BrowserWidget {
     BrowserWidget::new()
 }
+#[cfg(target_arch = "wasm32")]
+pub use resource::{Browser, BrowserShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Browser, BrowserShell, launch_spec as framework_launch_spec};

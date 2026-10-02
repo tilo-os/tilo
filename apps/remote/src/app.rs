@@ -2007,6 +2007,7 @@ impl RemoteApp {
     /// The last action an on-screen affordance dispatched, for the
     /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

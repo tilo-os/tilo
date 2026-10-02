@@ -333,6 +333,7 @@ impl NotificationsPane {
     }
 
     /// The most recently dispatched settings action's wire form (test hook).
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
     }

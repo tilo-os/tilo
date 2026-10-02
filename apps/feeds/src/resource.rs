@@ -19,7 +19,7 @@ use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    self, FEEDS_ACTION_TYPE, FeedsAction, add_folder_action, add_subscription_action,
+    FEEDS_ACTION_TYPE, FeedsAction, add_folder_action, add_subscription_action,
     bound_reader_actions, publish_children, reader_effect_specs, register,
     resource_ctx_from_library,
 };

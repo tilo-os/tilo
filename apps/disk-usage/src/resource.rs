@@ -160,6 +160,7 @@ impl ActionSink {
     }
 
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
         self.local.last_dispatched()
     }

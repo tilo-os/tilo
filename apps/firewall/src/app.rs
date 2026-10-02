@@ -757,6 +757,7 @@ impl FirewallApp {
         self.actions.attach(dispatcher);
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_hosted(&self) -> bool {
         self.actions.is_hosted()
     }
@@ -770,6 +771,7 @@ impl FirewallApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

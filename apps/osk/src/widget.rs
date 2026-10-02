@@ -824,6 +824,7 @@ impl OskWidget {
         crate::resource::provide_resources(&state)
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn commit_preference(
         &mut self,
         doc: &mut AutoCommit,
@@ -840,6 +841,7 @@ impl OskWidget {
         }
     }
 
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

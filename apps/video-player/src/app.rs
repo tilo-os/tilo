@@ -1293,12 +1293,14 @@ impl PlayerApp {
 
     /// Mark this player as a framework-hosted surface so
     /// [`Widget::resources`] defers to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.framework_hosted = hosted;
     }
 
     /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
     /// publishing only live track extras beside the framework door.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted
     }

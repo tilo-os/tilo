@@ -1937,6 +1937,7 @@ impl CalendarApp {
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }

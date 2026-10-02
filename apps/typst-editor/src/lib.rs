@@ -86,4 +86,7 @@ pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
 mod framework_history_tests;
 
 pub mod framework_history;
+#[cfg(target_arch = "wasm32")]
+pub use resource::{TypstEditor, TypstEditorShell};
+#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};
