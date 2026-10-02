@@ -51,6 +51,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// The palette the view was last drawn in, which `render` draws it in.
     drawn_theme: Option<Theme>,
     /// Shapes text for `render`, which runs outside a frame.
+    /// Kept across renders; unused on wasm where `render` is cfg'd out.
+    #[allow(dead_code, reason = "read only by render, which is native-only")]
     render_text: Option<TextRenderer>,
 }
 
@@ -97,6 +99,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
 }
 
 /// The revision a picture shows: the document's heads.
+#[allow(dead_code, reason = "called only by render, which is native-only")]
 fn revision(doc: &mut AutoCommit) -> String {
     let mut heads: Vec<String> = doc
         .get_heads()
