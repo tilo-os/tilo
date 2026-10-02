@@ -4757,7 +4757,7 @@ mod tests {
         assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
-    /// The `` surface: Send performs a real HTTP round trip and
+    /// The resource surface: Send performs a real HTTP round trip and
     /// reports worker completion exactly once, and a late record resolves by
     /// one indexed lookup.
     #[test]

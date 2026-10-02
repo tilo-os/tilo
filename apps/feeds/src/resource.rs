@@ -251,6 +251,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one assertion covers publish ownership and hosted extras"
+    )]
     fn resource_publish_owns_library_door_and_hosted_keeps_no_second_tree() {
         let mut doc = AutoCommit::new();
         let folder_id = Uuid::from_u128(0xFEED_0001);
