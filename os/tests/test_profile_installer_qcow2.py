@@ -24,9 +24,6 @@ class ProfileQcow2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tilo-handoff-test-") as temporary:
             root = Path(temporary)
             source, output = root / "source.qcow2", root / "profiled.qcow2"
-            encoder = root / "encoder"
-            encoder.write_text("#!/usr/bin/env python3\n")
-            encoder.chmod(0o755)
             subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", str(source), "1M"],
                            check=True)
             before = hashlib.sha256(source.read_bytes()).digest()
@@ -40,7 +37,7 @@ class ProfileQcow2Tests(unittest.TestCase):
                 path = handoff / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
-            profile.profile(source, output, encoder, [], handoff)
+            profile.profile(source, output, None, [], handoff)
             raw, extracted = root / "media.raw", root / "extracted"
             subprocess.run(["qemu-img", "convert", "-f", "qcow2", "-O", "raw",
                             str(output), str(raw)], check=True)
@@ -55,6 +52,7 @@ class ProfileQcow2Tests(unittest.TestCase):
             wifi = unpacked / "etc/NetworkManager/system-connections/tilo-setup.nmconnection"
             self.assertEqual(wifi.stat().st_mode & 0o777, 0o600)
             self.assertEqual(unpacked.stat().st_mode & 0o777, 0o700)
+            self.assertFalse((extracted / "profile.json").exists())
             self.assertEqual(before, hashlib.sha256(source.read_bytes()).digest())
             self.assertLess(profile.image_info(output)["virtual-size"] - 1024 * 1024,
                             72 * 1024)
