@@ -1852,7 +1852,14 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
         &state,
     );
     root.children.insert(0, library_analysis_resource());
-    vec![root]
+    // Agents and search address the open photograph as its own root; the
+    // library still nests the same child for tree navigation.
+    let mut roots = Vec::new();
+    if let Some(image) = &state.open {
+        roots.push(open_image_resource(image, &state.edits));
+    }
+    roots.push(root);
+    roots
 }
 
 /// Nested library catalogue rows for [`crate::resource::Photos::children`].

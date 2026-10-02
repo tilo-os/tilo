@@ -2523,19 +2523,8 @@ impl ui::resources::PublishesResources for TypstApp {
         if self.framework_hosted && id == "typst.workspace" {
             return None;
         }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         let ctx = self.resource_ctx();
-        find(&crate::actions::resources(&ctx), id).or_else(|| {
+        find_resource(&crate::actions::resources(&ctx), id).or_else(|| {
             self.framework_hosted.then(|| {
                 crate::actions::live_extras(&ctx)
                     .into_iter()
@@ -3849,4 +3838,16 @@ mod tests {
             assert!(matches!(app.compact_view, CompactPane::Preview));
         }
     }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }

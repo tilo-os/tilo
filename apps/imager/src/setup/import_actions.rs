@@ -533,8 +533,12 @@ pub struct ImportGuide;
 pub enum ImportDocumentAction {}
 
 impl ui::tilo_actions::Action for ImportDocumentAction {
+    #[allow(
+        clippy::uninhabited_references,
+        reason = "empty document action enum has no variants"
+    )]
     fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ui::tilo_actions::ActionError> {
-        match self {}
+        match *self {}
     }
 }
 

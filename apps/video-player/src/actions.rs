@@ -1070,8 +1070,17 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
     let mut children = Vec::new();
     for published_child in std::mem::take(&mut published.children) {
         if is_shared_library(&published_child) {
-            live_children.retain(|child| child.id != published_child.id);
-            children.push(published_child);
+            // Prefer the live shared library so jump/create availability
+            // reflects the open media; document publish alone uses
+            // `empty_resource_ctx` and would mark every jump unavailable.
+            if let Some(index) = live_children
+                .iter()
+                .position(|child| child.id == published_child.id || is_shared_library(child))
+            {
+                children.push(live_children.remove(index));
+            } else {
+                children.push(published_child);
+            }
             continue;
         }
         if let Some(index) = live_children

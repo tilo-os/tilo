@@ -3195,18 +3195,7 @@ impl ui::resources::PublishesResources for ImageEditorApp {
         if self.actions.is_hosted() && id == crate::actions::PROJECT_RESOURCE_ID {
             return None;
         }
-        fn find(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource.clone());
-            }
-            for child in &resource.children {
-                if let Some(found) = find(child, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.project_resource(doc), id)
+        find_resource(&self.project_resource(doc), id)
     }
 }
 
@@ -3949,4 +3938,16 @@ mod portal_tests {
         );
         assert_eq!(app.notice, "Crop updated. Later steps were recomputed.");
     }
+}
+
+fn find_resource(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }

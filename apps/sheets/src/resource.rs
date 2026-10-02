@@ -307,7 +307,7 @@ fn workbook_local_operations() -> Vec<ActionSpec> {
                             .expect("sheet operation serializes")
                     },
                 )
-                .execution(ExecutionMode::Background { cancellable: false })
+                .execution(ExecutionMode::Background { cancellable: true })
                 .returns(ResultSpec::Job),
             ),
         }

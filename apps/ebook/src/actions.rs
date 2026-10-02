@@ -1821,6 +1821,9 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
             },
         ));
     }
+    resource
+        .actions
+        .retain(|action| action.id != "select-passage" && action.id != "go-to");
     resource = resource.with_action(select_passage_operation(ctx.book_id.clone(), ctx.chapter));
     resource = resource.with_action(go_to_operation(ctx.book_id.clone(), ctx.chapter));
     // A published book already nests its annotation children. Add only the
@@ -2150,6 +2153,11 @@ pub(crate) fn library_book_document_resource(
             ..tilo_actions::ActionContract::default()
         }),
     );
+    // Passage/goto Views belong on every book address — not only the open
+    // reader — so bound `ebook.book:…` encodes without Unknown. Open-book
+    // overlay replaces these with the live chapter via `current_book_actions`.
+    resource = resource.with_action(select_passage_operation(book_id.clone(), 0));
+    resource = resource.with_action(go_to_operation(book_id.clone(), 0));
     let book_annotations: Vec<Annotation> = annotations
         .iter()
         .filter(|annotation| annotation.doc_id == book_id)
