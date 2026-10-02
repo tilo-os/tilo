@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 import zipfile
 
 
@@ -167,6 +168,16 @@ def fgj_run(run):
     return record
 
 
+class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        redirected = super().redirect_request(request, response, code, message, headers, url)
+        if redirected is not None:
+            require(url.startswith("https://"), "artifact redirect must use HTTPS")
+            # Object storage receives its own signed URL, never our Forgejo token.
+            redirected.remove_header("Authorization")
+        return redirected
+
+
 def download_artifact(run, name, destination):
     if destination.exists():
         regular(destination)
@@ -175,9 +186,26 @@ def download_artifact(run, name, destination):
     partial = destination.with_suffix(destination.suffix + ".part")
     if partial.exists():
         regular(partial).unlink()  # run-scoped download scratch; never a VM source
-    command(["fgj", "--hostname", "code.tilo.so", "run", "artifacts",
-             str(run), "-R", "tilo/tilo",
-             "-d", name, "-o", str(partial)])
+    record = fgj_run(run)
+    artifacts = json.loads(command([
+        "fgj", "--hostname", "code.tilo.so", "api",
+        f"repos/tilo/tilo/actions/runs/{record['id']}/artifacts"], capture=True))
+    matches = [item for item in artifacts if item.get("name") == name
+               and item.get("expired") is False]
+    require(len(matches) == 1, f"expected exactly one live artifact: {name}")
+    artifact_id = matches[0].get("id")
+    require(type(artifact_id) is int and artifact_id > 0, "invalid artifact ID")
+    url = f"https://code.tilo.so/api/v1/repos/tilo/tilo/actions/artifacts/{artifact_id}/zip"
+    # Capture credentials directly into memory; never put them in argv or logs.
+    token = command(["fgj", "--hostname", "code.tilo.so", "auth", "token"],
+                    capture=True).decode().strip()
+    require(token and "\n" not in token and "\r" not in token, "missing Forgejo token")
+    request = urllib.request.Request(url, headers={"Authorization": f"token {token}"})
+    opener = urllib.request.build_opener(ArtifactRedirect())
+    with opener.open(request, timeout=120) as source, partial.open("xb") as sink:
+        shutil.copyfileobj(source, sink, 1024 * 1024)
+        sink.flush()
+        os.fsync(sink.fileno())
     require(zipfile.is_zipfile(partial), f"Forgejo returned invalid artifact: {name}")
     partial.replace(destination)
 
@@ -368,7 +396,8 @@ def scenario_argv(data, work, profile, target, out):
     argv = [str(data["tilo_vm_exe"]), "scenario", "install", "--medium",
             str(medium_path(work, profile)),
             "--layout", "guided-alongside", "--target-disk", str(target),
-            "--encrypt", "passphrase", "--graphics", "software", "--out", str(out)]
+            "--filesystem", "ext4", "--encrypt", "passphrase",
+            "--graphics", "software", "--out", str(out)]
     require(profile in PROFILES, "unknown WHPX profile")
     if profile == "lenovo-83ed":
         argv.append("--skip-target-boot")

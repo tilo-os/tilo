@@ -1221,7 +1221,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   step "Formatting only $ROOT_PARTITION for Tilo; preserving every other partition"
   case "$FILESYSTEM" in
     btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -L root "$ROOT_PARTITION" ;;
+    ext4) mkfs.ext4 -q -F -O verity -L root "$ROOT_PARTITION" ;;
     xfs) mkfs.xfs -q -f -L root "$ROOT_PARTITION" >/dev/null ;;
   esac
   ROOT_FS_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION")"

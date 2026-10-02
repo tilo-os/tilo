@@ -19,7 +19,10 @@ mod replay;
 #[cfg(test)]
 mod testing;
 pub use index::*;
-pub use pane::{ActivityView, Period, RoomActivityOutcome, RoomActivityPane, RoomScope};
+pub use pane::{
+    ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period, RoomActivityOutcome,
+    RoomActivityPane, RoomScope,
+};
 
 /// A causal document paired with its admitted desktop projection. Implementors
 /// retain native mutation/persistence authority; the default snapshot is read-only.
@@ -287,7 +290,9 @@ mod admitted_history_tests {
         let mut pane = RoomActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
-        assert_eq!(pane.entries().len(), 3);
+        // Setup/layout commits are omitted from the explorer feed; the
+        // title change is the one Change row people should see.
+        assert_eq!(pane.entries().len(), 1);
         let labels = pane
             .replay_frames
             .iter()

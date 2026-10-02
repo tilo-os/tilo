@@ -211,15 +211,15 @@ export function createLiveLayer(peer, runtime, room, {
   // Keep `key` subscribed while its member is present: an ended
   // subscription (the track not announced yet, a relay hiccup) is retried
   // with backoff until the member leaves or the session changes.
-  function keepSubscribed(publisherId, key, open, attempt = 0) {
+  function keepSubscribed(publisherId, key, open, attempt = 0, wanted = () => true) {
     const current = session;
-    if (!current || subscriptions.has(key) || !members.has(publisherId)) return;
+    if (stopped || !current || subscriptions.has(key) || !members.has(publisherId) || !wanted()) return;
     const cleanup = open(current, () => {
       if (subscriptions.get(key) !== cleanup) return;
       subscriptions.delete(key);
       if (stopped || session !== current || !members.has(publisherId)) return;
       const delay = SUBSCRIBE_RETRY_MS[Math.min(attempt, SUBSCRIBE_RETRY_MS.length - 1)];
-      setTimer(() => keepSubscribed(publisherId, key, open, attempt + 1), delay);
+      setTimer(() => { if (session === current) keepSubscribed(publisherId, key, open, attempt + 1, wanted); }, delay);
     });
     subscriptions.set(key, cleanup);
   }
@@ -234,6 +234,11 @@ export function createLiveLayer(peer, runtime, room, {
       keepSubscribed(publisherId, `${publisherId}\u0000presence`,
         (current, ended) => current.subscribePresence(publisherId, (payload, at) => onPresence(publisherId, payload, at), ended));
       for (const record of watched.values()) subscribeRecord(publisherId, record);
+      for (const track of rawWatched.keys()) subscribeFrames(publisherId, track);
+      for (const key of memberFrames.keys()) {
+        const [member, track] = key.split('\u0000');
+        if (member === publisherId) subscribeFrames(publisherId, track);
+      }
     } else {
       members.delete(publisherId);
       remotes.delete(publisherId);
@@ -249,6 +254,26 @@ export function createLiveLayer(peer, runtime, room, {
     if (watched.has(key)) return;
     watched.set(key, {app: record.app, record: record.record});
     for (const publisherId of members) subscribeRecord(publisherId, record);
+  }
+  // Raw frames of a record (not live codec frames: the host's own tracks,
+  // such as legacy windows), from every member or from one.
+  const rawWatched = new Map(); // track -> Set of onFrame(publisher, bytes)
+  const memberFrames = new Map(); // `${publisher}\u0000${track}` -> Set of onFrame(bytes)
+  function deliverFrames(publisherId, track, payload) {
+    for (const onFrame of [...(rawWatched.get(track) ?? [])]) { try { onFrame(publisherId, payload); } catch {} }
+    for (const onFrame of [...(memberFrames.get(`${publisherId}\u0000${track}`) ?? [])]) { try { onFrame(payload); } catch {} }
+  }
+  function subscribeFrames(publisherId, track) {
+    keepSubscribed(publisherId, `${publisherId}\u0000raw\u0000${track}`,
+      (current, ended) => current.subscribeOps(publisherId, track, payload => deliverFrames(publisherId, track, payload), ended),
+      0, () => Boolean(rawWatched.get(track)?.size || memberFrames.get(`${publisherId}\u0000${track}`)?.size));
+  }
+  function releaseFrames(publisherId, track) {
+    if (rawWatched.get(track)?.size || memberFrames.get(`${publisherId}\u0000${track}`)?.size) return;
+    const key = `${publisherId}\u0000raw\u0000${track}`;
+    const cleanup = subscriptions.get(key);
+    subscriptions.delete(key);
+    try { cleanup?.(); } catch {}
   }
 
   async function connect() {
@@ -349,6 +374,36 @@ export function createLiveLayer(peer, runtime, room, {
       watchRecord(record);
       return () => watched.delete(recordKey(record));
     },
+    /** Raw frames of `record` from every member, now and joining:
+     * `onFrame(publisher, bytes)`. For the host's own record tracks (legacy
+     * windows), which are not live codec frames. Returns a stop function. */
+    watchRecordFrames(record, onFrame) {
+      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const handlers = rawWatched.get(track) ?? new Set();
+      rawWatched.set(track, handlers);
+      handlers.add(onFrame);
+      for (const publisherId of members) subscribeFrames(publisherId, track);
+      return () => {
+        handlers.delete(onFrame);
+        if (!handlers.size) rawWatched.delete(track);
+        for (const publisherId of members) releaseFrames(publisherId, track);
+      };
+    },
+    /** Raw frames of `record` from the member `publisher` only, while it is
+     * present: `onFrame(bytes)`. Returns a stop function. */
+    subscribeMemberRecord(publisher, record, onFrame) {
+      const track = runtime.liveRecordTrack(JSON.stringify(record));
+      const key = `${publisher}\u0000${track}`;
+      const handlers = memberFrames.get(key) ?? new Set();
+      memberFrames.set(key, handlers);
+      handlers.add(onFrame);
+      if (members.has(publisher)) subscribeFrames(publisher, track);
+      return () => {
+        handlers.delete(onFrame);
+        if (!handlers.size) memberFrames.delete(key);
+        releaseFrames(publisher, track);
+      };
+    },
     /** A durable change for the record landed: drop previews and snap drags. */
     durableChanged,
     /** Per-frame interpolated remote state on the `performance.now()` timeline. */
@@ -394,6 +449,8 @@ export function createLiveLayer(peer, runtime, room, {
       if (renewTimer !== undefined) clearTimer(renewTimer);
       publisher.stop();
       dropSession();
+      rawWatched.clear();
+      memberFrames.clear();
       setState('closed');
     },
   };
@@ -696,6 +753,13 @@ export async function connectPeer({
     get live() { return live; },
     /** The room's agents (`agents.mjs`), or `undefined` without a room. */
     get agents() { return agents; },
+    /** Send input `events` for the legacy window `surface` (16 hex) that
+     * `publisher` (64 hex) streams in the room; resolves whether the host
+     * took them. With no events: whether this device may drive it. */
+    legacyInput(publisher, surface, events) {
+      if (!room || !peer) return Promise.resolve(false);
+      return peer.legacyInput(room, publisher, surface, JSON.stringify(events));
+    },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
     /** `actions` in the frozen `actionsV1` contract. */

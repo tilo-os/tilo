@@ -27,12 +27,72 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
+use crate::i18n::t;
 use crate::region::{
     Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
 };
 use crate::widgets::{
     caption, card, choice_row, choice_row_stacked, choice_rows_stack_below, rows,
 };
+
+fn date_label(style: DateStyle) -> String {
+    t(match style {
+        DateStyle::Iso => "settings-region-date-iso",
+        DateStyle::Us => "settings-region-date-us",
+        DateStyle::Eu => "settings-region-date-eu",
+        DateStyle::Long => "settings-region-date-long",
+    })
+}
+
+fn date_from_shown(label: &str) -> Option<DateStyle> {
+    DateStyle::ALL
+        .iter()
+        .copied()
+        .find(|style| style.label() == label || date_label(*style) == label)
+}
+
+fn time_label(style: TimeStyle) -> String {
+    t(match style {
+        TimeStyle::H24 => "settings-region-time-24",
+        TimeStyle::H12 => "settings-region-time-12",
+    })
+}
+
+fn time_from_shown(label: &str) -> Option<TimeStyle> {
+    TimeStyle::ALL
+        .iter()
+        .copied()
+        .find(|style| style.label() == label || time_label(*style) == label)
+}
+
+fn measure_label(measure: Measurement) -> String {
+    t(match measure {
+        Measurement::Metric => "settings-region-measure-metric",
+        Measurement::Imperial => "settings-region-measure-imperial",
+    })
+}
+
+fn measure_from_shown(label: &str) -> Option<Measurement> {
+    Measurement::ALL
+        .iter()
+        .copied()
+        .find(|measure| measure.label() == label || measure_label(*measure) == label)
+}
+
+fn weekday_label(day: FirstDayOfWeek) -> String {
+    t(match day {
+        FirstDayOfWeek::Monday => "settings-region-weekday-monday",
+        FirstDayOfWeek::Sunday => "settings-region-weekday-sunday",
+        FirstDayOfWeek::Saturday => "settings-region-weekday-saturday",
+    })
+}
+
+fn weekday_from_shown(label: &str) -> Option<FirstDayOfWeek> {
+    FirstDayOfWeek::ALL
+        .iter()
+        .copied()
+        .find(|day| day.label() == label || weekday_label(*day) == label)
+}
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -125,29 +185,27 @@ impl RegionPane {
             .with_id("region.currency")
             .with_placeholder(loc.currency.code());
 
-        let date_opts: Vec<String> = DateStyle::ALL
-            .iter()
-            .map(|d| d.label().to_string())
-            .collect();
+        let date_current = date_label(loc.date_format);
+        let date_opts: Vec<String> = DateStyle::ALL.iter().copied().map(date_label).collect();
         let date = Dropdown::new(date_opts, "region.date_format.edit")
             .with_id("region.date")
-            .with_placeholder(loc.date_format.label());
+            .with_placeholder(&date_current);
 
-        let time_opts: Vec<String> = TimeStyle::ALL
-            .iter()
-            .map(|t| t.label().to_string())
-            .collect();
+        let time_current = time_label(loc.time_format);
+        let time_opts: Vec<String> = TimeStyle::ALL.iter().copied().map(time_label).collect();
         let time = Dropdown::new(time_opts, "region.time_format.edit")
             .with_id("region.time")
-            .with_placeholder(loc.time_format.label());
+            .with_placeholder(&time_current);
 
+        let measure_current = measure_label(loc.measurement);
         let unit_opts: Vec<String> = Measurement::ALL
             .iter()
-            .map(|m| m.label().to_string())
+            .copied()
+            .map(measure_label)
             .collect();
         let units = Dropdown::new(unit_opts, "region.measurement.edit")
             .with_id("region.measurement")
-            .with_placeholder(loc.measurement.label());
+            .with_placeholder(&measure_current);
 
         let number_style = Dropdown::new(
             NumberStyle::ALL
@@ -159,53 +217,62 @@ impl RegionPane {
         .with_id("region.number_style")
         .with_placeholder(loc.number_style.label());
 
+        let weekday_current = weekday_label(loc.first_day_of_week);
         let first_day = Dropdown::new(
             FirstDayOfWeek::ALL
                 .iter()
-                .map(|day| day.label().to_string())
+                .copied()
+                .map(weekday_label)
                 .collect(),
             "region.first_day.edit",
         )
         .with_id("region.first_day")
-        .with_placeholder(loc.first_day_of_week.label());
+        .with_placeholder(&weekday_current);
 
+        let currency_title = t("settings-region-currency");
+        let date_title = t("settings-region-date-format");
+        let time_title = t("settings-region-time-format");
+        let measure_title = t("settings-region-measurement");
+        let number_title = t("settings-region-number-format");
+        let first_title = t("settings-region-first-day");
         let formats = card(
-            "Formats",
+            &t("settings-region-formats-card"),
             rows(vec![
-                choice("Currency", Box::new(currency)),
-                choice("Date format", Box::new(date)),
-                choice("Time format", Box::new(time)),
-                choice("Measurement", Box::new(units)),
-                choice("Number format", Box::new(number_style)),
-                choice("First day of week", Box::new(first_day)),
+                choice(&currency_title, Box::new(currency)),
+                choice(&date_title, Box::new(date)),
+                choice(&time_title, Box::new(time)),
+                choice(&measure_title, Box::new(units)),
+                choice(&number_title, Box::new(number_style)),
+                choice(&first_title, Box::new(first_day)),
             ]),
         );
 
-        // A live preview of the chosen formats, so the effect is visible.
+        let amount = loc.number_style.amount(loc.currency.symbol());
+        let temp = t(match loc.measurement {
+            Measurement::Metric => "settings-region-preview-c",
+            Measurement::Imperial => "settings-region-preview-f",
+        });
+        let week_starts = weekday_label(loc.first_day_of_week);
         let preview = card(
-            "Preview",
+            &t("settings-region-preview-card"),
             rows(vec![
-                preview_line("Amount", &loc.number_style.amount(loc.currency.symbol())),
-                preview_line("Date", loc.date_format.example()),
-                preview_line("Time", loc.time_format.example()),
+                preview_line(&t("settings-region-preview-amount"), &amount),
                 preview_line(
-                    "Temperature",
-                    match loc.measurement {
-                        Measurement::Metric => "21 \u{00B0}C",
-                        Measurement::Imperial => "70 \u{00B0}F",
-                    },
+                    &t("settings-region-preview-date"),
+                    loc.date_format.example(),
                 ),
-                preview_line("Calendar week starts", loc.first_day_of_week.label()),
+                preview_line(
+                    &t("settings-region-preview-time"),
+                    loc.time_format.example(),
+                ),
+                preview_line(&t("settings-region-preview-temp"), &temp),
+                preview_line(&t("settings-region-preview-week"), &week_starts),
             ]),
         );
 
         let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Sheets uses these formats for cells; Weather uses the \
-                 measurement setting for its units. Changes here apply \
-                 everywhere those apps read the shared locale.",
-            )]),
+            &t("settings-region-shared-card"),
+            rows(vec![caption(&t("settings-region-shared-body"))]),
         );
 
         crate::widgets::cards(vec![formats, preview, explainer])
@@ -275,12 +342,12 @@ impl Widget for RegionPane {
         if self.needs_seed {
             let loc = self.settings.locale;
             for (key, value) in [
-                (CURRENCY_KEY, loc.currency.code()),
-                (DATE_KEY, loc.date_format.label()),
-                (TIME_KEY, loc.time_format.label()),
-                (MEASUREMENT_KEY, loc.measurement.label()),
-                (NUMBER_STYLE_KEY, loc.number_style.label()),
-                (FIRST_DAY_KEY, loc.first_day_of_week.label()),
+                (CURRENCY_KEY, loc.currency.code().to_string()),
+                (DATE_KEY, date_label(loc.date_format)),
+                (TIME_KEY, time_label(loc.time_format)),
+                (MEASUREMENT_KEY, measure_label(loc.measurement)),
+                (NUMBER_STYLE_KEY, loc.number_style.label().to_string()),
+                (FIRST_DAY_KEY, weekday_label(loc.first_day_of_week)),
             ] {
                 self.dispatch(state, &set_text_action(key, value));
             }
@@ -298,31 +365,31 @@ impl Widget for RegionPane {
             self.settings.locale.currency = c;
             changed = true;
         }
-        let date_now = self.settings.locale.date_format.label();
-        let (label, did_change) = self.reconcile(state, root, DATE_KEY, date_now);
+        let date_now = date_label(self.settings.locale.date_format);
+        let (label, did_change) = self.reconcile(state, root, DATE_KEY, &date_now);
         changed |= did_change;
-        if let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
-            && *d != self.settings.locale.date_format
+        if let Some(d) = date_from_shown(&label)
+            && d != self.settings.locale.date_format
         {
-            self.settings.locale.date_format = *d;
+            self.settings.locale.date_format = d;
             changed = true;
         }
-        let time_now = self.settings.locale.time_format.label();
-        let (label, did_change) = self.reconcile(state, root, TIME_KEY, time_now);
+        let time_now = time_label(self.settings.locale.time_format);
+        let (label, did_change) = self.reconcile(state, root, TIME_KEY, &time_now);
         changed |= did_change;
-        if let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
-            && *t != self.settings.locale.time_format
+        if let Some(style) = time_from_shown(&label)
+            && style != self.settings.locale.time_format
         {
-            self.settings.locale.time_format = *t;
+            self.settings.locale.time_format = style;
             changed = true;
         }
-        let measure_now = self.settings.locale.measurement.label();
-        let (label, did_change) = self.reconcile(state, root, MEASUREMENT_KEY, measure_now);
+        let measure_now = measure_label(self.settings.locale.measurement);
+        let (label, did_change) = self.reconcile(state, root, MEASUREMENT_KEY, &measure_now);
         changed |= did_change;
-        if let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
-            && *m != self.settings.locale.measurement
+        if let Some(m) = measure_from_shown(&label)
+            && m != self.settings.locale.measurement
         {
-            self.settings.locale.measurement = *m;
+            self.settings.locale.measurement = m;
             changed = true;
         }
         let style_now = self.settings.locale.number_style.label();
@@ -334,13 +401,13 @@ impl Widget for RegionPane {
             self.settings.locale.number_style = *style;
             changed = true;
         }
-        let first_day_now = self.settings.locale.first_day_of_week.label();
-        let (label, did_change) = self.reconcile(state, root, FIRST_DAY_KEY, first_day_now);
+        let first_day_now = weekday_label(self.settings.locale.first_day_of_week);
+        let (label, did_change) = self.reconcile(state, root, FIRST_DAY_KEY, &first_day_now);
         changed |= did_change;
-        if let Some(day) = FirstDayOfWeek::ALL.iter().find(|day| day.label() == label)
-            && *day != self.settings.locale.first_day_of_week
+        if let Some(day) = weekday_from_shown(&label)
+            && day != self.settings.locale.first_day_of_week
         {
-            self.settings.locale.first_day_of_week = *day;
+            self.settings.locale.first_day_of_week = day;
             changed = true;
         }
 
@@ -451,8 +518,8 @@ impl ui::undo::UndoPoints for RegionPane {
         crate::panes::preference_commit_context(
             pending,
             "region",
-            "Region & formats",
-            "Change region preferences",
+            &t("settings-region-undo-name"),
+            &t("settings-region-undo-action"),
         )
     }
 }

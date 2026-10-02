@@ -609,6 +609,7 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
+    history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -840,6 +841,7 @@ impl ChromeState {
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
             workspace_view_request: None,
+            history_action_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -1479,6 +1481,29 @@ impl ChromeState {
 
     pub fn take_activity_focus_request(&mut self) -> Option<ActivityFocus> {
         self.activity_focus_request.take()
+    }
+
+    /// Open Activity and run a selected-row history action (`history.compare`,
+    /// `history.undo`, `history.restore`) on the next paint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `id` is not a recognised history action.
+    pub fn request_history_selection_action(&mut self, id: &str) -> Result<(), String> {
+        match id {
+            tilo_desktop::activity::HISTORY_COMPARE
+            | tilo_desktop::activity::HISTORY_UNDO
+            | tilo_desktop::activity::HISTORY_RESTORE => {}
+            _ => return Err("Unknown history action".into()),
+        }
+        self.open_room_activity(None);
+        self.history_action_request = Some(id.to_string());
+        self.bump();
+        Ok(())
+    }
+
+    pub fn take_history_action_request(&mut self) -> Option<String> {
+        self.history_action_request.take()
     }
 
     /// Reveal one authoritative workspace-settings destination. All shell

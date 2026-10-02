@@ -298,7 +298,7 @@ pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let ground = colors.surfaces.base;
     let lifted = state.active || state.pressed;
-    let film = colors.glass_film();
+    let film = theme.material_film();
     let alpha = if lifted {
         GLASS_ACTIVE_ALPHA
     } else if state.hover {

@@ -285,6 +285,10 @@ enum Command {
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
+    LegacyInput(
+        tilo_relay_protocol::legacy_window::InputRequest,
+        InputCompletion,
+    ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
@@ -298,6 +302,9 @@ pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live grant, see [`PeerHandle::live_grant_then`].
 pub type GrantCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::LiveGrant, String>) + Send>;
+/// Called once with whether the host took a legacy window's input, see
+/// [`PeerHandle::legacy_input_then`].
+pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -620,6 +627,20 @@ impl PeerHandle {
         done: GrantCompletion,
     ) -> Result<(), String> {
         self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
+    }
+
+    /// Send input for a legacy window a member streams
+    /// ([`crate::carrier::legacy_input`]) over the current HTTPS session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn legacy_input_then(
+        &self,
+        request: tilo_relay_protocol::legacy_window::InputRequest,
+        done: InputCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LegacyInput(request, done))
     }
 
     /// Send `request` to the host's room administration over the current
@@ -1423,20 +1444,11 @@ impl Task {
                 true
             }
             Command::LiveGrant(workspace_id, agent, done) => {
-                match client {
-                    Some(Link::Https(link)) => {
-                        let http = link.client().clone();
-                        let session = link.session().to_owned();
-                        n0_future::task::spawn(async move {
-                            let grant =
-                                live_grant(http.as_ref(), &session, workspace_id, agent).await;
-                            done(grant.map_err(|error| error.to_string()));
-                        });
-                    }
-                    #[cfg(feature = "iroh")]
-                    Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
-                    None => done(Err("not connected to the host".into())),
-                }
+                Self::request_live_grant(workspace_id, agent, done, client);
+                true
+            }
+            Command::LegacyInput(request, done) => {
+                Self::request_legacy_input(request, done, client);
                 true
             }
             Command::Rooms(request, done) => {
@@ -1445,6 +1457,48 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
+        }
+    }
+
+    fn request_live_grant(
+        workspace_id: u64,
+        agent: Option<String>,
+        done: GrantCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let grant = live_grant(http.as_ref(), &session, workspace_id, agent).await;
+                    done(grant.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    fn request_legacy_input(
+        request: tilo_relay_protocol::legacy_window::InputRequest,
+        done: InputCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let sent =
+                        crate::carrier::legacy_input(http.as_ref(), &session, &request).await;
+                    done(sent.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
         }
     }
 

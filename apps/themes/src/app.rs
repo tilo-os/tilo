@@ -775,6 +775,7 @@ impl ThemesApp {
                     );
                 }
             }
+            self.save_individual_roles(state, &selected, &current);
             let f = self.customizer.font();
             if FONTS.contains(&f.as_str()) && f != current.font {
                 self.perform_action(
@@ -806,6 +807,36 @@ impl ThemesApp {
         }
 
         Some((catalog, idx, selected, edit_token, editable))
+    }
+
+    fn save_individual_roles(
+        &mut self,
+        state: &mut AutoCommit,
+        selected: &str,
+        current: &ThemeSpec,
+    ) {
+        let chrome = crate::model::chrome_weight_from_norm(self.customizer.chrome() as f32);
+        if (chrome - current.chrome_weight).abs() > f32::EPSILON {
+            self.perform_action(
+                state,
+                &crate::actions::set_custom_theme_chrome_action(selected, chrome),
+            );
+        }
+        let character =
+            crate::model::motion_character_from_norm(self.customizer.character() as f32);
+        if (character - current.motion_character).abs() > f32::EPSILON {
+            self.perform_action(
+                state,
+                &crate::actions::set_custom_theme_motion_character_action(selected, character),
+            );
+        }
+        let tint = crate::model::material_tint_from_norm(self.customizer.tint() as f32);
+        if (tint - current.material_tint).abs() > f32::EPSILON {
+            self.perform_action(
+                state,
+                &crate::actions::set_custom_theme_material_tint_action(selected, tint),
+            );
+        }
     }
 
     /// Steps 7-8 of [`Widget::sync`]: push the resolved selection into the

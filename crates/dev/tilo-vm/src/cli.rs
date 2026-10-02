@@ -312,6 +312,9 @@ pub struct InstallScenarioArgs {
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
+    /// Installed root filesystem; omitted leaves the installer's default unchanged.
+    #[arg(long, value_parser = ["btrfs", "ext4", "xfs"])]
+    pub filesystem: Option<String>,
     /// How the always-on disk encryption unlocks: passphrase (no TPM) or tpm-pin (software TPM; the installer offers it only for a verified boot chain).
     #[arg(long, value_enum, default_value = "passphrase")]
     pub encrypt: crate::scenario::Unlock,
@@ -1312,6 +1315,8 @@ mod tests {
                 "tpm-pin",
                 "--graphics",
                 "software",
+                "--filesystem",
+                "ext4",
                 "--skip-target-boot",
             ])
             .unwrap();
@@ -1325,6 +1330,7 @@ mod tests {
             assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
             assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
             assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+            assert_eq!(args.filesystem.as_deref(), Some("ext4"));
             assert!(args.skip_target_boot);
             assert_eq!(args.install_timeout, 3600);
             let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
@@ -1333,6 +1339,7 @@ mod tests {
             };
             assert_eq!(args.layout, crate::scenario::Layout::Erase);
             assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+            assert!(args.filesystem.is_none());
             assert!(!args.skip_target_boot);
             assert!(
                 Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"])

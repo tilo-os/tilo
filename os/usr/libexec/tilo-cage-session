@@ -12,6 +12,13 @@ fi
 for card in /sys/class/drm/card[0-9]*; do
   if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
     export WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1
+    if [[ $(uname -m) == aarch64 ]]; then
+      # LLVM's named Neoverse model assumes SVE even when KVM masks it.
+      # The baseline JIT keeps the accelerated guest and its 2D display usable.
+      cpu_shim=/usr/lib/tilo/virtio-gallivm-cpu.so
+      [[ -s $cpu_shim ]] || { echo 'missing ARM virtual graphics CPU shim' >&2; exit 1; }
+      export LD_PRELOAD="$cpu_shim${LD_PRELOAD:+:$LD_PRELOAD}"
+    fi
     break
   fi
 done
