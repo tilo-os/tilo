@@ -893,7 +893,13 @@ impl ChatApp {
             rect.x0 + 12.0 + f64::from(lw) + 34.0,
             rect.y0 + 12.0 + 24.0,
         );
-        fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
+        fill_round(
+            scene,
+            tf,
+            pill,
+            12.0,
+            ui::paint::with_alpha(c.surfaces.scrim, 150),
+        );
         fill_circle(
             scene,
             tf,
@@ -907,7 +913,7 @@ impl ChatApp {
             tf,
             &txt,
             11.5,
-            Color::WHITE,
+            c.on_surface(c.surfaces.scrim).ink,
             pill.x0 + 24.0,
             pill.center().y - 8.0,
         );
@@ -1280,9 +1286,10 @@ impl ChatApp {
         fill_round(scene, tf, chip, 6.0, c.accent[5]);
         // A tiny drawn monitor: screen rect + base bar.
         let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
-        stroke_round(scene, tf, screen, 2.0, Color::WHITE, 1.4);
+        let ink = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        stroke_round(scene, tf, screen, 2.0, ink, 1.4);
         let base = Rect::new(cx - 3.0, screen.y1 + 0.5, cx + 3.0, screen.y1 + 2.0);
-        fill_round(scene, tf, base, 1.0, Color::WHITE);
+        fill_round(scene, tf, base, 1.0, ink);
     }
 
     /// Bottom-left name plate over a tile: name + mic state.
@@ -1314,22 +1321,14 @@ impl ChatApp {
             tile.x0 + inset + f64::from(lw) + 2.0 * pad_x,
             tile.y1 - inset,
         );
-        // The plate is a 59 % black scrim over the tile; its ink is measured
-        // against what that scrim composites to (over the light preset's
-        // pale tile it is a mid grey, where danger red fell to ~2:1), and
-        // pushed until it clears text contrast (`legible_on`).
-        let scrim = Color::from_rgba8(0, 0, 0, 150);
+        // The plate is the theme scrim at 59 % over the tile. Its ink is
+        // measured against what that scrim composites to (over the light
+        // preset's pale tile the wash is a mid grey, where danger red fell
+        // to ~2:1), and pushed until it clears text contrast (`legible_on`).
+        let scrim = ui::paint::with_alpha(c.surfaces.scrim, 150);
         fill_round(scene, tf, plate, 8.0, scrim);
-        // The scrim's own colour at full alpha, composited over the tile by
-        // the scrim's alpha: the ground the label actually lands on.
-        let scrim_ink = Color::new([
-            scrim.components[0],
-            scrim.components[1],
-            scrim.components[2],
-            1.0,
-        ]);
         let plate_ground =
-            crate::paint::blend_toward(c.neutral[2], scrim_ink, f64::from(scrim.components[3]));
+            crate::paint::blend_toward(c.neutral[2], c.surfaces.scrim, 150.0 / 255.0);
         let tone = if muted {
             c.semantic.danger
         } else {

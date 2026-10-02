@@ -234,7 +234,7 @@ jobs:
       # Forgejo removes an empty matrix job entirely, leaving its aggregate
       # blocked. Keep one inert row when Rust is inapplicable; the job-level
       # condition skips it without consuming a runner.
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
@@ -395,14 +395,14 @@ jobs:
   check:
     if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
     needs: [builder, select]
-    runs-on: ${{ matrix.check_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
@@ -467,14 +467,14 @@ jobs:
   clippy:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
-    runs-on: ${{ matrix.check_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:

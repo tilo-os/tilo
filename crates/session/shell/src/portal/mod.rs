@@ -1248,7 +1248,8 @@ pub async fn serve_with_inhibit_and_clipboard(
             clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
         ],
         clipboard_broker,
-    );
+    )
+    .with_session_wake(lifecycle.wake.clone());
     let clipboard_events = clipboard.clone();
     let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
     let shortcuts = GlobalShortcutsBackend::with_service(

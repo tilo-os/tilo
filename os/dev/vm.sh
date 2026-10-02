@@ -426,7 +426,9 @@ cmd_wait_greeter_return() {
   local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
   msg "waiting for Tilo logout to return to the greeter ..."
   for i in $(seq 1 "$attempts"); do
-    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+    # The compositor's portal backend name, not its /proc entry, which turns
+    # non-dumpable once it holds identity keys.
+    if gssh "! busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
       msg "greeter returned after logout (~$i s)"
       return 0
     fi

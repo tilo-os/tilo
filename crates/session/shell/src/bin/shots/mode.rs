@@ -283,7 +283,11 @@ pub mod recording {
         for action in &scenario.actions {
             scenario_apply_then_capture(driver, action, &mut sink)?;
         }
-        let first_unit = sink.first_unit.take();
+        let mut first_unit = sink.first_unit.take();
+        let tail = encoder
+            .finish()
+            .map_err(|e| format!("finish encoding in recording mode: {e}"))?;
+        write_units(&mut file, &mut first_unit, tail)?;
         file.finish()?;
         Ok(RecordingSummary { codec, first_unit })
     }
@@ -309,19 +313,28 @@ pub mod recording {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
-                let unit = self
+                let units = self
                     .encoder
                     .encode(&rgba)
                     .map_err(|e| format!("encode in recording mode: {e}"))?;
-                if !unit.is_empty() {
-                    self.file.write_access_unit(&unit)?;
-                    if self.first_unit.is_none() {
-                        self.first_unit = Some(unit);
-                    }
-                }
+                write_units(self.file, &mut self.first_unit, units)?;
             }
             Ok(())
         }
+    }
+
+    fn write_units(
+        file: &mut Mp4Recording,
+        first_unit: &mut Option<Vec<u8>>,
+        units: Vec<media::EncodedUnit>,
+    ) -> Result<(), String> {
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            file.write_access_unit(&unit.data)?;
+            if first_unit.is_none() {
+                *first_unit = Some(unit.data);
+            }
+        }
+        Ok(())
     }
 
     impl SnapshotSink for RecordingSink<'_> {

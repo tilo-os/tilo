@@ -59,7 +59,8 @@ TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 # …or drive it step by step:
 ./os/dev/vm.sh boot --gl                # GL so the DRM compositor can render
 ./os/dev/vm.sh wait                     # block until greetd is up
-./os/dev/vm.sh login                    # types quickuser / tilo
+./os/dev/vm.sh login --passcode-only    # one-account disk: types the passcode (tilo)
+./os/dev/vm.sh login                    # two-field form: types quickuser / tilo
 ./os/dev/vm.sh shot desktop             # -> /tmp/tilo-vm/desktop.png
 ./os/dev/vm.sh serial 'greetd|shell|panic'   # grep the boot console
 ./os/dev/vm.sh stop
@@ -246,7 +247,8 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
-For Windows ARM64 development, dispatch `os-dev-installer.yml` with the exact
+For Windows ARM64 development, dispatch `os-dev-installer.yml` with
+`installer_rootfs=ext4` and the exact
 `registry.tilo.so/tilo/tilo-ci@sha256:<digest>` from a successful `os-dev.yml`
 ARM64 run. It layers the installer on that already-built unsigned image and
 uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
@@ -255,6 +257,12 @@ qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
 software` on the Windows WHPX host. Keep the medium as the immutable base for
 later throwaway install overlays. Component changes in a running dev VM use
 `tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+When building that disposable medium in WSL instead, set
+`TILO_PODMAN_BUILD_NETWORK=host` only if Podman's private build namespace
+cannot reach the package mirrors while the WSL host can.
+Keep `TILO_INSTALLER_OUTPUT` on WSL's native ext4 filesystem during the
+build; the raw disk can allocate its full logical size on `/mnt/c`. Export
+only the finished qcow2 or its compressed form to Windows.
 For a running WHPX installer, `installer-console.py --socket
 tcp://127.0.0.1:<console-port> state` reads the same action protocol that the
 scenario driver uses.

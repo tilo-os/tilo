@@ -157,17 +157,23 @@ pub fn schedule_fs_authority_publication(acl: PathBuf) {
 
 fn run_fs_authority_publication_queue() {
     loop {
+        // Taking the last publication and retiring happen under one lock: a
+        // schedule in between would see `running` still set, leave its ACL
+        // pending and return, and the retiring worker would drop it.
         let publication = match fs_authority_publication_queue().lock() {
-            Ok(mut queue) => queue.pending.take(),
+            Ok(mut queue) => {
+                let publication = queue.pending.take();
+                if publication.is_none() {
+                    queue.running = false;
+                }
+                publication
+            }
             Err(error) => {
                 tracing::warn!(%error, "filesystem authority publication queue is poisoned");
                 return;
             }
         };
         let Some(mut publication) = publication else {
-            if let Ok(mut queue) = fs_authority_publication_queue().lock() {
-                queue.running = false;
-            }
             fs_authority_publication_retired().notify_all();
             return;
         };
