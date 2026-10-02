@@ -181,11 +181,17 @@ fn real_checked_writer_input_and_resources_work_inside_shared_groups() {
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
     frame.poll_frame().unwrap();
     assert!(
+        frame.resources().iter().any(|r| {
+            r.kind == "tilo.rich-text"
+                || r.id.as_str() == "word-processor.document"
+                || r.id.as_str().starts_with("word-processor.document:")
+        }),
+        "checked Writer resources must remain reachable inside desktop rows: {:?}",
         frame
             .resources()
             .iter()
-            .any(|r| r.kind == "word_processor.document"),
-        "checked Writer resources must remain reachable inside desktop rows"
+            .map(|r| format!("{} ({})", r.id.as_str(), r.kind))
+            .collect::<Vec<_>>(),
     );
     frame
         .perform_named("word_processor", &ui::a11y::Action::Focus)

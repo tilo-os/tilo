@@ -320,7 +320,7 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
             ui::record::capability::record_intent(&report).expect("an open file names its record");
         let b = ui::record::capability::record_intent(&minutes).expect("and so does the other");
         assert_eq!(a.id, ui::RecordId::for_file(&report_path));
-        assert_eq!(a.kind, ui::RecordKind::new("document"));
+        assert_eq!(a.kind, ui::RecordKind::new(crate::RECORD_KIND));
         assert_ne!(a.id, b.id, "two files are never one record");
         assert_eq!(
             a.id.file_path().as_deref(),
