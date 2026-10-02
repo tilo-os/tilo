@@ -139,11 +139,16 @@ pub use params::{
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::ActionRegistry;
+#[allow(
+    deprecated,
+    reason = "existing app impls still name this trait until they publish through tilo_resource"
+)]
+pub use resource::ResourceProvider;
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
+    ResourcePresentation, ResourceViewMountSpec, ResourceViewSpec, flatten,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

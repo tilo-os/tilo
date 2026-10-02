@@ -1,0 +1,29 @@
+[package]
+name = "tilo-document"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Rich text as a tilo-resource resource: the typed action vocabulary every editor, agent and script edits a qdoc document through"
+
+[dependencies]
+tilo-doc = { path = "../tilo-doc" }
+# `ReplaceBody` imports its Markdown into the document.
+tilo-doc-codecs = { path = "../tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Images are referenced by content address; the bytes live in the caller's content store.
+tilo-content = { path = "../../system/content", default-features = false }
+# Ordering keys, batched writes, deterministic ids and the resource contract rich text implements.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-actions = { path = "../../collab/actions" }
+# Hyperlink targets a rich-text action may carry.
+url.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

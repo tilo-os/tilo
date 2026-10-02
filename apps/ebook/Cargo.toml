@@ -37,7 +37,7 @@ tilo-content = { path = "../../crates/system/content", default-features = false 
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes and comments are rich text, written in the SDK editor.
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 serde.workspace = true
 serde_json.workspace = true

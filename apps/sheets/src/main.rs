@@ -3,7 +3,7 @@
 //! Sheets — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
+//!   * default        — framework [`ResourceApp`] (`SheetsShell`).
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!

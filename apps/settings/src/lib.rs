@@ -61,6 +61,7 @@ pub mod account_probe;
 pub mod accounts;
 pub mod actions;
 pub mod categories;
+pub mod resource;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
@@ -146,3 +147,4 @@ pub(crate) fn clear_text_object(
         }
     }
 }
+pub use resource::{Settings, SettingsShell};

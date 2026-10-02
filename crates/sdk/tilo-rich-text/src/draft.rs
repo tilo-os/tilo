@@ -5,7 +5,7 @@
 //! what was written ([`Draft::clip_blocks`]) in one step, and the draft is
 //! cleared. Its text reads back as plain text for search and export.
 
-use qdoc_rich_text::{ClipBlock, RichText, RichTextAction, RichTextState};
+use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ROOT};
 use ui::tilo_actions::{Action, ActionError};
 use ui::tilo_resource::Doc;
@@ -76,12 +76,16 @@ impl Draft {
     /// What was written, as an action carries paragraphs.
     #[must_use]
     pub fn clip_blocks(&self) -> Vec<ClipBlock> {
-        qdoc::model::open(&self.doc, &ROOT)
+        tilo_doc::model::open(&self.doc, &ROOT)
             .map(|containers| {
-                qdoc::model::materialize_region(&self.doc, &containers, qdoc::model::Region::Body)
-                    .iter()
-                    .map(clip_block)
-                    .collect()
+                tilo_doc::model::materialize_region(
+                    &self.doc,
+                    &containers,
+                    tilo_doc::model::Region::Body,
+                )
+                .iter()
+                .map(clip_block)
+                .collect()
             })
             .unwrap_or_default()
     }
@@ -365,7 +369,7 @@ mod tests {
         assert_eq!(clips[1].kind, "list_item");
         assert_eq!(
             clips[1].attrs.get("checked"),
-            Some(&qdoc_rich_text::ClipAttr::Bool(true))
+            Some(&tilo_document::ClipAttr::Bool(true))
         );
         let mut draft = draft;
         draft.clear();

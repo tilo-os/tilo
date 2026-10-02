@@ -27,7 +27,7 @@ use ui::vello::peniko::Fill;
 use ui::widget::{Button, ButtonFace, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-const OPERATION_TYPE: &str = "speed-test.operation";
+pub(crate) const OPERATION_TYPE: &str = "speed-test.operation";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -55,13 +55,13 @@ enum WorkerMessage {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SpeedOperation {
+pub(crate) enum SpeedOperation {
     Start,
     Stop,
     ChangeRegion,
 }
 
-fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
+pub(crate) fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
     let mut spec =
         ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, op).ok()?;
     spec.contract = ActionContract {
@@ -86,6 +86,8 @@ pub struct SpeedTestApp {
     error: Option<String>,
     history: Vec<ResultSet>,
     shot: bool,
+    pub(crate) actions: crate::resource::ActionSink,
+    hosted: bool,
 }
 
 impl SpeedTestApp {
@@ -107,6 +109,8 @@ impl SpeedTestApp {
             error: None,
             history: Vec::new(),
             shot: false,
+            actions: crate::resource::ActionSink::default(),
+            hosted: false,
         }
     }
 
@@ -258,6 +262,31 @@ impl SpeedTestApp {
         }
     }
 
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn has_result(&self) -> bool {
+        self.result.is_some()
+    }
+
     fn is_running(&self) -> bool {
         matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload)
     }
@@ -303,8 +332,22 @@ impl SpeedTestApp {
     }
 }
 
+impl ui::undo::CommittedActions for SpeedTestApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for SpeedTestApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
@@ -807,23 +850,55 @@ impl Widget for SpeedTestApp {
 
 impl ui::resources::PublishesResources for SpeedTestApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
-        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
-            root.actions.push(spec);
+        if self.hosted {
+            return self.live_run_extra();
         }
-        if self.is_running()
-            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
-        {
-            root.actions.push(spec);
-        }
-        if let Some(spec) = action(
-            "change-region",
-            "Change test region",
-            &SpeedOperation::ChangeRegion,
-        ) {
-            root.actions.push(spec);
-        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
+            "speed-test:root",
+            "Internet speed test",
+            &crate::resource::SpeedTestState,
+        );
+        root.children.extend(self.live_run_extra());
         vec![root]
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if self.hosted && id == "speed-test:root" {
+            return None;
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
+            "speed-test:root",
+            "Internet speed test",
+            &crate::resource::SpeedTestState,
+        );
+        root.children.extend(self.live_run_extra());
+        find_resource(&[root], id)
+    }
+}
+
+fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+impl SpeedTestApp {
+    /// Stop while a measurement is running. Not a second `speed-test` root.
+    fn live_run_extra(&self) -> Vec<Resource> {
+        if !self.is_running() {
+            return Vec::new();
+        }
+        let mut run = Resource::new("speed-test.run", "speed-test.run", "Running test");
+        if let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop) {
+            run.actions.push(spec);
+        }
+        vec![run]
     }
 }
 
@@ -1173,6 +1248,14 @@ mod tests {
         registry: ui::tilo_actions::ActionRegistry::new(),
         resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
         palette: ["Run speed test", "Change test region"],
+    }
+
+    #[test]
+    fn hosted_lookup_keeps_the_run_and_not_the_root() {
+        let mut app = SpeedTestApp::new();
+        app.mark_hosted_for_test();
+        let doc = AutoCommit::new();
+        assert!(ui::resources::resource(&app, &doc, "speed-test:root").is_none());
     }
 
     /// Neither the wide metadata row nor the stacked dial touches the primary action.

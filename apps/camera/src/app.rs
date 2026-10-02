@@ -375,6 +375,10 @@ pub struct CameraApp {
     /// Where capture bytes live; documents carry only their `media_id`. The
     /// worker holds a clone.
     content: tilo_content::ContentStore,
+    #[allow(
+        dead_code,
+        reason = "seed for screen; kept for restore after framework cutover"
+    )]
     initial_screen: Screen,
 
     // CRDT-backed caches (refreshed every sync)
@@ -465,12 +469,11 @@ pub struct CameraApp {
     regions: Vec<(Rect, Action)>,
     active_touch: Option<TouchTarget>,
     dirty: bool,
-    initialized: bool,
 
     /// Framework-owned action dispatch: brackets the undo boundary, encodes and
     /// dispatches each action, and remembers the last one so a test can prove a
     /// button and its palette `ActionSpec` build the same `EncodedAction`.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     search_provider: crate::search::CameraSearchProvider,
     /// The last-capture thumbnail invokes Photos through the shell's typed
     /// application-open boundary. Camera never imports Photos or serializes a
@@ -595,8 +598,7 @@ impl CameraApp {
             regions: Vec::new(),
             active_touch: None,
             dirty: true,
-            initialized: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             search_provider: crate::search::CameraSearchProvider::new(),
             photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
             photos_browse: Self::photos_browse_emitter(),
@@ -1289,6 +1291,76 @@ impl CameraApp {
             .with_state(state)
             .with_bounds(rect)
             .with_action_target(Self::a11y_target(action))
+    }
+
+    /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
+    /// single mutation path shared with the Ctrl+K palette. The action is applied
+    /// Show the capture settings, scans, and recent handoff the framework resource holds.
+    /// An empty projection does not wipe preferences or a handoff that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::CameraState) {
+        let untouched = state.scans.is_empty()
+            && state.recent.is_none()
+            && state.mode == CaptureMode::Photo
+            && state.facing == Facing::Back
+            && state.settings == Settings::default();
+        let local_unpublished = !self.scans.is_empty()
+            || !self.captures.is_empty()
+            || self.mode != CaptureMode::Photo
+            || self.facing != Facing::Back
+            || self.settings != Settings::default();
+        if untouched && local_unpublished {
+            return;
+        }
+        if self.recording.is_none() {
+            self.mode = state.mode;
+        }
+        self.facing = state.facing;
+        self.settings = state.settings;
+        self.scans.clone_from(&state.scans);
+        if matches!(self.storage, Storage::Disk(_)) {
+            let next = state.recent.as_ref().map(|shared| Capture {
+                id: shared.id.clone(),
+                kind: shared.kind,
+                ts: shared.ts,
+                w: shared.w,
+                h: shared.h,
+                dur_ms: shared.dur_ms,
+                label: shared.label.clone(),
+                facing: shared.facing,
+                scene: 0,
+                path: None,
+                media_id: Some(shared.media_id.clone()),
+            });
+            let changed = self.captures.first().map(|capture| &capture.id)
+                != next.as_ref().map(|capture| &capture.id);
+            self.captures = next.into_iter().collect();
+            if changed {
+                self.thumb_pending.clear();
+            }
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Camera>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scan_count_for_test(&self) -> usize {
+        self.scans.len()
     }
 
     /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
@@ -2699,10 +2771,8 @@ impl Widget for CameraApp {
         self.poll_document_job();
         self.poll_document_export();
         self.poll_scan_image_picker();
-        if !self.initialized {
-            doc::init_defaults(state, path, self.initial_screen);
-            self.initialized = true;
-        }
+        // An empty record already reads as Photo / Back / default settings.
+        // Writing those defaults would be a phantom history entry.
         self.poll_countdown();
         while let Some(result) = self.worker.try_recv() {
             let terminal = result.invocation.filter(|invocation| {
@@ -3461,18 +3531,20 @@ impl ui::search::capability::SearchSource for CameraApp {
 
 impl ui::resources::PublishesResources for CameraApp {
     /// Publish capture resources so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns Document prefs / mode / lens;
+    /// only live Effect extras (shutter, devices, scanners) remain here.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Photos and Video Player are destinations, not Camera resources.
-        // Their typed launch operation is attached only to the one current
-        // capture resource, so search and agents cannot mistake Camera for a
-        // second media library.
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == crate::resource::CAMERA_RESOURCE_ID {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -6789,6 +6861,20 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc, root)
+    }
+
+    /// A fresh camera record stays empty. Readers still report Photo, the back
+    /// camera, and default settings.
+    #[test]
+    fn a_fresh_camera_record_stays_empty_until_a_capture_action() {
+        let (_app, doc, root) = sample_app();
+        assert!(
+            !doc::is_seeded(&doc, &root),
+            "default preferences are not written into a new record"
+        );
+        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Photo);
+        assert_eq!(doc::read_facing(&doc, &root), Facing::Back);
+        assert_eq!(doc::read_settings(&doc, &root), Settings::default());
     }
 
     #[test]

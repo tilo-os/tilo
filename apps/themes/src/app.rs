@@ -160,10 +160,8 @@ pub struct ThemesApp {
     last_export: Option<String>,
     structure_dirty: bool,
 
-    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
-    /// dispatches each Themes action, and remembers the last one for parity with
-    /// the Ctrl+K [`ActionSpec`].
-    actions: ui::ActionHost,
+    /// Framework dispatcher when hosted; the local action host otherwise.
+    actions: crate::resource::ActionSink,
 
     /// Theme id accepted through the canonical external-operation route. It is
     /// drained by `sync`, where mutable document access is available, so the
@@ -293,7 +291,7 @@ impl ThemesApp {
             status: String::new(),
             last_export: None,
             structure_dirty: false,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             pending_apply: None,
             completed_apply: None,
             pending_new: false,
@@ -565,6 +563,7 @@ impl ThemesApp {
 
     /// The last action an affordance dispatched through `Self::perform_action`.
     /// Rising state: it is the most recent dispatch, not cleared on read.
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
     }
@@ -643,8 +642,56 @@ impl ThemesApp {
         // shared store, else default to the seeded selection.
         if ui::doc::read_str(state, path, doc::KEY_ACTIVE).is_none() {
             let active = store::load_active_id().unwrap_or_else(|| sel.clone());
-            doc::put_str(state, path, doc::KEY_ACTIVE, &active);
+            self.perform_action(state, &crate::actions::set_active_theme_action(&active));
         }
+    }
+
+    /// Show the catalog and active theme the framework resource already holds.
+    /// An empty projection does not wipe a catalog that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ThemesState) {
+        if state.catalog.is_empty() && !self.catalog.is_empty() {
+            return;
+        }
+        self.catalog.clone_from(&state.catalog);
+        if self.selected.is_empty()
+            && let Some(active) = &state.active
+        {
+            self.selected.clone_from(active);
+        }
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Themes>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// In-flight apply job label for hosted live extras.
+    pub(crate) fn live_apply_job_label(&self) -> Option<String> {
+        self.pending_apply
+            .as_ref()
+            .map(|(id, _)| format!("Applying theme {id}"))
+    }
+
+    /// Last export JSON preview when one is live (not document state).
+    pub(crate) fn live_export_preview_resource(&self) -> Option<tilo_actions::Resource> {
+        self.last_export.as_ref()?;
+        Some(tilo_actions::Resource::new(
+            "themes.export-preview",
+            "themes.export-preview",
+            "Last export",
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
@@ -1968,12 +2015,29 @@ impl Widget for ThemesApp {
 }
 
 impl ui::resources::PublishesResources for ThemesApp {
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the library door — keep only live apply jobs and export previews.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() && id == "themes.library" {
+            return None;
+        }
+        if let Some(found) = self.publish_resource(doc, id) {
+            return Some(found);
+        }
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        None
     }
 }
 
@@ -2080,6 +2144,26 @@ mod tests {
     /// A freshly-seeded **live** app + its CRDT state (first-run seed done),
     /// with the config isolation scope that must outlive both.
     /// Live = presets only, no fabricated custom theme.
+    /// A live first sync records the active theme through the theme action.
+    #[test]
+    fn a_fresh_library_sets_the_active_theme_through_the_action() {
+        let _env = isolate_config();
+        let mut app = ThemesApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let recorded = app
+            .last_dispatched()
+            .expect("the first sync submits SetActiveTheme");
+        assert_eq!(
+            recorded.type_id.as_str(),
+            crate::actions::THEMES_ACTION_TYPE
+        );
+        let active = ui::doc::read_str(&state.doc, &state.root, doc::KEY_ACTIVE)
+            .expect("the active theme is in the document");
+        assert_eq!(active, app.selected);
+        assert!(crate::model::builtin_theme(&active).is_some());
+    }
+
     fn seeded() -> (ThemesApp, ui::State, ScopedEnv) {
         let env = isolate_config();
         let mut app = ThemesApp::new();
@@ -2678,7 +2762,7 @@ mod tests {
         // `perform_action`) is the byte-identical [`EncodedAction`] the theme's
         // Ctrl+K "Delete theme" [`ActionSpec`] exports.
         {
-            use tilo_actions::{ActionInput, ResourceProvider};
+            use tilo_actions::ActionInput;
             let (mut app, mut st, _env) = seeded_demo();
             assert_eq!(selected(&app), "sunset");
 
@@ -2694,7 +2778,7 @@ mod tests {
             // removed it from `st`), so both encode the same target.
             let mut probe = AutoCommit::new();
             doc::save_catalog(&mut probe, &automerge::ROOT, &demo_catalog());
-            let resources = ResourceProvider::resources(&app, &probe);
+            let resources = app.publish_resources(&probe);
             let sunset = resources[0]
                 .children
                 .iter()

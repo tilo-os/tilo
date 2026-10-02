@@ -30,7 +30,7 @@ type El = Box<dyn Widget>;
 /// remain local because they talk to CUPS/SANE and portals on this machine;
 /// publishing them still lets the shell, search, and a collaborating agent
 /// discover the real controls and receive an invocation receipt.
-const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
+pub(crate) const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DemoScenario {
@@ -67,6 +67,8 @@ pub struct PrintCentre {
     scan: ScanState,
     scan_save_picker: Option<ui::portal::PortalChannel>,
     scan_save_document: bool,
+    pub(crate) actions: crate::resource::ActionSink,
+    hosted: bool,
 }
 
 /// The scan page's controls and the pages scanned so far.
@@ -362,7 +364,7 @@ fn centered_page(content: El, max_width: f32) -> El {
 fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
     let pages = pages
         .iter()
-        .map(|page| qdoc_pdf::ScannedPdfPage {
+        .map(|page| tilo_doc_pdf::ScannedPdfPage {
             width: page.width,
             height: page.height,
             rgb: page
@@ -373,7 +375,7 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
             recognized_text: page.recognized_text.clone().unwrap_or_default(),
         })
         .collect::<Vec<_>>();
-    qdoc_pdf::render_scanned_pdf(&pages)
+    tilo_doc_pdf::render_scanned_pdf(&pages)
 }
 
 fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -396,7 +398,7 @@ fn action(id: &str, label: &str) -> El {
     )
 }
 
-fn resource_action(
+pub(crate) fn resource_action(
     id: &str,
     label: &str,
     kind: OperationKind,
@@ -2464,6 +2466,8 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            actions: crate::resource::ActionSink::default(),
+            hosted: false,
         }
     }
     pub fn demo(scenario: DemoScenario) -> Self {
@@ -2487,7 +2491,52 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            actions: crate::resource::ActionSink::default(),
+            hosted: false,
         }
+    }
+
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sink_is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Printers, jobs, and scanners from the live CUPS/SANE snapshot. Not a
+    /// second `print-centre.dashboard` root; dashboard Views already ride publish.
+    fn live_device_resources(&self) -> Vec<Resource> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        let mut extras = Vec::new();
+        if let Ok(queues) = &snapshot.queues {
+            extras.extend(queues.iter().map(printer_resource));
+        }
+        if let Ok(jobs) = &snapshot.jobs {
+            extras.extend(jobs.iter().map(job_resource).map(|mut job| {
+                job.actions
+                    .retain(|action| action.id.as_str() != "open-queue");
+                job
+            }));
+        }
+        if let Ok(scanners) = &snapshot.scanners {
+            extras.extend(scanners.iter().map(scanner_resource));
+        }
+        extras
     }
 
     fn request_document(&mut self) {
@@ -3300,8 +3349,22 @@ impl PrintCentre {
     }
 }
 
+impl ui::undo::CommittedActions for PrintCentre {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hosted edits belong to the framework dispatcher. Standalone stays
+        // on the local host, which has no document action yet.
+        if self.actions.is_hosted() {
+            return None;
+        }
+        self.actions.take_committed()
+    }
+}
+
 impl Widget for PrintCentre {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
@@ -3397,63 +3460,28 @@ impl Widget for PrintCentre {
     }
 }
 
+fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource_tree(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 impl ui::resources::PublishesResources for PrintCentre {
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("print-centre", "print-centre.dashboard", "Print Centre");
-        for (id, label, kind, command) in [
-            (
-                "refresh",
-                "Refresh printers and documents",
-                OperationKind::Effect,
-                "refresh",
-            ),
-            (
-                "open-dashboard",
-                "Open dashboard",
-                OperationKind::View,
-                "dashboard",
-            ),
-            (
-                "open-queue",
-                "Open print queue",
-                OperationKind::View,
-                "queue",
-            ),
-            (
-                "open-history",
-                "Open print history",
-                OperationKind::View,
-                "history",
-            ),
-            (
-                "run-diagnostics",
-                "Run printer diagnostics",
-                OperationKind::View,
-                "diagnostics",
-            ),
-            (
-                "find-printers",
-                "Find network printers",
-                OperationKind::Effect,
-                "discover",
-            ),
-            (
-                "print-document",
-                "Print a document",
-                OperationKind::View,
-                "print",
-            ),
-            (
-                "scan-document",
-                "Scan a document",
-                OperationKind::View,
-                "scan",
-            ),
-        ] {
-            if let Some(action) = resource_action(id, label, kind, command) {
-                root.actions.push(action);
-            }
+        if self.hosted {
+            return self.live_device_resources();
         }
+        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
+            "print-centre",
+            "Print Centre",
+            &crate::resource::PrintCentreState,
+        );
         if let Some(snapshot) = &self.snapshot {
             if let Ok(queues) = &snapshot.queues {
                 root.children.extend(queues.iter().map(printer_resource));
@@ -3467,12 +3495,95 @@ impl ui::resources::PublishesResources for PrintCentre {
         }
         vec![root]
     }
+
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
+        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
+            "print-centre",
+            "Print Centre",
+            &crate::resource::PrintCentreState,
+        );
+        if let Some(snapshot) = &self.snapshot {
+            if let Ok(queues) = &snapshot.queues {
+                root.children.extend(queues.iter().map(printer_resource));
+            }
+            if let Ok(jobs) = &snapshot.jobs {
+                root.children.extend(jobs.iter().map(job_resource));
+            }
+            if let Ok(scanners) = &snapshot.scanners {
+                root.children.extend(scanners.iter().map(scanner_resource));
+            }
+        }
+        if self.hosted && id == "print-centre" {
+            return None;
+        }
+        find_resource_tree(&[root], id)
+            .or_else(|| find_resource_tree(&self.live_device_resources(), id))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::ROOT;
+
+    #[test]
+    fn hosted_resources_keep_devices_without_dashboard_root() {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        let doc = AutoCommit::new();
+        assert!(!centre.is_framework_hosted());
+        let standalone = ui::resources::resources(&centre, &doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "print-centre.dashboard");
+        assert!(
+            standalone[0]
+                .children
+                .iter()
+                .any(|child| child.kind == "print-centre.printer")
+        );
+
+        centre.mark_hosted_for_test();
+        let printer_id = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "print-centre.printer")
+            .map(|child| child.id.as_str().to_owned())
+            .expect("printer");
+        assert!(ui::resources::resource(&centre, &doc, "print-centre").is_none());
+        assert!(
+            ui::resources::resource(&centre, &doc, &printer_id)
+                .is_some_and(|printer| printer.actions.iter().any(|action| action.id == "open")),
+            "a hosted printer stays the published row"
+        );
+        let extras = ui::resources::resources(&centre, &doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.kind != "print-centre.dashboard"
+                    && resource.id.as_str() != "print-centre"),
+            "hosted must not republish the dashboard: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "print-centre.printer")
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "print-centre.job")
+        );
+        assert!(extras.iter().all(|resource| {
+            resource
+                .actions
+                .iter()
+                .all(|action| action.id.as_str() != "open-queue")
+        }));
+    }
 
     /// The surface Print Centre publishes once a refresh has found printers,
     /// documents and scanners.

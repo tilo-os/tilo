@@ -37,6 +37,12 @@ pub struct ActionHost {
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical
     /// action.
     last_dispatched: Option<EncodedAction>,
+    /// Compensating document action for outside-consequence undo, computed
+    /// by [`Action::inverse_before`](tilo_actions::Action::inverse_before)
+    /// before the forward action ran. Cleared with [`Self::take_committed`].
+    pending_undo_via: Option<EncodedAction>,
+    /// The forward action paired with [`Self::pending_undo_via`], for redo.
+    pending_redo_via: Option<EncodedAction>,
     ambient_context: Option<ActionContext>,
 }
 
@@ -157,6 +163,13 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
+        // Capture the compensating action against the pre-apply document so a
+        // delete can still read the row it removes.
+        let undo_via = action.inverse_encoded(doc).or_else(|| {
+            action
+                .inverse_before(doc)
+                .and_then(|inverse| EncodedAction::encode(type_id, &inverse).ok())
+        });
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
@@ -190,6 +203,12 @@ impl ActionHost {
         }
         if self.commit_before.is_none() {
             self.commit_before = Some(before);
+        }
+        // One outside-consequence action per bracket: a later pure CRDT edit
+        // in the same event must not erase a pending compensating undo.
+        if undo_via.is_some() && self.pending_undo_via.is_none() {
+            self.pending_undo_via = undo_via;
+            self.pending_redo_via = Some(encoded.clone());
         }
         self.last_dispatched = Some(encoded);
         Ok(())
@@ -245,8 +264,30 @@ impl ActionHost {
         self.commit_before.take()
     }
 
+    /// Rising-edge pair for outside-consequence undo: `(undo_via, redo_via)`.
+    /// Cleared with the commit bracket so a host records them on the same
+    /// [`UndoEntry`](crate::state::UndoEntry).
+    pub fn take_action_revert(&mut self) -> Option<(EncodedAction, EncodedAction)> {
+        match (self.pending_undo_via.take(), self.pending_redo_via.take()) {
+            (Some(undo), Some(redo)) => Some((undo, redo)),
+            (undo, redo) => {
+                self.pending_undo_via = undo;
+                self.pending_redo_via = redo;
+                None
+            }
+        }
+    }
+
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
+    }
+
+    /// Drop any recorded dispatch without applying a new action. Used when an
+    /// outside-consequence path deliberately emits no collaborative write
+    /// (e.g. VPN local credential setup) so observers do not confuse a prior
+    /// seed publish with this operation.
+    pub fn clear_last_dispatched(&mut self) {
+        self.last_dispatched = None;
     }
 }
 

@@ -330,13 +330,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        if let Ok(model) = qdoc::model::open(&document, &automerge::ROOT)
-            && let Some(block) = qdoc::model::materialize(&document, &model)
+        if let Ok(model) = tilo_doc::model::open(&document, &automerge::ROOT)
+            && let Some(block) = tilo_doc::model::materialize(&document, &model)
                 .blocks
                 .into_iter()
                 .find(|block| {
                     block.kind == "image"
-                        && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into()))
+                        && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.into()))
                 })
         {
             std::fs::write(root.join("received.automerge"), document.save())?;

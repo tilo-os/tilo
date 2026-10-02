@@ -46,7 +46,7 @@ use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResultSpec, RetryPolicy,
 };
 
 use crate::doc as mdoc;
@@ -842,6 +842,162 @@ pub struct MusicResourceCtx {
     pub playback: crate::model::Playback,
 }
 
+impl MusicResourceCtx {
+    /// Project a shared library into the contextual page the resource door
+    /// publishes. Playback, queue and local-file stay on the widget: they are
+    /// device-local and are not in the Automerge library.
+    pub fn from_library(lib: &crate::model::Library) -> Self {
+        let track_label = |track_id: &str| -> String {
+            match lib.track(track_id) {
+                Some(track) => {
+                    let artist = lib.artist_name(&track.artist_id);
+                    if artist.is_empty() {
+                        track.title.clone()
+                    } else {
+                        format!("{} — {artist}", track.title)
+                    }
+                }
+                None => track_id.to_string(),
+            }
+        };
+        let mut playlists = lib.playlists.iter().collect::<Vec<_>>();
+        playlists.sort_by(|a, b| a.id.cmp(&b.id));
+        let playlists = playlists
+            .into_iter()
+            .take(OPEN_RESOURCE_CATEGORY_LIMIT)
+            .map(|playlist| PlaylistResource {
+                id: playlist.id.clone(),
+                name: playlist.name.clone(),
+                tracks: playlist
+                    .track_ids
+                    .iter()
+                    .take(OPEN_PLAYLIST_TRACK_LIMIT)
+                    .map(|tid| TrackRef {
+                        id: tid.clone(),
+                        label: track_label(tid),
+                        liked: lib.is_liked(tid),
+                        rank: playlist.track_ranks.get(tid).copied().unwrap_or_default(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let mut tracks = lib.tracks.values().collect::<Vec<_>>();
+        tracks.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut albums = lib.albums.values().collect::<Vec<_>>();
+        albums.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut artists = lib.artists.values().collect::<Vec<_>>();
+        artists.sort_by(|a, b| a.id.cmp(&b.id));
+        Self {
+            playlists,
+            tracks: tracks
+                .into_iter()
+                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|track| CatalogTrackResource {
+                    id: track.id.clone(),
+                    label: track_label(&track.id),
+                    album_id: track.album_id.clone(),
+                    artist_id: track.artist_id.clone(),
+                    offline: matches!(lib.cache_state(&track.id), crate::model::CacheState::Cached),
+                    liked: lib.is_liked(&track.id),
+                })
+                .collect(),
+            albums: albums
+                .into_iter()
+                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|album| CatalogAlbumResource {
+                    id: album.id.clone(),
+                    label: album.title.clone(),
+                    saved: lib.is_album_saved(&album.id),
+                })
+                .collect(),
+            artists: artists
+                .into_iter()
+                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
+                .map(|artist| CatalogArtistResource {
+                    id: artist.id.clone(),
+                    label: artist.name.clone(),
+                    followed: lib.is_artist_followed(&artist.id),
+                })
+                .collect(),
+            membership: None,
+            local_file: None,
+            queue: Vec::new(),
+            playback: crate::model::Playback::default(),
+        }
+    }
+}
+
+/// Library catalogue + navigation views for [`tilo_resource::publish`]. Player,
+/// queue and the open local file stay on the widget when hosted.
+pub(crate) fn document_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
+    catalogue_children(ctx)
+}
+
+fn known_track_ids(ctx: &MusicResourceCtx) -> BTreeSet<String> {
+    let mut known_tracks = ctx
+        .tracks
+        .iter()
+        .map(|track| track.id.clone())
+        .collect::<BTreeSet<_>>();
+    if let Some(file) = &ctx.local_file {
+        known_tracks.insert(file.id.clone());
+    }
+    known_tracks
+}
+
+/// Playlists, tracks, albums, artists, and navigation views. Not the player,
+/// queue, or open file.
+pub(crate) fn catalogue_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
+    let known_tracks = known_track_ids(ctx);
+    let mut children = Vec::new();
+    let mut playlists = ctx.playlists.iter().collect::<Vec<_>>();
+    playlists.sort_by(|a, b| a.id.cmp(&b.id));
+    for playlist in playlists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        children.push(playlist_resource(
+            playlist,
+            &known_tracks,
+            OPEN_PLAYLIST_TRACK_LIMIT,
+        ));
+    }
+    let mut tracks = ctx.tracks.iter().collect::<Vec<_>>();
+    tracks.sort_by(|a, b| a.id.cmp(&b.id));
+    for track in tracks.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        children.push(catalog_track_resource(track, &ctx.playback));
+    }
+    let mut albums = ctx.albums.iter().collect::<Vec<_>>();
+    albums.sort_by(|a, b| a.id.cmp(&b.id));
+    for album in albums.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        children.push(catalog_album_resource(album));
+    }
+    let mut artists = ctx.artists.iter().collect::<Vec<_>>();
+    artists.sort_by(|a, b| a.id.cmp(&b.id));
+    for artist in artists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
+        children.push(catalog_artist_resource(artist));
+    }
+    for &(id, label) in NAVIGATION_VIEWS {
+        children.push(navigation_view_resource(id, label));
+    }
+    children
+}
+
+/// Device-local player, queue and open file. Published beside the framework
+/// root when hosted — never a second copy of the library document door.
+pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
+    let known_tracks = known_track_ids(ctx);
+    let mut resources = vec![
+        with_playback_actions(
+            Resource::new("music.player:player", "music.player", "Player"),
+            &ctx.playback,
+            &known_tracks,
+        ),
+        queue_resource(ctx),
+    ];
+    if let Some(file) = &ctx.local_file {
+        resources.push(local_file_resource(file, &ctx.playback));
+    }
+    resources
+}
+
 #[allow(
     clippy::expect_used,
     reason = "action is always a MusicAction, which encodes losslessly (see encode()'s own allow)"
@@ -1592,85 +1748,25 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
 /// playlist" action), each playlist (rename + delete), and each track within a
 /// playlist (remove + toggle-like). Every document-mutating operation is
 /// exported as the same action the on-screen affordance dispatches.
-pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    let mut known_tracks = ctx
-        .tracks
-        .iter()
-        .map(|track| track.id.clone())
-        .collect::<BTreeSet<_>>();
-    if let Some(file) = &ctx.local_file {
-        known_tracks.insert(file.id.clone());
-    }
-    let mut root = Resource::new("music.library", "music.library", "Library")
-        .with_action(open_local_file_spec());
-    if let Some(file) = &ctx.local_file {
-        root = root.with_child(local_file_resource(file, &ctx.playback));
-    }
-    root = root.with_child(with_playback_actions(
-        Resource::new("music.player:player", "music.player", "Player"),
-        &ctx.playback,
-        &known_tracks,
-    ));
-    root = root.with_child(queue_resource(ctx));
-
-    // Library-level: create a playlist. The id is minted once when the name
-    // argument is committed, then baked into the envelope, so replay stays
-    // deterministic.
-    root = root.with_action(
-        ActionSpec::prompted(
-            "new-playlist",
-            "New playlist",
-            "Name",
-            "playlist name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let name = if name.trim().is_empty() {
-                    "New Playlist"
-                } else {
-                    name.trim()
-                };
-                encode(&create_playlist_action(&new_playlist_id(), name))
-            },
+pub fn provide_resources(ctx: &MusicResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // A document that already holds the library publishes those rows. An empty
+    // document has only navigation stubs; the ctx page under test replaces
+    // them. Player, queue, and the open file stay live extras.
+    let state =
+        <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut root =
+        ui::tilo_resource::publish::<crate::resource::Music>("music.library", "Library", &state);
+    let published_catalogue = root.children.iter().any(|child| {
+        matches!(
+            child.kind.as_str(),
+            "music.track" | "music.playlist" | "music.album" | "music.artist"
         )
-        .requiring(PermissionRequirement::Write)
-        .reversible(),
-    );
-
-    let mut playlists = ctx.playlists.iter().collect::<Vec<_>>();
-    playlists.sort_by(|a, b| a.id.cmp(&b.id));
-    for playlist in playlists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
-        root = root.with_child(playlist_resource(
-            playlist,
-            &known_tracks,
-            OPEN_PLAYLIST_TRACK_LIMIT,
-        ));
+    });
+    if !published_catalogue {
+        root.children.retain(|child| child.kind != "music.view");
+        root.children.extend(catalogue_children(ctx));
     }
-
-    let mut tracks = ctx.tracks.iter().collect::<Vec<_>>();
-    tracks.sort_by(|a, b| a.id.cmp(&b.id));
-    for track in tracks.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
-        root = root.with_child(catalog_track_resource(track, &ctx.playback));
-    }
-    let mut albums = ctx.albums.iter().collect::<Vec<_>>();
-    albums.sort_by(|a, b| a.id.cmp(&b.id));
-    for album in albums.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
-        root = root.with_child(catalog_album_resource(album));
-    }
-    let mut artists = ctx.artists.iter().collect::<Vec<_>>();
-    artists.sort_by(|a, b| a.id.cmp(&b.id));
-    for artist in artists.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
-        root = root.with_child(catalog_artist_resource(artist));
-    }
-
-    // App destinations are first-class resources too. A palette, agent or
-    // history item can therefore reopen the exact screen through the same
-    // canonical operation broker used for albums, artists and playlists. Keep
-    // them after document resources so Ctrl+K's unfiltered initial window still
-    // prioritises the library actions users can immediately perform.
-    for &(id, label) in NAVIGATION_VIEWS {
-        root = root.with_child(navigation_view_resource(id, label));
-    }
-
+    root.children.extend(live_device_resources(ctx));
     vec![root]
 }
 
@@ -1679,6 +1775,18 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 /// time the host calls this method against the current model, so deleted or
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
+fn find_music(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_music(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
     if id == LOCAL_FILE_RESOURCE_ID {
         return ctx
@@ -1708,11 +1816,6 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
         .collect::<BTreeSet<_>>();
     if let Some(file) = &ctx.local_file {
         known_tracks.insert(file.id.clone());
-    }
-    if id == "music.library" {
-        return provide_resources(ctx, &AutoCommit::new())
-            .into_iter()
-            .next();
     }
     if id == "music.player:player" {
         return Some(with_playback_actions(
@@ -1761,12 +1864,28 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
         .map(|playlist| playlist_resource(playlist, &known_tracks, 0))
 }
 
-impl ResourceProvider for crate::app::MusicApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.music_resource_ctx(), doc)
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MusicApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        let state =
+            <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Music>(
+            "music.library",
+            "Library",
+            &state,
+        );
+        root.children
+            .extend(live_device_resources(&self.music_resource_ctx()));
+        vec![root]
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "music.library" {
+            return self.publish_resources(doc).into_iter().next();
+        }
+        if let Some(found) = find_music(&self.publish_resources(doc), id) {
+            return Some(found);
+        }
         let ctx = self.music_resource_ctx_for_id(id)?;
         resource_by_id(&ctx, id)
     }
@@ -1864,7 +1983,7 @@ mod tests {
     /// the resources of any document seeded the same way.
     fn contract_resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let (app, _) = seeded();
-        ResourceProvider::resources(&app, doc)
+        app.publish_resources(doc)
     }
 
     fn playlist_key(res: &Resource) -> &str {
@@ -1929,6 +2048,56 @@ mod tests {
                 encode(&remove_track_action(&playlist, &track))
             }),
         ],
+    }
+
+    #[test]
+    fn resource_publish_owns_the_library_door_and_live_extras_stay_separate() {
+        let (app, doc) = seeded();
+        let library = crate::doc::load_library(&doc);
+        let published = ui::tilo_resource::publish::<crate::resource::Music>(
+            "music.library",
+            "Music",
+            &library,
+        );
+        let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(root_actions.contains(&"new-playlist"), "{root_actions:?}");
+        assert!(root_actions.contains(&"open-file"), "{root_actions:?}");
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.kind == "music.playlist"
+                    && child.actions.iter().any(|action| action.id == "rename")),
+            "playlist document actions ride Resource::children"
+        );
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.kind == "music.view"),
+            "navigation destinations are published children"
+        );
+        assert!(
+            !published
+                .children
+                .iter()
+                .any(|child| matches!(child.kind.as_str(), "music.player" | "music.queue")),
+            "player/queue are device-local and must not duplicate under publish"
+        );
+
+        let extras = live_device_resources(&app.music_resource_ctx());
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "music.player")
+        );
+        assert!(extras.iter().any(|resource| resource.kind == "music.queue"));
+        assert!(
+            !extras
+                .iter()
+                .any(|resource| resource.kind == "music.library"),
+            "hosted extras must not republish the library root"
+        );
     }
 
     #[test]

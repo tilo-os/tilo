@@ -6,9 +6,6 @@ publish.workspace = true
 license.workspace = true
 description = "Tilo app store — surfaces Tilo registry entries and legacy Flatpak apps in one list."
 
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
 
 [lib]
 name = "store"

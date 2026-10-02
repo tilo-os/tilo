@@ -38,6 +38,7 @@ pub mod doc;
 mod export_dialog;
 pub mod model;
 mod priority_contacts;
+pub mod resource;
 pub mod responsive;
 pub mod search_provider;
 pub mod vcard;
@@ -59,7 +60,9 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Contacts")
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Contacts, ContactsShell};
 
 pub mod framework_history;
+
+#[cfg(test)]
+mod framework_history_tests;

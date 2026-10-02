@@ -2418,9 +2418,8 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let playlist = app.lib.playlists.first().expect("seed playlist").clone();
         let track = playlist.track_ids.first().expect("seed membership").clone();
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
-        let resource =
-            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
-                .expect("membership resolves lazily");
+        let resource = MusicApp::publish_resource(&app, &doc, &resource_id)
+            .expect("membership resolves lazily");
         assert!(
             resource
                 .actions
@@ -2477,9 +2476,8 @@ fn global_search_and_canonical_views_route_without_mutation() {
     {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
-        let resource =
-            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
-                .expect("published destination resolves at the authority door");
+        let resource = MusicApp::publish_resource(&app, &doc, &resource_id)
+            .expect("published destination resolves at the authority door");
         let open = resource
             .actions
             .iter()

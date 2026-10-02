@@ -494,7 +494,7 @@ impl Editing {
 
     /// The paragraphs written in a comment or reply, trailing blank ones
     /// dropped.
-    fn clips(&self) -> Vec<qdoc_rich_text::ClipBlock> {
+    fn clips(&self) -> Vec<tilo_document::ClipBlock> {
         let EditInput::Rich(field) = &self.input else {
             return tilo_rich_text::plain_clips(self.text().trim_end());
         };
@@ -827,7 +827,7 @@ pub struct PdfApp {
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
     /// action, and records the last one for parity checks with the palette.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// How each displayed page maps between the engine's page space, PDF
     /// user space and its card in the stack (rotation and fit included).
     page_maps: Vec<model::PageMap>,
@@ -1246,7 +1246,7 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
@@ -1284,6 +1284,68 @@ impl PdfApp {
             action,
             tilo_actions::ActionContext::for_action("so.tilo.pdf-viewer", "PDF Viewer", action),
         );
+    }
+
+    /// Show markup the framework resource already holds.
+    /// An empty projection does not clear markup that has not been published yet.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PdfMarkup) {
+        if state.pages.is_empty()
+            && state.annotations.is_empty()
+            && state.comments.is_empty()
+            && state.signatures.is_empty()
+        {
+            return;
+        }
+        self.stored_annotations.clone_from(&state.annotations);
+        self.comments.clone_from(&state.comments);
+        if !self.page_maps.is_empty() {
+            self.annotations = self
+                .stored_annotations
+                .iter()
+                .map(|annotation| {
+                    self.page_map(annotation.page)
+                        .annotation_to_card(annotation)
+                })
+                .collect();
+            self.signatures = state
+                .signatures
+                .iter()
+                .map(|signature| self.page_map(signature.page).signature_to_card(signature))
+                .collect();
+        }
+        self.dirty = true;
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test-only: open find and materialise matches for `query`.
+    #[cfg(test)]
+    pub(crate) fn stage_find_for_test(&mut self, query: &str) {
+        self.open_search();
+        self.search_input.set_text(query);
+        self.recompute_matches();
+    }
+
+    /// Test-only: live find hit count after [`Self::stage_find_for_test`].
+    #[cfg(test)]
+    pub(crate) fn find_match_count_for_test(&self) -> usize {
+        self.match_count()
     }
 
     /// The presentation context Ctrl+K needs to build the document-level action
@@ -2096,8 +2158,17 @@ impl PdfApp {
     )]
     fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
         let source_count = self.source_pages.len().max(1);
-        PdfDoc::ensure_page_plan(state, source_count);
-        PdfDoc::migrate_page_anchors(state);
+        if self.actions.is_hosted() {
+            self.perform_action(
+                state,
+                &crate::actions::PdfViewerAction::EnsurePagePlan {
+                    source_page_count: source_count,
+                },
+            );
+        } else {
+            PdfDoc::ensure_page_plan(state, source_count);
+            PdfDoc::migrate_page_anchors(state);
+        }
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
             return;
@@ -6031,22 +6102,52 @@ impl ui::resources::PublishesResources for PdfApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        // Framework [`tilo_resource::publish`] owns `pdf.document`, page/zoom
+        // Views, and markup children. Find hits are live presentation only —
+        // keep that same standalone slice when hosted, never a second root.
+        if self.actions.is_hosted() {
+            return self
+                .pdf_resource_ctx()
+                .map(|ctx| crate::actions::find_result_resources(&ctx))
+                .unwrap_or_default();
+        }
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| {
+        // The framework root already publishes the document. The directory page
+        // keeps the same live find slice as `resources`, never a second root.
+        if self.actions.is_hosted() {
+            let resources = if cursor.is_empty() && max_results > 0 {
                 self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::document_root(&ctx))
-            })
-            .flatten()
-            .into_iter()
-            .collect();
+                    .map(|ctx| crate::actions::find_result_resources(&ctx))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources,
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
+        // The directory is the published document. Page, outline, and find
+        // rows stay on the full resource tree; listing them here would walk
+        // the open document just to name the root actions.
+        let mut resources = if cursor.is_empty() && max_results > 0 {
+            self.pdf_resource_ctx()
+                .map(|ctx| crate::actions::provide_resources(&ctx, doc))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if let Some(root) = resources.first_mut() {
+            root.children.clear();
+        }
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: Vec::new(),
@@ -6054,7 +6155,14 @@ impl ui::resources::PublishesResources for PdfApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted()
+            && self
+                .pdf_resource_ctx()
+                .is_some_and(|ctx| id == format!("pdf.document:{}", ctx.doc_id))
+        {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -6866,7 +6974,7 @@ mod tests {
                 .find_map(|result| result.action_address())
                 .expect("page text is globally searchable by a canonical action");
             assert!(
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &hit.resource).is_some()
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &hit.resource).is_some()
             );
 
             for needle in ["highlight", "Iroh relay"] {
@@ -6876,7 +6984,7 @@ mod tests {
                     .find_map(|result| result.action_address())
                     .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
                 let resource =
-                    tilo_actions::ResourceProvider::resource(&app, &state.doc, &address.resource)
+                    crate::app::PdfApp::publish_resource(&app, &state.doc, &address.resource)
                         .expect("search door resolves the addressed annotation/comment resource");
                 assert!(
                     resource
@@ -6891,12 +6999,9 @@ mod tests {
                 .filter_map(|result| result.action_address())
                 .find(|address| address.resource.starts_with("pdf.outline:"))
                 .expect("PDF bookmarks are globally searchable by their canonical action");
-            let bookmark_resource = tilo_actions::ResourceProvider::resource(
-                &app,
-                &state.doc,
-                &bookmark_address.resource,
-            )
-            .expect("bookmark search result resolves to the current outline resource");
+            let bookmark_resource =
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &bookmark_address.resource)
+                    .expect("bookmark search result resolves to the current outline resource");
             assert!(
                 bookmark_resource
                     .actions
@@ -6910,7 +7015,7 @@ mod tests {
                 .expect("reply text is globally searchable by its canonical action");
             assert!(reply_address.resource.starts_with("pdf.reply:"));
             assert!(
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &reply_address.resource)
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &reply_address.resource)
                     .is_some(),
                 "a reply search hit resolves to the durable reply resource"
             );
@@ -6930,7 +7035,7 @@ mod tests {
                 .find(|address| address.resource.starts_with("pdf.search-result:"))
                 .expect("bounded find result has a canonical global-search action");
             let find_resource =
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
                     .expect("current find-result address resolves");
             assert!(
                 find_resource
@@ -6941,7 +7046,7 @@ mod tests {
             app.search_input.set_text("filesystem");
             app.recompute_matches();
             assert!(
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
                     .is_none(),
                 "a stale find ordinal cannot be rebound to the next query"
             );
@@ -6970,8 +7075,7 @@ mod tests {
                 "a stale cursor restarts against the new generation"
             );
             assert!(
-                tilo_actions::ResourceProvider::resource(&app, &state.doc, &stale_resource)
-                    .is_none()
+                crate::app::PdfApp::publish_resource(&app, &state.doc, &stale_resource).is_none()
             );
         }
     }
@@ -7042,7 +7146,7 @@ mod tests {
             let page_id = "source-1";
             let resource_id = format!("pdf.page:sample:{page_id}");
             assert!(
-                tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_some(),
+                crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_some(),
                 "the durable page id resolves through the provider"
             );
             assert_eq!(
@@ -7063,12 +7167,8 @@ mod tests {
             tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
             a.sync(&mut state_a.doc, &state_a.root);
             b.sync(&mut state_b.doc, &state_b.root);
-            assert!(
-                tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_none()
-            );
-            assert!(
-                tilo_actions::ResourceProvider::resource(&b, &state_b.doc, &resource_id).is_none()
-            );
+            assert!(crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_none());
+            assert!(crate::app::PdfApp::publish_resource(&b, &state_b.doc, &resource_id).is_none());
 
             // Concurrent page-plan actions merge like the other markup actions.
             let mut left = AutoCommit::load(&base).expect("left replica");

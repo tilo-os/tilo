@@ -136,9 +136,9 @@ word-processor = { path = "../../../apps/word-processor" }
 # The document-format registry. The shell asks it whether a path is an
 # editable document; which installed app opens it comes from the app
 # manifests, not from here.
-qdoc = { path = "../../doc/qdoc" }
+tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-content = { path = "../../system/content", features = ["device"] }
-qdoc-codecs = { path = "../../doc/qdoc-codecs", default-features = false }
+tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 mime_guess.workspace = true
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/

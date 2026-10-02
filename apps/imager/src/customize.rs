@@ -780,11 +780,11 @@ impl CustomizePanel {
     /// Route a winit event into the panel. Text edits and toggles dispatch
     /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
-    pub fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
@@ -865,7 +865,7 @@ impl CustomizePanel {
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
@@ -933,7 +933,7 @@ impl CustomizePanel {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        host: &mut ui::ActionHost,
+        host: &mut crate::resource::ActionSink,
         g: &CzGeom,
     ) -> CzResponse {
         if self.export_focused {
@@ -1080,7 +1080,11 @@ impl CustomizePanel {
         }
     }
 
-    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut AutoCommit,
+        host: &mut crate::resource::ActionSink,
+        action: &ImagerAction,
+    ) {
         host.dispatch_with_context(
             doc,
             IMAGER_ACTION_TYPE,

@@ -15,5 +15,7 @@ pub mod incremental;
 pub mod item_actions;
 #[path = "live_permissions.rs"]
 pub mod live_permissions;
+#[path = "model_contract.rs"]
+pub mod model_contract;
 #[path = "scenarios.rs"]
 pub mod scenarios;

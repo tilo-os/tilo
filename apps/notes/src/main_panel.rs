@@ -108,7 +108,7 @@ fn notes_editor(page: Option<PageId>) -> NotesEditor {
     let context = page.map(|page| {
         crate::actions::history_context(&crate::actions::edit_body_action(
             page,
-            qdoc_rich_text::RichTextAction::AppendParagraph {
+            tilo_document::RichTextAction::AppendParagraph {
                 text: String::new(),
             },
         ))

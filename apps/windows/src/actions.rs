@@ -16,6 +16,8 @@ use tilo_actions::{
 };
 
 pub const WINDOWS_ACTION_TYPE: &str = "windows.compat.action";
+/// Stable id of the manager resource published by [`tilo_resource::publish`].
+pub const MANAGER_RESOURCE_ID: &str = "windows.manager";
 const ROOT_KEY: &str = "windows-compat";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +65,7 @@ pub fn encode(action: &WindowsAction) -> EncodedAction {
         payload: Vec::new(),
     })
 }
-fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
+pub(crate) fn immediate(id: &str, label: &str, action: &WindowsAction) -> ActionSpec {
     ActionSpec::immediate(id, label, WINDOWS_ACTION_TYPE, action).unwrap_or_else(|_| {
         ActionSpec::immediate_encoded(id, label, action.locus(), encode(action))
     })
@@ -110,9 +112,119 @@ fn effect(
     .with_contract(contract)
 }
 
+/// Standalone / contract-test tree: manager root with live catalogue children.
+/// Prefer [`crate::resource::provide_resources`] / surface `publish_resources`
+/// once document state is available — this keeps `SampleProvider` fixtures working.
 pub fn provide_resources(catalogue: &Catalogue) -> Vec<Resource> {
     let apps = catalogue.apps.iter().map(app_resource).collect();
     vec![manager_resource(catalogue, apps)]
+}
+
+/// Install Effect on the manager door (no document delta). Appliance Effects
+/// ride the `windows.appliance` child from [`appliance_publish_child`].
+pub fn manager_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        path_operation(
+            "install",
+            "Install Windows application",
+            "windows.install",
+            "installer path",
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged(),
+    ]
+}
+
+/// Appliance lifecycle Effects. `ready` gates availability the same way the
+/// live appliance child does.
+pub fn appliance_effect_specs(ready: bool) -> Vec<ActionSpec> {
+    let mut specs = vec![
+        path_operation(
+            "import-iso",
+            "Import Windows ISO",
+            "windows.import-iso",
+            "ISO path",
+        )
+        .requiring(PermissionRequirement::Admin)
+        .privileged(),
+    ];
+    for (id, label, type_id) in [
+        ("recovery", "Open recovery desktop", "windows.recovery"),
+        ("start", "Start Windows", "windows.start"),
+        ("restart", "Restart Windows", "windows.restart"),
+        ("suspend", "Suspend Windows", "windows.suspend"),
+        ("resume", "Resume Windows", "windows.resume"),
+        ("shutdown", "Shut down Windows", "windows.shutdown"),
+        (
+            "temporary-network",
+            "Connect temporarily for activation",
+            "windows.temporary-network",
+        ),
+        (
+            "update-network",
+            "Connect temporarily for Windows Update",
+            "windows.update-network",
+        ),
+        (
+            "revoke-network",
+            "Disconnect temporary network access",
+            "windows.revoke-network",
+        ),
+    ] {
+        let contract = ActionContract {
+            permission: PermissionRequirement::Admin,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::AtMostOnce,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            availability: availability(ready, Some("Set up the managed Windows appliance first")),
+            ..ActionContract::default()
+        };
+        specs.push(effect(id, label, type_id, "", contract));
+    }
+    specs
+}
+
+/// Document-bound route shortcuts for one override already in shared state.
+pub fn override_app_resource(app_id: &str, route: Route) -> Resource {
+    let _ = route;
+    let mut resource = Resource::new(
+        format!("windows.app:{app_id}"),
+        "windows.compat-app",
+        app_id.to_owned(),
+    );
+    for candidate in Route::ALL {
+        resource = resource.with_action(immediate(
+            &format!("route-{}", candidate.short().to_ascii_lowercase()),
+            &format!("Use {}", candidate.label()),
+            &WindowsAction::SetRoute {
+                app_id: app_id.to_owned(),
+                route: candidate,
+            },
+        ));
+    }
+    // An override is recorded in the document, so reset is always offered.
+    resource.with_action(immediate(
+        "reset-route",
+        "Use catalogue recommendation",
+        &WindowsAction::ResetRoute {
+            app_id: app_id.to_owned(),
+        },
+    ))
+}
+
+/// Live catalogue projection without a `windows.manager` root: appliance,
+/// pending install, and compat-app rows. Hosted [`PublishesResources`] returns
+/// these beside [`tilo_resource::publish`]; standalone overlays them as children.
+pub fn live_catalogue_extras(catalogue: &Catalogue) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    if let Some(confirmation) = &catalogue.vm_install_confirmation {
+        extras.push(pending_install_resource(confirmation));
+    }
+    extras.push(appliance_resource(catalogue));
+    extras.extend(catalogue.apps.iter().map(app_resource));
+    extras
 }
 
 fn app_resource(app: &crate::model::WindowsApp) -> Resource {
@@ -340,17 +452,10 @@ fn add_prefix_resource(resource: Resource, app: &crate::model::WindowsApp) -> Re
 }
 
 fn manager_resource(catalogue: &Catalogue, apps: Vec<Resource>) -> Resource {
-    let mut manager = Resource::new("windows.manager", "windows.manager", "Windows manager")
-        .with_action(
-            path_operation(
-                "install",
-                "Install Windows application",
-                "windows.install",
-                "installer path",
-            )
-            .requiring(PermissionRequirement::Admin)
-            .privileged(),
-        );
+    let mut manager = Resource::new(MANAGER_RESOURCE_ID, "windows.manager", "Windows manager");
+    for spec in manager_effect_specs() {
+        manager = manager.with_action(spec);
+    }
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
         manager = manager.with_child(pending_install_resource(confirmation));
     }
@@ -420,54 +525,23 @@ fn appliance_resource(catalogue: &Catalogue) -> Resource {
         "windows.appliance",
         "windows.appliance",
         "Managed Windows appliance",
-    )
-    .with_action(
-        path_operation(
-            "import-iso",
-            "Import Windows ISO",
-            "windows.import-iso",
-            "ISO path",
-        )
-        .requiring(PermissionRequirement::Admin)
-        .privileged(),
     );
-    for (id, label, type_id) in [
-        ("recovery", "Open recovery desktop", "windows.recovery"),
-        ("start", "Start Windows", "windows.start"),
-        ("restart", "Restart Windows", "windows.restart"),
-        ("suspend", "Suspend Windows", "windows.suspend"),
-        ("resume", "Resume Windows", "windows.resume"),
-        ("shutdown", "Shut down Windows", "windows.shutdown"),
-        (
-            "temporary-network",
-            "Connect temporarily for activation",
-            "windows.temporary-network",
-        ),
-        (
-            "update-network",
-            "Connect temporarily for Windows Update",
-            "windows.update-network",
-        ),
-        (
-            "revoke-network",
-            "Disconnect temporary network access",
-            "windows.revoke-network",
-        ),
-    ] {
-        let contract = ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            availability: availability(
-                catalogue.vm.ready,
-                Some("Set up the managed Windows appliance first"),
-            ),
-            ..ActionContract::default()
-        };
-        appliance = appliance.with_action(effect(id, label, type_id, "", contract));
+    for spec in appliance_effect_specs(catalogue.vm.ready) {
+        appliance = appliance.with_action(spec);
+    }
+    appliance
+}
+
+/// Static appliance child for [`tilo_resource::publish`] (availability enforced
+/// at invoke time / refined by live extras).
+pub fn appliance_publish_child() -> Resource {
+    let mut appliance = Resource::new(
+        "windows.appliance",
+        "windows.appliance",
+        "Managed Windows appliance",
+    );
+    for spec in appliance_effect_specs(true) {
+        appliance = appliance.with_action(spec);
     }
     appliance
 }

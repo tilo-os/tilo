@@ -3757,7 +3757,7 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let registry = qdoc_codecs::builtin_registry();
+    let registry = tilo_doc_codecs::builtin_registry();
     let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {

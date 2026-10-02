@@ -34,6 +34,12 @@ pub(crate) enum BuilderDomain {
         title: String,
         order: u32,
     },
+    /// Generic published doors (`apply` / `group` / rich-text catalogue
+    /// builders) that mint from arguments and therefore need a Draft domain.
+    PublishedDoor {
+        action: String,
+        scope: Vec<u8>,
+    },
 }
 
 pub(crate) fn optional_page(page: Option<PageId>) -> Vec<u8> {
@@ -102,6 +108,10 @@ impl BuilderDomain {
             Self::DailyCreate { title, order } => (
                 "daily-create-v4-uuid/v1",
                 vec![title.as_bytes().to_vec(), order.to_be_bytes().to_vec()],
+            ),
+            Self::PublishedDoor { action, scope } => (
+                "published-dynamic-door/v1",
+                vec![scope.clone(), action.as_bytes().to_vec()],
             ),
         }
     }

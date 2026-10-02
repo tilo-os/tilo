@@ -3,7 +3,7 @@ use crate::actions::{PHOTOS_OPERATION_TYPE, PhotosOperation, PhotosResources};
 use crate::model::{Album, LibraryPhoto};
 use crate::shots_pattern;
 use automerge::ROOT;
-use tilo_actions::{Action, ResourceProvider};
+use tilo_actions::Action;
 
 fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
     resource.id.0 == id
@@ -1237,7 +1237,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             &mut doc,
         ));
         let favorites = PhotosResources
-            .resources(&doc)
+            .publish_resources(&doc)
             .pop()
             .expect("library root")
             .actions
@@ -1292,7 +1292,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         );
         app.add_selected_to_destination_album(&mut doc);
         let album = PhotosResources
-            .resource(&doc, "photos.album:trip")
+            .publish_resource(&doc, "photos.album:trip")
             .expect("chosen album remains published");
         let membership = album
             .actions
@@ -1944,7 +1944,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         assert!(matches!(address.action.as_str(), "view" | "open"));
         assert!(
             PhotosResources
-                .resources(&doc)
+                .publish_resources(&doc)
                 .iter()
                 .any(|resource| has_resource_id(resource, &address.resource))
         );
@@ -2602,7 +2602,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         PhotosDoc::set_edits(&mut doc, &edits);
         let resource_id = crate::actions::resource_id(&open);
 
-        let resources = PhotosResources.resources(&doc);
+        let resources = PhotosResources.publish_resources(&doc);
         let exported = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|entry| {

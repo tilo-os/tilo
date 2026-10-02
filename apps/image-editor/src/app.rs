@@ -117,7 +117,7 @@ pub struct ImageEditorApp {
     /// The authoritative dispatch boundary for every shared graph mutation.
     /// Toolbar, inspector, keyboard and assistive-technology controls all use
     /// this host, matching the actions exposed through global search.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
 }
 impl ImageEditorApp {
     pub fn new() -> Self {
@@ -233,7 +233,7 @@ impl ImageEditorApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_checkpoint: None,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
     pub fn seed_shot(&mut self, doc: &mut AutoCommit, path: &std::path::Path, advanced: bool) {
@@ -474,7 +474,7 @@ impl ImageEditorApp {
     /// frame.
     fn dispatch_graph_action<A>(&mut self, state: &mut AutoCommit, type_id: &str, action: &A)
     where
-        A: tilo_actions::Action + serde::Serialize,
+        A: tilo_actions::Action + serde::Serialize + crate::actions::AsEditorAction,
     {
         self.actions.dispatch_with_context(
             state,
@@ -485,6 +485,81 @@ impl ImageEditorApp {
         self.project = ProjectDoc::read(state);
         self.rendered_project = None;
         self.rebuild_crop_editor();
+    }
+
+    /// Show the project graph the framework resource already holds.
+    /// An empty / blank projection does not wipe a graph that has not been
+    /// published yet (local source path or adjustments that never reached the
+    /// shared document).
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Project) {
+        if Self::is_blank_projection(state) && self.has_unpublished_local_edits() {
+            return;
+        }
+        self.project = state.clone();
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+    }
+
+    fn is_blank_projection(project: &Project) -> bool {
+        crate::actions::source_path(project).is_empty()
+            && !project
+                .graph
+                .nodes
+                .keys()
+                .any(|id| id.as_str() != "source" && id.as_str() != "output")
+    }
+
+    fn has_unpublished_local_edits(&self) -> bool {
+        !Self::is_blank_projection(&self.project)
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// deferring the project door to `tilo_resource::publish`.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test / attach override so [`PublishesResources`] can keep only live
+    /// extras beside `ResourceRoot`.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.actions.set_hosted_for_test(hosted);
+    }
+
+    /// Seed a project that has not been written through the framework resource.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
+        self.project = project;
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+    }
+
+    /// Adjustment node ids currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_adjustment_ids_for_test(&self) -> Vec<String> {
+        self.project
+            .graph
+            .nodes
+            .keys()
+            .filter(|id| id.as_str() != "source" && id.as_str() != "output")
+            .cloned()
+            .collect()
+    }
+
+    /// Source path currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_source_path_for_test(&self) -> String {
+        crate::actions::source_path(&self.project).to_owned()
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::ImageEditor>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     /// Persist a graph position after the editor has provided fluid local drag
@@ -526,19 +601,19 @@ impl ImageEditorApp {
     }
 
     fn restore_project(&mut self, state: &mut AutoCommit, project: Project, label: &str) {
-        self.project = project;
-        if !self
+        let selection_survives = self
             .editor
             .selection
             .iter()
-            .any(|id| self.project.graph.nodes.contains_key(id))
-        {
+            .any(|id| project.graph.nodes.contains_key(id));
+        self.dispatch_graph_action(
+            state,
+            crate::actions::RESTORE_PROJECT_TYPE,
+            &crate::actions::RestoreProject { project },
+        );
+        if !selection_survives {
             self.editor.select_only(self.project.output.clone());
         }
-        ProjectDoc::restore_history_snapshot(state, &self.project);
-        ProjectDoc::write(state, &self.project);
-        self.rendered_project = None;
-        self.rebuild_crop_editor();
         self.notice = format!("{label}. The final image was recomputed.");
     }
 
@@ -598,16 +673,17 @@ impl ImageEditorApp {
             return false;
         }
         self.checkpoint();
-        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
-        {
-            *source = path.to_string_lossy().into_owned();
-        }
-        self.project.name = path
+        let source = path.to_string_lossy().into_owned();
+        let name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled image")
-            .into();
-        ProjectDoc::write(state, &self.project);
+            .to_string();
+        self.dispatch_graph_action(
+            state,
+            crate::actions::SET_SOURCE_TYPE,
+            &crate::actions::SetSource { path: source, name },
+        );
         self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
         true
     }
@@ -625,16 +701,20 @@ impl ImageEditorApp {
         }
         crate::web_file::remember(name, bytes);
         self.checkpoint();
-        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
-        {
-            *source = format!("{}{name}", crate::engine::OPENED_SOURCE);
-        }
-        self.project.name = std::path::Path::new(name)
+        let source = format!("{}{name}", crate::engine::OPENED_SOURCE);
+        let title = std::path::Path::new(name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled image")
-            .into();
-        ProjectDoc::write(state, &self.project);
+            .to_string();
+        self.dispatch_graph_action(
+            state,
+            crate::actions::SET_SOURCE_TYPE,
+            &crate::actions::SetSource {
+                path: source,
+                name: title,
+            },
+        );
         // The kept bytes may be a new image under the same name.
         self.rendered_project = None;
         self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
@@ -1232,14 +1312,7 @@ impl ImageEditorApp {
         );
     }
     /// The toolbar and empty-state buttons, which the app holds rather than
-    /// exposing as children; the host reaches their actions through these.
-    fn retained_buttons(&self) -> Vec<&Button> {
-        self.toolbar
-            .iter()
-            .map(|(_, button)| button)
-            .chain(std::iter::once(&self.empty_open))
-            .collect()
-    }
+    /// exposing as children. Control custody still reaches them here.
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
         self.toolbar
             .iter_mut()
@@ -2777,10 +2850,24 @@ impl Widget for ImageEditorApp {
             return Ok(Some(started));
         }
         if request.type_id == CONTROL_OPERATION_TYPE {
-            for button in self.retained_buttons_mut() {
-                if let Some(started) = button.start_operation(op, doc, path)? {
-                    return Ok(Some(started));
+            let started = {
+                let mut found = None;
+                for button in self.retained_buttons_mut() {
+                    if let Some(started) = button.start_operation(op, doc, path)? {
+                        found = Some(started);
+                        break;
+                    }
                 }
+                found
+            };
+            if let Some(started) = started {
+                // View/effect handlers queue into `toolbar_pending`; run them
+                // before returning so a host click opens the picker in the
+                // same tick (sync may not run until the next relayout).
+                if let Some(command) = self.toolbar_pending.take() {
+                    self.run_toolbar(doc, command);
+                }
+                return Ok(Some(started));
             }
         }
         if let Some(started) = self.admit_resource_operation(
@@ -3106,14 +3193,64 @@ impl ui::search::capability::SearchSource for ImageEditorApp {
 }
 
 impl ui::resources::PublishesResources for ImageEditorApp {
+    /// Standalone / `--shots` / unit tests publish through
+    /// [`tilo_resource::publish`]. When the framework hosts the surface, that
+    /// door already owns the project. A project that matches the document is
+    /// read from the document; an edit that has not been written yet stays on
+    /// the widget so the palette still shows it.
+    ///
+    /// Retained toolbar / empty-state buttons are not layout children, so their
+    /// `tilo.control:*` resources must be published here or host clicks never
+    /// resolve after `ActionEmitter` emit.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = vec![crate::actions::resource(&self.project)];
-        resources.extend(
-            self.retained_buttons()
-                .into_iter()
-                .flat_map(|button| ui::resources::resources(button, doc)),
-        );
-        resources
+        let mut out = if self.actions.is_hosted() {
+            Vec::new()
+        } else {
+            vec![self.project_resource(doc)]
+        };
+        out.extend(self.control_resources(doc));
+        out
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == crate::actions::PROJECT_RESOURCE_ID {
+            return None;
+        }
+        self.control_resources(doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id)
+            .or_else(|| find_resource(&self.project_resource(doc), id))
+    }
+}
+
+impl ImageEditorApp {
+    fn control_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut out = Vec::new();
+        for (_, button) in &self.toolbar {
+            out.extend(ui::resources::resources(button, doc));
+        }
+        out.extend(ui::resources::resources(&self.empty_open, doc));
+        out
+    }
+
+    fn project_resource(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        let stored = <crate::resource::ImageEditor as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_else(|_| self.project.clone());
+        let project = if stored == self.project {
+            stored
+        } else {
+            self.project.clone()
+        };
+        let label = if project.name.is_empty() {
+            "Image Editor".to_string()
+        } else {
+            project.name.clone()
+        };
+        ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+            crate::actions::PROJECT_RESOURCE_ID,
+            &label,
+            &project,
+        )
     }
 }
 
@@ -3261,6 +3398,18 @@ impl ImageEditorApp {
         self.resource_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
+}
+
+fn find_resource(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource.clone());
+    }
+    for child in &resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

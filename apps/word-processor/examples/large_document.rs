@@ -76,13 +76,13 @@ trait Editor {
 }
 
 fn measure(doc: &automerge::AutoCommit) -> (usize, usize) {
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(c) = tilo_doc::model::open(doc, &automerge::ROOT) else {
         return (0, 0);
     };
-    let ids = qdoc::model::blocks_in_order(doc, &c);
+    let ids = tilo_doc::model::blocks_in_order(doc, &c);
     let chars = ids
         .iter()
-        .map(|id| qdoc::model::block_text(doc, &c, id).map_or(0, |t| t.chars().count()))
+        .map(|id| tilo_doc::model::block_text(doc, &c, id).map_or(0, |t| t.chars().count()))
         .sum();
     (ids.len(), chars)
 }
@@ -104,11 +104,11 @@ impl Editor for HeadlessApp<WordProcessorApp> {
         let harness = self.harness();
         harness.begin_profiling();
         harness.clear_profile_samples();
-        let scans = qdoc::model::ordered_keys_scan_count();
+        let scans = tilo_doc::model::ordered_keys_scan_count();
         let started = ui::time::now();
         harness.key(key);
         let wall = micros(started.elapsed());
-        let scans = qdoc::model::ordered_keys_scan_count().saturating_sub(scans);
+        let scans = tilo_doc::model::ordered_keys_scan_count().saturating_sub(scans);
         let frames = harness.take_profile_samples();
         let sum =
             |pick: fn(&ui::profiling::FrameTiming) -> u64| frames.iter().map(pick).sum::<u64>();
@@ -137,15 +137,16 @@ fn open_standalone(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
 /// into it through the editor's own paste action, ten thousand paragraphs a
 /// time.
 fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
-    use qdoc_codecs::FormatProvider;
-    use qdoc_rich_text::action::{RegionKind, RichTextAction};
-    use qdoc_rich_text::{ClipBlock, RichText};
+    use tilo_doc_codecs::FormatProvider;
+    use tilo_document::ClipBlock;
+    use tilo_document::action::{RegionKind, RichTextAction};
     use ui::tilo_resource::Invoke;
+    use word_processor::framework::Document;
 
     let failed = |error: String| std::io::Error::other(error);
     let bytes = std::fs::read(path)?;
-    let mut scratch = qdoc::Document::new();
-    qdoc_codecs::MarkdownCodec
+    let mut scratch = tilo_doc::Document::new();
+    tilo_doc_codecs::MarkdownCodec
         .import(
             &bytes,
             &mut scratch.as_mut(),
@@ -158,7 +159,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
         .into_iter()
         .map(|block| ClipBlock {
             level: match block.attrs.get("level") {
-                Some(qdoc::AttrVal::Int(level)) => Some(*level),
+                Some(tilo_doc::AttrVal::Int(level)) => Some(*level),
                 _ => None,
             },
             kind: block.kind,
@@ -175,9 +176,10 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
     for chunk in clips.chunks(10_000) {
         let (block, at) = app
             .read_document(|doc| {
-                let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-                let last = qdoc::model::blocks_in_order(doc, &c).pop()?;
-                let len = qdoc::model::block_text(doc, &c, &last).map_or(0, |t| t.chars().count());
+                let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
+                let last = tilo_doc::model::blocks_in_order(doc, &c).pop()?;
+                let len =
+                    tilo_doc::model::block_text(doc, &c, &last).map_or(0, |t| t.chars().count());
                 Some((last, len))
             })
             .ok_or_else(|| failed("the record holds no paragraph".into()))?;
@@ -191,7 +193,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
             adopt_first_style: false,
         };
         let invoke =
-            Invoke::<RichText>::apply(&paste).map_err(|error| failed(error.to_string()))?;
+            Invoke::<Document>::apply(&paste).map_err(|error| failed(error.to_string()))?;
         app.invoke_confirmed(invoke)
             .map_err(|error| failed(error.to_string()))?;
     }

@@ -151,7 +151,8 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
             // plain Text; other elements have none.
             match doc.get(&e, "body").map_err(|e| e.to_string())? {
                 Some((Value::Object(ObjType::Map), body)) => {
-                    qdoc::model::open(doc, &body).map_err(|_| "Unreadable recorded text body")?;
+                    tilo_doc::model::open(doc, &body)
+                        .map_err(|_| "Unreadable recorded text body")?;
                 }
                 Some(_) => return Err("Recorded text body is not rich text".into()),
                 None if string(doc, &e, "kind")? == "text"

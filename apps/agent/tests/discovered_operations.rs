@@ -21,7 +21,7 @@ use tilo_automerge::ApplyIncoming;
 use ui::time::Duration;
 
 use automerge::AutoCommit;
-use tilo_actions::{ActionAddress, Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -61,10 +61,10 @@ fn nothing_granted(name: &str) -> ui::permissions::PermissionContext {
 fn seed_document_with_image(instruction: &str) -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("quinten".as_bytes()));
-    let c = qdoc::model::init(&mut doc, &automerge::ROOT);
-    let mut ids = qdoc::model::seeded_id_gen(&doc, &c);
+    let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
+    let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -79,9 +79,9 @@ fn seed_document_with_image(instruction: &str) -> AutoCommit {
     doc
 }
 
-fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).expect("schema");
-    qdoc::model::materialize(doc, &c).blocks
+fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
+    let c = tilo_doc::model::open(doc, &automerge::ROOT).expect("schema");
+    tilo_doc::model::materialize(doc, &c).blocks
 }
 
 fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
@@ -103,7 +103,7 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
 }
 
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
-    photos::actions::PhotosResources.resources(doc)
+    photos::actions::PhotosResources.publish_resources(doc)
 }
 
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
@@ -304,7 +304,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
         assert!(!reply.text.contains('#'), "{}", reply.text);
 
         // The refusal itself is still an attributed agent-authored document edit.
-        let genesis = qdoc::model::schema_genesis_actor_hex();
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
         let seed = hex::encode("quinten");
         let actors: std::collections::HashSet<String> =
             tilo_resource::history::versions(&mut replica)
@@ -449,7 +449,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
 
         // The app-hosted action is attributed to the authenticated broker actor;
         // the agent's local acknowledgement edit may retain its display actor.
-        let genesis = qdoc::model::schema_genesis_actor_hex();
+        let genesis = tilo_doc::model::schema_genesis_actor_hex();
         let seed = hex::encode("quinten");
         let actors: std::collections::HashSet<String> =
             tilo_resource::history::versions(&mut replica)
@@ -588,7 +588,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         let placed = images
             .iter()
             .find_map(|block| match block.attrs.get("blob") {
-                Some(qdoc::AttrVal::Str(hash)) => Some(hash),
+                Some(tilo_doc::AttrVal::Str(hash)) => Some(hash),
                 _ => None,
             })
             .expect("the carried image has a content hash");

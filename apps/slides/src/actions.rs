@@ -41,8 +41,12 @@
 //! delete an element, move a slide — take their targets and values as typed
 //! arguments, so an agent or a script can make any layout or styling edit a
 //! person makes on the canvas, by stable id, through the same permission,
-//! history and undo path. `apply` (any [`SlidesAction`] as JSON) and `group`
-//! (several operations as one undo step) are published beside them.
+//! history and undo path. Bound document ops — add a slide (rank from the
+//! live deck) and set the accent theme — ride
+//! [`Resource::bound_actions`](ui::tilo_resource::Resource::bound_actions) so
+//! `tilo_resource::publish` includes them without a post-publish bolt-on.
+//! `apply` (any [`SlidesAction`] as JSON) and `group` (several operations as
+//! one undo step) are published beside them.
 //!
 //! ## Determinism contract
 //!
@@ -70,7 +74,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
+    Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::tilo_resource::{ActionCx, ActionDecl};
 
@@ -287,7 +291,7 @@ pub struct ElementData {
     /// A text element's words as written (paragraphs with their marks);
     /// empty for one described by `text` alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<qdoc_rich_text::ClipBlock>,
+    pub blocks: Vec<tilo_document::ClipBlock>,
 }
 
 impl ElementData {
@@ -483,6 +487,8 @@ pub enum SlidesAction {
     /// Set the deck's accent theme (palette). Deck-wide, so it carries no slide
     /// index.
     SetDeckPalette { palette: String },
+    /// Set the deck title (committed rename, not a per-keystroke splice).
+    SetDeckTitle { title: String },
     /// Add an element (a fresh insert, a paste, a duplicate, or a picked image)
     /// to slide `slide`. The element's id is minted at authoring and carried in
     /// the payload.
@@ -545,7 +551,7 @@ pub enum SlidesAction {
     EditElementText {
         slide_id: String,
         element_id: String,
-        edit: qdoc_rich_text::RichTextAction,
+        edit: tilo_document::RichTextAction,
     },
     /// Replace the words of a slide's title (its first text box) and/or body
     /// (its second), a paragraph per line. `slide` is the slide's id, or its
@@ -737,7 +743,7 @@ fn set_slide_text(doc: &mut Doc, slide: &str, texts: [Option<&str>; 2]) -> Resul
         return Err(refused("give a title, a body or both"));
     }
     for (body, markdown) in edits {
-        qdoc_rich_text::RichTextAction::ReplaceBody { markdown }.apply_under(doc, &body)?;
+        tilo_document::RichTextAction::ReplaceBody { markdown }.apply_under(doc, &body)?;
     }
     Ok(())
 }
@@ -1077,6 +1083,12 @@ impl Action for SlidesAction {
                 }
                 SlidesDoc::set_palette(doc, PaletteKind::from_str(palette));
             }
+            SlidesAction::SetDeckTitle { title } => {
+                if title.chars().count() > MAX_TEXT_CHARS {
+                    return Err(refused("deck title is too long"));
+                }
+                SlidesDoc::set_title(doc, title);
+            }
             SlidesAction::AddElement {
                 slide,
                 slide_id,
@@ -1345,6 +1357,12 @@ pub fn set_deck_palette_action(palette: PaletteKind) -> SlidesAction {
     }
 }
 
+pub fn set_deck_title_action(title: impl Into<String>) -> SlidesAction {
+    SlidesAction::SetDeckTitle {
+        title: title.into(),
+    }
+}
+
 pub fn add_element_action(
     slide: usize,
     slide_id: impl Into<String>,
@@ -1548,19 +1566,33 @@ pub struct SlideResource {
     pub elements: Vec<ElementResource>,
 }
 
+/// The current live selection. Published beside the framework root when hosted
+/// — never a second copy of the deck document door. Its actions are bound to
+/// the peer's selected element (or current slide when nothing is selected).
+#[derive(Clone)]
+pub struct SelectionResourceCtx {
+    pub slide_id: String,
+    pub element_id: Option<String>,
+    pub label: String,
+    pub actions: Vec<ActionSpec>,
+}
+
 /// The presentation context Slides hands [`provide_resources`]: the deck title,
-/// and the slides it currently has open (each with its elements). Everything
-/// here is derived from the in-memory deck mirror, which the document already
-/// holds; nothing is fabricated.
-#[derive(Debug, Clone)]
+/// the slides it currently has open (each with its elements), and the peer's
+/// live selection. Deck rows come from the document; selection is local.
+#[derive(Clone)]
 pub struct SlidesResourceCtx {
     pub deck_title: String,
     pub slides: Vec<SlideResource>,
+    /// Per-peer current slide / selected element. Not collaborative document
+    /// state — rides [`live_presentation_resources`] when hosted.
+    pub selection: Option<SelectionResourceCtx>,
 }
 
 impl SlidesResourceCtx {
     /// The context for `deck` as it stands: each slide in deck order, each
-    /// slide's elements back to front.
+    /// slide's elements back to front. Selection is left unset — callers that
+    /// know the peer's focus fill it in (see [`crate::app::SlidesApp::slides_resource_ctx`]).
     pub fn from_deck(deck: &crate::model::Deck) -> Self {
         Self {
             deck_title: deck.title.clone(),
@@ -1583,6 +1615,7 @@ impl SlidesResourceCtx {
                         .collect(),
                 })
                 .collect(),
+            selection: None,
         }
     }
 }
@@ -1592,13 +1625,12 @@ impl SlidesResourceCtx {
 // ===========================================================================
 
 /// The deck as a [`ui::tilo_resource::Resource`]: [`SlidesAction`] is its
-/// replayable vocabulary, and its declarations are the typed operations an
-/// agent, a script or the palette calls by name with arguments — add,
-/// move/resize, restyle and delete an element, and move a slide. Publishing
-/// it ([`provide_resources`]) also offers the generic
-/// [`APPLY`](ui::tilo_resource::APPLY) (any [`SlidesAction`] as JSON) and
-/// [`GROUP`](ui::tilo_resource::GROUP) (several declared operations as one
-/// undo step) every resource has.
+/// replayable vocabulary. Declarations are the typed element/slide ops an
+/// agent, a script or the palette calls by name; bound actions are add-slide
+/// and theme-* (payload from the live deck). Publishing it
+/// ([`provide_resources`] / [`ui::tilo_resource::publish`]) also offers the
+/// generic [`APPLY`](ui::tilo_resource::APPLY) and
+/// [`GROUP`](ui::tilo_resource::GROUP) every resource has.
 pub struct SlidesDeck;
 
 /// Declared operation ids, as published on the `slides.deck` resource.
@@ -1607,6 +1639,7 @@ pub const MOVE_ELEMENT: &str = "move-element";
 pub const RESTYLE_ELEMENT: &str = "restyle-element";
 pub const DELETE_ELEMENT: &str = "delete-element";
 pub const MOVE_SLIDE: &str = "move-slide";
+pub const ADD_SLIDE: &str = "add-slide";
 pub const SET_SLIDE_TEXT: &str = "set-slide-text";
 
 impl ui::tilo_resource::Resource for SlidesDeck {
@@ -1621,6 +1654,31 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         SlidesDoc::load(doc)
             .map(|deck| SlidesResourceCtx::from_deck(&deck))
             .ok_or_else(|| ui::tilo_resource::ModelError::invalid("the document holds no deck"))
+    }
+
+    fn initialize(doc: &mut Doc) -> Result<(), ui::tilo_resource::ModelError> {
+        if SlidesDoc::is_uninitialized(doc) {
+            SlidesDoc::seed(doc, &crate::model::starter_deck());
+        }
+        Ok(())
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        deck_local_operations()
+    }
+
+    fn bound_actions(state: &SlidesResourceCtx) -> Vec<ActionSpec> {
+        deck_bound_document_actions(state)
+    }
+
+    fn coalesces(previous: &SlidesAction, next: &SlidesAction) -> bool {
+        matches!(
+            (previous, next),
+            (
+                SlidesAction::SetDeckTitle { .. },
+                SlidesAction::SetDeckTitle { .. }
+            )
+        )
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -1998,32 +2056,28 @@ fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
     (at.min(ctx.slides.len()) as i64).saturating_mul(1_i64 << 32)
 }
 
-fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
-    let title = ctx.deck_title.trim();
-    let deck_label = if title.is_empty() { "Deck" } else { title };
-    // The declared operations, `apply`, `group` and the slides beneath.
-    let mut deck = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx);
-
-    for (id, label, kind, value) in [
-        (
+/// View and Effect operations published via [`SlidesDeck::local_operations`].
+fn deck_local_operations() -> Vec<ActionSpec> {
+    let mut specs = vec![
+        operation(
             "editor",
             "Show editor",
             OperationKind::View,
             SlidesOperation::ShowEditor,
         ),
-        (
+        operation(
             "overview",
             "Show slide overview",
             OperationKind::View,
             SlidesOperation::ShowOverview,
         ),
-        (
+        operation(
             "present",
             "Start presentation",
             OperationKind::View,
             SlidesOperation::StartPresentation,
         ),
-        (
+        operation(
             "present-largest-external",
             "Present on largest external display",
             OperationKind::View,
@@ -2031,7 +2085,7 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
                 output: PresentationOutput::LargestExternal,
             },
         ),
-        (
+        operation(
             "present-primary-external",
             "Present on primary external display",
             OperationKind::View,
@@ -2039,27 +2093,32 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
                 output: PresentationOutput::PrimaryExternal,
             },
         ),
-        (
+        operation(
             "end-presentation",
             "End presentation",
             OperationKind::View,
             SlidesOperation::EndPresentation,
         ),
-    ] {
-        deck = deck.with_action(operation(id, label, kind, value));
-    }
-    deck = deck.with_action(file_operation("open", "Open presentation", false));
-    deck = deck.with_action(file_operation("save-as", "Save presentation", true));
-    deck = deck.with_action(read_operation());
+    ];
+    // System file picker with no document delta may stay an Effect.
+    specs.push(file_operation("open", "Open presentation", false));
+    specs.push(file_operation("save-as", "Save presentation", true));
+    specs.push(read_operation());
+    specs
+}
 
+/// Document ops whose payload needs the live deck: append a slide (rank after
+/// the last slide) and set the accent theme. Published through
+/// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
+fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let rank = resource_rank_for_slot(ctx, ctx.slides.len());
-    deck = deck.with_action(
+    let mut specs = vec![
         ActionSpec::typed(
-            "add-slide",
+            ADD_SLIDE,
             "Add slide",
             "optional title and body",
             ExecutionLocus::ClientLocal,
@@ -2081,18 +2140,26 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
             },
         )
         .reversible(),
-    );
+    ];
 
-    // Deck-level: set the accent theme, one row per palette.
+    // Deck-level: set the accent theme, one row per palette. Collaborative
+    // document state (not a per-peer View) — same CRDT path as the inspector.
     for kind in PaletteKind::ALL {
-        deck = deck.with_action(immediate_spec(
+        specs.push(immediate_spec(
             &format!("theme-{}", kind.as_str()),
             &format!("Theme: {}", kind.label()),
             &set_deck_palette_action(kind),
         ));
     }
+    specs
+}
 
-    deck
+fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
+    let title = ctx.deck_title.trim();
+    let deck_label = if title.is_empty() { "Deck" } else { title };
+    // Declared ops, bound add-slide/theme, apply, group, View/Effect
+    // local_operations, and slides beneath — all from publish, no bolt-on.
+    ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx)
 }
 
 fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResourceCtx) -> Resource {
@@ -2288,11 +2355,101 @@ fn read_operation() -> ActionSpec {
     )
 }
 
+/// Build the peer's live selection from a slide snapshot and optional element id.
+/// Element-bound delete / restack / reveal ride here; slide document ops stay on
+/// the durable `slides.slide:<id>` child published via [`SlidesDeck::children`].
+pub fn selection_ctx_for(slide: &SlideResource, element_id: Option<&str>) -> SelectionResourceCtx {
+    let (label, actions) = if let Some(element_id) = element_id {
+        match slide
+            .elements
+            .iter()
+            .find(|element| element.id == element_id)
+        {
+            Some(element) => {
+                let resource = element_resource(slide, element, false);
+                (resource.label, resource.actions)
+            }
+            None => (
+                format!("Slide {}", slide.idx + 1),
+                vec![operation(
+                    "open",
+                    "Open slide",
+                    OperationKind::View,
+                    SlidesOperation::RevealSlide {
+                        slide: slide.data.id.clone(),
+                    },
+                )],
+            ),
+        }
+    } else {
+        (
+            format!("Slide {}", slide.idx + 1),
+            vec![operation(
+                "open",
+                "Open slide",
+                OperationKind::View,
+                SlidesOperation::RevealSlide {
+                    slide: slide.data.id.clone(),
+                },
+            )],
+        )
+    };
+    SelectionResourceCtx {
+        slide_id: slide.data.id.clone(),
+        element_id: element_id
+            .filter(|id| slide.elements.iter().any(|element| element.id == *id))
+            .map(str::to_owned),
+        label,
+        actions,
+    }
+}
+
+/// Live selection. Published beside the framework root when hosted — never a
+/// second copy of the deck document door. Selection-bound palette rows (delete /
+/// restack / reveal on the peer's focus) stay addressable without republishing
+/// every slide already on [`tilo_resource::publish`].
+pub fn live_presentation_resources(ctx: &SlidesResourceCtx) -> Vec<Resource> {
+    let Some(selection) = &ctx.selection else {
+        return Vec::new();
+    };
+    vec![selection_resource(selection)]
+}
+
+fn selection_resource(selection: &SelectionResourceCtx) -> Resource {
+    let id = match &selection.element_id {
+        Some(element) => format!("slides.selection:{}:{}", selection.slide_id, element),
+        None => format!("slides.selection:{}", selection.slide_id),
+    };
+    let mut resource = Resource::new(id, "slides.selection", selection.label.clone());
+    resource.actions.extend(selection.actions.clone());
+    resource
+}
+
+fn attach_live_selection(deck: &mut Resource, ctx: &SlidesResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
+    };
+    let wanted = slide_resource_id(&selection.slide_id);
+    let Some(slide) = deck.children.iter_mut().find(|slide| slide.id.0 == wanted) else {
+        return;
+    };
+    slide.children.insert(0, selection_resource(selection));
+}
+
 /// Build the bounded contextual resource tree shown by the palette. Search and
 /// agents resolve everything beyond this window by stable id through
 /// [`resolve_resource`], which always rebuilds from the current deck mirror.
-pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    vec![returning_outline(deck_resource(ctx))]
+/// Standalone / `--shots` / unit tests nest the live selection under its slide;
+/// when hosted, [`live_presentation_resources`] returns that slice alone.
+pub fn provide_resources(ctx: &SlidesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    // The document is the deck once it holds one. Selection stays the peer's
+    // live focus and is attached beside that deck. A caller that has not
+    // written a deck yet still publishes the context it passed.
+    let state =
+        <SlidesDeck as ui::tilo_resource::Resource>::read(doc).unwrap_or_else(|_| ctx.clone());
+    let mut deck = returning_outline(deck_resource(&state));
+    attach_live_selection(&mut deck, ctx);
+    vec![deck]
 }
 
 /// Resolve exactly one current durable deck resource without growing the
@@ -2342,12 +2499,30 @@ fn resolve_unannotated(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
     None
 }
 
-impl ResourceProvider for crate::app::SlidesApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+fn find_slides(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_slides(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::SlidesApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.slides_resource_ctx(), doc)
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let published = provide_resources(&self.slides_resource_ctx(), doc);
+        if let Some(found) = find_slides(&published, id) {
+            return Some(found);
+        }
+        // A slide or element outside the eager page is still addressable.
         resolve_resource(&self.slides_resource_ctx(), id)
     }
 }
@@ -2863,5 +3038,27 @@ mod tests {
                 "both replicas applied the author-computed z, not local extrema"
             );
         }
+    }
+
+    #[test]
+    fn consecutive_deck_title_edits_are_one_step() {
+        use ui::tilo_resource::Resource as _;
+        let first = SlidesAction::SetDeckTitle { title: "Q".into() };
+        let second = SlidesAction::SetDeckTitle { title: "Qu".into() };
+        assert!(SlidesDeck::coalesces(&first, &second));
+        assert!(!SlidesDeck::coalesces(
+            &first,
+            &SlidesAction::SetDeckPalette {
+                palette: "ink".into(),
+            },
+        ));
+        let mut doc = automerge::AutoCommit::new();
+        SlidesDoc::seed(&mut doc, &crate::model::starter_deck());
+        SlidesAction::SetDeckTitle {
+            title: "Quarterly".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(SlidesDoc::load(&doc).expect("deck").title, "Quarterly");
     }
 }

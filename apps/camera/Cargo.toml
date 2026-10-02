@@ -48,7 +48,7 @@ image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Cameras (live-capture) and SANE document scanners.
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 

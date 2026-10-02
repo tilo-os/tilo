@@ -68,13 +68,13 @@ fn three_session_doc() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
     let root = automerge::ROOT;
-    let c = qdoc::model::init(&mut doc, &root);
-    let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &root);
+    let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     let base = now_i64().saturating_sub(6 * 3600);
     tilo_resource::history::commit_stamped_at(&mut doc, base);
 
     let para = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -88,7 +88,7 @@ fn three_session_doc() -> AutoCommit {
     // Session one: six edits about twenty seconds apart.
     for i in 0..6i64 {
         let at = text_len(&doc, &root);
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -104,11 +104,11 @@ fn three_session_doc() -> AutoCommit {
     peer.set_actor(automerge::ActorId::from("Ada Lovelace".as_bytes()));
     for i in 0..4i64 {
         let at = text_len(&peer, &root);
-        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&peer, &root).ok() else {
             continue;
         };
-        let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut pids = tilo_doc::IdGen::new(peer.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut peer,
             c: &cc,
             ids: &mut pids,
@@ -129,10 +129,10 @@ fn three_session_doc() -> AutoCommit {
     // Session three, three hours in, back to the local author.
     for i in 0..7i64 {
         let at = text_len(&doc, &root);
-        let Some(cc) = qdoc::model::open(&doc, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&doc, &root).ok() else {
             continue;
         };
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &cc,
             ids: &mut ids,
@@ -147,10 +147,10 @@ fn three_session_doc() -> AutoCommit {
 }
 
 fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
-    let Some(c) = qdoc::model::open(doc, root).ok() else {
+    let Some(c) = tilo_doc::model::open(doc, root).ok() else {
         return 0;
     };
-    qdoc::model::materialize(doc, &c)
+    tilo_doc::model::materialize(doc, &c)
         .blocks
         .first()
         .map_or(0, |b| b.text.chars().count())
@@ -167,11 +167,11 @@ fn singleton_bands_doc() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
     let root = automerge::ROOT;
-    let c = qdoc::model::init(&mut doc, &root);
-    let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &root);
+    let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     tilo_resource::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(900));
     let para = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -190,11 +190,11 @@ fn singleton_bands_doc() -> AutoCommit {
         let mut peer = doc.fork();
         peer.set_actor(automerge::ActorId::from(who.as_bytes()));
         let at = text_len(&peer, &root);
-        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&peer, &root).ok() else {
             continue;
         };
-        let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut pids = tilo_doc::IdGen::new(peer.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut peer,
             c: &cc,
             ids: &mut pids,

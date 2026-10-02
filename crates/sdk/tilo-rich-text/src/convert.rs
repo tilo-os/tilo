@@ -9,9 +9,9 @@
 
 use std::collections::BTreeMap;
 
-use qdoc::document::MarkValue;
-use qdoc::snapshot::BlockView;
-use qdoc_rich_text::action::{AttrVal as ActionAttr, MarkVal};
+use tilo_doc::document::MarkValue;
+use tilo_doc::snapshot::BlockView;
+use tilo_document::action::{AttrVal as ActionAttr, MarkVal};
 use ui::widget::BlockContent;
 use ui::widget::BlockKind;
 use ui::widget::marks::{Mark, MarkSpan};
@@ -38,21 +38,21 @@ pub(crate) fn chars(text: &str) -> usize {
 
 fn int_attr(view: &BlockView, key: &str) -> Option<i64> {
     match view.attrs.get(key) {
-        Some(qdoc::AttrVal::Int(value)) => Some(*value),
+        Some(tilo_doc::AttrVal::Int(value)) => Some(*value),
         _ => None,
     }
 }
 
 fn bool_attr(view: &BlockView, key: &str) -> Option<bool> {
     match view.attrs.get(key) {
-        Some(qdoc::AttrVal::Bool(value)) => Some(*value),
+        Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
         _ => None,
     }
 }
 
 fn str_attr<'a>(view: &'a BlockView, key: &str) -> Option<&'a str> {
     match view.attrs.get(key) {
-        Some(qdoc::AttrVal::Str(value)) => Some(value.as_str()),
+        Some(tilo_doc::AttrVal::Str(value)) => Some(value.as_str()),
         _ => None,
     }
 }
@@ -117,7 +117,7 @@ fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
 }
 
 /// The qdoc mark an editor mark is stored as: its name and value, for an
-/// edit that sets it ([`RichTextAction::SetMark`](qdoc_rich_text::RichTextAction::SetMark)).
+/// edit that sets it ([`RichTextAction::SetMark`](tilo_document::RichTextAction::SetMark)).
 pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
     match mark {
         Mark::Bold => ("strong", MarkVal::Bool(true)),
@@ -149,23 +149,23 @@ pub(crate) const EDITOR_MARKS: [&str; 8] = [
 /// A paragraph as the paste vocabulary carries it: kind, text, marks and
 /// attributes, so an action can write it elsewhere (a comment reply, a
 /// message) as it was written.
-pub fn clip_block(view: &BlockView) -> qdoc_rich_text::ClipBlock {
-    use qdoc_rich_text::ClipAttr;
+pub fn clip_block(view: &BlockView) -> tilo_document::ClipBlock {
+    use tilo_document::ClipAttr;
     let attrs = view
         .attrs
         .iter()
         .filter(|(key, _)| !matches!(key.as_str(), "level" | "ordered" | "align"))
         .filter_map(|(key, value)| {
             let value = match value {
-                qdoc::AttrVal::Bool(value) => ClipAttr::Bool(*value),
-                qdoc::AttrVal::Int(value) => ClipAttr::Int(*value),
-                qdoc::AttrVal::Str(value) => ClipAttr::Str(value.clone()),
-                qdoc::AttrVal::Float(_) => return None,
+                tilo_doc::AttrVal::Bool(value) => ClipAttr::Bool(*value),
+                tilo_doc::AttrVal::Int(value) => ClipAttr::Int(*value),
+                tilo_doc::AttrVal::Str(value) => ClipAttr::Str(value.clone()),
+                tilo_doc::AttrVal::Float(_) => return None,
             };
             Some((key.clone(), value))
         })
         .collect();
-    qdoc_rich_text::ClipBlock {
+    tilo_document::ClipBlock {
         kind: view.kind.clone(),
         text: view.text.clone(),
         marks: view
@@ -182,28 +182,28 @@ pub fn clip_block(view: &BlockView) -> qdoc_rich_text::ClipBlock {
 }
 
 /// What a paragraph an action carries shows as in the editor.
-pub fn content_of_clip(clip: &qdoc_rich_text::ClipBlock) -> BlockContent {
-    use qdoc_rich_text::ClipAttr;
-    let mut attrs: BTreeMap<String, qdoc::AttrVal> = clip
+pub fn content_of_clip(clip: &tilo_document::ClipBlock) -> BlockContent {
+    use tilo_document::ClipAttr;
+    let mut attrs: BTreeMap<String, tilo_doc::AttrVal> = clip
         .attrs
         .iter()
         .map(|(key, value)| {
             let value = match value {
-                ClipAttr::Bool(value) => qdoc::AttrVal::Bool(*value),
-                ClipAttr::Int(value) => qdoc::AttrVal::Int(*value),
-                ClipAttr::Str(value) => qdoc::AttrVal::Str(value.clone()),
+                ClipAttr::Bool(value) => tilo_doc::AttrVal::Bool(*value),
+                ClipAttr::Int(value) => tilo_doc::AttrVal::Int(*value),
+                ClipAttr::Str(value) => tilo_doc::AttrVal::Str(value.clone()),
             };
             (key.clone(), value)
         })
         .collect();
     if let Some(level) = clip.level {
-        attrs.insert("level".into(), qdoc::AttrVal::Int(level));
+        attrs.insert("level".into(), tilo_doc::AttrVal::Int(level));
     }
     if let Some(ordered) = clip.ordered {
-        attrs.insert("ordered".into(), qdoc::AttrVal::Bool(ordered));
+        attrs.insert("ordered".into(), tilo_doc::AttrVal::Bool(ordered));
     }
     if let Some(align) = &clip.align {
-        attrs.insert("align".into(), qdoc::AttrVal::Str(align.clone()));
+        attrs.insert("align".into(), tilo_doc::AttrVal::Str(align.clone()));
     }
     content_of(&BlockView {
         id: String::new(),
@@ -217,19 +217,19 @@ pub fn content_of_clip(clip: &qdoc_rich_text::ClipBlock) -> BlockContent {
 
 /// A paragraph the editor shows, as an action carries it: written the way
 /// the editor stores it, then read back.
-pub fn clip_of_content(content: &BlockContent) -> qdoc_rich_text::ClipBlock {
+pub fn clip_of_content(content: &BlockContent) -> tilo_document::ClipBlock {
     use ui::automerge::{ObjType, ROOT, transaction::Transactable};
     let mut doc = ui::automerge::AutoCommit::new();
     let clips = doc
         .put_object(ROOT, "clip", ObjType::Map)
         .ok()
         .filter(|root| {
-            qdoc_rich_text::RichText::initialize_under(&mut doc, root).is_ok()
+            tilo_document::RichText::initialize_under(&mut doc, root).is_ok()
                 && crate::fill_under(&mut doc, root, std::slice::from_ref(content)).is_ok()
         })
-        .and_then(|root| qdoc::model::open(&doc, &root).ok())
+        .and_then(|root| tilo_doc::model::open(&doc, &root).ok())
         .map(|containers| {
-            qdoc::model::materialize_region(&doc, &containers, qdoc::model::Region::Body)
+            tilo_doc::model::materialize_region(&doc, &containers, tilo_doc::model::Region::Body)
                 .iter()
                 .map(clip_block)
                 .collect::<Vec<_>>()
@@ -238,7 +238,7 @@ pub fn clip_of_content(content: &BlockContent) -> qdoc_rich_text::ClipBlock {
     clips
         .into_iter()
         .next()
-        .unwrap_or_else(|| qdoc_rich_text::ClipBlock {
+        .unwrap_or_else(|| tilo_document::ClipBlock {
             kind: "paragraph".into(),
             text: content.text.clone(),
             marks: Vec::new(),
@@ -273,7 +273,7 @@ pub fn content_of(view: &BlockView) -> BlockContent {
     let code_group = matches!(kind, BlockKind::CodeBlock { .. })
         .then(|| str_attr(view, "code_group").map(str::to_owned))
         .flatten();
-    let authors = qdoc::document::author_runs(&view.marks)
+    let authors = tilo_doc::document::author_runs(&view.marks)
         .into_iter()
         .map(|(start, end, author)| (byte_of_char(&text, start)..byte_of_char(&text, end), author))
         .filter(|(range, _)| range.start < range.end)
@@ -364,10 +364,10 @@ impl KindSpec {
             .iter()
             .filter(|(key, want)| {
                 let have = view.attrs.get(*key).map(|value| match value {
-                    qdoc::AttrVal::Bool(value) => ActionAttr::Bool(*value),
-                    qdoc::AttrVal::Int(value) => ActionAttr::Int(*value),
-                    qdoc::AttrVal::Float(value) => ActionAttr::Float(*value),
-                    qdoc::AttrVal::Str(value) => ActionAttr::Str(value.clone()),
+                    tilo_doc::AttrVal::Bool(value) => ActionAttr::Bool(*value),
+                    tilo_doc::AttrVal::Int(value) => ActionAttr::Int(*value),
+                    tilo_doc::AttrVal::Float(value) => ActionAttr::Float(*value),
+                    tilo_doc::AttrVal::Str(value) => ActionAttr::Str(value.clone()),
                 });
                 have != *want
             })
@@ -468,9 +468,9 @@ pub(crate) fn mark_runs(want: &MarkRuns, have: &MarkRuns) -> Vec<MarkEdit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qdoc::document::MarkSpan as DocMark;
+    use tilo_doc::document::MarkSpan as DocMark;
 
-    fn view(kind: &str, text: &str, attrs: &[(&str, qdoc::AttrVal)]) -> BlockView {
+    fn view(kind: &str, text: &str, attrs: &[(&str, tilo_doc::AttrVal)]) -> BlockView {
         BlockView {
             id: "b".into(),
             kind: kind.into(),
@@ -488,31 +488,31 @@ mod tests {
     fn kinds_round_trip_through_their_stored_form() {
         let cases = [
             view("paragraph", "", &[]),
-            view("heading", "", &[("level", qdoc::AttrVal::Int(2))]),
+            view("heading", "", &[("level", tilo_doc::AttrVal::Int(2))]),
             view("quote", "", &[]),
             view(
                 "list_item",
                 "",
                 &[
-                    ("ordered", qdoc::AttrVal::Bool(true)),
-                    ("level", qdoc::AttrVal::Int(1)),
+                    ("ordered", tilo_doc::AttrVal::Bool(true)),
+                    ("level", tilo_doc::AttrVal::Int(1)),
                 ],
             ),
             view(
                 "list_item",
                 "",
                 &[
-                    ("ordered", qdoc::AttrVal::Bool(false)),
-                    ("level", qdoc::AttrVal::Int(0)),
-                    ("checked", qdoc::AttrVal::Bool(true)),
+                    ("ordered", tilo_doc::AttrVal::Bool(false)),
+                    ("level", tilo_doc::AttrVal::Int(0)),
+                    ("checked", tilo_doc::AttrVal::Bool(true)),
                 ],
             ),
             view(
                 "paragraph",
                 "",
                 &[
-                    ("code", qdoc::AttrVal::Bool(true)),
-                    ("lang", qdoc::AttrVal::Str("rust".into())),
+                    ("code", tilo_doc::AttrVal::Bool(true)),
+                    ("lang", tilo_doc::AttrVal::Str("rust".into())),
                 ],
             ),
         ];

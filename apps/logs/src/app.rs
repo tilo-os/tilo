@@ -3,9 +3,10 @@
 //! A graphical systemd-journal viewer. It is a single self-rendering
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
 //! coloured rows, a detail pane, and a filter bar — are drawn directly into
-//! the Vello scene. Selection, filters, and search are local view state. Live tail is a local effect that
-//! controls this process's journal poller; journal entries themselves are an
-//! external render cache.
+//! the Vello scene. Shared filter and selection preferences sync through
+//! [`crate::resource::Logs`]. Live tail is a local Effect that controls this
+//! process's journal poller; journal entries themselves are an external
+//! render cache.
 //!
 //! Layout (top → bottom):
 //! ```text
@@ -55,6 +56,7 @@ use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
 use crate::model::{Filter, LogEntry, Priority};
+use crate::resource::LogsAction;
 use crate::theme_ext::{ThemeColors, tint};
 use ui::paint::{PaintCtx, fill_rect, fill_round, stroke_round};
 use ui::widget::{PushNav, PushPane};
@@ -198,6 +200,9 @@ pub struct LogsApp {
     // ---- live-tail plumbing (never runs under --shots) ----
     allow_live: bool,
     last_poll: Instant,
+
+    /// Document actions: local host standalone; framework dispatcher when hosted.
+    actions: crate::resource::ActionSink,
 }
 
 impl LogsApp {
@@ -238,6 +243,7 @@ impl LogsApp {
             push: PushNav::default(),
             allow_live,
             last_poll: ui::time::now(),
+            actions: crate::resource::ActionSink::default(),
         };
         app.rebuild_facets();
         app
@@ -405,56 +411,125 @@ impl LogsApp {
         self.clamp_scroll();
     }
 
-    /// Apply one local view operation. Filters and selection intentionally
-    /// never cross the Automerge boundary: they describe one person's current
-    /// investigation, not a collaborative journal annotation.
-    fn apply_view_operation(&mut self, operation: LogsOperation) {
-        match operation {
-            LogsOperation::SetPriority { value } => self.filter.min_priority = value.clamp(0, 7),
-            LogsOperation::SetUnit { value } => self.filter.unit = value,
-            LogsOperation::SetBoot { value } => self.filter.boot = value,
-            LogsOperation::SetSearch { value } => {
-                self.filter.search = value;
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Logs>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local journal cache.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::LogsState) {
+        self.filter = state.filter.clone();
+        if self.search_input.value() != self.filter.search {
+            self.search_input.set_text(&self.filter.search);
+        }
+        self.selected_entry.clone_from(&state.selected_entry);
+        self.sel_raw = self
+            .selected_entry
+            .as_ref()
+            .and_then(|entry_id| {
+                self.entries
+                    .iter()
+                    .position(|entry| actions::entry_resource_id(entry) == *entry_id)
+            })
+            .and_then(|index| i64::try_from(index).ok())
+            .unwrap_or(-1);
+        self.recompute_filtered();
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+
+    pub(crate) fn commit_view(&mut self, doc: &mut AutoCommit, action: &LogsAction) {
+        self.apply_logs_action_locally(action);
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Apply a document action to the widget caches without writing the doc.
+    fn apply_logs_action_locally(&mut self, action: &LogsAction) {
+        match action {
+            LogsAction::SetPriority { value } => self.filter.min_priority = (*value).clamp(0, 7),
+            LogsAction::SetUnit { value } => self.filter.unit.clone_from(value),
+            LogsAction::SetBoot { value } => self.filter.boot.clone_from(value),
+            LogsAction::SetSearch { value } => {
+                self.filter.search.clone_from(value);
                 self.search_input.set_text(&self.filter.search);
             }
-            LogsOperation::ClearFilters => {
+            LogsAction::ClearFilters => {
                 self.filter = Filter::default();
                 self.search_input.set_text("");
             }
-            LogsOperation::SelectEntry { entry_id } => {
+            LogsAction::SelectEntry { entry_id } => {
                 self.selected_entry = Some(entry_id.clone());
                 self.sel_raw = self
                     .entries
                     .iter()
-                    .position(|entry| actions::entry_resource_id(entry) == entry_id)
+                    .position(|entry| actions::entry_resource_id(entry) == *entry_id)
                     .and_then(|index| i64::try_from(index).ok())
                     .unwrap_or(-1);
             }
-            LogsOperation::Refresh
-            | LogsOperation::SetLiveTail { .. }
-            | LogsOperation::ExportFiltered => return,
         }
         self.recompute_filtered();
         self.clamp_scroll();
         self.dirty = true;
     }
 
-    /// Local journal operations. They intentionally do not enter the shared
-    /// document: polling a machine's journal is a device-local capability and
-    /// one peer's live-tail preference must not start work on every peer.
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live journal entry children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Logs::read(doc).unwrap_or_default();
+        actions::standalone_resources(
+            &self.entries,
+            &self.filter,
+            self.live_tail,
+            self.allow_live,
+            &state,
+        )
+    }
+
+    /// Live journal entry rows without a `logs.journal` root.
+    pub(crate) fn live_entry_extras(&self) -> Vec<Resource> {
+        actions::live_entry_resources(&self.entries, &self.filter)
+    }
+
+    /// Local journal Effects. Polling and live-tail are device-local and must
+    /// not start work on every peer. Entry select Views also commit the shared
+    /// selection into the document.
     #[allow(
         clippy::needless_pass_by_value,
         reason = "Decoded operations are consumed exactly once at the app boundary."
     )]
-    fn perform_effect(&mut self, operation: actions::LogsOperation) -> Result<(), String> {
+    fn perform_effect(
+        &mut self,
+        operation: actions::LogsOperation,
+        doc: &mut AutoCommit,
+    ) -> Result<(), String> {
         match operation {
-            operation @ (LogsOperation::SetPriority { .. }
-            | LogsOperation::SetUnit { .. }
-            | LogsOperation::SetBoot { .. }
-            | LogsOperation::SetSearch { .. }
-            | LogsOperation::ClearFilters
-            | LogsOperation::SelectEntry { .. }) => self.apply_view_operation(operation),
-            actions::LogsOperation::Refresh => {
+            LogsOperation::SelectEntry { entry_id } => {
+                self.commit_view(doc, &LogsAction::SelectEntry { entry_id });
+            }
+            LogsOperation::Refresh => {
                 self.source_loading = false;
                 if self.allow_live {
                     match crate::journal::load_live(2000) {
@@ -467,11 +542,11 @@ impl LogsApp {
                     }
                 }
             }
-            actions::LogsOperation::SetLiveTail { enabled } => {
+            LogsOperation::SetLiveTail { enabled } => {
                 self.live_tail = enabled;
                 self.last_poll = force_immediate_poll_at();
             }
-            actions::LogsOperation::ExportFiltered => self.request_export()?,
+            LogsOperation::ExportFiltered => self.request_export()?,
         }
         self.dirty = true;
         Ok(())
@@ -552,8 +627,8 @@ impl LogsApp {
         self.dirty = true;
     }
 
-    /// Move the local selection by `delta` filtered positions.
-    fn move_selection(&mut self, delta: isize) {
+    /// Move the shared selection by `delta` filtered positions.
+    fn move_selection(&mut self, doc: &mut AutoCommit, delta: isize) {
         if self.filtered.is_empty() {
             return;
         }
@@ -567,17 +642,17 @@ impl LogsApp {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
+        self.commit_view(doc, &LogsAction::SelectEntry { entry_id: id });
         self.scroll_into_view(new_pos);
         self.dirty = true;
     }
 
-    fn select_abs(&mut self, abs: usize) {
+    fn select_abs(&mut self, doc: &mut AutoCommit, abs: usize) {
         let Some(entry) = self.entries.get(abs) else {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
+        self.commit_view(doc, &LogsAction::SelectEntry { entry_id: id });
         if let Some(pos) = self.filtered_pos(abs) {
             self.scroll_into_view(pos);
         }
@@ -2438,7 +2513,7 @@ impl LogsApp {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if !matches!(kind, OperationKind::Effect | OperationKind::View) {
@@ -2454,7 +2529,7 @@ impl LogsApp {
         // highlight. Reveal the selected detail slab for an agent or palette
         // invocation just as a pointer selection does on a narrow viewport.
         let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
-        self.perform_effect(operation)?;
+        self.perform_effect(operation, doc)?;
         if reveals_entry && self.narrow_at(self.rect.width()) {
             self.push.show_detail();
             self.dirty = true;
@@ -2701,12 +2776,14 @@ impl Widget for LogsApp {
                 ..
             } => {
                 self.focused = true;
-                self.on_click(self.cursor, ctx.handled);
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                self.on_click(self.cursor, doc, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, *ctx.modifiers, ctx.handled);
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                self.on_key(key_event, *ctx.modifiers, doc, ctx.handled);
             }
             _ => {}
         }
@@ -2748,6 +2825,10 @@ impl Widget for LogsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.search_input.cursor_shape(point)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic target table for every painted a11y control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2772,8 +2853,9 @@ impl Widget for LogsApp {
             self.request_journal_operation("set-live-tail");
             return true;
         }
+        let (doc, _) = ui::doc::document(state, path);
         if target == "logs.clear-filters" && activate {
-            self.apply_view_operation(LogsOperation::ClearFilters);
+            self.commit_view(doc, &LogsAction::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2797,7 +2879,7 @@ impl Widget for LogsApp {
             && activate
             && let Ok(value) = value.parse::<i64>()
         {
-            self.apply_view_operation(LogsOperation::SetPriority { value });
+            self.commit_view(doc, &LogsAction::SetPriority { value });
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2805,9 +2887,12 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.unit-choice:")
             && activate
         {
-            self.apply_view_operation(LogsOperation::SetUnit {
-                value: value.to_owned(),
-            });
+            self.commit_view(
+                doc,
+                &LogsAction::SetUnit {
+                    value: value.to_owned(),
+                },
+            );
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -2816,9 +2901,12 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.boot-choice:")
             && activate
         {
-            self.apply_view_operation(LogsOperation::SetBoot {
-                value: value.to_owned(),
-            });
+            self.commit_view(
+                doc,
+                &LogsAction::SetBoot {
+                    value: value.to_owned(),
+                },
+            );
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -2842,7 +2930,7 @@ impl Widget for LogsApp {
                 .iter()
                 .position(|entry| actions::entry_resource_id(entry) == id)
         {
-            self.select_abs(abs);
+            self.select_abs(doc, abs);
             if self.narrow_at(self.rect.width()) {
                 self.push.show_detail();
             }
@@ -2879,8 +2967,32 @@ impl ui::undo::UndoPoints for LogsApp {
 }
 
 impl ui::resources::PublishesResources for LogsApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        actions::resources(&self.entries, &self.filter, self.live_tail, self.allow_live)
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the journal door — keep only live journal entry rows.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource.clone());
+                }
+                if let Some(found) = find(&resource.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        if self.is_hosted() && id == crate::actions::JOURNAL_RESOURCE_ID {
+            return None;
+        }
+        find(&self.publish_resources(doc), id)
     }
 }
 
@@ -2984,9 +3096,13 @@ impl LogsApp {
                         && matches!(key.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            self.apply_view_operation(LogsOperation::SetSearch {
-                value: String::new(),
-            });
+            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+            self.commit_view(
+                doc,
+                &LogsAction::SetSearch {
+                    value: String::new(),
+                },
+            );
             self.scroll = 0.0;
             self.dirty = true;
             *ctx.handled = true;
@@ -3006,8 +3122,9 @@ impl LogsApp {
                 },
             );
             if self.search_input.take_dirty().is_some() {
-                self.filter.search = self.search_input.value().to_owned();
-                self.recompute_filtered();
+                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+                let query = self.search_input.value().to_owned();
+                self.commit_view(doc, &LogsAction::SetSearch { value: query });
                 self.scroll = 0.0;
                 self.dirty = true;
                 input_handled = true;
@@ -3140,7 +3257,7 @@ impl LogsApp {
         clippy::too_many_lines,
         reason = "one ordered hit-test preserves the popup-to-row interaction priority"
     )]
-    fn on_click(&mut self, pt: Point, handled: &mut bool) {
+    fn on_click(&mut self, pt: Point, doc: &mut AutoCommit, handled: &mut bool) {
         // 1. An open dropdown captures the click first.
         if self.popup.is_some() {
             let reg = self.regions();
@@ -3148,14 +3265,10 @@ impl LogsApp {
                 if irect.contains(pt) {
                     match self.popup {
                         Some(Popup::Unit) => {
-                            self.apply_view_operation(LogsOperation::SetUnit {
-                                value: val.clone(),
-                            });
+                            self.commit_view(doc, &LogsAction::SetUnit { value: val.clone() });
                         }
                         Some(Popup::Boot) => {
-                            self.apply_view_operation(LogsOperation::SetBoot {
-                                value: val.clone(),
-                            });
+                            self.commit_view(doc, &LogsAction::SetBoot { value: val.clone() });
                         }
                         Some(Popup::Actions) => self.request_journal_operation(val),
                         None => {}
@@ -3251,9 +3364,12 @@ impl LogsApp {
                 let Some(priority) = Priority::ALL.get(i) else {
                     continue;
                 };
-                self.apply_view_operation(LogsOperation::SetPriority {
-                    value: priority.level(),
-                });
+                self.commit_view(
+                    doc,
+                    &LogsAction::SetPriority {
+                        value: priority.level(),
+                    },
+                );
                 self.scroll = 0.0;
                 self.dirty = true;
                 *handled = true;
@@ -3263,7 +3379,7 @@ impl LogsApp {
 
         // 6. Clear-filters button.
         if !self.filter.is_clear() && reg.clear_btn.contains(pt) {
-            self.apply_view_operation(LogsOperation::ClearFilters);
+            self.commit_view(doc, &LogsAction::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             *handled = true;
@@ -3273,7 +3389,7 @@ impl LogsApp {
         // 7. List rows → select. On a narrow window this also pushes the
         // detail pane in (single-pane master-detail navigation).
         if let Some(abs) = self.row_at(&reg, pt) {
-            self.select_abs(abs);
+            self.select_abs(doc, abs);
             if reg.narrow {
                 self.push.show_detail();
             }
@@ -3285,32 +3401,33 @@ impl LogsApp {
         &mut self,
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
         let ctrl = modifiers.state().control_key();
         match &key_event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_selection(1);
+                self.move_selection(doc, 1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_selection(-1);
+                self.move_selection(doc, -1);
                 *handled = true;
             }
             Key::Named(NamedKey::PageDown) => {
-                self.move_selection(10);
+                self.move_selection(doc, 10);
                 *handled = true;
             }
             Key::Named(NamedKey::PageUp) => {
-                self.move_selection(-10);
+                self.move_selection(doc, -10);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
-                self.move_selection(isize::MIN / 2);
+                self.move_selection(doc, isize::MIN / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                self.move_selection(isize::MAX / 2);
+                self.move_selection(doc, isize::MAX / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -3322,9 +3439,12 @@ impl LogsApp {
                     // Back out of the pushed detail pane to the list.
                     self.push.show_master();
                 } else if !self.filter.search.is_empty() {
-                    self.apply_view_operation(LogsOperation::SetSearch {
-                        value: String::new(),
-                    });
+                    self.commit_view(
+                        doc,
+                        &LogsAction::SetSearch {
+                            value: String::new(),
+                        },
+                    );
                     self.scroll = 0.0;
                 }
                 self.dirty = true;
@@ -3338,7 +3458,7 @@ impl LogsApp {
                             *handled = true;
                         }
                         "r" | "R" => {
-                            self.apply_view_operation(LogsOperation::ClearFilters);
+                            self.commit_view(doc, &LogsAction::ClearFilters);
                             self.scroll = 0.0;
                             *handled = true;
                         }
@@ -3374,10 +3494,10 @@ mod tests {
         }
     }
 
-    /// Facets and every view filter narrow the entries locally — including
-    /// one invoked by an agent — without touching the shared document.
+    /// Facets and shared filter actions narrow the entry list and write the
+    /// collaborative view document.
     #[test]
-    fn view_filters_narrow_entries_without_touching_the_shared_document() {
+    fn shared_filters_narrow_entries_and_write_the_document() {
         // Facets collect units and two boots.
         let app = LogsApp::new(sample_entries(), false);
         assert!(app.units.contains(&"shell.service".to_string()));
@@ -3385,24 +3505,31 @@ mod tests {
 
         // The priority threshold filters entries.
         {
-            let (mut app, _doc) = synced_app();
+            let (mut app, mut doc) = synced_app();
             let total = app.filtered.len();
-            app.apply_view_operation(LogsOperation::SetPriority {
-                value: Priority::Err.level(),
-            });
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetPriority {
+                    value: Priority::Err.level(),
+                },
+            );
             let errs = app.filtered.len();
             assert!(errs < total, "errors-only must show fewer than all");
             assert!(errs > 0);
             for &i in &app.filtered {
                 assert!(app.entries[i].priority.level() <= 3);
             }
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).min_priority, 3);
         }
         // Search narrows results.
         {
-            let (mut app, _doc) = synced_app();
-            app.apply_view_operation(LogsOperation::SetSearch {
-                value: "iroh".to_string(),
-            });
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetSearch {
+                    value: "iroh".to_string(),
+                },
+            );
             assert_eq!(app.search_input.value(), "iroh");
             assert!(!app.filtered.is_empty());
             for &i in &app.filtered {
@@ -3411,52 +3538,45 @@ mod tests {
                     || e.unit.to_lowercase().contains("iroh");
                 assert!(hit);
             }
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).search, "iroh");
         }
         // The unit filter restricts to one unit.
         {
-            let (mut app, _doc) = synced_app();
-            app.apply_view_operation(LogsOperation::SetUnit {
-                value: "kernel".to_string(),
-            });
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetUnit {
+                    value: "kernel".to_string(),
+                },
+            );
             assert!(
                 app.filtered
                     .iter()
                     .all(|&i| app.entries[i].unit == "kernel")
             );
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).unit, "kernel");
         }
-        // The boot filter is local.
-        {
-            let (mut app, _doc) = synced_app();
-            let boot = app.boots[1].0.clone();
-            app.apply_view_operation(LogsOperation::SetBoot {
-                value: boot.clone(),
-            });
-            assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
-        }
-        // An agent filter view operation never changes the shared document.
+        // The boot filter syncs.
         {
             let (mut app, mut doc) = synced_app();
-            let encoded = tilo_actions::EncodedAction::encode_operation(
-                actions::LOGS_OPERATION_TYPE,
-                &LogsOperation::SetUnit {
+            let boot = app.boots[1].0.clone();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetBoot {
+                    value: boot.clone(),
+                },
+            );
+            assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
+            assert_eq!(crate::doc::ViewDoc::filter(&doc).boot, boot);
+        }
+        // A document filter action updates the widget through the ActionSink.
+        {
+            let (mut app, mut doc) = synced_app();
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetUnit {
                     value: "kernel".to_string(),
                 },
-            )
-            .unwrap();
-
-            assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::View,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .unwrap()
             );
             assert_eq!(app.filter.unit, "kernel");
             assert!(
@@ -3465,24 +3585,24 @@ mod tests {
                     .all(|&index| app.entries[index].unit == "kernel")
             );
             assert!(
-                doc.keys(&ROOT).next().is_none(),
-                "agent view actions must not write shared state"
+                doc.keys(&ROOT).next().is_some(),
+                "document filter actions must write shared state"
             );
         }
     }
 
-    /// Selection auto-lands on an error or worse and arrow keys move only the
-    /// local selection.
+    /// Selection auto-lands on an error or worse and arrow keys move the
+    /// shared selection.
     #[test]
-    fn selection_auto_lands_on_errors_and_moves_locally() {
-        let (mut app, doc) = synced_app();
+    fn selection_auto_lands_on_errors_and_moves_through_the_document() {
+        let (mut app, mut doc) = synced_app();
         // Auto-selection lands on an error or worse.
         let sel = app.effective_selected().expect("an entry is auto-selected");
         assert!(app.entries[sel].priority.level() <= Priority::Err.level());
 
-        // Arrow navigation moves only the local selection.
+        // Arrow navigation commits the shared selection.
         let before = app.effective_selected().unwrap();
-        app.move_selection(1);
+        app.move_selection(&mut doc, 1);
         let after = app.effective_selected().unwrap();
         assert_ne!(before, after);
         assert_eq!(
@@ -3492,9 +3612,9 @@ mod tests {
                 .map(actions::entry_resource_id)
                 .as_deref()
         );
-        assert!(
-            doc.keys(&ROOT).next().is_none(),
-            "selection must not touch the shared doc"
+        assert_eq!(
+            crate::doc::ViewDoc::selected_entry(&doc).as_deref(),
+            app.selected_entry.as_deref()
         );
     }
 
@@ -3590,7 +3710,8 @@ mod tests {
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
             ui::host::scoped(&services, || {
-                app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+                app.perform_effect(LogsOperation::ExportFiltered, &mut AutoCommit::new())
+                    .unwrap();
             });
             assert_eq!(
                 recorder.pick_requests()[0].suggested_name(),
@@ -3612,7 +3733,8 @@ mod tests {
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
             ui::host::scoped(&services, || {
-                app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+                app.perform_effect(LogsOperation::ExportFiltered, &mut AutoCommit::new())
+                    .unwrap();
             });
             app.drain_export_portal();
             assert_eq!(app.export_status.as_deref(), Some("Export failed."));
@@ -3647,9 +3769,12 @@ mod tests {
             assert_eq!(app.regions().clear_btn, Rect::ZERO);
 
             // Activate a filter (errors-or-worse threshold).
-            app.apply_view_operation(LogsOperation::SetPriority {
-                value: Priority::Err.level(),
-            });
+            app.commit_view(
+                &mut doc,
+                &LogsAction::SetPriority {
+                    value: Priority::Err.level(),
+                },
+            );
             assert!(!app.filter.is_clear());
 
             // The Clear-filters control now sits in the header, just left of the
@@ -3666,7 +3791,7 @@ mod tests {
 
             // Clicking it clears the filter through the production on_click path.
             let mut handled = false;
-            app.on_click(reg.clear_btn.center(), &mut handled);
+            app.on_click(reg.clear_btn.center(), &mut doc, &mut handled);
             assert!(
                 handled,
                 "the header Clear-filters button must be hit-tested"

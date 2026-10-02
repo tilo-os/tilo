@@ -4,7 +4,7 @@
 //! An ODP file is an `OpenDocument` package: a ZIP archive whose first entry is
 //! an uncompressed `mimetype`, alongside `content.xml` (the slides), plus the
 //! usual `styles.xml`, `meta.xml` and `META-INF/manifest.xml`. This module
-//! mirrors how `crates/doc/qdoc` handles `.odt` (ZIP + `content.xml`), but maps
+//! mirrors how `crates/doc/tilo-doc` handles `.odt` (ZIP + `content.xml`), but maps
 //! the presentation vocabulary — `draw:page` slides holding `draw:frame`
 //! text-boxes and `draw:rect` / `draw:ellipse` / `draw:line` shapes — onto the
 //! [`Deck`]/[`Slide`]/[`Element`](crate::model) model and back.
@@ -527,7 +527,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p && let Some(ch) = qdoc_codecs::resolve_general_ref(&r) {
+                if in_text_p && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r) {
                     p_buf.push(ch);
                     let (bold, italic) = spans.last().copied().unwrap_or_default();
                     crate::model::push_run(&mut p_block, ch.encode_utf8(&mut [0; 4]), bold, italic);
@@ -756,7 +756,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| qdoc_codecs::unescape_attr(&a))
+        .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
 }
 
 #[cfg(test)]

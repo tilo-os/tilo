@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    EncodedAction, ExecutionLocus, Resource, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::MapsDoc;
@@ -353,8 +353,31 @@ fn history_resource(query: &str) -> Resource {
     resource
 }
 
+fn place_view_ops(place_id: &str) -> Vec<ActionSpec> {
+    let mut ops = Vec::new();
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Open place",
+        tilo_actions::OperationKind::View,
+        "maps.open-place",
+        &place_id,
+    ) {
+        ops.push(spec.with_contract(ActionContract::view()));
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "directions",
+        "Get directions",
+        tilo_actions::OperationKind::View,
+        "maps.directions",
+        &place_id,
+    ) {
+        ops.push(spec.with_contract(ActionContract::view()));
+    }
+    ops
+}
+
 fn saved_place_resource(place: &crate::model::Place) -> Resource {
-    Resource::new(
+    let mut resource = Resource::new(
         format!("maps.place:{}", place.id),
         "maps.place",
         place.name.clone(),
@@ -366,7 +389,13 @@ fn saved_place_resource(place: &crate::model::Place) -> Resource {
             id: place.id.clone(),
             saved: false,
         },
-    ))
+    ));
+    // Presentation open/directions ride the place child so hosted publish
+    // keeps them without a second hand-built workspace tree.
+    for spec in place_view_ops(&place.id) {
+        resource.actions.insert(0, spec);
+    }
+    resource
 }
 
 fn route_resource(model: &MapModel) -> Resource {
@@ -443,38 +472,9 @@ fn region_resource(region: &DownloadedRegion) -> Resource {
     ))
 }
 
-/// Build the resource tree Maps currently has open: the workspace, its saved
-/// places (each exporting an un-save action), the active route (a clear action),
-/// and its offline regions (each a delete action) — every document-mutating
-/// operation exported as the same action the on-screen affordance dispatches.
-///
-/// The shared state lives in the document, so this reads the model straight from
-/// `doc` (an unseeded document publishes nothing). Presentation — the selected
-/// place, the camera, the search box — is read for labelling only and never
-/// becomes an action.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource tree is deliberately declared in one stable, searchable hierarchy; extracting each resource kind would obscure the shared action contract"
-)]
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let Some(model) = MapsDoc::load(doc) else {
-        return Vec::new();
-    };
-
-    let mut root = Resource::new("maps.workspace", "maps.workspace", "Maps");
-
-    // Workspace-level: clear every offline area, only when some exist.
-    if !model.regions.is_empty() {
-        root = root.with_action(immediate(
-            "clear-regions",
-            "Clear offline areas",
-            &MapsAction::ClearRegions,
-        ));
-    }
-
-    // Search is a local brokered operation: result ranking/geocoding is not a
-    // shared document command, so another window never navigates unexpectedly.
-    root = root.with_action(ActionSpec::prompted_operation(
+/// Prompted Search maps View — local geocode broker, not a document command.
+pub(crate) fn search_maps_spec() -> ActionSpec {
+    ActionSpec::prompted_operation(
         "search",
         "Search maps",
         "Place, address, or category",
@@ -488,53 +488,100 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     payload: Vec::new(),
                 })
         },
-    ));
+    )
+}
 
+/// Document-bound workspace actions for [`tilo_resource::publish`].
+pub(crate) fn document_bound_actions(model: &MapModel) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    if !model.regions.is_empty() {
+        actions.push(immediate(
+            "clear-regions",
+            "Clear offline areas",
+            &MapsAction::ClearRegions,
+        ));
+    }
     if !model.recents.is_empty() {
-        root = root.with_action(immediate(
+        actions.push(immediate(
             "clear-search-history",
             "Clear search history",
             &MapsAction::ClearRecents,
         ));
     }
+    actions
+}
 
-    for query in model.recents.iter().take(EAGER_PER_KIND_LIMIT) {
-        root = root.with_child(history_resource(query));
+fn find_maps(resources: &[Resource], id: &str) -> Option<Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_maps(&resource.children, id) {
+            return Some(found);
+        }
     }
+    None
+}
 
-    // Saved places → a resource each, exporting the un-save action.
+/// Collaborative children for [`tilo_resource::publish`]: history, saved
+/// places, active route/transit, offline regions, and plan settings.
+pub(crate) fn document_children(model: &MapModel) -> Vec<Resource> {
+    let mut children = Vec::new();
+    for query in model.recents.iter().take(EAGER_PER_KIND_LIMIT) {
+        children.push(history_resource(query));
+    }
     for place in model
         .places
         .iter()
         .filter(|place| place.saved)
         .take(EAGER_PER_KIND_LIMIT)
     {
-        root = root.with_child(saved_place_resource(place));
+        children.push(saved_place_resource(place));
     }
-
-    // Active route → a resource exporting the clear action.
     if model.route.is_some() {
-        root = root.with_child(route_resource(&model));
+        children.push(route_resource(model));
     }
     if !model.transit.is_empty() {
-        root = root.with_child(transit_resource(&model));
+        children.push(transit_resource(model));
     }
-
-    // Offline regions → a resource each, exporting the delete action.
     for region in model.regions.iter().take(EAGER_PER_KIND_LIMIT) {
-        root = root.with_child(region_resource(region));
+        children.push(region_resource(region));
     }
-    root = root.with_child(plan_settings_resource(&model));
-
-    vec![root]
+    children.push(plan_settings_resource(model));
+    children
 }
 
-impl ResourceProvider for crate::app::MapsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+/// Build the resource tree Maps currently has open via
+/// [`tilo_resource::publish`]: the workspace door, its saved places, the
+/// active route, and offline regions — every document-mutating operation
+/// exported as the same action the on-screen affordance dispatches.
+///
+/// The shared state lives in the document, so this reads the model straight from
+/// `doc` (an unseeded document publishes nothing). Presentation — the selected
+/// place, the camera, the search box — is read for labelling only and never
+/// becomes an action. Ranked search hits and map POIs stay on the widget.
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let Some(model) = MapsDoc::load(doc) else {
+        return Vec::new();
+    };
+    vec![ui::tilo_resource::publish::<crate::resource::Maps>(
+        "maps.workspace",
+        "Maps",
+        &model,
+    )]
+}
+
+// Inherent resource publication (was ResourceProvider)
+impl crate::app::MapsApp {
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`].
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(found) = find_maps(&provide_resources(doc), id) {
+            return Some(found);
+        }
         let model = MapsDoc::load(doc)?;
         if id == "maps.workspace" {
             return provide_resources(doc).into_iter().next();
@@ -849,16 +896,39 @@ mod tests {
             }
 
             let app = crate::app::MapsApp::offline();
+            let published_place = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "maps.place:place-0")
+                .expect("the first saved place is on the published page");
+            let looked_up = app
+                .publish_resource(&doc, "maps.place:place-0")
+                .expect("an eager saved place resolves");
+            assert_eq!(
+                looked_up
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                published_place
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                "an eager saved place is the published row"
+            );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
+                app.publish_resource(&doc, "maps.place:place-19").is_some(),
                 "an omitted saved place remains exactly addressable"
             );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
+                app.publish_resource(&doc, "maps.region:region-19")
+                    .is_some(),
                 "an omitted offline region remains exactly addressable"
             );
             assert!(
-                ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
+                app.publish_resource(&doc, "maps.search-history:query-19")
+                    .is_some(),
                 "an omitted history item remains exactly addressable"
             );
         }

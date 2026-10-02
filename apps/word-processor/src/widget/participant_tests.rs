@@ -33,8 +33,8 @@ fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) 
 }
 
 fn body_ids(doc: &AutoCommit) -> Vec<String> {
-    let containers = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-    qdoc::model::region_blocks_in_order(doc, &containers, Region::Body)
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    tilo_doc::model::region_blocks_in_order(doc, &containers, Region::Body)
 }
 
 fn caret(block: &str, offset: usize) -> ParticipantView {
@@ -182,9 +182,9 @@ fn views_rebase_under_concurrent_edits() {
     // A remote peer inserts "Oh, " at the block start.
     let mut remote = state.doc.fork();
     {
-        let containers = qdoc::model::open(&remote, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::model::seeded_id_gen(&remote, &containers);
-        let mut dm = qdoc::DocMut {
+        let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
+        let mut id_gen = tilo_doc::model::seeded_id_gen(&remote, &containers);
+        let mut dm = tilo_doc::DocMut {
             doc: &mut remote,
             c: &containers,
             ids: &mut id_gen,
@@ -222,9 +222,9 @@ fn views_rebase_under_concurrent_edits() {
     // Deleting the text around a caret collapses it onto the next survivor.
     let mut remote = state.doc.fork();
     {
-        let containers = qdoc::model::open(&remote, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::model::seeded_id_gen(&remote, &containers);
-        let mut dm = qdoc::DocMut {
+        let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
+        let mut id_gen = tilo_doc::model::seeded_id_gen(&remote, &containers);
+        let mut dm = tilo_doc::DocMut {
             doc: &mut remote,
             c: &containers,
             ids: &mut id_gen,
@@ -241,7 +241,7 @@ fn views_rebase_under_concurrent_edits() {
     // The caret block disappears: park at the document end, no selection.
     wp.set_participant_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
     let mut remote = state.doc.fork();
-    let containers = qdoc::model::open(&remote, &automerge::ROOT).unwrap();
+    let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
     remote.delete(&containers.blocks, ids[1].as_str()).unwrap();
     state.doc.merge_incoming(&mut remote).unwrap();
     wp.sync(&mut state.doc, &state.root);
@@ -784,8 +784,7 @@ fn a_participant_host_publishes_the_schema_as_its_own_tree() {
     let (mut wp, state, _) = widget_with(&["x"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
     let published = ui::resources::resources(&wp, &state.doc);
-    let schema =
-        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc);
+    let schema = wp.publish_catalogue_schema(&state.doc);
     assert_eq!(published.len(), schema.len());
     assert_eq!(
         published
@@ -918,8 +917,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
     // Outside any invocation the host still publishes the schema.
     assert_eq!(
         ui::resources::resources(&wp, &state.doc).len(),
-        <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc)
-            .len()
+        wp.publish_catalogue_schema(&state.doc).len()
     );
 }
 
@@ -930,7 +928,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
 fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view() {
     let (mut wp, state, _) = widget_with(&["first paragraph"]);
     ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let own = <WordProcessorWidget as tilo_actions::ResourceProvider>::resources(&wp, &state.doc);
+    let own = wp.publish_resources(&state.doc);
     let tree = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));

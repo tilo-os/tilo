@@ -12,7 +12,11 @@ pub const ADD_ADJUSTMENT_TYPE: &str = "image-editor.add-adjustment";
 pub const REMOVE_ADJUSTMENT_TYPE: &str = "image-editor.remove-adjustment";
 pub const UPDATE_ADJUSTMENT_TYPE: &str = "image-editor.update-adjustment";
 pub const RECONNECT_INPUT_TYPE: &str = "image-editor.reconnect-input";
+pub const SET_SOURCE_TYPE: &str = "image-editor.set-source";
+pub const RESTORE_PROJECT_TYPE: &str = "image-editor.restore-project";
 pub const OPERATION_TYPE: &str = "image-editor.operation";
+/// Unified document action type for the framework resource APPLY path.
+pub const IMAGE_EDITOR_ACTION_TYPE: &str = "image-editor.action";
 pub const PROJECT_RESOURCE_ID: &str = "image-editor.project";
 pub const SOURCE_RESOURCE_ID: &str = "image-editor.source";
 pub const EXPORT_RESOURCE_ID: &str = "image-editor.export";
@@ -33,10 +37,40 @@ pub enum EditorOperation {
     },
 }
 pub fn register(r: &mut ActionRegistry) {
+    r.register::<ImageEditorAction>(IMAGE_EDITOR_ACTION_TYPE);
+    r.register::<SetSource>(SET_SOURCE_TYPE);
+    r.register::<RestoreProject>(RESTORE_PROJECT_TYPE);
     r.register::<AddAdjustment>(ADD_ADJUSTMENT_TYPE);
     r.register::<RemoveAdjustment>(REMOVE_ADJUSTMENT_TYPE);
     r.register::<UpdateAdjustment>(UPDATE_ADJUSTMENT_TYPE);
     r.register::<ReconnectInput>(RECONNECT_INPUT_TYPE);
+}
+
+/// Nested project catalogue for [`crate::resource::ImageEditor::children`].
+/// Adjustment Document ops (remove, set-*, move) ride these children through
+/// `tilo_resource::publish`; View reveal ops stay on the same child rows.
+pub(crate) fn project_children(project: &Project) -> Vec<Resource> {
+    resource(project).children
+}
+
+/// Root Document operations for [`crate::resource::ImageEditor::bound_actions`].
+/// Add-exposure / add-contrast / … mint their node id at publish time so the
+/// palette and agents apply the same collaborative graph edit.
+pub(crate) fn project_bound_document_actions(project: &Project) -> Vec<ActionSpec> {
+    resource(project)
+        .actions
+        .into_iter()
+        .filter(|spec| spec.kind == OperationKind::Document)
+        .collect()
+}
+
+/// Root View/Effect operations for [`crate::resource::ImageEditor::local_operations`].
+pub(crate) fn project_local_operations() -> Vec<ActionSpec> {
+    resource(&Project::blank())
+        .actions
+        .into_iter()
+        .filter(|spec| spec.kind != OperationKind::Document)
+        .collect()
 }
 
 /// The normal collaborative graph insertion action.  It names the stable
@@ -131,6 +165,121 @@ impl Action for ReconnectInput {
         ExecutionLocus::ClientLocal
     }
 }
+
+/// Put back a project snapshot from the editor's undo or redo stack.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RestoreProject {
+    pub project: Project,
+}
+
+impl Action for RestoreProject {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        ProjectDoc::restore_history_snapshot(doc, &self.project);
+        ProjectDoc::write(doc, &self.project);
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
+/// Point the project at an opened image and name it. Other adjustments stay.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SetSource {
+    pub path: String,
+    pub name: String,
+}
+
+impl Action for SetSource {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if self.path.is_empty() {
+            return Err(ActionError::Refused("an opened image needs a path".into()));
+        }
+        ProjectDoc::set_source(doc, &self.path, &self.name);
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
+/// One document vocabulary for the project resource. Historical envelopes keep
+/// the per-edit type ids registered beside this.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum ImageEditorAction {
+    Add(AddAdjustment),
+    Remove(RemoveAdjustment),
+    Update(UpdateAdjustment),
+    Reconnect(ReconnectInput),
+    SetSource(SetSource),
+    Restore(RestoreProject),
+}
+
+impl Action for ImageEditorAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        match self {
+            Self::Add(action) => action.apply(doc),
+            Self::Remove(action) => action.apply(doc),
+            Self::Update(action) => action.apply(doc),
+            Self::Reconnect(action) => action.apply(doc),
+            Self::SetSource(action) => action.apply(doc),
+            Self::Restore(action) => action.apply(doc),
+        }
+    }
+    fn locus(&self) -> ExecutionLocus {
+        match self {
+            Self::Add(action) => action.locus(),
+            Self::Remove(action) => action.locus(),
+            Self::Update(action) => action.locus(),
+            Self::Reconnect(action) => action.locus(),
+            Self::SetSource(action) => action.locus(),
+            Self::Restore(action) => action.locus(),
+        }
+    }
+}
+
+pub(crate) trait AsEditorAction {
+    fn as_editor_action(&self) -> ImageEditorAction;
+}
+
+impl AsEditorAction for AddAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Add(self.clone())
+    }
+}
+
+impl AsEditorAction for RemoveAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Remove(self.clone())
+    }
+}
+
+impl AsEditorAction for UpdateAdjustment {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Update(self.clone())
+    }
+}
+
+impl AsEditorAction for ReconnectInput {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Reconnect(self.clone())
+    }
+}
+
+impl AsEditorAction for SetSource {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::SetSource(self.clone())
+    }
+}
+
+impl AsEditorAction for RestoreProject {
+    fn as_editor_action(&self) -> ImageEditorAction {
+        ImageEditorAction::Restore(self.clone())
+    }
+}
+
 pub fn resource(project: &Project) -> Resource {
     let mut r = Resource::new(PROJECT_RESOURCE_ID, "image-editor.project", &project.name);
     if let Ok(open) = ActionSpec::operation(
@@ -443,6 +592,75 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EditorOp
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use tilo_actions::Action;
+
+    #[test]
+    fn restore_project_puts_the_snapshot_back() {
+        let mut doc = AutoCommit::new();
+        let original = ProjectDoc::read(&doc);
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        assert!(
+            ProjectDoc::read(&doc)
+                .graph
+                .nodes
+                .contains_key("exposure-1")
+        );
+        RestoreProject {
+            project: original.clone(),
+        }
+        .apply(&mut doc)
+        .expect("restore applies");
+        let restored = ProjectDoc::read(&doc);
+        assert!(!restored.graph.nodes.contains_key("exposure-1"));
+        assert_eq!(restored.name, original.name);
+    }
+
+    #[test]
+    fn set_source_records_the_opened_image_without_replacing_adjustments() {
+        let mut doc = AutoCommit::new();
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        SetSource {
+            path: "/photos/harbour.jpg".into(),
+            name: "harbour".into(),
+        }
+        .apply(&mut doc)
+        .expect("source applies");
+        let project = ProjectDoc::read(&doc);
+        assert_eq!(source_path(&project), "/photos/harbour.jpg");
+        assert_eq!(project.name, "harbour");
+        assert!(project.graph.nodes.contains_key("exposure-1"));
+    }
+
+    #[test]
+    fn opening_an_image_sets_the_source_without_rewriting_adjustments() {
+        let mut doc = AutoCommit::new();
+        ProjectDoc::add_adjustment(
+            &mut doc,
+            "exposure-1",
+            "Exposure",
+            &Operation::Exposure { stops: 0.5 },
+        );
+        SetSource {
+            path: "/photos/harbour.jpg".into(),
+            name: "Harbour".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let project = ProjectDoc::read(&doc);
+        assert_eq!(source_path(&project), "/photos/harbour.jpg");
+        assert_eq!(project.name, "Harbour");
+        assert!(project.operations.contains_key("exposure-1"));
+    }
 
     /// Each editable step is a resource publishing canonical actions whose
     /// typed parameter surfaces build JSON that touches only their own node.
@@ -647,7 +865,19 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded(),
         registry: registry(),
-        resources: |doc| vec![resource(&ProjectDoc::read(doc))],
+        resources: |doc| {
+            let project = ProjectDoc::read(doc);
+            let label = if project.name.is_empty() {
+                "Image Editor"
+            } else {
+                project.name.as_str()
+            };
+            vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+                PROJECT_RESOURCE_ID,
+                label,
+                &project,
+            )]
+        },
         palette: ["Add exposure", "Remove adjustment", "Set contrast"],
         replay: [
             add_adjustment => |_| encode(ADD_ADJUSTMENT_TYPE, &AddAdjustment {

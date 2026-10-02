@@ -50,7 +50,7 @@ use ui::doc::{read_bool, read_str_or_text};
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
-    ResourceProvider, ResultSpec, RetryPolicy,
+    ResultSpec, RetryPolicy,
 };
 
 use crate::categories::Category;
@@ -876,7 +876,7 @@ pub enum SettingValue {
 
 impl SettingValue {
     /// The Automerge scalar this value writes.
-    fn scalar(&self) -> ScalarValue {
+    pub(crate) fn scalar(&self) -> ScalarValue {
         match self {
             SettingValue::Bool(b) => ScalarValue::Boolean(*b),
             SettingValue::Int(i) => ScalarValue::Int(*i),
@@ -1369,11 +1369,101 @@ pub(super) fn choice_prompt_spec(
     .with_contract(setting_contract())
 }
 
+/// Categories whose preference door is owned by [`tilo_resource::publish`]:
+/// portable [`SettingsAction`] rows (and open-only About / Permissions). Live
+/// device inventories and hardware effects stay on the hosted widget.
+pub(crate) fn is_document_door_category(category: Category) -> bool {
+    matches!(
+        category,
+        Category::Appearance
+            | Category::Accessibility
+            | Category::Notifications
+            | Category::RegionFormats
+            | Category::KeyboardShortcuts
+            | Category::About
+            | Category::Permissions
+    )
+}
+
+/// Section children for [`tilo_resource::publish`]: `SettingsAction` preference
+/// panes plus open-only navigation. Per-app notification rows, default-app
+/// handlers, accounts, and hardware sections are not shared document state.
+pub(crate) fn document_children(state: &crate::resource::SettingsState) -> Vec<Resource> {
+    let doc = state.to_doc();
+    // Flip targets fall back to this machine's durable defaults when the CRDT
+    // has not seeded a key yet — same policy the full tree used before.
+    let prefs = SystemPrefs::load();
+    Category::ALL
+        .iter()
+        .copied()
+        .filter(|category| is_document_door_category(*category))
+        .map(|category| document_section_resource(category, &doc, &prefs))
+        .collect()
+}
+
+#[allow(
+    clippy::unreachable,
+    reason = "caller filters to document-door categories only"
+)]
+fn document_section_resource(
+    category: Category,
+    doc: &AutoCommit,
+    prefs: &SystemPrefs,
+) -> Resource {
+    let mut pane = match category {
+        Category::Appearance => appearance_section(doc, prefs),
+        Category::Accessibility => accessibility_section(doc, prefs),
+        Category::Notifications => notifications_portable_section(doc, prefs),
+        Category::RegionFormats => region_section(doc, prefs),
+        Category::KeyboardShortcuts => shortcuts_section(doc),
+        Category::About | Category::Permissions => Resource::new(
+            pane_resource_id(category),
+            "settings.section",
+            category.label(),
+        ),
+        other => {
+            unreachable!(
+                "document_section_resource only builds document-door categories, got {other:?}"
+            )
+        }
+    };
+    if let Some(open) = pane_navigation_resource(category)
+        .actions
+        .into_iter()
+        .next()
+    {
+        pane.actions.insert(0, open);
+    }
+    pane
+}
+
+/// Hosted-only extras that are not on the framework resource: hardware and
+/// service sections, account inventory, default-app handlers, and per-app
+/// notification rows from local durable prefs.
+pub(crate) fn live_device_resources(
+    doc: &AutoCommit,
+    account_inventory: &[accounts::Account],
+) -> Vec<Resource> {
+    let prefs = SystemPrefs::load();
+    let mut extras: Vec<Resource> = Category::ALL
+        .iter()
+        .copied()
+        .filter(|category| !is_document_door_category(*category))
+        .map(|category| section_resource(category, doc, &prefs, account_inventory))
+        .collect();
+    extras.extend(notification_app_resources(doc, &prefs));
+    extras
+}
+
 /// Build the resource tree Settings publishes: the configuration root, a child
 /// per section, each exporting the settings it owns as the same actions its
 /// on-screen controls dispatch. Current values are read from `doc` (falling
 /// back to the shipped defaults for a section whose pane hasn't seeded its keys
 /// yet), so a bool's flip target and an enum's fallback reflect what is set.
+///
+/// Standalone / `--shots` / unit tests: [`tilo_resource::publish`] owns the
+/// `SettingsAction` door; device-local sections and live inventories are merged
+/// into the same root so the palette shape stays one tree.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     provide_resources_with_accounts(doc, &[])
 }
@@ -1382,13 +1472,36 @@ pub fn provide_resources_with_accounts(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
 ) -> Vec<Resource> {
-    // Dynamic child resources (installed handlers, input-source roster and
-    // hardware-adjacent preferences) must describe this device's current
-    // durable state, not merely the compile-time defaults.
-    let d = SystemPrefs::load();
-    let mut root = Resource::new("settings.root", "settings.root", "Settings");
+    let state = crate::resource::SettingsState::from_doc(doc);
+    let mut root = ui::tilo_resource::publish::<crate::resource::Settings>(
+        "settings.root",
+        "Settings",
+        &state,
+    );
+    let prefs = SystemPrefs::load();
+    if let Some(section) = root
+        .children
+        .iter_mut()
+        .find(|child| child.id.as_str() == pane_resource_id(Category::Notifications))
+    {
+        // Portable notification preferences stay the published children.
+        // Per-app rows are this machine's inventory beside them.
+        section
+            .children
+            .extend(notification_app_resources(doc, &prefs));
+    }
+    let mut published: std::collections::HashMap<String, Resource> = root
+        .children
+        .drain(..)
+        .map(|child| (child.id.as_str().to_owned(), child))
+        .collect();
     for category in Category::ALL.iter().copied() {
-        root = root.with_child(section_resource(category, doc, &d, account_inventory));
+        let id = pane_resource_id(category);
+        if let Some(section) = published.remove(&id) {
+            root = root.with_child(section);
+        } else {
+            root = root.with_child(section_resource(category, doc, &prefs, account_inventory));
+        }
     }
     vec![root]
 }
@@ -1700,60 +1813,71 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
     section
 }
 
+fn notifications_portable_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    let sec = Resource::new(
+        "settings.section:notifications",
+        "settings.section",
+        "Notifications",
+    );
+    portable::attach_portable_preferences(sec, Category::Notifications, doc, d)
+}
+
+/// Per-app notification rows from local durable prefs — not shared document
+/// state, so hosted surfaces publish them beside the framework resource.
+fn notification_app_resources(doc: &AutoCommit, d: &SystemPrefs) -> Vec<Resource> {
+    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
+    crate::panes::notifications::resource_notification_apps(&d.notifications)
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+        .map(|(app_id, app_name)| {
+            let mut resource = Resource::new(
+                format!("settings.notification-app:{app_id}"),
+                "settings.notification-app",
+                app_name,
+            );
+            for (id, field, label) in [
+                ("banners", "banners", "notification banners"),
+                ("previews", "previews", "message previews"),
+                ("sounds", "sounds", "notification sounds"),
+                ("badges", "badges", "notification badges"),
+                ("priority", "priority", "priority during focus"),
+                (
+                    "priority-contacts",
+                    "priority_contacts",
+                    "priority contacts during focus",
+                ),
+            ] {
+                let key = format!("notifications.app.{app_id}.{field}");
+                let default = match field {
+                    "banners" => d.notifications.show_banners,
+                    "previews" => d.notifications.show_previews,
+                    "sounds" => d.notifications.play_sounds,
+                    "badges" => d.notifications.show_badges,
+                    _ => false,
+                };
+                resource = resource.with_action(bool_flip_spec(id, &key, b(&key, default), label));
+            }
+            let key = format!("notifications.app.{app_id}.mute");
+            resource.with_action(choice_prompt_spec(
+                "mute",
+                "Mute notifications temporarily",
+                key,
+                "Not muted, For 1 hour, For 8 hours, For 24 hours",
+                &["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
+                read_str_or_text(doc, &ROOT, format!("notifications.app.{app_id}.mute"))
+                    .unwrap_or_else(|| "Not muted".into()),
+            ))
+        })
+        .collect()
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the ordered resource declaration mirrors the Notifications hierarchy"
 )]
 fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    let mut sec = Resource::new(
-        "settings.section:notifications",
-        "settings.section",
-        "Notifications",
-    );
-    sec = portable::attach_portable_preferences(sec, Category::Notifications, doc, d);
-    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
-    for (app_id, app_name) in
-        crate::panes::notifications::resource_notification_apps(&d.notifications)
-            .into_iter()
-            .take(MAX_DYNAMIC_RESOURCES)
-    {
-        let mut resource = Resource::new(
-            format!("settings.notification-app:{app_id}"),
-            "settings.notification-app",
-            app_name,
-        );
-        for (id, field, label) in [
-            ("banners", "banners", "notification banners"),
-            ("previews", "previews", "message previews"),
-            ("sounds", "sounds", "notification sounds"),
-            ("badges", "badges", "notification badges"),
-            ("priority", "priority", "priority during focus"),
-            (
-                "priority-contacts",
-                "priority_contacts",
-                "priority contacts during focus",
-            ),
-        ] {
-            let key = format!("notifications.app.{app_id}.{field}");
-            let default = match field {
-                "banners" => d.notifications.show_banners,
-                "previews" => d.notifications.show_previews,
-                "sounds" => d.notifications.play_sounds,
-                "badges" => d.notifications.show_badges,
-                _ => false,
-            };
-            resource = resource.with_action(bool_flip_spec(id, &key, b(&key, default), label));
-        }
-        let key = format!("notifications.app.{app_id}.mute");
-        resource = resource.with_action(choice_prompt_spec(
-            "mute",
-            "Mute notifications temporarily",
-            key,
-            "Not muted, For 1 hour, For 8 hours, For 24 hours",
-            &["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
-            read_str_or_text(doc, &ROOT, format!("notifications.app.{app_id}.mute"))
-                .unwrap_or_else(|| "Not muted".into()),
-        ));
+    let mut sec = notifications_portable_section(doc, d);
+    for resource in notification_app_resources(doc, d) {
         sec = sec.with_child(resource);
     }
     sec
@@ -5499,21 +5623,37 @@ pub fn device_mesh_workspace_binding(
     .ok()
 }
 
-impl ResourceProvider for crate::SettingsApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+// Inherent resource publication (was ResourceProvider)
+impl crate::SettingsApp {
+    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources_with_accounts(doc, self.account_resource_inventory())
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "settings.root" {
-            // Exact root lookup is intentionally shallow. Building every live
-            // hardware inventory merely to resolve the root made one address
-            // proportional to every device, stream, account, job, and model.
-            let root = Category::ALL.iter().copied().fold(
-                Resource::new("settings.root", "settings.root", "Settings"),
-                |root, category| root.with_child(pane_navigation_resource(category)),
+            // The document door, not a navigation stub and not the live hardware
+            // inventory. Preference panes come from `tilo_resource::publish`.
+            let state = crate::resource::SettingsState::from_doc(doc);
+            return Some(ui::tilo_resource::publish::<crate::resource::Settings>(
+                "settings.root",
+                "Settings",
+                &state,
+            ));
+        }
+        // Notification rows include device-local apps that the portable document
+        // pane does not. Every other id already on the published tree is that node.
+        let device_notifications = category_for_resource_id(id) == Some(Category::Notifications)
+            || id.starts_with("settings.notification-app:");
+        if !device_notifications {
+            let state = crate::resource::SettingsState::from_doc(doc);
+            let root = ui::tilo_resource::publish::<crate::resource::Settings>(
+                "settings.root",
+                "Settings",
+                &state,
             );
-            return Some(root);
+            if let Some(found) = find_resource(root, id) {
+                return Some(found);
+            }
         }
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();
@@ -5542,6 +5682,120 @@ mod tests {
             .iter()
             .find(|r| r.id.as_str() == id)
             .unwrap_or_else(|| panic!("section {id} present"))
+    }
+
+    #[test]
+    fn resource_publish_owns_preference_door_and_hosted_keeps_device_extras() {
+        let state = crate::resource::SettingsState::default();
+        let published = ui::tilo_resource::publish::<crate::resource::Settings>(
+            "settings.root",
+            "Settings",
+            &state,
+        );
+        let section_ids: Vec<&str> = published
+            .children
+            .iter()
+            .map(|child| child.id.as_str())
+            .collect();
+        assert!(
+            section_ids.contains(&"settings.section:appearance"),
+            "{section_ids:?}"
+        );
+        assert!(
+            section_ids.contains(&"settings.section:notifications"),
+            "{section_ids:?}"
+        );
+        assert!(
+            section_ids.contains(&"settings.section:accessibility"),
+            "{section_ids:?}"
+        );
+        assert!(
+            section_ids.contains(&"settings.section:region_formats"),
+            "{section_ids:?}"
+        );
+        assert!(
+            section_ids.contains(&"settings.section:keyboard_shortcuts"),
+            "{section_ids:?}"
+        );
+        assert!(
+            !section_ids.contains(&"settings.section:sound"),
+            "hardware sections stay off the framework resource: {section_ids:?}"
+        );
+        assert!(
+            !section_ids.contains(&"settings.section:network"),
+            "hardware sections stay off the framework resource: {section_ids:?}"
+        );
+
+        let appearance = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "settings.section:appearance")
+            .expect("appearance section");
+        let appearance_ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(appearance_ids.contains(&"open"), "{appearance_ids:?}");
+        assert!(appearance_ids.contains(&"theme"), "{appearance_ids:?}");
+        assert!(appearance_ids.contains(&"ui_scale"), "{appearance_ids:?}");
+
+        let notifications = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "settings.section:notifications")
+            .expect("notifications section");
+        let notif_ids: Vec<&str> = notifications
+            .actions
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect();
+        assert!(notif_ids.contains(&"dnd"), "{notif_ids:?}");
+        assert!(
+            notifications.children.is_empty(),
+            "per-app rows are live extras, not document children"
+        );
+
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
+        let doc = AutoCommit::new();
+        assert!(!app.is_hosted(), "standalone tests stay on the local host");
+        let standalone = app.publish_resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "settings.root");
+        assert_eq!(standalone[0].children.len(), Category::ALL.len());
+        assert!(
+            standalone[0]
+                .children
+                .iter()
+                .any(|child| child.id.as_str() == "settings.section:sound"),
+            "standalone merges device-local sections into the one root"
+        );
+
+        app.mark_hosted_for_test();
+        assert!(app.is_hosted());
+        let extras = ui::resources::PublishesResources::resources(&app, &doc);
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.id.as_str() == "settings.section:sound"),
+            "hosted keeps hardware sections as extras"
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.id.as_str() == "settings.section:network"),
+            "hosted keeps hardware sections as extras"
+        );
+        assert!(
+            !extras
+                .iter()
+                .any(|resource| resource.id.as_str() == "settings.section:appearance"),
+            "hosted must not republish the SettingsAction door: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            !extras
+                .iter()
+                .any(|resource| resource.kind == "settings.root"),
+            "hosted must not republish settings.root beside ResourceRoot"
+        );
     }
 
     /// Ctrl+K tree, stable pane addresses, lookups, bounded inventories and refused stale targets.
@@ -5615,24 +5869,41 @@ mod tests {
             }
         }
 
-        // Case `exact_root_lookup_is_shallow_and_section_lookup_is_canonical`.
+        // Case `exact_root_lookup_is_the_published_document_door`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             let app = config.app();
             let doc = AutoCommit::new();
-            let root = ResourceProvider::resource(&app, &doc, "settings.root")
+            let root = app
+                .publish_resource(&doc, "settings.root")
                 .expect("root resolves exactly");
-            assert_eq!(root.children.len(), Category::ALL.len());
+            assert_eq!(root.kind, "settings.root");
             assert!(
-                root.children
+                root.actions.iter().any(|action| action.id == "apply"),
+                "the root lookup is the published document door"
+            );
+            assert_eq!(
+                root.children.len(),
+                Category::ALL
                     .iter()
-                    .all(|section| section.children.is_empty()),
-                "resolving the root must not enumerate live dynamic inventories"
+                    .copied()
+                    .filter(|category| is_document_door_category(*category))
+                    .count(),
+                "hardware panes stay off the exact root lookup"
+            );
+            assert!(
+                root.children.iter().all(|section| {
+                    section
+                        .children
+                        .iter()
+                        .all(|child| child.kind != "settings.account")
+                }),
+                "resolving the root must not enumerate live account inventories"
             );
 
-            let appearance =
-                ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
-                    .expect("one section resolves without rebuilding every other section");
+            let appearance = app
+                .publish_resource(&doc, &pane_resource_id(Category::Appearance))
+                .expect("one section resolves without rebuilding every other section");
             assert_eq!(appearance.label, Category::Appearance.label());
             assert!(appearance.actions.iter().any(|action| action.id == "theme"));
         }

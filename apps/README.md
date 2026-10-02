@@ -22,19 +22,35 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 
 ## Application contract (required)
 
-Expose each operation through the resource/action API. UI controls, scripts and
-agents must invoke the same typed operation:
+There is **one** resource / action / view model. Every app is a
+[`tilo-app`](../crates/sdk/tilo-app) `ResourceApp`: its state is a
+`tilo_resource::Resource`, its mutations are that resource's `Action` applied
+through the framework dispatcher, and its pixels are a `ViewCx` /
+`ResourceSurface` that only reads resource state and submits actions.
+`tilo_resource::publish` is the only bridge to the tree the palette, agents,
+scripts and the shell door see. Sync (Automerge, history, per-author undo,
+collaboration) is on by default — an app does not implement its own sync loop.
+External systems (CalDAV, a shared filesystem file) are projections drained by
+an `Effect`; undo of a document action that wrote a queue entry is the inverse
+action through `apply`.
 
-1. `Widget::resources` publishes stable resource and action IDs, labels,
-   availability, permission, risk/confirmation, retry, execution, discovery,
-   result, and typed parameters.
-2. CRDT mutations are serializable `Action` values registered in the app's
-   `ActionRegistry`. Views and effects are serializable operations handled only
-   by `Widget::start_operation`; every operation
-   type is declared by `local_resource_operation_handlers`.
+Do **not** hand-build a second `tilo_actions::Resource` tree for the same state,
+mutate a private `AutoCommit` from the widget, or keep an app-local action
+vocabulary that is not `Resource::Action`.
+
+UI controls, scripts and agents invoke the same typed operation:
+
+1. `ResourceApp` + `tilo_resource::publish` expose stable resource and action
+   IDs, labels, availability, permission, risk/confirmation, retry, execution,
+   discovery, result, and typed parameters (including nested child resources).
+2. CRDT mutations are the resource's serializable `Action`, registered under
+   `Resource::ACTION_TYPE`. Views and effects are serializable operations
+   handled only by `Widget::start_operation`; every operation type is declared
+   by `local_resource_operation_handlers`.
 3. Inputs needed by a headless caller are parameters, not hidden UI state. A
    file action may offer a portal when a person omits `path`, but agents and
-   scripts must be able to provide the path explicitly.
+   scripts must be able to provide the path explicitly. Saving into the shared
+   filesystem is a document action on a file resource, not an effect.
 4. `Immediate` means the work and its promised result exist before the handler
    returns. Queued, portal, network, worker, or service work returns `Accepted`,
    is polled by invocation ID, and terminates as succeeded, failed, or cancelled.

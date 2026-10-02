@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_actions::{
     ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
-    ExecutionLocus, ParamType, PermissionRequirement,
+    ExecutionLocus, OperationKind, ParamType, PermissionRequirement,
 };
 
 use crate::delta::Delta;
@@ -125,6 +125,14 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// Document actions whose payload is bound from `state` at publish time
+    /// (clear-all that names the current rows). Prefer [`declarations`] when
+    /// the payload does not need the live state. Published on the same
+    /// resource as [`declarations`].
+    fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
     /// The JSON Schema of [`Action`](Self::Action)'s serde form, published as
     /// the schema of the generic [`APPLY`] operation's argument (and of the
     /// `apply` members of [`GROUP`](crate::GROUP)), so agents and scripts can
@@ -137,10 +145,29 @@ pub trait Resource: Sized + 'static {
         None
     }
 
-    /// Resources nested inside this one (a track's clips, a list's items),
-    /// each exporting actions with their arguments already bound. Published
-    /// beneath the root resource for the palette, agents and scripts.
+    /// Resources nested inside this one (a track's clips, a list's items,
+    /// a page's rich-text body), each exporting actions with their arguments
+    /// already bound. Published beneath the root resource for the palette,
+    /// agents and scripts — the same door as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
+        Vec::new()
+    }
+
+    /// View and effect operations on this resource: local presentation and
+    /// jobs that have no document delta (show a week, start a sync drain,
+    /// open a system file picker). They are published on the same tree as
+    /// [`declarations`](Self::declarations). A document mutation does not
+    /// belong here — it is a [`declarations`](Self::declarations) entry or
+    /// [`APPLY`]. `publish` drops a `Document` spec so it cannot become a
+    /// second write path.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
+    /// Named presentations of this resource (editor, reader) with stable ids.
+    /// Not an action called `open`: ordinary presentation toggles never become
+    /// composable views by accident. Defaults to none.
+    fn views(_state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
         Vec::new()
     }
 
@@ -281,9 +308,10 @@ pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> Enc
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 fn refused<R: Resource>(reason: &str) -> EncodedAction {
+    let _ = R::ACTION_TYPE;
     EncodedAction {
-        type_id: R::ACTION_TYPE.to_owned(),
-        payload: serde_json::to_vec(&serde_json::json!({ "refused": reason })).unwrap_or_default(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+        payload: reason.as_bytes().to_vec(),
     }
 }
 
@@ -439,8 +467,12 @@ fn group_spec<R: Resource>() -> ActionSpec {
 }
 
 /// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, and the nested
-/// resources.
+/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, the named
+/// [`Resource::views`], and the nested resources.
+///
+/// This is the only bridge from a [`Resource`] type to the
+/// [`tilo_actions::Resource`] tree the palette, agents, scripts and the shell
+/// door see. Apps do not construct a second tree for the same state.
 ///
 /// An action offered on the items of a collection (see [`crate::items`])
 /// stays published on the record, with its id parameter, for scripts and
@@ -460,6 +492,20 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
         } else {
             spec
         });
+    }
+    for spec in R::bound_actions(state) {
+        // Document actions and state-dependent views or effects. Static views
+        // and effects stay on `local_operations`.
+        resource = resource.with_action(spec);
+    }
+    for view in R::views(state) {
+        resource = resource.with_view(view);
+    }
+    for spec in R::local_operations() {
+        if spec.kind == OperationKind::Document {
+            continue;
+        }
+        resource = resource.with_action(spec);
     }
     resource
         .with_action(apply_spec::<R>())

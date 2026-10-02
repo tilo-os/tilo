@@ -56,6 +56,10 @@ impl DisksDoc {
 
     pub fn write_topology(doc: &mut AutoCommit, topo: &Topology) {
         let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
+        Self::write_topology_json(doc, &json);
+    }
+
+    pub fn write_topology_json(doc: &mut AutoCommit, json: &str) {
         let _ = doc.put(&ROOT, "topology", json);
     }
 

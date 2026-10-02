@@ -1485,6 +1485,82 @@ pub trait Widget {
         false
     }
 
+    /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
+    /// control dispatches the same [`tilo_actions`] action its
+    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
+    /// document heads captured **just before** here, so the host can record
+    /// one undo boundary the same way a palette dispatch does. Rising-edge:
+    /// reading MUST clear it.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        None
+    }
+
+    /// Rising-edge compensating document actions for the bracket
+    /// [`Self::take_committed_action`] just opened: `(undo_via, redo_via)`.
+    /// Set when the forward action's
+    /// [`tilo_actions::Action::inverse_before`] recorded an outside
+    /// consequence. Default: none (pure CRDT undo via inverse patches).
+    fn take_action_revert(
+        &mut self,
+    ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
+        None
+    }
+
+    /// Whether the undo step this widget's last reported boundary opened
+    /// stays open for the actions that continue it — the rest of a word
+    /// typed a keystroke at a time. A hosted component then closes the step
+    /// at the widget's next boundary, or before an undo, a save or a merge,
+    /// instead of after this event. Answered by the widget itself, never its
+    /// children.
+    fn keeps_undo_step_open(&self) -> bool {
+        false
+    }
+
+    /// Host → widget: the live state of the undo history, published once per
+    /// frame to every laid-out widget.
+    ///
+    /// A widget only ever receives `&mut AutoCommit`, which carries the
+    /// document but not its history — so without this a control could not tell
+    /// whether there was anything to undo, and every app was reduced to
+    /// printing the shortcut and hoping. Store the status (embed an
+    /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
+    /// [`is_enabled`](Widget::is_enabled), and in
+    /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
+    /// is exactly where the disabled state must be reflected.
+    ///
+    /// The host sweeps its `node_map`, so this reaches a widget at any depth
+    /// with no container forwarding. Call the provider only when the widget
+    /// consumes status; deriving historical summaries can require a document
+    /// diff. Default: ignore the provider without evaluating it.
+    fn set_undo_status(&mut self, _status: &mut dyn FnMut() -> crate::undo::UndoStatus) {}
+
+    /// Widget → host: an undo or redo the user asked for.
+    ///
+    /// The host drains this after each event and performs it through
+    /// `App::perform_undo` /
+    /// `App::perform_redo` — the same methods
+    /// the Ctrl+Z key handler calls, so a button and the shortcut are one
+    /// implementation and cannot drift.
+    ///
+    /// Rising-edge: reading MUST clear it, so one activation is one undo.
+    /// Default: nothing requested.
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        None
+    }
+
+    /// Offer a host keyboard undo/redo shortcut to focused widget-local
+    /// history before the application document consumes it.
+    ///
+    /// The default recursively asks retained children. A component with its
+    /// own editing history should return `true` only while focus is inside
+    /// that component and it has consumed the request. Returning `false`
+    /// preserves the standard collaboration-safe document undo behavior.
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.handle_local_undo_request(request))
+    }
+
     /// Apply an action another app in this room published, if this app owns
     /// the document — lets an app address a document it doesn't hold by
     /// saying what should happen instead of writing bytes directly, keeping

@@ -630,7 +630,7 @@ pub(crate) fn assets_complete(
 /// A page's body: rich text.
 fn validate_body(doc: &AutoCommit, page: &ObjId) -> Result<(), String> {
     let body = object(doc, page, "body", ObjType::Map)?;
-    qdoc::model::open(doc, &body)
+    tilo_doc::model::open(doc, &body)
         .map(|_| ())
         .map_err(|error| format!("body is not rich text: {error}"))
 }
@@ -800,7 +800,7 @@ mod tests {
             let action = crate::actions::add_image_asset_action(
                 page,
                 bytes.clone(),
-                qdoc_rich_text::RichTextAction::AppendParagraph {
+                tilo_document::RichTextAction::AppendParagraph {
                     text: format!("![Scan](asset:{})", blake3::hash(&bytes).to_hex()),
                 },
             );
@@ -820,7 +820,7 @@ mod tests {
                 page: page.to_string(),
                 digest: "0".repeat(64),
                 bytes: b"not an image".to_vec(),
-                edit: qdoc_rich_text::RichTextAction::AppendParagraph {
+                edit: tilo_document::RichTextAction::AppendParagraph {
                     text: "![Bad](asset:bad)".into(),
                 },
             };

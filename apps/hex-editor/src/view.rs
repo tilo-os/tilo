@@ -214,6 +214,9 @@ pub struct HexView {
     shots_overlay: bool,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
+    /// Local host for standalone tests; the framework dispatcher once the
+    /// surface is attached. Hosted publication keeps only live cursor extras.
+    pub(crate) actions: crate::resource::ActionSink,
 }
 
 impl HexView {
@@ -262,7 +265,21 @@ impl HexView {
             shots_status: false,
             shots_overlay: false,
             focused: false,
+            actions: crate::resource::ActionSink::default(),
         }
+    }
+
+    /// Whether this surface is under the framework [`ResourceApp`] host.
+    #[allow(dead_code, reason = "framework migration test helper")]
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    /// Standalone tests stay on the local action host.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// The editor with no file loaded — the honest live default. Shows a
@@ -2309,13 +2326,34 @@ impl Widget for HexView {
 }
 
 impl ui::resources::PublishesResources for HexView {
-    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the document door. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// `hex_editor.document` — keep only live cursor / selection byte extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.actions.is_hosted() {
+            return crate::actions::live_buffer_extras(&self.hex_resource_ctx());
+        }
+        self.publish_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.actions.is_hosted() && id == "hex_editor.document" {
+            return None;
+        }
+        find_resource(&self.publish_resources(doc), id)
+    }
+}
+
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl HexView {
@@ -2324,7 +2362,7 @@ impl HexView {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
@@ -2348,6 +2386,14 @@ impl HexView {
                 self.dirty = true;
             }
             HexOperation::Edit { edit } if self.has_file => {
+                // Raw bytes: the sink returns before the framework dispatcher.
+                // The buffer stays on this device.
+                let action = crate::actions::action_from_wire(&edit);
+                self.actions.dispatch_document(
+                    doc,
+                    &action,
+                    ui::tilo_actions::ActionContext::default(),
+                );
                 self.model.apply_local_edit(&edit.into());
                 self.record_local_history();
                 self.dirty = true;
@@ -2371,7 +2417,7 @@ impl HexView {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {

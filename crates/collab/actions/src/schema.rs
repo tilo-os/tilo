@@ -192,6 +192,10 @@ pub fn catalogue_schema_bytes(entries: &[CatalogueSchemaEntry]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[allow(
+    deprecated,
+    reason = "tests pin ResourceProvider behaviour while the trait stays re-exported"
+)]
 mod tests {
     use super::*;
     use crate::{EncodedAction, Resource, ResourceProvider, door};

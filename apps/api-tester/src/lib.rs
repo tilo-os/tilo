@@ -44,6 +44,7 @@ mod http;
 mod model;
 mod navrow;
 mod palette;
+pub mod resource;
 mod responsive;
 mod search_provider;
 mod seed;
@@ -59,6 +60,7 @@ pub fn app_root_demo() -> Box<dyn Widget> {
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ApiTesterApp::new())
 }
+pub use resource::{ApiTester, ApiTesterShell};
 
 /// The app as every host mounts it: the live root and its actions.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

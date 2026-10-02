@@ -70,7 +70,23 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let n = parse_bench_n(&args).unwrap_or(400);
         return run_clicks_bench(shots_viewport(), n);
     }
-    ui::launch::run(&launch_spec())?;
+    // Shots keep the standalone renderer (seeded fixtures, TILO_CALC_* knobs).
+    // The live window runs on the resource/action framework.
+    let standalone = args.iter().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    });
+    if standalone {
+        ui::launch::run(&launch_spec())?;
+    } else {
+        ui::framework::run::<calculator::CalculatorShell>();
+    }
     Ok(())
 }
 

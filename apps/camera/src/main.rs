@@ -121,6 +121,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 pub fn main() {
+    if !camera::standalone_launch() {
+        ui::framework::run::<camera::CameraShell>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.camera", camera::app_root)
             .shot_handler(render_shot)

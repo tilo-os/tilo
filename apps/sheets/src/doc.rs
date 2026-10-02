@@ -525,6 +525,32 @@ impl SheetsDoc {
         (0..n).map(|i| Self::sheet_color(doc, i)).collect()
     }
 
+    /// All sheet names in order, without creating a missing workbook subtree.
+    pub fn sheet_names_readonly(doc: &AutoCommit) -> Vec<String> {
+        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
+            return Vec::new();
+        };
+        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
+            return Vec::new();
+        };
+        let n = doc.length(&sheets);
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let name = match doc.get(&sheets, i) {
+                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
+                    read_str(doc, &sheet, "name").unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            out.push(if name.is_empty() {
+                format!("Sheet{}", i + 1)
+            } else {
+                name
+            });
+        }
+        out
+    }
+
     /// All sheet names in order.
     pub fn sheet_names(doc: &mut AutoCommit) -> Vec<String> {
         let sheets = Self::sheets_list(doc);

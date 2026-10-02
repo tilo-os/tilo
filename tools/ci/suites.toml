@@ -574,10 +574,10 @@ inputs = ["crates/system/block-devices/tests/fixtures/disks.json"]
 readers = ["apps/disks/src/probe.rs"]
 
 [[cargo]]
-package = "qdoc-codecs"
+package = "tilo-doc-codecs"
 inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs",
-           "crates/doc/qdoc-codecs/tests/binary_inputs.rs", "crates/doc/qdoc-codecs/tests/office_fidelity.rs"]
+readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/tilo-doc-codecs/tests/office_roundtrip.rs",
+           "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
 
 [[cargo]]
 package = "tilo-font-catalog"

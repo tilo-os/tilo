@@ -1,15 +1,9 @@
 //! Authenticator — standard Tilo application entry point.
 //!
-//! `--shots PATH` uses a deterministic sample vault. `--scenario NAME` (the
-//! shared screenshot vocabulary every app speaks; `--screen NAME` is the
-//! older spelling and still accepted) selects `list`, `add`, `add-advanced`,
-//! `add-picker`, `empty`, `provision`, `persistence-error` or
-//! `missing-secret`; the default is the account list. `--viewport WxH`
-//! controls the screenshot size.
+//! Live windows run on the resource framework. `--shots` stays on the
+//! standalone seeded roots.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop. Crash-producing lints remain denied.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -70,22 +64,39 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 fn configure(app: &mut ui::App) {
     app.set_window_title(Some("Authenticator".into()));
-    // One-time codes are live credentials: keep them out of screenshots,
-    // recordings and screen shares.
     app.set_capture_protected(true);
     totp::actions::register(app.action_registry_mut());
+}
+
+fn wants_standalone() -> bool {
+    std::env::args().any(|arg| {
+        [
+            "--shots",
+            "--responsive-matrix",
+            "--native-audit",
+            "--headless",
+        ]
+        .iter()
+        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
+    })
+}
+
+fn shot_spec() -> LaunchSpec {
+    LaunchSpec::new(APP_ID, totp::app_root)
+        .shot_root(shot_root)
+        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .scenarios(SCREENS)
+        .allowed_options(&["--screen"])
+        .configure_app(configure)
 }
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new(APP_ID, totp::app_root)
-            .shot_root(shot_root)
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .scenarios(SCREENS)
-            .allowed_options(&["--screen"])
-            .configure_app(configure),
-    );
+    if wants_standalone() {
+        ui::launch::run_or_exit(&shot_spec());
+        return;
+    }
+    ui::launch::run_or_exit(&totp::launch_spec());
 }

@@ -251,7 +251,7 @@ pub struct BackupsApp {
     /// Framework-owned action dispatch: every retention-policy edit goes through
     /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Transient floating status bubble: the health + snapshot tally surfaced as
     /// a bottom-right pill instead of a permanent bottom strip, so the dashboard
     /// spans to the window bottom. Poked when the tally/health changes and shown
@@ -375,7 +375,7 @@ impl BackupsApp {
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
             force_rail_open: std::env::var("TILO_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
@@ -419,8 +419,47 @@ impl BackupsApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
+    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    /// Show the retention policy the framework resource already holds.
+    /// An empty/default projection must not wipe unpublished local policy.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::BackupsState) {
+        let untouched = state.policy == RetentionPolicy::default();
+        let local_unpublished = self.ui.policy != RetentionPolicy::default();
+        if untouched && local_unpublished {
+            return;
+        }
+        self.ui.policy = state.policy;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ui_policy(&self) -> &RetentionPolicy {
+        &self.ui.policy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ui_policy_mut(&mut self) -> &mut RetentionPolicy {
+        &mut self.ui.policy
+    }
+
+    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Backups>,
+    ) {
+        self.actions.attach(dispatcher);
     }
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
@@ -4785,7 +4824,8 @@ impl Widget for BackupsApp {
         let (state, path) = ui::doc::document(state, path);
         self.drain_effects();
         if !self.seeded {
-            BackupsDoc::seed(state, path);
+            // Readers fall back to the default policy. The record stays empty
+            // until a retention action writes a field.
             self.seeded = true;
         }
         self.load_cache(state, path);
@@ -5138,13 +5178,20 @@ impl ui::search::capability::SearchSource for BackupsApp {
 }
 
 impl ui::resources::PublishesResources for BackupsApp {
-    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
-    /// (see [`crate::actions`]).
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// policy Document ops ride [`tilo_resource::publish`]; this returns only
+    /// live catalog extras (never a second `backups.policy` / workspace root).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+        if self.is_hosted() && id == crate::actions::BACKUPS_RESOURCE_ID {
+            return None;
+        }
+        self.publish_resource(doc, id)
     }
 }
 
@@ -6102,16 +6149,27 @@ mod tests {
             "screen readers receive the same whole-snapshot contract as sighted users"
         );
         let resources = ui::resources::resources(&f.app, &f.state.doc);
-        assert_eq!(resources.len(), 2, "policy and catalog are driveable");
+        let flat = tilo_actions::flatten(&resources);
         assert!(
             resources
                 .iter()
-                .any(|resource| resource.kind == "backups.policy")
+                .any(|resource| resource.kind == "backups.workspace"),
+            "workspace catalog is driveable: {:?}",
+            resources
+                .iter()
+                .map(|r| r.kind.as_str())
+                .collect::<Vec<_>>(),
         );
         assert!(
-            resources
-                .iter()
-                .any(|resource| resource.kind == "backups.workspace")
+            flat.iter()
+                .any(|entry| entry.resource_kind == "backups.policy")
+                || resources.iter().any(|resource| {
+                    resource
+                        .children
+                        .iter()
+                        .any(|child| child.kind == "backups.policy")
+                }),
+            "policy Document ops ride the published workspace child",
         );
         assert!(
             tilo_actions::flatten(&resources)
@@ -6222,5 +6280,21 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let fitted = renderer.elide_to_width(&metadata, 11.5, 342.0);
         assert!(renderer.measure(&fitted, 11.5, None).0 <= 342.0);
+    }
+
+    #[test]
+    fn a_fresh_backup_record_stays_empty_until_a_retention_action() {
+        use automerge::ReadDoc;
+        use ui::widget::Widget;
+        let mut app = BackupsApp::new();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(
+            state
+                .doc
+                .get(automerge::ROOT, "ret_hourly")
+                .unwrap()
+                .is_none()
+        );
     }
 }

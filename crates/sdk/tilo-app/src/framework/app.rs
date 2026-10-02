@@ -62,6 +62,15 @@ pub trait ResourceApp: 'static {
         <Self::Resource as Resource>::LABEL.to_owned()
     }
 
+    /// View and effect operations of this app's presentation, published on
+    /// the same resource as [`Resource::local_operations`]. A shared resource
+    /// type (rich text) does not know about one app's chrome. Document
+    /// mutations do not belong here. History does not either: it is the
+    /// resource's own history, not a toggle beside it.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
     /// Named screenshot scenarios for `--shots --scenario NAME`.
     fn scenarios() -> &'static [&'static str] {
         &[]
@@ -181,6 +190,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let content = A::view(&mut cx);
     ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
+        .with_presentation(A::local_operations())
 }
 
 #[allow(
@@ -339,7 +349,7 @@ fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
     A::SHOT_VIEWPORT
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     LaunchSpec::from_definition(definition::<A>())
@@ -350,6 +360,13 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .scenarios(A::scenarios())
         .allowed_options(&["--data-dir"])
         .allowed_live_options(&["--data-dir"])
+}
+
+#[cfg(not(tilo_native_runner))]
+/// Named for the same apps that build a native [`LaunchSpec`]; the browser
+/// host mounts [`definition`] itself and never runs this path.
+pub fn launch_spec<A: ResourceApp>() -> crate::launch::LaunchSpec {
+    crate::launch::LaunchSpec::from_definition(definition::<A>())
 }
 
 #[cfg(feature = "native")]
