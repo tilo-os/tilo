@@ -238,17 +238,11 @@ pub fn provide_resources(state: &VaultState) -> Vec<PublishedResource> {
     )]
 }
 
-/// Live launch: framework host, capture-protected (secrets on screen).
+/// Live launch with capture protection for stored secrets.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    let spec = ui::framework::launch_spec::<PasswordsShell>();
-    // Windowed App knobs (title, capture protection) are native-only; the
-    // browser host mounts the definition without a live App runner.
-    #[cfg(not(target_arch = "wasm32"))]
-    let spec = spec.configure_app(|app| {
-        app.set_window_title(Some("Passwords".into()));
-        app.set_capture_protected(true);
-    });
-    spec
+    // Window title / capture protection live in main.rs via configure_app
+    // (native App only). The browser mounts the definition without that path.
+    ui::framework::launch_spec::<PasswordsShell>()
 }
 
 #[cfg(test)]

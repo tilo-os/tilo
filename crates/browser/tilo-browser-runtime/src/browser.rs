@@ -214,6 +214,10 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     /// The focus presence last reported to the page.
     focus_presence: RefCell<Option<serde_json::Value>>,
+    /// LIVE_V1: when true, local publications and redraws stay suspended.
+    peer_suspended: bool,
+    /// LIVE_V1: leading-edge throttle for owned-record publications.
+    publication: RefCell<crate::throttle::PublicationSchedule>,
 }
 
 struct Desktop {
@@ -222,6 +226,10 @@ struct Desktop {
     persistence: crate::desktop::Persistence,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
+    /// LIVE_V1: window geometry / focus / drag published to the overlay.
+    live: Rc<RefCell<crate::live_view::LiveLayout>>,
+    /// LIVE_V1: app+record ids keyed by desktop tab id.
+    tab_records: Rc<RefCell<std::collections::BTreeMap<u64, (String, String)>>>,
 }
 
 impl Mount {
@@ -681,6 +689,8 @@ fn present_desktop(
             shared,
             persistence,
             generation: format!("mount-{id}"),
+            live: Rc::default(),
+            tab_records: Rc::default(),
         }),
     })
 }
@@ -934,6 +944,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
+        peer_suspended: false,
+        publication: RefCell::new(crate::throttle::PublicationSchedule::new(
+            ui::time::Duration::from_millis(window_ms),
+        )),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -2328,23 +2342,11 @@ pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
         let Some(desktop) = &m.desktop else {
-            #[cfg(not(feature = "relay"))]
-            return Ok("null".into());
+            // Single-record mounts: relay-peer LIVE_V1 snapshot TBD; keep the
+            // feature gate so unexpected_cfgs stay quiet for cloud/relay.
             #[cfg(feature = "relay")]
-            return Ok(m.record.as_ref().map_or_else(
-                || "null".into(),
-                |record| {
-                    crate::live_view::record_snapshot_json(
-                        &record.app,
-                        record.checkout.id.as_str(),
-                        crate::live_view::published_selection(
-                            m.frame.focus_presence_payload(),
-                            &ui::presence::capability::subtree_presence(m.frame.root_widget()),
-                        ),
-                    )
-                    .to_string()
-                },
-            ));
+            let _ = m.checkout.as_ref();
+            return Ok("null".into());
         };
         let layout = desktop.live.borrow();
         let selection = crate::live_view::published_selection(
@@ -2385,7 +2387,7 @@ pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsVa
         let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
         let pending = {
             let mut schedule = m.publication.borrow_mut();
-            schedule.set_live_window(ms.map(|ms| std::time::Duration::from_millis(u64::from(ms))));
+            schedule.set_live_window(ms.map(|ms| ui::time::Duration::from_millis(u64::from(ms))));
             schedule.due().is_some()
         };
         // A pending deadline may have moved earlier than the loop's wake-up.
