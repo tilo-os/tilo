@@ -97,7 +97,6 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 [ "$(grep -Fc 'file: os/Containerfile.wpe' "$os")" = 2 ] \
   && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 8 ] \
   && grep -Fq "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)" "$os" \
-  && grep -Fq "no-cache: \${{ matrix.role == 'reproduce' }}" "$os" \
   && ok 'OS image builds take the browser engine from its isolated recipe' \
   || bad 'an OS image build lacks the isolated browser engine context'
 

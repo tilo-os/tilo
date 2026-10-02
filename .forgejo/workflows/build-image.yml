@@ -268,11 +268,11 @@ jobs:
           elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
-            # Both lanes run on the release class like a generic publication's.
-            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
+            # It runs on the release class like a generic publication.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"}]}'
           elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
-              matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
+              matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
             else
               # A protected manual or nightly main publication runs on the
               # release class: the large runners' image (it carries the release
@@ -281,11 +281,10 @@ jobs:
               # 10 GiB. The early KVM probe rejects publishing if nested
               # virtualization is unavailable. Tags retain the dedicated release
               # fleet above.
-              # A publication lane holds its slot while it waits for its
-              # reproduction, so each class has at least two slots per
-              # architecture: an uncached thin-LTO reproduction on a large ARM
-              # runner (2 jobs) does not fit in three hours.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
+              # One lane per architecture: it builds the publication, then
+              # rebuilds it from a cleared builder for the reproducibility
+              # gate, so a release holds one release slot per architecture.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
@@ -1080,13 +1079,6 @@ jobs:
           if [[ $GITHUB_EVENT_NAME != pull_request ]]; then
             validate=true
           fi
-          # The reproduction lane of a publication builds the same inputs from
-          # scratch and reports only its manifest digest; the publication lane
-          # installs, gates, signs and publishes.
-          if [[ '${{ matrix.role }}' == reproduce ]]; then
-            [[ $publish == true ]] || { echo '::error::a reproduction lane runs only for a publication'; exit 1; }
-            validate=false
-          fi
           # Build / OS dev publishes images and nothing else: no disk install.
           fast=false
           if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
@@ -1239,7 +1231,7 @@ jobs:
       # the tracked PCR authority. sign-target-prediction.sh repeats every
       # check, including the root-owned signer path, on the final image.
       - name: Prove the release signer before building
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           ./os/dev/probe-release-signer.py "$TILO_PCR_PREDICTION_SIGNER" "$TILO_EFI_SIGNING_CERT_SHA256"
@@ -1430,11 +1422,10 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
             WPE_BUILD_JOBS=${{ env.TILO_WPE_JOBS }}
           provenance: false
-          no-cache: ${{ matrix.role == 'reproduce' }}
           cache-from: |
-            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
-            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
       # The build toolchain first, cached on its own, then the compile, which
       # goes through the compiler cache. A registry cache is only written when
@@ -1443,7 +1434,7 @@ jobs:
       # steps reuse these results from local BuildKit state.
       - name: Build and cache the build toolchain
         id: toolchain-stage
-        if: matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && steps.wpe-stage.outcome != 'failure'
+        if: steps.release-mode.outputs.publish != 'true' && steps.wpe-stage.outcome != 'failure'
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1572,7 +1563,7 @@ jobs:
 
       - name: Build and cache the compile stages
         id: compile-stages
-        if: matrix.role != 'reproduce' && steps.wpe-stage.outcome != 'failure'
+        if: steps.wpe-stage.outcome != 'failure'
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1828,14 +1819,14 @@ jobs:
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
       - name: Recognize a missing registry cache blob
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure'
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"
 
       - name: Build the browser engine stage without the damaged layer cache
         id: wpe-uncached
-        if: matrix.role != 'reproduce' && steps.wpe-stage.outcome == 'failure'
+        if: steps.wpe-stage.outcome == 'failure'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
@@ -1855,7 +1846,7 @@ jobs:
       # cache tag, replacing the manifests that named the missing blob.
       - name: Build the Tilo image without the damaged layer cache
         id: build-uncached
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1965,8 +1956,21 @@ jobs:
       # Only a publication (tag, nightly or protected manual main release)
       # pays for the second uncached build; integration images for tilo-ci
       # and dev disks are never signed or published and skip it.
+      # The rebuild must not reuse anything the publication build left in the
+      # builder: its layer cache, cache mounts and compiler state all go. The
+      # publication image is already exported to /var/tmp/tilo-image.tar.
+      - name: Clear the builder for the independent rebuild
+        if: steps.release-mode.outputs.publish == 'true' && steps.wpe-stage.outcome != 'failure'
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILDER_NAME"
+          docker buildx prune --builder "$BUILDER_NAME" --all --force
+          docker buildx du --builder "$BUILDER_NAME" | tail -1
+
       - name: Independently rebuild the release candidate
-        if: matrix.role == 'reproduce' && steps.wpe-stage.outcome != 'failure'
+        if: steps.release-mode.outputs.publish == 'true' && steps.wpe-stage.outcome != 'failure'
         id: repro
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -2031,38 +2035,6 @@ jobs:
             "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" \
             'docker://registry.tilo.so/tilo/tilo-repro-debug:${{ github.run_id }}-${{ matrix.arch }}-reproduce'
 
-      # Hand the rebuild's manifest digest to the publication lane of this run,
-      # which waits for it before installing or signing anything. A failed
-      # rebuild says so, so the publication fails instead of waiting it out.
-      #
-      # It reports even when the lane failed before its builder or registry
-      # login existed: it logs in itself and builds the one-label image with
-      # the default builder when this job never started its own.
-      - name: Report the independent rebuild to the publication lane
-        if: always() && matrix.role == 'reproduce'
-        env:
-          REPRO_OUTCOME: ${{ steps.repro.outcome }}
-          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
-          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          manifest=failed
-          if [[ $REPRO_OUTCOME == success ]]; then
-            repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
-              "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
-            manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
-            [[ $manifest =~ ^[0-9a-f]{64}$ ]]
-          fi
-          context="$(mktemp -d)"
-          printf 'FROM scratch\nLABEL org.tilo.reproduction.manifest=%s\n' "$manifest" > "$context/Containerfile"
-          printf '%s' "$REGISTRY_PASSWORD" | docker login registry.tilo.so --username '${{ github.actor }}' --password-stdin
-          builder=()
-          [[ -z $BUILDER_NAME ]] || builder=(--builder "$BUILDER_NAME")
-          docker buildx build "${builder[@]}" --provenance=false --push \
-            -f "$context/Containerfile" -t 'registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
-          echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
-          [[ $manifest != failed ]]
-
       # A failed digest gate previously left only two opaque manifest hashes:
       # the independent archive disappears with its runner. Retain a tiny,
       # source-bound list of layer/config digests from each lane, with no blob
@@ -2072,43 +2044,40 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          role=primary
-          archive=/var/tmp/tilo-image.tar
-          if [[ '${{ matrix.role }}' == reproduce ]]; then
-            role=reproduce
-            archive=/var/tmp/tilo-image-repro.tar
-          fi
-          python3 os/scripts/oci-archive-layer-report.py "$archive" oci-layer-report.json \
-            --source '${{ github.sha }}' --run-id '${{ github.run_id }}' \
-            --arch '${{ matrix.arch }}' --role "$role"
+          mkdir -p oci-layer-report
+          for role in primary reproduce; do
+            archive=/var/tmp/tilo-image.tar
+            [[ $role == primary ]] || archive=/var/tmp/tilo-image-repro.tar
+            [[ -s $archive ]] || continue
+            python3 os/scripts/oci-archive-layer-report.py "$archive" "oci-layer-report/$role.json" \
+              --source '${{ github.sha }}' --run-id '${{ github.run_id }}' \
+              --arch '${{ matrix.arch }}' --role "$role"
+          done
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
-          name: oci-layer-report-${{ matrix.arch }}-${{ matrix.role == 'reproduce' && 'reproduce' || 'primary' }}
-          path: oci-layer-report.json
+          name: oci-layer-report-${{ matrix.arch }}
+          path: oci-layer-report/
           if-no-files-found: warn
 
-      # The publication lane: the uncached rebuild ran in parallel in the
-      # reproduction lane of this run. Wait for its manifest digest.
-      - name: Wait for the independent rebuild
+      # The rebuild's manifest digest, for the comparison before anything is
+      # installed or signed. A failed rebuild fails the publication.
+      - name: Measure the independent rebuild
         id: reproduction
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
-        timeout-minutes: 300
+        if: steps.release-mode.outputs.publish == 'true'
+        env:
+          REPRO_OUTCOME: ${{ steps.repro.outcome }}
         run: |
           set -euo pipefail
-          while true; do
-            manifest="$(skopeo inspect 'docker://registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' 2>/dev/null \
-              | jq -r '.Labels["org.tilo.reproduction.manifest"] // empty' || true)"
-            case "$manifest" in
-              failed) echo '::error::the independent rebuild failed'; exit 1 ;;
-              '') sleep 60 ;;
-              *) [[ $manifest =~ ^[0-9a-f]{64}$ ]]; break ;;
-            esac
-          done
+          [[ $REPRO_OUTCOME == success ]] || { echo '::error::the independent rebuild failed'; exit 1; }
+          repro_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image-repro.tar \
+            "$TILO_OS_REPOSITORY:repro-${{ github.sha }}" '${{ steps.repro.outputs.digest }}')"
+          manifest="$(skopeo inspect --raw "oci-archive:/var/tmp/tilo-image-repro.tar:$repro_ref" | sha256sum | awk '{print $1}')"
+          [[ $manifest =~ ^[0-9a-f]{64}$ ]]
           echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
-          echo "::notice::independent rebuild reported manifest sha256:$manifest"
+          echo "::notice::independent rebuild of ${{ matrix.arch }}: manifest sha256:$manifest"
 
       - name: Release build cache before image installation
         if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-fast != 'true'
@@ -2342,7 +2311,7 @@ jobs:
       # On a mismatch, retain both images under scratch tags and print which
       # layers and files differ before failing.
       - name: Compare with the independent rebuild
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}
           BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
@@ -2710,7 +2679,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: tilo-os-boot-failure-${{ matrix.arch }}${{ matrix.role && format('-{0}', matrix.role) || '' }}
+          name: tilo-os-boot-failure-${{ matrix.arch }}
           path: |
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/qemu.log
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
@@ -2754,7 +2723,7 @@ jobs:
       # digest so the signature is bound to the exact image, not a mutable tag.
       # Skipped on PRs (the image isn't pushed; nothing to sign).
       - name: Sign the published image
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           # URI only (for example gcpkms://, awskms://, azurekms:// or
           # hashivault://). The signing key is non-exportable and never enters
@@ -2767,7 +2736,7 @@ jobs:
             "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       - name: Install checksum-pinned Syft from the persistent asset cache
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         run: ./os/dev/install-cached-syft.sh
 
       # SBOM (security plan §9): Rekor's public instance admits at most 100 KB
@@ -2775,7 +2744,7 @@ jobs:
       # inventory in the OCI registry and bind its exact SHA-256 into the
       # KMS-signed, Rekor-logged SLSA provenance below.
       - name: Generate SBOM (syft → SPDX)
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           syft \
@@ -2793,7 +2762,7 @@ jobs:
           mv sbom.normalized.json sbom.spdx.json
 
       - name: Attach the complete SPDX SBOM and pin its digest for provenance
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           image="$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
@@ -2802,7 +2771,7 @@ jobs:
           printf 'TILO_SBOM_SHA256=%s\n' "$(sha256sum sbom.spdx.json | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - name: Generate and attest SLSA provenance
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -2828,7 +2797,7 @@ jobs:
       # keys; this release-signed statement is the migration anchor and is still
       # required before any channel becomes visible.
       - name: Generate and attest release freshness
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -2843,7 +2812,7 @@ jobs:
             "$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
 
       - name: Verify and describe the native release child
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
           image="$TILO_OS_REPOSITORY@${{ steps.release.outputs.digest }}"
@@ -2898,7 +2867,7 @@ jobs:
       # against keys/cosign.pub and its provenance, then builds, boots and
       # publishes this architecture alone, never waiting on the other lane.
       - name: Request this architecture's dev disk from the signed child
-        if: steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
         # A dev disk must never hold back a release.
         continue-on-error: true
         env:
@@ -2924,7 +2893,7 @@ jobs:
           echo "::notice::requested tilo-vm:$tag ($ARCH) from $IMAGE"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'
+        if: steps.release-mode.outputs.publish == 'true'
         with:
           name: tilo-os-child-${{ matrix.arch }}
           path: release-child/${{ matrix.arch }}.json
