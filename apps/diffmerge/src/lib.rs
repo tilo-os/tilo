@@ -83,8 +83,9 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Diff & Merge")
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Diffmerge, DiffmergeShell, launch_spec};
 
 pub mod framework_history;
-pub use resource::{Diffmerge, DiffmergeShell, launch_spec};
+
+#[cfg(test)]
+mod framework_history_tests;

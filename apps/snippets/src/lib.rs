@@ -97,8 +97,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     Box::new(app)
 }
 
-#[cfg(test)]
-mod framework_history_tests;
+pub use resource::{Snippets, SnippetsShell, launch_spec};
 
 pub mod framework_history;
-pub use resource::{Snippets, SnippetsShell, launch_spec};
+
+#[cfg(test)]
+mod framework_history_tests;

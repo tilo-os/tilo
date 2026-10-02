@@ -580,6 +580,8 @@ pub fn seed_scenario(
     }
 }
 
+pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};
+
 #[cfg(test)]
 mod framework_history_tests;
 
@@ -635,4 +637,3 @@ mod camera_import_tests {
         }
     }
 }
-pub use resource::{Photos, PhotosShell, PhotosState, launch_spec, standalone_launch};
