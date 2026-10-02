@@ -60,6 +60,7 @@ echo "== collaborative Files shipped-image contract ($mode) =="
 
 # Executables and the host FUSE prerequisite must be in the immutable image.
 for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
+            /usr/bin/tilo-runtime-mcp \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
             /usr/libexec/tilo/native-atspi-smoke.sh \
@@ -361,8 +362,11 @@ if [ "$mode" = runtime ]; then
     || die "published Tilo Wayland socket is absent"
 
   # Exercise the verified immutable package payload, which is the artifact the
-  # installed registry and launcher resolve.
-  LD_LIBRARY_PATH="$runtime_lib" TILO_FILES_BINARY="$payload/bin/file-explorer" \
+  # installed registry and launcher resolve. Thin packages require the signed
+  # runtime bundle's library directory, just as the launcher supplies it. Do
+  # not inherit host library overrides into this installed-payload check.
+  LD_LIBRARY_PATH="$runtime_lib" \
+  TILO_FILES_BINARY="$payload/bin/file-explorer" \
     /usr/libexec/tilo/files-atspi-smoke.sh \
     || die "installed Files AT-SPI smoke failed"
 fi

@@ -691,8 +691,13 @@ jobs:
           esac
           printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
             | sha256sum --check --strict
-          expected=$'SHA256SUMS\nmanifest.json\nshell\ntilo-launcher\ntilo-unlock-helper'
+          expected=$'SHA256SUMS\nmanifest.json\nshell\ntilo-launcher\ntilo-runtime-mcp\ntilo-unlock-helper'
           actual=$(tar -tzf "$work/desktop.tar.gz" | LC_ALL=C sort)
+          legacy_expected=$'SHA256SUMS\nmanifest.json\nshell\ntilo-launcher\ntilo-unlock-helper'
+          if [[ $actual == "$legacy_expected" ]]; then
+            echo '::notice::desktop payload predates the native runtime host; building the desktop from source'
+            exit 0
+          fi
           [[ $actual == "$expected" ]] || {
             printf 'unexpected desktop payload members:\n%s\n' "$actual" >&2
             exit 1
@@ -722,7 +727,7 @@ jobs:
           fi
           find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
           install -m 0755 "$work/shell" "$work/tilo-launcher" \
-            "$work/tilo-unlock-helper" os/desktop-artifacts/
+            "$work/tilo-runtime-mcp" "$work/tilo-unlock-helper" os/desktop-artifacts/
           cp "$work/manifest.json" os/desktop-artifacts/
           echo 'TILO_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
           echo "TILO_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
@@ -3194,7 +3199,11 @@ jobs:
       # Each board publishes on its own; one broken board must not cancel another.
       fail-fast: false
       matrix:
-        board: ${{ fromJSON(needs.plan.outputs.boards) }}
+        # The reusable workflow's completion job depends on `board`. Forgejo
+        # leaves that dependency unresolved when an empty matrix creates no
+        # job. Keep one skipped row in that case; board-wait still gates every
+        # real board build, so the placeholder never starts a runner.
+        board: ${{ fromJSON(needs.plan.outputs.boards != '[]' && needs.plan.outputs.boards || '["none"]') }}
     runs-on: runner-large-arm64
     timeout-minutes: 90
     env:

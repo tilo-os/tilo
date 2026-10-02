@@ -115,6 +115,18 @@ files = [
 ]
 
 [[component]]
+name = "native-runtime-host"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["tilo-runtime-mcp"]
+dev_features = ["dev-overrides"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-runtime-mcp", to = "/usr/bin/tilo-runtime-mcp", mode = "0755" },
+]
+
+[[component]]
 name = "launcher"
 kind = "userspace"
 scope = "session"
