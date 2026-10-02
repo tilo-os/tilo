@@ -18,6 +18,23 @@ tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
 serde.workspace = true
 serde_json.workspace = true
+# The workspace history pane reads causal documents and draws with the
+# toolkit's renderer and input types.
+automerge.workspace = true
+tilo-automerge.workspace = true
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+blake3.workspace = true
+uuid.workspace = true
+taffy.workspace = true
+vello.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+fluent.workspace = true
+tilo-copy-lint = { path = "../../dev/copy-lint" }
 
 [lints]
 workspace = true
