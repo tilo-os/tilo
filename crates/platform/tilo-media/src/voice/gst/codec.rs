@@ -84,11 +84,23 @@ impl OpusEncoder {
             source.push_buffer(buffer).map_err(|_| AudioError::Codec)?;
         }
         source.end_of_stream().map_err(|_| AudioError::Codec)?;
+        let bus = pipeline.0.bus().ok_or(AudioError::Codec)?;
         let mut packets = Vec::new();
-        for _ in 0..64 {
-            let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(300)) else {
-                break;
+        // Drain until the encoder has flushed everything: end of stream or a
+        // pipeline error ends the loop, never how long one packet takes.
+        loop {
+            let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(100)) else {
+                if sink.is_eos() {
+                    break;
+                }
+                if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
+                    return Err(AudioError::Codec);
+                }
+                continue;
             };
+            if packets.len() == 64 {
+                return Err(AudioError::Capacity);
+            }
             let buffer = sample.buffer().ok_or(AudioError::Codec)?;
             if buffer.size() == 0 || buffer.size() > MAX_PACKET_BYTES {
                 return Err(AudioError::InvalidFrame);
@@ -100,6 +112,9 @@ impl OpusEncoder {
                     .as_slice()
                     .to_vec(),
             );
+        }
+        if packets.is_empty() {
+            return Err(AudioError::Codec);
         }
         Ok(packets)
     }
