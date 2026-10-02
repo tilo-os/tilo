@@ -7,11 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       candidate_manifest:
-        description: "Public tilo-vm-disk-candidate candidate.json URL from a dev-disk run."
+        description: "Public dev disk candidate.json or retained tilo-vm-disk-aarch64.json URL."
         required: true
       source_revision:
         description: "Exact 40-character source revision the candidate must name."
         required: true
+      upgrade_image:
+        description: "Optional immutable tilo-vm dev image to stage and boot in the disposable overlay."
+        required: false
+        default: ""
       renderer_variant:
         description: "Greeter render probe: gpu (default), vello-cpu, gl-softpipe, lp-zero, or lp-no-rast."
         required: false
@@ -42,6 +46,7 @@ jobs:
       TILO_RUN: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}
       CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}
       SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+      UPGRADE_IMAGE: ${{ github.event.inputs.upgrade_image }}
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
       CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
       CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
@@ -68,27 +73,31 @@ jobs:
         run: |
           set -euo pipefail
           [[ $SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]]
-          [[ $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk-candidate/[A-Za-z0-9._-]+/candidate\.json$ ]] || {
+          [[ $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk-candidate/[A-Za-z0-9._-]+/candidate\.json$ || $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk/[A-Za-z0-9._-]+/tilo-vm-disk-aarch64\.json$ ]] || {
             echo '::error::candidate_manifest must be a Tilo dev disk candidate URL'
             exit 1
           }
           mkdir -p "$TILO_RUN"
-          base=${CANDIDATE_MANIFEST%/candidate.json}
-          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json" "$CANDIDATE_MANIFEST"
-          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json.sha256" "$CANDIDATE_MANIFEST.sha256"
-          (cd "$TILO_RUN" && sha256sum -c candidate.json.sha256)
+          manifest_file=${CANDIDATE_MANIFEST##*/}
+          base=${CANDIDATE_MANIFEST%/*}
+          curl --fail --location --retry 3 --output "$TILO_RUN/$manifest_file" "$CANDIDATE_MANIFEST"
+          curl --fail --location --retry 3 --output "$TILO_RUN/$manifest_file.sha256" "$CANDIDATE_MANIFEST.sha256"
+          (cd "$TILO_RUN" && sha256sum -c "$manifest_file.sha256")
+          jq 'if .schema == "https://tilo.sh/dev/disk/v1" then
+            .files = [.disks[] | select(.arch == "aarch64" and .format == "qcow2") | . + {role: "disk"}]
+            else . end' "$TILO_RUN/$manifest_file" > "$TILO_RUN/disk-input.json"
           jq -e --arg source "$SOURCE_REVISION" '
-            .schema == "https://tilo.sh/dev/disk-candidate/v1"
-            and .validation == "unvalidated"
+            ((.schema == "https://tilo.sh/dev/disk-candidate/v1" and .validation == "unvalidated")
+             or .schema == "https://tilo.sh/dev/disk/v1")
             and .arch == "aarch64"
             and .sourceRevision == $source
             and ([.files[] | select(.role == "disk")] | length) == 1
-          ' "$TILO_RUN/candidate.json" >/dev/null
-          file=$(jq -er '.files[] | select(.role == "disk") | .file' "$TILO_RUN/candidate.json")
-          [[ $file == tilo-vm-candidate-aarch64.qcow2 ]]
-          url=$(jq -er '.files[] | select(.role == "disk") | .url' "$TILO_RUN/candidate.json")
+          ' "$TILO_RUN/disk-input.json" >/dev/null
+          file=$(jq -er '.files[] | select(.role == "disk") | .file' "$TILO_RUN/disk-input.json")
+          [[ $file =~ ^tilo-vm-[A-Za-z0-9._-]+\.qcow2$ ]]
+          url=$(jq -er '.files[] | select(.role == "disk") | .url' "$TILO_RUN/disk-input.json")
           [[ $url == "$base/$file" ]]
-          sha=$(jq -er '.files[] | select(.role == "disk") | .sha256' "$TILO_RUN/candidate.json")
+          sha=$(jq -er '.files[] | select(.role == "disk") | .sha256' "$TILO_RUN/disk-input.json")
           [[ $sha =~ ^[0-9a-f]{64}$ ]]
           curl --fail --location --retry 3 --output "$TILO_RUN/$file" "$url"
           (cd "$TILO_RUN" && printf '%s  %s\n' "$sha" "$file" | sha256sum -c -)
@@ -108,6 +117,10 @@ jobs:
           }
           [[ $CAPTURE_FAULT_PC == true || $CAPTURE_FAULT_PC == false ]] || {
             echo '::error::capture_fault_pc must be true or false'
+            exit 1
+          }
+          [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::upgrade_image must pin a tilo-vm dev image digest'
             exit 1
           }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
@@ -131,6 +144,26 @@ jobs:
             sleep 1
           done
           [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
+          if [[ -n $UPGRADE_IMAGE ]]; then
+            # Reuse the candidate's installed disk. bootc fetches changed layers;
+            # the original disk remains immutable underneath this overlay.
+            old_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id')
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c 'mount -o remount,rw /boot && bootc switch $UPGRADE_IMAGE'"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
+            ready=false
+            for attempt in $(seq 1 120); do
+              new_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) || new_boot=
+              if [[ -n $new_boot && $new_boot != "$old_boot" ]]; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::dev image upgrade did not reboot'; exit 1; }
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootc status --json" > "$TILO_RUN/bootc-status.json"
+            jq -e --arg image "$UPGRADE_IMAGE" '.status.booted.image.image.image == $image' "$TILO_RUN/bootc-status.json" >/dev/null || {
+              echo '::error::guest did not boot the requested dev image'
+              exit 1
+            }
+            cat "$TILO_RUN/bootc-status.json"
+          fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
             [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {

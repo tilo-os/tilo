@@ -91,12 +91,16 @@ enum Command {
         /// Optional world-readable progress file for the first-run UI.
         #[arg(long)]
         status_file: Option<PathBuf>,
+        /// Agent hosts and other headless boxes: pair without a compositor
+        /// first-use requester lease. Desktop first-use must omit this flag.
+        #[arg(long, default_value_t = false)]
+        headless: bool,
         /// PID of the compositor that initiated this first-use operation.
         #[arg(long)]
-        requester_pid: u32,
+        requester_pid: Option<u32>,
         /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
         #[arg(long)]
-        requester_start_time: u64,
+        requester_start_time: Option<u64>,
     },
     /// Approve one nearby host token issued by this device.
     Approve {
@@ -1654,9 +1658,9 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
         port,
         ..
     } = options;
-    if kind == EnrollmentKind::PersonalDevice && requester_lease.is_none() {
-        bail!("personal-device pairing requires a live first-use requester");
-    }
+    // Desktop first-use always supplies a compositor lease. Agent hosts pass
+    // `--headless` so the lease is absent on purpose; validate_requester is a
+    // no-op for None.
     validate_requester(requester_lease)?;
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
@@ -2247,6 +2251,52 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     run().map(|()| std::process::ExitCode::SUCCESS)
 }
 
+fn personal_device_requester_lease(
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<Option<tilo_relay::ProcessLease>> {
+    match (headless, requester_pid, requester_start_time) {
+        (true, None, None) => Ok(None),
+        (true, _, _) => {
+            bail!("--headless cannot be combined with --requester-pid or --requester-start-time")
+        }
+        (false, Some(pid), Some(start_time)) => {
+            Ok(Some(tilo_relay::ProcessLease::from_parts(pid, start_time)))
+        }
+        (false, _, _) => bail!(
+            "personal-device pairing requires --requester-pid and --requester-start-time unless --headless"
+        ),
+    }
+}
+
+fn pair_device_cli(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    label: &str,
+    timeout: u64,
+    status_file: Option<&std::path::Path>,
+    headless: bool,
+    requester_pid: Option<u32>,
+    requester_start_time: Option<u64>,
+) -> anyhow::Result<()> {
+    let requester_lease =
+        personal_device_requester_lease(headless, requester_pid, requester_start_time)?;
+    pair(
+        JoinOptions {
+            identity_root,
+            label,
+            timeout,
+            kind: EnrollmentKind::PersonalDevice,
+            home_peer_output: None,
+            identity_dir: Some(identity_dir),
+            requester_lease,
+            port: NEARBY_PORT,
+        },
+        status_file,
+    )
+}
+
 fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
@@ -2288,23 +2338,18 @@ fn run() -> anyhow::Result<()> {
             label,
             timeout,
             status_file,
+            headless,
             requester_pid,
             requester_start_time,
-        } => pair(
-            JoinOptions {
-                identity_root: &identity_root,
-                label: &label,
-                timeout,
-                kind: EnrollmentKind::PersonalDevice,
-                home_peer_output: None,
-                identity_dir: Some(&identity_dir),
-                requester_lease: Some(tilo_relay::ProcessLease::from_parts(
-                    requester_pid,
-                    requester_start_time,
-                )),
-                port: NEARBY_PORT,
-            },
+        } => pair_device_cli(
+            &identity_root,
+            &identity_dir,
+            &label,
+            timeout,
             status_file.as_deref(),
+            headless,
+            requester_pid,
+            requester_start_time,
         ),
         Command::Approve {
             identity_root,

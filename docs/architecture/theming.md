@@ -91,8 +91,16 @@ seeing them.
 
 ### Data, versioned
 
-The user-authored form is `CustomThemeSpec`: a schema version, an id and name,
-eleven authored colours, `radius_px`, `spacing_px` and a font family. It is
+The authored form is `CustomThemeSpec`, and it is the document for built-in
+defaults, distribution defaults, and the user theme. Schema 1 is an id, a name,
+eleven colours, `radius_px`, `spacing_px` and a font. Schema 2 adds
+`motion_scale`, `material_scale` and `icon_scale`. Schema 3 adds
+`chrome_weight` (the rule under a toolbar and along a status bar; `1` is the
+hairline, `0` draws none), `motion_character` (the shared UI springs, from
+calm through stock to lively; drag tracking stays put) and `material_tint`
+(how far glass carries the accent; `0` is the stock film). A missing scale or
+chrome weight or motion character is `1.0`, and a missing tint is `0`, so a
+schema 1 or schema 2 file still opens. It is
 stored in `appearance.custom_theme` of the shared settings record, and Theme
 Studio is its only writer (`docs/settings-and-studios.md`, Themes). Built-in
 presets are the same contract expressed as `PaletteSpec` constructors.
@@ -144,8 +152,8 @@ The theme a person sees is resolved from layers, lowest to highest:
 | # | Layer | Who writes it | Typical contents |
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | [`Theme::dark()`](../../crates/sdk/ui-core/src/theme.rs): the stock dark palette, shape, density, type and motion. This is the code default. It is not a file |
-| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | palette, default accent, and optional pins (`palette`, `accent`). Wallpaper, greeter and boot artwork are not part of this layer yet |
-| 3 | User theme | the person, through Settings and Theme Studio | preset or custom theme, accent, shape, density, type, motion, materials, icons |
+| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | the same document as the user theme. Pins may name any of its roles. |
+| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the same document: colours, radius, spacing, font, motion scale and character, material scale and tint, icon scale, chrome weight |
 | 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
 
@@ -160,10 +168,11 @@ defaults file, and nothing about this layer is signed.
 **Distribution defaults** (identifiers: `distribution`,
 `distribution_defaults`) are the layer for whoever ships the Tilo OS image —
 an agent-sandbox provider, a hardware vendor, an organisation's managed
-fleet. The layer sets a palette and a default accent, and may **pin**
-`palette` or `accent`. A pin beats the user theme only for that field.
-Accessibility fields are not pinnable. Wallpaper, greeter and boot artwork
-are not stored here yet.
+fleet. The layer sets the same fields a user theme sets, and may **pin** any of
+them (`palette`, `accent`, `shape`, `density`, `type`, `motion`, `material`,
+`icons`, `chrome`). A pin beats the user theme only for that field.
+Accessibility fields are not pinnable. Wallpaper, greeter artwork and boot artwork are image files, not roles on
+this document, so they are not an option on any of the three layers.
 
 Distribution defaults, the user theme, the workspace tint and accessibility
 live in the settings document as **versioned JSON**. The settings store does
@@ -186,9 +195,19 @@ set only an accent leave the user's choice of light or dark alone.
 Far more than an accent colour, because every one of these is a token and not
 an implementation detail: palette (every surface, text tier, accent and
 semantic colour), shape (radius scale), density (spacing scale, kept
-proportional), type (family and scale), motion (durations, reduce motion),
-materials (glass, elevation) and icons. Each is safe to expose because apps
-consume only the role, and the validator guarantees the role keeps its promise.
+proportional), type (family and scale), motion (durations and the character
+of the UI springs), materials (glass, elevation, and how far the film carries
+the accent), icons, and chrome weight (a hairline rule or a heavier one).
+Each is safe to expose because apps consume only the role, and the validator
+guarantees the role keeps its promise.
+
+A person and an agent author the same document. Theme Studio's sliders and
+the Themes actions (`SetCustomThemeChrome`, `SetCustomThemeMotionCharacter`,
+`SetCustomThemeMaterialTint`, and the scale actions beside them) write the
+same fields. An agent does not invent a widget. Individuality is which
+values fill the roles; the widget vocabulary stays the one the toolkit draws.
+When a look still does not fit, the schema gains a role. It does not gain a
+selector.
 
 ## App developers
 
@@ -270,7 +289,8 @@ Verified against the code at the time of writing:
   Distribution defaults, the workspace tint and accessibility are versioned
   JSON in settings. Each has `schema_version` and `validate`, and a rejected
   schema is not applied. Policy pins live on `DistributionPolicy.pins` and
-  name only `palette` or `accent`. A pin beats the user theme for that
+  name `palette`, `accent`, `shape`, `density`, `type`, `motion`, `material`,
+  `icons`, or `chrome`. A pin beats the user theme for that
   field; an admitted accessibility layer still replaces the colour track and
   applies text scale, UI scale and reduced motion last. Out-of-range
   accessibility scales are clamped in `AccessibilityLayer::materialize`

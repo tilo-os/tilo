@@ -52,6 +52,16 @@
   (system_u object_r tilo_session_unit_file_t ((s0) (s0))))
 (allow xdm_t tilo_session_unit_file_t (service (start stop status)))
 
+; The compositor runs in that same xdm_t session and writes per-user state under
+; $HOME through tilo-files' durable parent provisioning, which opens (O_RDONLY)
+; and fsyncs every ancestor directory from / down. The base policy gives xdm_t
+; getattr/open/search on /home (home_root_t) and read on everything below it,
+; but not read on /home itself, and dontaudits that denial. So every such write
+; from the session (e.g. the identity device fleet) failed with a bare EACCES.
+; Only `read` on the /home directory is added; DAC (0755) already lets every
+; local user list it, and nothing below /home is widened.
+(allow xdm_t home_root_t (dir (read)))
+
 ; The console channel of a VM (crates/session/console-control): the greeter
 ; and the live installer run in xdm_t and answer the tilo-control action
 ; protocol on the virtio-serial port named org.tilo.console.0. That port only

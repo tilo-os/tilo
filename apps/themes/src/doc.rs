@@ -69,6 +69,16 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
         _ => None,
     }
 }
+fn read_scale(doc: &AutoCommit, r: &ObjId, key: &str) -> f32 {
+    read_authored(doc, r, key, 1.0, 4.0)
+}
+
+fn read_authored(doc: &AutoCommit, r: &ObjId, key: &str, default: f32, max: f64) -> f32 {
+    read_number(doc, r, key)
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= max)
+        .map_or(default, |value| value as f32)
+}
+
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
     let name = read_str(doc, r, "name")?;
     let font = read_str(doc, r, "font")?;
@@ -103,6 +113,12 @@ fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
         radius_norm: radius.clamp(0.0, 1.0),
         spacing_norm: spacing.clamp(0.0, 1.0),
         font,
+        motion_scale: read_scale(doc, r, "motion_scale"),
+        material_scale: read_scale(doc, r, "material_scale"),
+        icon_scale: read_scale(doc, r, "icon_scale"),
+        chrome_weight: read_scale(doc, r, "chrome_weight"),
+        motion_character: read_scale(doc, r, "motion_character"),
+        material_tint: read_authored(doc, r, "material_tint", 0.0, 1.0),
         order,
     })
 }
@@ -125,6 +141,12 @@ fn put_record(doc: &mut AutoCommit, r: &ObjId, s: &ThemeSpec) {
         f64::from(s.spacing_norm.clamp(0.0, 1.0)),
     );
     put_str(doc, r, "font", &s.font);
+    put_f64(doc, r, "motion_scale", f64::from(s.motion_scale));
+    put_f64(doc, r, "material_scale", f64::from(s.material_scale));
+    put_f64(doc, r, "icon_scale", f64::from(s.icon_scale));
+    put_f64(doc, r, "chrome_weight", f64::from(s.chrome_weight));
+    put_f64(doc, r, "motion_character", f64::from(s.motion_character));
+    put_f64(doc, r, "material_tint", f64::from(s.material_tint));
     let _ = ui::doc::put_if_changed(doc, r, "order", u64::from(s.order));
 }
 
@@ -180,6 +202,12 @@ pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> 
         && record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
         })
+}
+pub fn set_scale(doc: &mut AutoCommit, root: &ObjId, id: &str, key: &str, value: f32) -> bool {
+    value.is_finite()
+        && (0.0..=4.0).contains(&value)
+        && record(doc, root, id)
+            .is_some_and(|r| ui::doc::put_if_changed(doc, &r, key, f64::from(value)))
 }
 pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
     valid_font(value)
@@ -243,6 +271,12 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                         "font",
                         "radius_norm",
                         "spacing_norm",
+                        "motion_scale",
+                        "material_scale",
+                        "icon_scale",
+                        "chrome_weight",
+                        "motion_character",
+                        "material_tint",
                         "order",
                         "dark_base",
                     ]
@@ -259,6 +293,24 @@ pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
                         .is_some_and(|v| v.is_finite() && v >= 0. && v <= f64::from(u32::MAX))
                 {
                     return Err("Invalid order".into());
+                }
+                if matches!(
+                    key.as_str(),
+                    "motion_scale"
+                        | "material_scale"
+                        | "icon_scale"
+                        | "chrome_weight"
+                        | "motion_character"
+                ) && !read_number(doc, &row, &key)
+                    .is_some_and(|v| v.is_finite() && (0.0..=4.0).contains(&v))
+                {
+                    return Err(format!("Invalid {key}"));
+                }
+                if key == "material_tint"
+                    && !read_number(doc, &row, &key)
+                        .is_some_and(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+                {
+                    return Err("Invalid material_tint".into());
                 }
             }
         }

@@ -181,7 +181,11 @@ editable_node_named() {
   needle="'$expected'"
   for candidate in "${!node_names[@]}"; do
     [[ ${node_names[$candidate]} == *"$needle"* ]] || continue
-    interfaces=$(property "$candidate" Interfaces 2>/dev/null) || continue
+    # Interfaces are a method on Accessible, not a property.
+    interfaces=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$candidate" \
+      --method org.a11y.atspi.Accessible.GetInterfaces 2>/dev/null) || continue
     if [[ $interfaces == *"org.a11y.atspi.EditableText"* \
       && $interfaces == *"org.a11y.atspi.Text"* ]]; then
       printf '%s\n' "$candidate"
@@ -264,7 +268,7 @@ wait_for_text() {
     text=$(gdbus call --address "$atspi_address" \
       --dest "$app_bus" \
       --object-path "$path" \
-      --method org.a11y.atspi.Text.GetText 0 -1 2>/dev/null) || {
+      --method org.a11y.atspi.Text.GetText -- 0 -1 2>/dev/null) || {
       sleep 0.05
       continue
     }
@@ -317,10 +321,28 @@ case "$mode" in
       click_named "Create identity"
       wait_for_names \
         "I understand that losing this device without a backup means losing this identity." \
-        "Create"
+        "Create local identity"
       click_named "I understand that losing this device without a backup means losing this identity."
-      wait_for_names "Create"
-      click_named "Create"
+      wait_for_names "Create local identity"
+      click_named "Create local identity"
+      # No backup in a disposable release VM; say so explicitly, as a person
+      # skipping it would.
+      wait_for_names \
+        "I understand that without an encrypted backup, losing this device means losing this identity." \
+        "Continue without backup"
+      click_named "I understand that without an encrypted backup, losing this device means losing this identity."
+      wait_for_names "Continue without backup"
+      click_named "Continue without backup"
+      # The media codecs step appears only where the codec pack is offered.
+      for _ in $(seq 1 400); do
+        collect_tree || { sleep 0.05; continue; }
+        node_named "Your identity is ready" >/dev/null && break
+        if node_named "Not now" >/dev/null; then
+          click_named "Not now"
+          break
+        fi
+        sleep 0.05
+      done
       wait_for_names "Your identity is ready"
     fi
     ;;

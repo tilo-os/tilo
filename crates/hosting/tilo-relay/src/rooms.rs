@@ -518,6 +518,31 @@ impl Rooms {
         RoomJoinService::new(self.clone())
     }
 
+    /// The current role of `device` only when room Write permission is allowed,
+    /// including live capability restrictions; `None` otherwise.
+    #[cfg_attr(
+        not(feature = "web"),
+        allow(dead_code, reason = "read by the web listener")
+    )]
+    pub(crate) async fn legacy_writer_role(
+        &self,
+        room: &str,
+        device: [u8; 32],
+    ) -> Option<collab_types::role::Role> {
+        use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
+        let governed = self.room(room).await.ok()?;
+        let governed = governed.lock().await;
+        let now = SystemTime::now();
+        let (role, caps, person) = governed.peer().permissions(device, now).ok()?;
+        drop(governed);
+        let actor = Actor::person(Some(role), person).in_room(room.to_owned());
+        let resource = ResourceRef::Room(room.to_owned());
+        let seconds = now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+        (decide_capability(&actor, &resource, Verb::Write, &caps, Some(seconds))
+            == CapDecision::Allow)
+            .then_some(role)
+    }
+
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
         self.inner
             .rooms

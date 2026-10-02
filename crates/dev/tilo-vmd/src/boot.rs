@@ -45,7 +45,7 @@ pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "--omit",
     "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh",
     "--omit-drivers",
-    "xfs",
+    "amdgpu nouveau xe xfs",
     "--add-drivers",
     "ext4",
     "--add",

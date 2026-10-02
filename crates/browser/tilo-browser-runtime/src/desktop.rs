@@ -21,6 +21,7 @@ use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
+use ui::automerge::AutoCommit;
 use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
@@ -83,6 +84,22 @@ pub(crate) struct Shared {
     /// Tabs bound to a record that could not open yet: a peer's desktop
     /// named it before the record itself arrived.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// The windows showing another member's legacy windows, by tab.
+    peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
+    /// Legacy windows asked for and not opened yet, by key.
+    pending_peer_windows: Rc<RefCell<HashMap<String, PeerWindow>>>,
+}
+
+/// Launch name of the window showing the legacy window `key`.
+pub(crate) const PEER_WINDOW_LAUNCH: &str = "tilo.peer-window:";
+
+/// Another member's legacy window, as the page streams it: its key (the
+/// page's name for the stream), app id and title.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct PeerWindow {
+    pub key: String,
+    pub app: String,
+    pub title: String,
 }
 
 impl Shared {
@@ -118,6 +135,75 @@ impl Shared {
         )
     }
 
+    /// The legacy window `tab` shows, if it shows one.
+    pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
+        self.peer_windows
+            .borrow()
+            .get(&tab)
+            .map(|window| window.key.clone())
+    }
+
+    /// Reconcile the windows showing legacy windows with `wanted`: the
+    /// launch names of the ones to open, and the tabs to close (no longer
+    /// wanted, or restored from a saved desktop that streamed them before).
+    pub fn reconcile_peer_windows(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+        wanted: Vec<PeerWindow>,
+    ) -> (Vec<String>, Vec<TabId>) {
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        let mut open = self.peer_windows.borrow_mut();
+        open.retain(|tab, _| live.contains(tab));
+        let mut close = Vec::new();
+        for tab in tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter(|tab| matches!(tab.tile, TileContent::PeerWindow { .. }))
+        {
+            if open
+                .get(&tab.id)
+                .is_none_or(|window| !wanted.iter().any(|wanted| wanted.key == window.key))
+            {
+                close.push(tab.id);
+            }
+        }
+        let mut pending = self.pending_peer_windows.borrow_mut();
+        pending.clear();
+        let mut launch = Vec::new();
+        for window in wanted {
+            if open.values().any(|open| open.key == window.key) {
+                continue;
+            }
+            launch.push(format!("{PEER_WINDOW_LAUNCH}{}", window.key));
+            pending.insert(window.key.clone(), window);
+        }
+        (launch, close)
+    }
+
+    /// Forget the legacy window `tab` showed.
+    pub fn closed_peer_window(&self, tab: TabId) {
+        self.peer_windows.borrow_mut().remove(&tab);
+    }
+
+    /// Every tab's bound record.
+    pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
+        self.records
+            .borrow()
+            .iter()
+            .map(|(tab, checkout)| (*tab, checkout.clone()))
+            .collect()
+    }
+
     /// The record `tab` shows, once its component bound one.
     pub fn record_of(&self, tab: TabId) -> Option<String> {
         self.records
@@ -150,6 +236,14 @@ impl Tiles {
     }
 
     fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+        if let TileContent::PeerWindow { label, .. } = &tab.tile {
+            // The page draws the stream over this window's content.
+            return Err(if self.shared.peer_windows.borrow().contains_key(&tab.id) {
+                format!("Connecting to {label}…")
+            } else {
+                format!("{label} is no longer shared")
+            });
+        }
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
             return Err("This window has no application in the browser".into());
         };
@@ -293,6 +387,20 @@ impl TileSource for Tiles {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        if let Some(key) = app.strip_prefix(PEER_WINDOW_LAUNCH) {
+            let window = self.shared.pending_peer_windows.borrow_mut().remove(key)?;
+            let tab = Tab {
+                id,
+                title: window.title.clone(),
+                tile: TileContent::PeerWindow {
+                    app_id: window.app.clone(),
+                    label: window.title.clone(),
+                    note: String::new(),
+                },
+            };
+            self.shared.peer_windows.borrow_mut().insert(id, window);
+            return Some(tab);
+        }
         Some(app_tab(id, application(app)?))
     }
 
@@ -338,7 +446,7 @@ fn peer_salt(device: &str) -> u16 {
 
 /// Where a room's desktop lives in the profile. Changing it orphans stored
 /// desktops.
-const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
+pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 
 /// The stored form of a room's desktop.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -357,6 +465,15 @@ pub(crate) struct Persistence {
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    /// Every change of this device's desktop, for Activity
+    /// (`tilo_desktop_surface::history_log`).
+    pub history: Rc<RefCell<AutoCommit>>,
+    history_key: StorageKey,
+    history_dirty: Cell<bool>,
+    pub notifications: tilo_desktop_surface::DesktopNotifications,
+    notifications_key: StorageKey,
+    saved_notifications_revision: Cell<u64>,
+    author: String,
 }
 
 impl Persistence {
@@ -365,15 +482,52 @@ impl Persistence {
     /// # Errors
     /// The store refused the write; the next change retries.
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
+        let notifications_revision = self.notifications.revision();
+        if notifications_revision != self.saved_notifications_revision.get() {
+            let bytes = tilo_desktop_surface::notifications::encode_history(
+                self.notifications.log().history(),
+                ui::time::SystemTime::now(),
+                ui::time::now(),
+            )
+            .map_err(|error| error.to_string())?;
+            self.store
+                .write(&self.notifications_key, WriteOp::Replace(bytes), None)
+                .map_err(|error| error.to_string())?;
+            self.saved_notifications_revision
+                .set(notifications_revision);
+        }
         let revision = handle.revision();
-        if revision == self.saved_revision.get() && !self.records_changed.get() {
+        if revision == self.saved_revision.get()
+            && !self.records_changed.get()
+            && !self.history_dirty.get()
+        {
             return Ok(());
         }
         let stored = stored_desktop(handle, &self.records.borrow());
-        let bytes = serde_json::to_vec(&stored).map_err(|error| error.to_string())?;
+        let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
         self.store
             .write(&self.key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
+        let mut history = self.history.borrow_mut();
+        if tilo_desktop_surface::history_log::record(
+            &mut history,
+            &value,
+            &self.author,
+            crate::history::now_seconds(),
+        ) {
+            self.history_dirty.set(true);
+        }
+        tilo_desktop_surface::history_log::save_pending(
+            &mut history,
+            &self.history_dirty,
+            |bytes| {
+                self.store
+                    .write(&self.history_key, WriteOp::Replace(bytes), None)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
         self.saved_revision.set(revision);
         self.records_changed.set(false);
         Ok(())
@@ -514,12 +668,45 @@ pub(crate) fn mount(
             .collect();
         tilo_desktop_surface::seed_tree(&mut minter, "Workspace", tabs)
     };
+    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
+    let history = store
+        .read(&history_key)
+        .ok()
+        .flatten()
+        .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
+        .unwrap_or_default();
+    let notifications_key =
+        StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "notifications");
+    let notifications = tilo_desktop_surface::DesktopNotifications::default();
+    if let Some(history) = store
+        .read(&notifications_key)
+        .ok()
+        .flatten()
+        .and_then(|stored| {
+            tilo_desktop_surface::notifications::decode_history(
+                &stored.bytes,
+                ui::time::SystemTime::now(),
+                ui::time::now(),
+            )
+            .ok()
+        })
+    {
+        notifications.restore_history(history);
+    }
+    let saved_notifications_revision = Cell::new(notifications.revision());
     let persistence = Persistence {
         store,
         key,
         saved_revision: Cell::new(0),
         records_changed: Rc::clone(&shared.records_changed),
         records: Rc::clone(&shared.records),
+        history: Rc::new(RefCell::new(history)),
+        history_key,
+        history_dirty: Cell::new(false),
+        notifications,
+        notifications_key,
+        saved_notifications_revision,
+        author: inputs.author.clone(),
     };
     let tiles = Tiles {
         inputs,
