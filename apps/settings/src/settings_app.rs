@@ -698,51 +698,23 @@ impl SettingsApp {
                         }
                     }
                     crate::actions::PowerOperation::SetProfile { profile } => {
-                        if !["Power Saver", "Balanced", "Performance"].contains(&profile.as_str()) {
+                        if crate::panes::power::profile_from_label(profile).is_none() {
                             return Err("unsupported power profile".into());
                         }
                     }
                     crate::actions::PowerOperation::SetAutoSuspend { .. } => {}
                     crate::actions::PowerOperation::SetBlankTimeout { label } => {
-                        if ![
-                            "1 minute",
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::blank_from_label(label).is_none() {
                             return Err("unsupported screen blank timeout".into());
                         }
                     }
                     crate::actions::PowerOperation::SetLockTimeout { label } => {
-                        if ![
-                            "1 minute",
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::lock_from_label(label).is_none() {
                             return Err("unsupported automatic lock timeout".into());
                         }
                     }
                     crate::actions::PowerOperation::SetSuspendTimeout { profile, label } => {
-                        if ![
-                            "5 minutes",
-                            "10 minutes",
-                            "15 minutes",
-                            "30 minutes",
-                            "45 minutes",
-                            "1 hour",
-                            "Never",
-                        ]
-                        .contains(&label.as_str())
-                        {
+                        if crate::panes::power::suspend_from_label(label).is_none() {
                             return Err("unsupported suspend timeout".into());
                         }
                         match profile.as_str() {
@@ -753,7 +725,7 @@ impl SettingsApp {
                     crate::actions::PowerOperation::SetLidAction { action }
                     | crate::actions::PowerOperation::SetPowerKeyAction { action }
                     | crate::actions::PowerOperation::SetCriticalAction { action } => {
-                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
+                        if crate::panes::power::action_from_label(action).is_none() {
                             return Err("unsupported power action".into());
                         }
                     }
@@ -1451,35 +1423,25 @@ impl SettingsApp {
                 "scroll speed updated"
             }
             crate::actions::InputOperation::SetAccelerationProfile { profile } => {
-                if !["Adaptive", "Flat"].contains(&profile.as_str()) {
-                    return Err("unsupported acceleration profile".into());
-                }
-                prefs.input.accel_profile = if profile == "Flat" {
-                    "flat".into()
-                } else {
-                    "adaptive".into()
-                };
+                prefs.input.accel_profile =
+                    crate::panes::mouse_keyboard::accel_from_label(&profile)
+                        .ok_or_else(|| "unsupported acceleration profile".to_string())?
+                        .to_string();
                 "pointer acceleration updated"
             }
             crate::actions::InputOperation::SetComposeKey { key } => {
-                prefs.input.compose_key = match key.as_str() {
-                    "Disabled" => None,
-                    "Right Alt" => Some("ralt".into()),
-                    "Menu" => Some("menu".into()),
-                    "Caps Lock" => Some("caps".into()),
-                    "Right Super" => Some("rwin".into()),
-                    "Left Super" => Some("lwin".into()),
-                    _ => return Err("unsupported compose key".into()),
-                };
+                prefs.input.compose_key = crate::panes::mouse_keyboard::compose_from_label(&key)
+                    .ok_or_else(|| "unsupported compose key".to_string())?
+                    .as_stored()
+                    .map(str::to_string);
                 "compose key updated"
             }
             crate::actions::InputOperation::SetCapsLock { behavior } => {
-                prefs.input.caps_lock = crate::panes::mouse_keyboard::CAPS_LOCK_CHOICES
-                    .iter()
-                    .find(|(label, _)| *label == behavior)
-                    .ok_or("unsupported Caps Lock behavior")?
-                    .1
-                    .map(str::to_string);
+                prefs.input.caps_lock =
+                    crate::panes::mouse_keyboard::caps_lock_from_label(&behavior)
+                        .ok_or_else(|| "unsupported Caps Lock behavior".to_string())?
+                        .as_stored()
+                        .map(str::to_string);
                 "Caps Lock behavior updated"
             }
             crate::actions::InputOperation::SetActiveSource { label } => {
@@ -1850,6 +1812,7 @@ impl Widget for SettingsApp {
         // survives category switches (which rebuild the tree). A text-scale
         // change is the one thing that re-sizes the shell itself, so it is the
         // one thing that builds it anew.
+        crate::widgets::set_compose_text_growth(theme.text_growth());
         if self.shell.is_none() || self.shell_text_scale.to_bits() != theme.text_scale.to_bits() {
             self.shell_text_scale = theme.text_scale;
             self.shell = Some(self.build_shell());
