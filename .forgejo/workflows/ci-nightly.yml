@@ -129,6 +129,10 @@ jobs:
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
+      # The same image predates the private session bus tests (tilo-os-search).
+      - name: Ensure private D-Bus test daemon
+        run: bash tools/ci/ensure-dbus-daemon.sh
+
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       # Where the runner's kernel can enforce Landlock, the PDF helper's
