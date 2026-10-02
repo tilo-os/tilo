@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tilo_wet_media::{
-    Canvas, Engines, Fill, Heightfield, LayerPainter, Mark, Painted, Preset, Rgb, Settings, Stroke,
-    StrokePoint, composite, parse_paint, presets,
+    Canvas, ColourField, Engines, FieldKind, Fill, Heightfield, LayerPainter, Mark, Painted,
+    Preset, Rgb, Settings, Stroke, StrokePoint, composite, parse_paint, presets,
 };
 
 const WIDTH: usize = 640;
@@ -49,7 +49,153 @@ fn region(
         brush,
         angle,
         params: BTreeMap::new(),
+        field: None,
     })
+}
+
+fn with(mut mark: Mark, values: &[(&str, f32)]) -> Mark {
+    let params = match &mut mark {
+        Mark::Stroke(stroke) => &mut stroke.params,
+        Mark::Fill(fill) => &mut fill.params,
+    };
+    params.extend(values.iter().map(|(id, value)| ((*id).to_owned(), *value)));
+    mark
+}
+
+fn hex(text: &str) -> Rgb {
+    parse_paint(text, &[]).expect("hex colour").colour
+}
+
+/// The oil techniques a landscape is built from: a graded sky laid in and
+/// softened with a blender, a feathered band of mist, a glaze over a dry
+/// passage and a scumble of light over it.
+fn techniques(preset: &Preset) -> Vec<Mark> {
+    let w = 640.0;
+    let mut sky = region(
+        preset,
+        "pigment:lead-white",
+        &[(0.0, 0.0), (w, 0.0), (w, 260.0), (0.0, 260.0)],
+        40.0,
+        0.0,
+        false,
+    );
+    if let Mark::Fill(fill) = &mut sky {
+        fill.field = ColourField::new(
+            FieldKind::Linear,
+            (0.0, 0.0),
+            (0.0, 250.0),
+            vec![
+                (0.0, hex("#4f5e7c")),
+                (0.55, hex("#a9a3a6")),
+                (0.85, hex("#e2c79d")),
+                (1.0, hex("#efd7a8")),
+            ],
+        );
+    }
+    let mut glow = region(
+        preset,
+        "#f3dcae",
+        &[
+            (330.0, 120.0),
+            (630.0, 120.0),
+            (630.0, 260.0),
+            (330.0, 260.0),
+        ],
+        30.0,
+        0.0,
+        true,
+    );
+    if let Mark::Fill(fill) = &mut glow {
+        fill.field = ColourField::new(
+            FieldKind::Radial,
+            (480.0, 250.0),
+            (480.0, 130.0),
+            vec![(0.0, hex("#f6dfb0")), (1.0, hex("#c9bba7"))],
+        );
+    }
+    let blender = |angle: f32, strength: f32| {
+        with(
+            region(
+                preset,
+                "pigment:lead-white",
+                &[(0.0, 0.0), (w, 0.0), (w, 262.0), (0.0, 262.0)],
+                60.0,
+                angle,
+                true,
+            ),
+            &[("blender", strength)],
+        )
+    };
+    let land = region(
+        preset,
+        "#6d6a78",
+        &[(0.0, 260.0), (w, 250.0), (w, 420.0), (0.0, 420.0)],
+        30.0,
+        2.0,
+        false,
+    );
+    let mist = with(
+        region(
+            preset,
+            "#c9c3c4",
+            &[(0.0, 248.0), (w, 244.0), (w, 280.0), (0.0, 284.0)],
+            20.0,
+            0.0,
+            true,
+        ),
+        &[("feather", 1.5), ("load", 0.5)],
+    );
+    let field = region(
+        preset,
+        "#e8e4dc",
+        &[(0.0, 330.0), (w, 320.0), (w, 420.0), (0.0, 420.0)],
+        26.0,
+        1.0,
+        false,
+    );
+    let glaze = with(
+        region(
+            preset,
+            "#8a5a3a",
+            &[(40.0, 340.0), (300.0, 335.0), (300.0, 410.0), (40.0, 410.0)],
+            30.0,
+            0.0,
+            false,
+        ),
+        &[("glaze", 0.9), ("feather", 0.8)],
+    );
+    let scumble = with(
+        stroke(
+            preset,
+            "#f2ede1",
+            18.0,
+            &[(340.0, 380.0, 0.8), (600.0, 372.0, 0.6)],
+            false,
+        ),
+        &[("load", 0.18)],
+    );
+    let soften_edge = with(
+        stroke(
+            preset,
+            "#000000",
+            16.0,
+            &[(20.0, 258.0, 1.0), (620.0, 250.0, 1.0)],
+            true,
+        ),
+        &[("blender", 0.8)],
+    );
+    vec![
+        sky,
+        glow,
+        blender(0.0, 0.9),
+        blender(2.0, 0.6),
+        land,
+        mist,
+        soften_edge,
+        field,
+        glaze,
+        scumble,
+    ]
 }
 
 fn landscape(preset: &Preset, oil: bool) -> Vec<Mark> {
@@ -161,7 +307,7 @@ fn landscape(preset: &Preset, oil: bool) -> Vec<Mark> {
     marks
 }
 
-fn render(preset: &Preset, engines: &Engines) -> Vec<u8> {
+fn render(preset: &Preset, engines: &Engines, marks: Vec<Mark>) -> Vec<u8> {
     let engine = engines.get(&preset.engine).expect("built-in engine");
     let texture = preset.ground.unwrap_or_default();
     let ground = Arc::new(Heightfield::new(WIDTH, HEIGHT, texture, 1.0, 1));
@@ -173,7 +319,7 @@ fn render(preset: &Preset, engines: &Engines) -> Vec<u8> {
     };
     let settings = Settings::new(engine.parameters(), &preset.params);
     let mut painter = LayerPainter::new(Arc::clone(&engine), canvas, settings);
-    let marks: Vec<Painted> = landscape(preset, preset.engine == "oil")
+    let marks: Vec<Painted> = marks
         .into_iter()
         .enumerate()
         .map(|(index, mark)| Painted::new(&format!("mark-{index}"), mark))
@@ -197,9 +343,23 @@ fn main() {
         .unwrap_or_else(|| "target/wet-media".into());
     std::fs::create_dir_all(&out).expect("output directory");
     let engines = Engines::builtin();
-    for preset in presets::builtin() {
-        let image = render(&preset, &engines);
-        let path = format!("{out}/{}.png", preset.id);
+    let mut sheets: Vec<(String, Preset, Vec<Mark>)> = presets::builtin()
+        .into_iter()
+        .map(|preset| {
+            let marks = landscape(&preset, preset.engine == "oil");
+            (preset.id.clone(), preset, marks)
+        })
+        .collect();
+    if let Some(oil) = presets::builtin()
+        .into_iter()
+        .find(|preset| preset.id == "oil")
+    {
+        let marks = techniques(&oil);
+        sheets.push(("oil-techniques".into(), oil, marks));
+    }
+    for (name, preset, marks) in sheets {
+        let image = render(&preset, &engines, marks);
+        let path = format!("{out}/{name}.png");
         let file = std::fs::File::create(&path).expect("png file");
         let mut encoder = png::Encoder::new(file, WIDTH as u32, HEIGHT as u32);
         encoder.set_color(png::ColorType::Rgba);

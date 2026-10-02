@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brush::StrokePoint;
 use crate::colour::{Paint, Pigment};
+use crate::field::ColourField;
 use crate::ground::{Heightfield, Texture};
 
 /// How a medium's layer composes onto what is beneath it.
@@ -148,6 +149,10 @@ pub struct Fill {
     pub angle: f32,
     #[serde(default)]
     pub params: BTreeMap<String, f32>,
+    /// Colour that changes across the region, mixed as it is laid in;
+    /// `paint` gives the handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<ColourField>,
 }
 
 /// One mark as a medium receives it.
@@ -184,6 +189,7 @@ impl Mark {
                     })
                     .collect(),
                 brush: fill.brush * scale,
+                field: fill.field.as_ref().map(|field| field.scaled(scale)),
                 ..fill.clone()
             }),
         }

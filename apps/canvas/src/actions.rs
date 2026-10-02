@@ -91,6 +91,7 @@ pub struct NewMark {
     pub shape: Shape,
     /// `#rrggbb[aa]` or `pigment:<name>`.
     pub fill: Option<String>,
+    /// Instead of `fill`; on an oil layer the brush is remixed along it.
     pub gradient: Option<Gradient>,
     /// Outline colour.
     pub stroke: Option<String>,
