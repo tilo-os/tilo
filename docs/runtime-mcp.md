@@ -204,7 +204,14 @@ optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
 against the directory as it is now; named, a target that changed since is
 refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
 update and answers with it; an invocation still running then says so in
-`pending` and is followed with `tilo_status`. A number outside the range its
+`pending` and is followed with `tilo_status`. One call is `resource`,
+`action` and `arguments`. Several that share a peer go in `calls`,
+`[{resource, action, arguments}, …]` (at most 32), and run in order: the
+first keeps the named revision, each later one reads the directory as it
+is then, and the first that does not succeed stops the rest. The answer is
+`results`, plus `stopped` at that call's index. The same `invocation_id`
+never runs the batch twice: the first step uses it, and each later step's
+id is derived from it. A number outside the range its
 action declares (`pageSize: 200` where the signature says `1..64`) fails
 validation before the action runs; the bridge then runs the call once more
 with the bound the refusal named and adds `adjusted` to the answer
@@ -221,7 +228,10 @@ launches an installed app and answers, once the new instance has published its
 directory, with its `peer_id` and its `directory`: the compact page of its
 top-level resources with all their actions, and the resources beneath them
 while the page stays within 12 KiB (`"truncated": true` when something was left
-for `tilo_query`). An agent acts on the reply without browsing first. An app
+for `tilo_query`). An action line there is its label and parameters
+(`"save-as": "Save document as (path?)"`); the description sentence is left
+to `tilo_query`, because this reply is read again on every later turn. An
+agent acts on the reply without browsing first. An app
 may publish again while it starts, and a directory read in between lists
 nothing, so the reply waits up to 3 s more for one that lists a resource.
 
