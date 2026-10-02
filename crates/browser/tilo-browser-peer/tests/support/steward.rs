@@ -152,6 +152,11 @@ async fn join(host: &Relay, root: &SigningKey, device: &Device) -> RelayCoeditSe
 
 /// Admit every device that asks (the host admits only the user's own), and
 /// apply their acknowledgements.
+///
+/// Members already in a channel stay there. This loop's request map starts
+/// empty on every reconnect; reconciling against only the requests seen
+/// since then would remove everyone who has not asked again yet, and a
+/// peer that resumes cannot open edits sealed while it was out.
 async fn admit(session: RelayCoeditSession, channels: Arc<Mutex<Channels>>, own: [u8; 32]) {
     let mut requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>> =
         HashMap::new();
@@ -168,9 +173,11 @@ async fn admit(session: RelayCoeditSession, channels: Arc<Mutex<Channels>>, own:
                 }
                 let pending = requests.entry(request.channel).or_default();
                 pending.insert(request.device, *request.clone());
+                let already = channels.steward(request.channel).members();
                 let allowed: BTreeSet<Ed25519PublicKey> = pending
                     .keys()
                     .copied()
+                    .chain(already)
                     .chain([Ed25519PublicKey::from_bytes(own)])
                     .collect();
                 let steward = channels.steward(request.channel);

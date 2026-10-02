@@ -30,6 +30,10 @@ D2 = 7
 D1 = 1
 D2 = 5
 
+[apps.canvas]
+D1 = 1
+D2 = 2
+
 [apps.chat]
 D1 = 1
 D2 = 8
@@ -209,7 +213,7 @@ D2 = 10
 W3 = 11
 
 [sdk.tilo-app]
-R1 = 23
+R1 = 27
 
 [sdk.tilo-app-state]
 R1 = 9

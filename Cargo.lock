@@ -1543,6 +1543,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "png",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-content",
+ "tilo-wet-media",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "cap-fs-ext"
 version = "3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14506,6 +14522,7 @@ dependencies = [
  "calculator",
  "calendar",
  "camera",
+ "canvas",
  "channel-crypto",
  "chat",
  "clocks",
@@ -14585,6 +14602,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-content",
  "tilo-files",
  "tilo-resource",
  "tilo-runner-native",
@@ -16626,6 +16644,7 @@ dependencies = [
  "calculator",
  "calendar",
  "camera",
+ "canvas",
  "chat",
  "clocks",
  "contacts",
@@ -16657,6 +16676,19 @@ dependencies = [
  "wasm-bindgen",
  "weather",
  "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wet-media"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "png",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tiny-skia",
  "workspace-hack",
 ]
 

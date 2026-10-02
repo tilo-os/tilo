@@ -24,6 +24,50 @@ pub struct McpServer<H> {
     /// The short names compact pages gave long resource ids.
     handles: std::sync::Mutex<page::Handles>,
     open_files: std::sync::Arc<OpenFiles>,
+    /// Where answers read the content an action produced, to show it.
+    media: Option<std::sync::Arc<dyn crate::MediaReader>>,
+    /// The app each of this session's invocations went to, so a later
+    /// `tilo_status` reads produced content with that app's scope.
+    produced_by: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, String>>,
+}
+
+/// Where an answer carries the images it shows until [`tool_result`] moves
+/// them out of the JSON and into MCP image blocks. Not a valid JSON key an
+/// app could produce in an output.
+const IMAGES: &str = "\u{1}images";
+/// At most this many images answer one action.
+const MAX_IMAGES: usize = 4;
+/// Larger content is named, not shown.
+const MAX_IMAGE_BYTES: usize = 8 << 20;
+
+/// The MIME type of image bytes an MCP client can show.
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.len() > 12 && bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// The images an answer carries, taken out of it: its own, and those of
+/// each result of a batch.
+fn take_images(value: &mut Value) -> Vec<Value> {
+    let mut images = Vec::new();
+    if let Some(fields) = value.as_object_mut() {
+        if let Some(Value::Array(own)) = fields.remove(IMAGES) {
+            images.extend(own);
+        }
+        if let Some(Value::Array(results)) = fields.get_mut("results") {
+            for result in results {
+                images.extend(take_images(result));
+            }
+        }
+    }
+    images
 }
 
 /// The instance each file last went to through an app's own `open` or
@@ -222,8 +266,11 @@ fn error(id: &Value, code: i32, message: &str) -> Value {
 }
 fn tool_result(result: Result<Value, String>) -> Value {
     match result {
-        Ok(value) => {
-            json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
+        Ok(mut value) => {
+            let images = take_images(&mut value);
+            let mut content = vec![json!({"type":"text","text":value.to_string()})];
+            content.extend(images);
+            json!({"content":content,"structuredContent":value,"isError":false})
         }
         Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
@@ -240,6 +287,93 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             detail: Detail::Compact,
             handles: std::sync::Mutex::default(),
             open_files: std::sync::Arc::default(),
+            media: None,
+            produced_by: std::sync::Mutex::default(),
+        }
+    }
+    /// Answer an action that produced image content with the image itself,
+    /// read from `media` with the producing app's own scope.
+    #[must_use]
+    pub fn with_media(mut self, media: Option<std::sync::Arc<dyn crate::MediaReader>>) -> Self {
+        self.media = media;
+        self
+    }
+    fn produced_by(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<tilo_actions::InvocationId, String>>
+    {
+        self.produced_by
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Remember that `invocation` went to `provider`'s app.
+    async fn record_producer(&self, invocation: tilo_actions::InvocationId, provider: &str) {
+        if self.media.is_none() {
+            return;
+        }
+        let Some(app_id) = self.app_of(provider).await else {
+            return;
+        };
+        let mut produced = self.produced_by();
+        if produced.len() >= 256 {
+            produced.clear();
+        }
+        produced.insert(invocation, app_id);
+    }
+    /// The app id of the live instance `provider`.
+    async fn app_of(&self, provider: &str) -> Option<String> {
+        let peer = provider.parse::<u64>().ok()?;
+        self.instances()
+            .await
+            .ok()?
+            .1
+            .into_iter()
+            .find(|(id, _)| *id == peer)
+            .and_then(|(_, app)| app.get("app_id")?.as_str().map(str::to_owned))
+    }
+    /// Carry the images a succeeded `invocation` produced in `value`, under
+    /// [`IMAGES`], for [`tool_result`] to show.
+    async fn attach_images(&self, invocation: tilo_actions::InvocationId, value: &mut Value) {
+        let Some(media) = self.media.clone() else {
+            return;
+        };
+        if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
+            return;
+        }
+        let hashes: Vec<String> = value
+            .pointer("/update/output/resources")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter_map(tilo_actions::content_hash)
+            .take(MAX_IMAGES)
+            .map(str::to_owned)
+            .collect();
+        let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
+            return;
+        };
+        if hashes.is_empty() {
+            return;
+        }
+        let read = tokio::task::spawn_blocking(move || {
+            hashes
+                .iter()
+                .filter_map(|hash| media.read(&app_id, hash).ok().flatten())
+                .filter(|bytes| bytes.len() <= MAX_IMAGE_BYTES)
+                .filter_map(|bytes| {
+                    use base64::Engine as _;
+                    let mime = image_mime(&bytes)?;
+                    Some(json!({"type":"image","mimeType":mime,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)}))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        if !read.is_empty()
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert(IMAGES.into(), Value::Array(read));
         }
     }
     /// Share which instance holds which file with the endpoint's other
@@ -461,6 +595,26 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if let Some(detail) = params.pointer(SURFACE_DETAIL) {
             self.detail =
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
+        }
+        // Every connection is one agent run, so its edits are attributed to
+        // it in history and undo, whatever transport it came over. A host
+        // that names the run itself (the HTTP endpoint) has done so already.
+        if self.run.is_none() {
+            let label: String = params
+                .pointer("/clientInfo/name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or("MCP agent")
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(64)
+                .collect();
+            self.run = Some(tilo_actions::ActionGroup {
+                id: format!("mcp:{}", uuid::Uuid::new_v4()),
+                label,
+                kind: "agent-run".into(),
+            });
         }
         Ok(
             json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
@@ -816,7 +970,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             "tilo_invoke" => self.invoke(parse(args)?).await,
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
-                self.status(invocation_id(&a.invocation_id)?)
+                let invocation = invocation_id(&a.invocation_id)?;
+                let mut value = self.status(invocation)?;
+                self.attach_images(invocation, &mut value).await;
+                Ok(value)
             }
             "tilo_cancel" => {
                 let a: StatusArgs = parse(args)?;
@@ -963,9 +1120,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .parse::<u64>()
             .ok()
             .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
+        self.record_producer(invocation, &target.provider).await;
         let mut value = self
             .run_with_handles(target, a.arguments, invocation, a.revision, wait)
             .await?;
+        self.attach_images(invocation, &mut value).await;
         if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
             self.open_files.record(&path, peer);
         }

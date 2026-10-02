@@ -182,6 +182,13 @@ impl RuntimeServices for Session {
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         Self::launch(self, app_id, command)
     }
+
+    fn media(&self) -> Option<std::sync::Arc<dyn tilo_runtime::MediaReader>> {
+        Some(std::sync::Arc::new(tilo_runtime::profile::BlobMedia::new(
+            &self.blob_socket,
+            &self.room,
+        )))
+    }
 }
 
 /// The desktop's peer network, attached when `TILO_COLLAB_HOST(S)` names a

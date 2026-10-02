@@ -205,6 +205,52 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
+    /// What an agent sees of the running app: every published action with
+    /// its address, label, description and typed parameters, in a stable
+    /// order. Snapshot it so a change shows how it altered the vocabulary an
+    /// agent, a script or a screen reader works with, and what it costs in
+    /// context.
+    pub fn agent_surface(&mut self) -> serde_json::Value {
+        let resources = self.harness().resources();
+        let mut rows: Vec<serde_json::Value> = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .map(|descriptor| {
+                serde_json::json!({
+                    "resource": descriptor.address.resource.as_str(),
+                    "action": descriptor.address.action,
+                    "resource_kind": descriptor.resource_kind,
+                    "label": descriptor.action_label,
+                    "description": descriptor.description,
+                    "operation": descriptor.kind,
+                    "params": descriptor.params,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| (row["resource"].to_string(), row["action"].to_string()));
+        serde_json::Value::Array(rows)
+    }
+
+    /// Run a view or effect operation (`look`, `export`) through the host
+    /// door, as an agent or script does, and answer with what it produced;
+    /// `None` while it is still running.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn operate(
+        &mut self,
+        invoke: Invoke<A::Resource>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+        };
+        let harness = self.harness();
+        let started = harness.invoke_bound_action(&address, &arguments)?;
+        harness.relayout();
+        Ok(started.completed())
+    }
+
     fn invoke_as(
         &mut self,
         invoke: Invoke<A::Resource>,

@@ -1584,6 +1584,11 @@ fn dispatch_definition_with_manager(
             viewport,
             prepared.runner_inputs,
         )?);
+        // The host prepared the component's presentation; a capture that
+        // names a palette is drawn in it, as every other `--shots` path is.
+        if std::env::var_os("TILO_SHOTS_THEME").is_some() {
+            driver.set_theme(shot_theme(args));
+        }
         if !args.native_audit
             && let Some(scenario) = spec.component_capture_scenario
             && let Err(source) = scenario(&mut driver, args)

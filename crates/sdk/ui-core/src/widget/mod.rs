@@ -2503,9 +2503,11 @@ pub use capture_studio::{
     ReplayCommand, ScreenshotCommand, ScreenshotSendDevice, ScreenshotSendTarget, SourceMode,
 };
 pub mod screenshot_markup;
+pub mod selection_handles;
 pub use screenshot_markup::{
     MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
 };
+pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
 
 pub mod activity_timeline;
 pub mod history;

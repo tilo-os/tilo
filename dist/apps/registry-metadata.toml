@@ -20,6 +20,9 @@ tagline = "Make time visible"
 [apps.camera]
 description = "Capture photos and video from your connected cameras."
 tagline = "Ready when the moment is"
+[apps.canvas]
+description = "Draw and paint with vector marks and real wet media that stay editable as objects."
+tagline = "Art agents can see and revise"
 [apps.chat]
 description = "A focused space for conversations, calls, and shared work."
 tagline = "Talk together, naturally"

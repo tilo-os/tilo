@@ -80,6 +80,9 @@ pub struct ToggleGroup {
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
+    /// The theme colours `cached` was painted in, so a theme change
+    /// repaints it.
+    drawn_palette: Option<[vello::peniko::Color; 4]>,
     /// Fill the parent's available width, allowing compact app navigation on
     /// phone-sized windows while retaining equal hit targets.
     flexible_width: bool,
@@ -113,6 +116,7 @@ impl ToggleGroup {
             last_selected: usize::MAX,
             is_focused: false,
             last_focused: false,
+            drawn_palette: None,
             flexible_width: false,
             style: SegmentedStyle::Solid,
             active_touch: None,
@@ -824,6 +828,16 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_focused = self.is_focused;
         }
+        let palette = [
+            theme.accent_primary,
+            theme.bg_hover,
+            theme.tokens.colors.text_primary,
+            theme.tokens.colors.surfaces.base,
+        ];
+        if self.drawn_palette != Some(palette) {
+            self.drawn_palette = Some(palette);
+            self.cache_dirty = true;
+        }
         let needs_emit = self.cache_dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {
             let dx = self.rect.x0 - self.cache_rect.x0;
@@ -980,14 +994,19 @@ impl Widget for ToggleGroup {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                AccessNode::new(Role::ToggleButton)
+                let node = AccessNode::new(Role::ToggleButton)
                     .with_action_target(self.segment_id(i))
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(i == self.selected),
                         ..Default::default()
                     })
-                    .with_position(i.saturating_add(1), count)
+                    .with_position(i.saturating_add(1), count);
+                // Where the segment is drawn, so pointing at it lands on it.
+                match self.segment_rects.get(i) {
+                    Some(rect) => node.with_bounds(*rect),
+                    None => node,
+                }
             })
             .collect();
         Some(
@@ -1561,6 +1580,12 @@ mod tests {
             assert_eq!(
                 Widget::accessibility(&g).unwrap().value.as_deref(),
                 Some("a")
+            );
+            let segments = Widget::accessibility(&g).unwrap().children;
+            assert_eq!(
+                segments.get(2).and_then(|segment| segment.bounds),
+                g.segment_rects.get(2).map(|rect| (*rect).into()),
+                "each segment is placed where it is drawn"
             );
 
             // Click into segment 2 → value follows the new selection.

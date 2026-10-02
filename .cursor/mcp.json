@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tilo-canvas": {
+      "command": "python3",
+      "args": ["${workspaceFolder}/scripts/agent-loop/session.py", "mcp", "canvas"]
+    }
+  }
+}

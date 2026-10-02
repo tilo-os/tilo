@@ -63,6 +63,17 @@ pub const FILES_SOCKET: &str = "files.sock";
 /// joined room's id.
 pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
 
+/// Reads content an app of this profile stored, through that app's own
+/// scope, so an answer can carry what an action produced (the picture a
+/// `look` rendered) instead of only naming it.
+pub trait MediaReader: Send + Sync {
+    /// The bytes of `hash` as `app_id` stored them; `Ok(None)` when that app
+    /// may not read them or they are not here.
+    /// # Errors
+    /// Returns connection errors.
+    fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>>;
+}
+
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
 pub trait RuntimeServices: Sized {
@@ -109,4 +120,10 @@ pub trait RuntimeServices: Sized {
     /// # Errors
     /// Returns handshake, descriptor or process-spawn errors.
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;
+
+    /// Where MCP answers read the content apps stored; `None` for a host
+    /// without a content service.
+    fn media(&self) -> Option<std::sync::Arc<dyn MediaReader>> {
+        None
+    }
 }

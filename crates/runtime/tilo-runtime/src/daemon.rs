@@ -701,6 +701,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
             computer.clone(),
             viewer,
         );
+        endpoint.serve_media(session.media());
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
     }
@@ -719,6 +720,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         computer,
         joiner: session.joiner(),
         search,
+        media: session.media(),
     };
     endpoint.accept(&listener)
 }
@@ -733,6 +735,8 @@ struct Endpoint<H> {
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
+    /// Where answers read the content actions produced.
+    media: Option<Arc<dyn crate::MediaReader>>,
 }
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
@@ -752,6 +756,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
+            let media = self.media.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -761,7 +766,9 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     let _slot = slot;
                     if let Err(error) = serve_connection(
                         stream,
-                        McpServer::new(host, room, actor).with_computer(computer),
+                        McpServer::new(host, room, actor)
+                            .with_computer(computer)
+                            .with_media(media),
                         &status,
                         joiner.as_ref(),
                         &search,
@@ -896,12 +903,32 @@ pub fn connect(profile: &Path) -> io::Result<()> {
     std::thread::Builder::new()
         .name("tilo-mcp-proxy-stdin".into())
         .spawn(move || {
-            let result = io::copy(&mut io::stdin().lock(), &mut writer);
+            let result = relay(&mut io::stdin().lock(), &mut writer);
             let _ = writer.shutdown(std::net::Shutdown::Write);
             result
         })?;
-    io::copy(&mut stream, &mut io::stdout().lock())?;
+    relay(&mut stream, &mut io::stdout().lock())?;
     Ok(())
+}
+
+/// Copy `from` to `to`, flushing after every read. A client waits for each
+/// reply before it sends the next request, so a reply must not sit in a
+/// buffer until more arrives: `io::copy` into a buffered stdout fills its
+/// buffer and writes only when it is full or the stream ends.
+pub(crate) fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u64> {
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        to.write_all(buffer.get(..read).unwrap_or_default())?;
+        to.flush()?;
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
 }
 
 /// Attach connected service descriptors and replace this host with the app.
