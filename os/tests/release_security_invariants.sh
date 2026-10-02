@@ -15,7 +15,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # Generic publication triggers share the generation-series lock. A protected
 # Lenovo dispatch uses its own source-specific group because it never allocates
 # a generic genN; validation builds remain per-ref.
-grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
   && ok 'generic generation publication is serialized separately from Lenovo' \
   || bad 'release jobs can race and reuse one generation'
@@ -117,6 +117,13 @@ if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow"; then
 else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
+if grep -Fq 'cosign attach sbom --type spdx --input-format json' "$workflow" \
+   && [ "$(grep -Fc './os/dev/verify-release-sbom.sh "$image"' "$workflow")" -eq 3 ] \
+   && ! grep -Fq -- '--type spdxjson' "$workflow"; then
+  ok 'release gates verify the complete registry SBOM through logged provenance'
+else
+  bad 'a release path bypasses the logged SBOM digest and complete registry attachment'
+fi
 
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
@@ -199,7 +206,7 @@ if [ "$(grep -Fc 'TILO_VM_DISPLAY' "$workflow")" -eq 3 ] \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh' "$workflow" \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop' "$workflow" \
    && grep -Fq './os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock' "$workflow" \
-   && grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |\$)'" "$workflow"; then
+   && grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$workflow"; then
   ok 'installed compositor, OOBE and AT-SPI gates run in both the virgl and 2D display modes'
 else
   bad 'the display mode can bypass an installed compositor, OOBE or AT-SPI gate'
@@ -229,15 +236,16 @@ hex="$(printf 'a%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_APP_COLLECTION_SHA256="$hex" \
-   TILO_DESKTOP_PAYLOAD_SHA256="$hex" \
+   TILO_DESKTOP_PAYLOAD_SHA256="$hex" TILO_SBOM_SHA256="$hex" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
-  ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
+   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.runDetails.byproducts[] | select(.name == "spdx-sbom" and .uri == "sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null; then
+  ok 'SLSA provenance binds generation, source inputs, app collection, image and SBOM digests'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi

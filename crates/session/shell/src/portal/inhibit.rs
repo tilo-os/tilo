@@ -27,6 +27,8 @@ const SUPPORTED: u32 = LOGOUT | USER_SWITCH | SUSPEND | IDLE;
 
 static SCREENSAVER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
+static SESSION_WAKE: std::sync::LazyLock<crate::idle_wake::IdleWake> =
+    std::sync::LazyLock::new(crate::idle_wake::IdleWake::default);
 
 /// Publish the compositor's authoritative lock state to Inhibit monitors.
 /// This contains no application-controlled data and is safe to call from the
@@ -34,6 +36,7 @@ static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
 pub fn publish_screensaver_state(active: bool) {
     if SCREENSAVER_ACTIVE.swap(active, Ordering::AcqRel) != active {
         SESSION_STATE_REVISION.fetch_add(1, Ordering::AcqRel);
+        SESSION_WAKE.poke();
     }
 }
 
@@ -252,9 +255,8 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
         .spawn(
             async move {
                 let mut seen = SESSION_STATE_REVISION.load(Ordering::Acquire);
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
                 loop {
-                    interval.tick().await;
+                    SESSION_WAKE.wait().await;
                     let revision = SESSION_STATE_REVISION.load(Ordering::Acquire);
                     if revision == seen {
                         continue;

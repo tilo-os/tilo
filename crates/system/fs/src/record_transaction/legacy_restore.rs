@@ -226,6 +226,9 @@ fn persist_legacy(
     if bytes.len() > MAX_RECORD_TRANSACTION_ENTRY_BYTES {
         return Err(RecordTransactionJournalError::EntryTooLarge);
     }
-    atomic_file::write_creating_parent(&entry_path(root, entry.request.intent_id), &bytes)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &entry_path(root, entry.request.intent_id),
+        &bytes,
+    )?;
     Ok(())
 }

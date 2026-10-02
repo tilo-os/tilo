@@ -48,21 +48,6 @@ env:
   # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
   # adapter and fail instead of silently selecting runner hardware.
   WGPU_ADAPTER_NAME: llvmpipe
-  # Software-Vulkan goldens are intentionally exercised by ci-nightly.yml after
-  # its parallel suite has drained. Under the affected-package shards their
-  # atomic rasterisation changes with runner load, producing repeatable false
-  # pixel deltas even though the same canonical image passes while isolated.
-  GOLDEN_FILTER: >-
-    (package(tilo-ui) and test(typography_visual_regression::)) or
-    (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
-    (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
-  # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images
-  # and take tens of seconds each. Pull-request shards skip them; pushes to
-  # main still run them here, and ci-nightly.yml runs them with the whole
-  # workspace, so a regression is caught at the merge that caused it.
-  PUSH_ONLY_FILTER: >-
-    (package(tilo-fs) and binary(collab_release_matrix)) or
-    (package(tilo-rollback) and binary(mechanism))
 
 jobs:
   builder:
@@ -128,85 +113,31 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
           filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
 
-      - name: Fetch comparison base
-        shell: bash
-        run: |
-          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
-            # Refresh main explicitly so a dispatch always compares against the
-            # current integration branch.
-            git fetch origin \
-              +refs/heads/main:refs/remotes/origin/main
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [ -z "$base" ] || [ "$base" = "null" ]; then
-              base='${{ github.event.before }}'
-            fi
-            if [ -n "$base" ] &&
-               [ "$base" != "0000000000000000000000000000000000000000" ] &&
-               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-              git fetch origin "$base"
-            fi
-          fi
-
       # Pull requests test the head merged onto main's current tip, and every
       # other job merges this same main commit.
       - name: Merge onto main
         id: merge
         uses: ./.forgejo/actions/merge-main
 
-      - name: Nix Cargo lock guard
-        run: python3 scripts/check-nix-cargo-lock.py
-
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
       - name: Repository layout guard
         run: python3 tools/policy/check_repository_layout.py
+
+      # From the merged tree, so the plan follows its rules and not those of a
+      # pull request's own, possibly older, workflow file.
       - name: Select and balance affected packages
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          base=$PULL_REQUEST_BASE
-          selection_args=()
-          if [ "$EVENT_NAME" = pull_request ]; then
-            selection_args+=(--allow-security-skip)
-          elif [ "$EVENT_NAME" = workflow_dispatch ]; then
-            # Dispatch has no pull-request base or push-before SHA. Do not
-            # silently reduce an acceptance run to the last commit's changes.
-            base=origin/main
-            selection_args+=(--full)
-          elif [ -z "$base" ] || [ "$base" = "null" ]; then
-            base=$PUSH_BEFORE
-          fi
-          if [ "$EVENT_NAME" = push ]; then
-            # Pull requests run the hermetic suites their paths reach. Every
-            # push runs all of them, so an input a suite forgot to declare
-            # still fails at the merge that broke it.
-            selection_args+=(--all-suites)
-          fi
-          if [ -z "$base" ] \
-              || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base=HEAD^
-          fi
-          # Every diff-style gate compares with the common ancestor, as package
-          # selection does. A pull request is tested merged onto main, so its
-          # ancestor with main is the merged main commit itself. A push to main
-          # extends its previous tip, so there the common ancestor is exactly
-          # github.event.before.
-          base=$(git merge-base "$base" HEAD)
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-          python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
-            --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
-          {
-            echo '```json'
-            cat ci-plan.json
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.sha }}
+          LANDER_LOGIN: qos-integrator
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/ci/select.sh
 
   # Shell, image-configuration, and workflow policy cannot be selected through
   # Cargo's dependency graph. Run these checks beside selection so they do not
@@ -303,7 +234,7 @@ jobs:
       # Forgejo removes an empty matrix job entirely, leaving its aggregate
       # blocked. Keep one inert row when Rust is inapplicable; the job-level
       # condition skips it without consuming a runner.
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
@@ -317,6 +248,10 @@ jobs:
         uses: ./.forgejo/actions/merge-main
         with:
           main: ${{ needs.select.outputs.main }}
+
+      # From the merged tree: its package names are the ones nextest sees.
+      - name: Read the shared test filters
+        run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -450,14 +385,14 @@ jobs:
   check:
     if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
     needs: [builder, select]
-    runs-on: ${{ matrix.check_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
@@ -522,14 +457,14 @@ jobs:
   clippy:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
-    runs-on: ${{ matrix.check_runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: '8'
     strategy:
       fail-fast: false
       max-parallel: 2
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:

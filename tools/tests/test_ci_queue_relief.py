@@ -54,7 +54,10 @@ class QueueReliefTests(unittest.TestCase):
         with self.subTest(phase='os full build is not a pr gate'):
             events = section(workflow("build-image"), "on")
             self.assertNotRegex(events, r"(?m)^  pull_request(?:_target)?:")
-            self.assertRegex(events, r"(?m)^  schedule:")
+            # OS releases are tags + workflow_dispatch only (no nightly schedule).
+            self.assertNotRegex(events, r"(?m)^  schedule:")
+            self.assertRegex(events, r"(?m)^  workflow_dispatch:")
+            self.assertRegex(events, r"(?m)^  push:")
         with self.subTest(phase='app and desktop prs keep preflight without packaging'):
             for name, plan, build in (("release-apps", "plan", "build"),
                                       ("release-desktop", "validate", "package")):

@@ -3,8 +3,9 @@
 //! An empty collaborative desktop should explain the useful things people can
 //! do together, with a direct route to open any available app. Every card
 //! publishes a semantic action into the widget document; the host takes it
-//! with [`LaunchpadAction::take`] and routes it through the same app, invite
-//! and Activity paths used everywhere else.
+//! with [`LaunchpadAction::take`] (the "Open an app" button with
+//! [`take_open_app`]) and routes it through the same app, invite, Activity and
+//! launcher paths used everywhere else.
 
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
@@ -29,6 +30,19 @@ use winit::keyboard::{Key, NamedKey};
 use crate::i18n::t;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
+
+/// Whether "Open an app" was chosen, cleared from `doc` so it fires once.
+pub fn take_open_app(doc: &mut AutoCommit, root: &ObjId) -> bool {
+    let chosen = matches!(
+        doc.get(root, EMPTY_WORKSPACE_OPEN_APP),
+        Ok(Some((Value::Scalar(value), _)))
+            if matches!(value.as_ref(), ScalarValue::Boolean(true))
+    );
+    if chosen {
+        let _ = doc.put(root, EMPTY_WORKSPACE_OPEN_APP, false);
+    }
+    chosen
+}
 
 pub const EMPTY_WORKSPACE_CHAT: &str = "shell.empty-workspace.chat";
 pub const EMPTY_WORKSPACE_NOTES: &str = "shell.empty-workspace.notes";

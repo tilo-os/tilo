@@ -46,7 +46,7 @@ fn reopen(root: &Path) -> (SenderRuntime, PortableStorage) {
     let cache = PortableStorage::new("profile", "device").unwrap();
     let scope = SenderScope::native(uuid::Uuid::from_bytes([1; 16]), [2; 32], [3; 32]).unwrap();
     let file = PrivateActionsFile::from_held(
-        atomic_file::StorageDirectory::open(root).unwrap(),
+        tilo_files::native::atomic::StorageDirectory::open(root).unwrap(),
         scope,
         &cache,
     )

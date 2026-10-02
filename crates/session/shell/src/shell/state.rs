@@ -122,28 +122,16 @@ mod identity_fs_tests {
                 "publication returned while the deliberately blocked publisher was unfinished"
             );
             std::fs::write(&release, b"release").expect("release publisher");
-            let deadline = std::time::Instant::now()
-                .checked_add(HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
-            while std::time::Instant::now() < deadline {
-                if log.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            // The publisher writes its log line by line, so the log existing
+            // says nothing about it being complete. The worker retires only
+            // after the publisher has exited, which is the event to wait on;
+            // the budget is a backstop and a stall reports the attempt history.
+            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
+                .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
             let arguments = std::fs::read_to_string(&log).expect("background publication");
             assert!(arguments.contains("publish-authority"));
             assert!(arguments.contains(cache.to_str().unwrap()));
             assert!(arguments.contains(acl.to_str().unwrap()));
-            // The released publisher only has to exit; the budget is a
-            // backstop, and a stall reports the worker's attempt history.
-            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
-                |report| {
-                    panic!(
-                        "the publisher worker must retire before its fixture is removed: {report}"
-                    )
-                },
-            );
         }
 
         // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
@@ -2443,7 +2431,7 @@ impl WorkspaceTree {
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
-        if let Err(e) = atomic_file::write_creating_parent(path, &json) {
+        if let Err(e) = tilo_files::native::atomic::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
@@ -3600,6 +3588,37 @@ impl WorkspaceTree {
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
+        self.flush_to_disk();
+        true
+    }
+
+    /// Join a room copied from the machine that enrolled this device.
+    ///
+    /// This is membership, not a continuation offer, so turning app
+    /// continuations off does not remove it.
+    pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
+        if room.is_nil()
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
+        {
+            return false;
+        }
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "From another device");
+        workspace.room = room;
+        // The same person sits at this machine. Without their membership the
+        // room exists but every launch from either of their devices is denied.
+        let user = local_user_id();
+        workspace.set_owner(user.clone());
+        self.desktop.workspaces.push(workspace);
+        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        self.room_share_floor
+            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
+        self.seed_doc_from_cache();
+        self.doc_set_owner(id, &user);
         self.flush_to_disk();
         true
     }

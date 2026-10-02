@@ -669,7 +669,7 @@ impl FileHistoryStore {
             if let Some(parent) = self.log_path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                atomic_file::sync_directory(parent)?;
+                tilo_files::native::atomic::sync_directory(parent)?;
             }
             file.set_len(state.log.len)?;
             state.log.file = Some(file);

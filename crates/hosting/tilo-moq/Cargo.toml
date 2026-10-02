@@ -28,7 +28,6 @@ hex = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-serde_json.workspace = true
 # Only for examples/wt_stream_signal_repro.rs (Chromium WebTransport crash reproducer).
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rustls.workspace = true

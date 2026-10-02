@@ -178,3 +178,112 @@ test('actionsV1 drives an agent\'s open records over frames to its device', asyn
     stop();
   }
 });
+
+test('one task is cancelled by id without stopping the agent', async () => {
+  const peer = fakePeer(request => {
+    const {resource, action} = request.target.address;
+    if (resource === 'agent:writer' && action === 'cancel-task') {
+      return request.argument.Text === 't2' ? {Completed: {output: {value: {}}}} : {Rejected: {error: {Refused: {reason: 'the agent has no such task'}}}};
+    }
+    return {Rejected: {error: 'UnknownAction'}};
+  });
+  const {agents, stop} = agentsWith(peer);
+  try {
+    assert.equal(await agents.cancelTask('writer', 't2'), undefined);
+    assert.deepEqual(peer.sent[0].frame.message.Invoke.target, {provider: 'agents', address: {resource: 'agent:writer', action: 'cancel-task'}});
+    assert.deepEqual(peer.sent[0].frame.message.Invoke.argument, {Text: 't2'});
+    await assert.rejects(agents.cancelTask('writer', 't9'), error => error instanceof AgentsError && error.code === 'refused' && /no such task/.test(error.message));
+    await assert.rejects(agents.cancelTask('writer', ''), TypeError);
+    assert.equal(peer.sent.length, 2, 'nothing is sent without a task id');
+    assert.ok(!peer.sent.some(sent => sent.frame.message.Invoke.target.address.action === 'stop'));
+  } finally {
+    stop();
+  }
+});
+
+test('a caller idempotency id names the invocation, so a resend is answered once', async () => {
+  // The host's ledger: one answer per invocation id, as the supervisor keeps it.
+  const answered = new Map();
+  let tasks = 0;
+  let silent = true;
+  const peer = fakePeer(request => {
+    if (silent) return undefined;
+    const key = request.invocation;
+    if (!answered.has(key)) {
+      const {action} = request.target.address;
+      tasks += 1;
+      answered.set(key, {Completed: {output: {value: action === 'spawn' ? {agentId: 'writer', taskId: `t${tasks}`} : {taskId: `t${tasks}`}}}});
+    }
+    return answered.get(key);
+  });
+  const {agents, stop} = agentsWith(peer, {timeoutMs: 20});
+  const spawnId = '0b5f1c2e-9d7a-4c55-8a1e-3f1d2c4b5a69';
+  const messageId = '1C6F2D3E-0A8B-4D66-9B2F-4E2D3C5B6A70';
+  try {
+    // The first attempt goes unanswered; the caller resends under the same id.
+    await assert.rejects(agents.spawn({grant: 'writer', task: 'tidy', id: spawnId}), error => error.code === 'timeout');
+    silent = false;
+    const spawned = await agents.spawn({grant: 'writer', task: 'tidy', id: spawnId});
+    assert.deepEqual(await agents.spawn({grant: 'writer', task: 'tidy', id: spawnId}), spawned);
+    assert.deepEqual(spawned, {agentId: 'writer', taskId: 't1'});
+    assert.deepEqual(peer.sent.map(sent => sent.frame.message.Invoke.invocation), [spawnId, spawnId, spawnId]);
+
+    // Two sends of one id while the first waits share one frame.
+    const [first, second] = await Promise.all([
+      agents.message('writer', 'add a heading', {id: messageId}),
+      agents.message('writer', 'add a heading', {id: messageId}),
+    ]);
+    assert.deepEqual(first, {taskId: 't2'});
+    assert.deepEqual(second, first);
+    assert.equal(peer.sent.at(-1).frame.message.Invoke.invocation, messageId.toLowerCase());
+    assert.equal(peer.sent.length, 4);
+    assert.equal(tasks, 2, 'one agent and one task');
+
+    await assert.rejects(agents.message('writer', 'x', {id: 'not-a-uuid'}), TypeError);
+    await assert.rejects(agents.spawn({grant: 'writer', task: 'x', id: 7}), TypeError);
+    assert.equal(peer.sent.length, 4);
+    const fresh = await agents.message('writer', 'add a heading');
+    assert.deepEqual(fresh, {taskId: 't3'}, 'without an id every call is new');
+  } finally {
+    stop();
+  }
+});
+
+
+test('a pending invocation id cannot alias a different task or agent', async () => {
+  const peer = fakePeer(() => ({Completed: {output: {value: {taskId: 't1'}}}}));
+  const {agents, stop} = agentsWith(peer);
+  const id = '37d1ca54-3c0f-4dfe-b4d5-e35f3d8ba8fd';
+  try {
+    const first = agents.message('writer', 'first task', {id});
+    await assert.rejects(agents.message('writer', 'different task', {id}), error => error.code === 'invocation_conflict');
+    await assert.rejects(agents.message('another-agent', 'first task', {id}), error => error.code === 'invocation_conflict');
+    assert.deepEqual(await first, {taskId: 't1'});
+    assert.equal(peer.sent.length, 1, 'only the original request is sent');
+  } finally {
+    stop();
+  }
+});
+
+
+test('an invocation binding survives timeout and rejects different input', async () => {
+  const peer = fakePeer(() => undefined);
+  const {agents, stop} = agentsWith(peer, {timeoutMs: 10});
+  const id = '46c880a1-55f3-4844-851d-3fb83f3c55b2';
+  try {
+    await assert.rejects(agents.message('writer', 'original', {id}), error => error.code === 'timeout');
+    await assert.rejects(agents.message('writer', 'changed', {id}), error => error.code === 'invocation_conflict');
+    assert.equal(peer.sent.length, 1);
+  } finally { agents.dispose(); stop(); }
+});
+
+test('disposing an agent API permanently closes its transport', async () => {
+  const peer = fakePeer(() => undefined);
+  const {agents, stop} = agentsWith(peer, {timeoutMs: 10});
+  try {
+    agents.dispose();
+    await assert.rejects(agents.cancelTask('writer', 'task'), error => error.code === 'closed');
+    await assert.rejects(agents.status(), error => error.code === 'closed');
+    assert.equal(peer.sent.length, 0);
+  } finally { stop(); }
+});

@@ -59,7 +59,7 @@ grep -Fqx 'Service=tilo-fs-recipient.service' "$recipient_socket"
 for policy in \
   'ProtectSystem=strict' \
   'ProtectHome=read-only' \
-  'ReadWritePaths=-%h/Shared -%h/.cache/tilo/received-files %t/tilo' \
+  'ReadWritePaths=%h/Shared %h/.cache/tilo %h/.cache/tilo/received-files %t/tilo' \
   'PrivateIPC=yes' \
   'ProtectKernelLogs=yes' \
   'ProtectClock=yes' \
@@ -69,6 +69,132 @@ for policy in \
   'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
   grep -Fqx "$policy" "$recipient_unit"
 done
+# Host units keep the mount-namespace sandbox. A tilo-vm slot cannot mount a
+# fresh /dev/mqueue; that exception is a drop-in shipped only in os/dev-image.
+# Empty assignments do not unset boolean keys (systemd ignores them as
+# invalid), so a drop-in must assign false. ReadWritePaths= is a path list:
+# an empty assignment resets it, and the merged list must stay empty or
+# systemd still enters a mount namespace. PrivateIPC=yes is what mounts
+# /dev/mqueue inside that namespace.
+dropin_root="$repo/os/dev-image/usr/lib/systemd/user"
+# Boolean keys whose empty assignment systemd rejects, leaving production on.
+nested_bools='ProtectSystem|ProtectHome|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|PrivateIPC|PrivateTmp|ProtectControlGroups'
+for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+  prod="$repo/os/usr/lib/systemd/user/$unit"
+  for kept in \
+    'ProtectSystem=strict' \
+    'ProtectHome=read-only' \
+    'ProtectKernelTunables=yes' \
+    'ProtectKernelModules=yes' \
+    'ProtectKernelLogs=yes' \
+    'PrivateTmp=yes' \
+    'ProtectControlGroups=yes' \
+    'ProtectClock=yes' \
+    'ProtectHostname=yes'; do
+    grep -Fqx "$kept" "$prod" || {
+      echo "$unit lost production sandbox directive $kept" >&2
+      exit 1
+    }
+  done
+  if grep -Eq '^PrivateIPC=' "$prod"; then
+    grep -Fqx 'PrivateIPC=yes' "$prod" || {
+      echo "$unit production PrivateIPC is no longer yes" >&2
+      exit 1
+    }
+  fi
+  if ! grep -Eq '^ReadWritePaths=.+' "$prod"; then
+    echo "$unit lost production ReadWritePaths" >&2
+    exit 1
+  fi
+  dropin="$dropin_root/$unit.d/10-nested-user-namespace.conf"
+  test -f "$dropin" || {
+    echo "missing nested-session drop-in for $unit" >&2
+    exit 1
+  }
+  for off in \
+    ProtectSystem=false \
+    ProtectHome=false \
+    ProtectKernelTunables=false \
+    ProtectKernelModules=false \
+    ProtectKernelLogs=false \
+    PrivateIPC=false \
+    PrivateTmp=false \
+    ProtectControlGroups=false \
+    ReadWritePaths=; do
+    grep -Fqx "$off" "$dropin" || {
+      echo "$dropin does not turn off $off" >&2
+      exit 1
+    }
+  done
+  if grep -Eq "^(${nested_bools})=\$" "$dropin"; then
+    echo "$dropin still uses an empty boolean assignment" >&2
+    exit 1
+  fi
+  if grep -Eq '^(ProtectClock|ProtectHostname)=' "$dropin"; then
+    echo "$dropin overrides ProtectClock or ProtectHostname" >&2
+    exit 1
+  fi
+  # Last non-empty assignment wins. An empty boolean is ignored, so
+  # PrivateIPC= in the drop-in leaves production PrivateIPC=yes in force.
+  for key in PrivateIPC PrivateTmp ProtectControlGroups; do
+    merged=""
+    while IFS= read -r line; do
+      case "$line" in
+        "$key"=) ;;
+        "$key"=*) merged="${line#"$key"=}" ;;
+      esac
+    done < <(grep -h -E "^${key}=" "$prod" "$dropin" || true)
+    if [ "$merged" = yes ]; then
+      echo "$unit dev-image merge still sets ${key}=yes" >&2
+      exit 1
+    fi
+  done
+  merged_rw=""
+  while IFS= read -r line; do
+    value="${line#ReadWritePaths=}"
+    if [ -z "$value" ]; then
+      merged_rw=""
+    else
+      merged_rw="${merged_rw:+$merged_rw }$value"
+    fi
+  done < <(grep -h -E '^ReadWritePaths=' "$prod" "$dropin" || true)
+  if [ -n "$merged_rw" ]; then
+    echo "$unit dev-image merge still sets ReadWritePaths=$merged_rw" >&2
+    exit 1
+  fi
+done
+if grep -R -F -- '10-nested-user-namespace.conf' "$repo/os/Containerfile" "$repo/os/usr" >/dev/null; then
+  echo 'nested-session drop-in leaked into the production image' >&2
+  exit 1
+fi
+command -v systemd-analyze >/dev/null || {
+  echo 'systemd-analyze is required to prove the nested drop-in parses' >&2
+  exit 1
+}
+(
+  verify_root=$(mktemp -d)
+  trap 'rm -rf "$verify_root"' EXIT
+  mkdir -p "$verify_root/etc" "$verify_root/usr/lib/systemd/system"
+  printf 'NAME=Test\nID=test\nVERSION_ID=1\n' >"$verify_root/etc/os-release"
+  printf 'NAME=Test\nID=test\nVERSION_ID=1\n' >"$verify_root/usr/lib/os-release"
+  for unit in tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service; do
+    cp "$repo/os/usr/lib/systemd/user/$unit" "$verify_root/usr/lib/systemd/system/$unit"
+    mkdir -p "$verify_root/usr/lib/systemd/system/$unit.d"
+    cp "$dropin_root/$unit.d/10-nested-user-namespace.conf" \
+      "$verify_root/usr/lib/systemd/system/$unit.d/"
+  done
+  verify_log=$(mktemp)
+  systemd-analyze --root="$verify_root" verify \
+    tilo-fs-recipient.service tilo-fs-cloud.service tilo-models.service \
+    >"$verify_log" 2>&1 || true
+  if grep -E 'Failed to parse (Protect|PrivateIPC|PrivateTmp|ReadWritePaths)' "$verify_log"; then
+    echo 'systemd-analyze rejected a nested-session sandbox drop-in' >&2
+    cat "$verify_log" >&2
+    rm -f "$verify_log"
+    exit 1
+  fi
+  rm -f "$verify_log"
+)
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
@@ -82,7 +208,7 @@ wpe_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Conta
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$wpe_copy_line" -lt "$wpe_deps_line"
 test "$wpe_deps_line" -lt "$shell_link_check_line"
-grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
+grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
 # stronger accessibility release gate before any filesystem test could run.

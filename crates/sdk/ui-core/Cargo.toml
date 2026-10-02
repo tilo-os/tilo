@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -126,6 +126,7 @@ url.workspace = true
 # x-www-form-urlencoded dialect that also reads `+` as a space.
 percent-encoding.workspace = true
 form_urlencoded.workspace = true
+# First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the
@@ -317,7 +318,7 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 serial_test.workspace = true
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 regex.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point

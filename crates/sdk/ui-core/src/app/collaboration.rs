@@ -488,7 +488,7 @@ impl App {
     }
 
     /// Shared by the per-frame tick and the headless test path. Returns
-    /// `true` iff at least one event was processed.
+    /// `true` iff presentation changed (not merely that a packet arrived).
     pub fn pump_collab_presence(&mut self) -> bool {
         self.pump_collab_presence_inner(false).0
     }
@@ -619,18 +619,50 @@ impl App {
         }
     }
 
-    /// Applies every queued collaboration event. Returns whether any event
-    /// arrived and whether one of them may have changed the action surface.
+    /// Applies every queued collaboration event. Returns whether presentation
+    /// changed and whether one of them may have changed the action surface.
+    ///
+    /// Widget-owned replies (Nearby Send snapshots, catalogues) still run
+    /// `handle_collab_event`. They do not by themselves request a frame:
+    /// Files' 2s poll used to recommit an unchanged listing because `any`
+    /// meant "a packet arrived".
     fn drain_collab_presence_events(&mut self) -> (bool, bool) {
         let events = self.collaboration.manager.poll();
-        let any = !events.is_empty();
+        let mut any = false;
         let mut action_surface_may_have_changed = false;
         for event in events {
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
+            // Always deliver the event. Skipping an unchanged present must
+            // not skip widget handling (keys, catalogues, Nearby replies).
             self.forward_session_notification(&event);
+            any |= Self::collab_event_updates_app_presentation(&event);
             self.apply_collab_presence_event(event);
+            if self.root_widget.take_structure_dirty() {
+                self.layout.structure_dirty = true;
+                any = true;
+            }
         }
         (any, action_surface_may_have_changed)
+    }
+
+    fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
+        !matches!(
+            event,
+            CollabEvent::NearbyTransferCommandResult { .. }
+                | CollabEvent::ActionCatalogue { .. }
+                | CollabEvent::ActionDirectoryPage { .. }
+                | CollabEvent::PublishedActionResolution { .. }
+                | CollabEvent::EnrolledTask(_)
+                | CollabEvent::EnrolledTaskReply { .. }
+                | CollabEvent::EnrolledTaskDisconnected { .. }
+                | CollabEvent::NativeMediaCommandResult { .. }
+                | CollabEvent::TaskRun(_)
+                | CollabEvent::TaskActionInvocationResult { .. }
+                | CollabEvent::TaskRunCancellation { .. }
+                | CollabEvent::WorkspaceControl { .. }
+                | CollabEvent::RealtimeCommandResult { .. }
+                | CollabEvent::Realtime(_)
+        )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
         match event {

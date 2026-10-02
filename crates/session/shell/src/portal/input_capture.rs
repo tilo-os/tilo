@@ -248,9 +248,19 @@ struct CaptureState {
 
 /// Compositor-facing input capture authority.  Hosted sessions use
 /// [`unavailable`](Self::unavailable), which prevents false capability claims.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct InputCaptureCompositorHandle {
     state: Arc<Mutex<CaptureState>>,
+    /// Parked by the portal signal emitter until a signal is queued.
+    wake: crate::idle_wake::IdleWake,
+}
+impl Default for InputCaptureCompositorHandle {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(CaptureState::default())),
+            wake: crate::idle_wake::IdleWake::default(),
+        }
+    }
 }
 impl InputCaptureCompositorHandle {
     pub fn unavailable() -> Self {
@@ -265,6 +275,7 @@ impl InputCaptureCompositorHandle {
                 sessions: HashMap::new(),
                 signals: vec![],
             })),
+            wake: crate::idle_wake::IdleWake::default(),
         }
     }
     pub fn available(&self) -> bool {
@@ -365,6 +376,7 @@ impl InputCaptureCompositorHandle {
             cursor: (x, y),
             barrier_id: barrier.id,
         });
+        self.wake.poke();
         true
     }
     fn drain_signals(&self) -> Vec<PortalSignal> {
@@ -406,16 +418,7 @@ impl InputCaptureBackend {
         }
     }
     pub fn spawn_signal_emitter(&self) {
-        let compositor = self.compositor.clone();
-        let connection = self.connection.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(8)).await;
-                for signal in compositor.drain_signals() {
-                    emit_signal(&connection, signal).await;
-                }
-            }
-        });
+        spawn_compositor_emitter(self.compositor.clone(), self.connection.clone());
     }
     pub fn session_handle(&self) -> InputCaptureSessionHandle {
         InputCaptureSessionHandle {
@@ -1006,6 +1009,7 @@ impl InputCaptureBackend {
                     session: key.clone(),
                 });
             }
+            self.compositor.wake.poke();
             true
         });
         (if changed { 0 } else { 2 }, HashMap::new())
@@ -1045,6 +1049,7 @@ impl InputCaptureBackend {
                 }
             };
             state.signals.push(signal);
+            self.compositor.wake.poke();
             true
         });
         (if changed { 0 } else { 2 }, HashMap::new())
@@ -1103,6 +1108,25 @@ fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Valu
     if let Ok(value) = OwnedValue::try_from(value) {
         values.insert(key.into(), value);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_compositor_emitter(
+    compositor: InputCaptureCompositorHandle,
+    connection: zbus::Connection,
+) {
+    tokio::spawn(async move {
+        loop {
+            let signals = compositor.drain_signals();
+            if signals.is_empty() {
+                compositor.wake.wait().await;
+                continue;
+            }
+            for signal in signals {
+                emit_signal(&connection, signal).await;
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "linux")]
@@ -1479,5 +1503,72 @@ mod tests {
                 y: 0
             }]
         ));
+    }
+
+    /// The session-runtime emitters used to wake on a timer with nothing to
+    /// send. That CPU is not on the frame loop: the process still accumulates
+    /// it while loop ticks and the main thread's context switches stay at zero.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn idle_emitters_stay_asleep_until_a_signal_is_queued() {
+        use std::time::Duration;
+        use tokio::net::UnixStream;
+        use zbus::connection::Builder;
+
+        const COMM: &str = "tilo-idle-emit";
+        let (runtime, tid) = crate::idle_thread_probe::spawned_thread(COMM, || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name(COMM)
+                .build()
+                .expect("runtime")
+        });
+        let capture = super::InputCaptureCompositorHandle::unavailable();
+        runtime.block_on(async {
+            let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+            let server = Builder::unix_stream(server_sock)
+                .p2p()
+                .server("0123456789abcdef0123456789abcdef")
+                .expect("server")
+                .build();
+            let client = Builder::unix_stream(client_sock).p2p().build();
+            let (connection, _client) = tokio::try_join!(server, client).expect("p2p");
+            super::spawn_compositor_emitter(capture.clone(), connection.clone());
+            crate::portal::clipboard::spawn_signal_emitter(
+                connection.clone(),
+                crate::portal::clipboard::ClipboardBackend::new(),
+            );
+            crate::notifications::spawn_signal_emitter(
+                connection.clone(),
+                crate::notifications::NotificationBridge::new(),
+            );
+            crate::portal::notification::spawn_action_emitter(
+                connection.clone(),
+                crate::portal::notification::NotificationPortalHandle::default(),
+            );
+            crate::portal::inhibit::spawn_state_emitter(
+                connection.clone(),
+                crate::portal::inhibit::InhibitMonitorHandle::default(),
+            );
+            crate::portal::global_shortcuts::spawn_signal_emitter(
+                connection,
+                crate::portal::global_shortcuts::GlobalShortcutsHandle::with_bound_session_for_tests(
+                    "/session",
+                    "so.tilo.notes",
+                    &[],
+                ),
+            );
+        });
+        crate::idle_thread_probe::assert_stays_asleep(&tid, "portal and notification emitters");
+        let parked = crate::idle_thread_probe::context_switches(&tid);
+        capture.wake.poke();
+        std::thread::sleep(Duration::from_millis(50));
+        let woke = crate::idle_thread_probe::context_switches(&tid).saturating_sub(parked);
+        assert!(
+            woke > 0,
+            "a queued input-capture signal must wake the emitter, woke {woke}"
+        );
+        drop(runtime);
     }
 }

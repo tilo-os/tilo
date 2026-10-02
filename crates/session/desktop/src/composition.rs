@@ -632,6 +632,12 @@ impl DesktopSurface {
                 .map(|g| g.id)
                 .collect();
             for id in stale {
+                if row.groups.iter().any(|g| g.id == id && g.is_closing()) {
+                    // Super+W (and the ✕) start the close animation
+                    // before the tree drop is reconciled; keep the last
+                    // frame here until `GroupRow::prune_closed_groups`.
+                    continue;
+                }
                 if let Some(group) = row.groups.iter_mut().find(|g| g.id == id) {
                     reports.extend(ui::component_lifecycle::close_components(group));
                 }

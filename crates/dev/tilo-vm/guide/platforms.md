@@ -80,9 +80,11 @@ display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
 through QMP and waits for QEMU to exit.
 
 For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
-virtual GPU, USB devices and VNC. `--memory-mb` controls guest RAM; less RAM
-can shorten WHPX's cold start, but choose enough for the components being
-tested. A 2 GiB VM is suitable only for light service work. Neither option
+virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
+`--memory-mb 8192` when an in-guest build needs more. On a Snapdragon X Elite
+Windows ARM64 host, the same cached direct-boot disk reached SSH in 22 seconds
+with 3 GiB, versus 44 seconds with 8 GiB; a full stop and restart with 3 GiB
+took 28 seconds. A 2 GiB VM is suitable only for light service work. Neither option
 changes the disk image or the installer test path.
 
 ### Direct kernel boot for a fast service VM

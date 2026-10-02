@@ -121,24 +121,24 @@ pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &path);
 }
 
-/// The faux drop-shadow every floating map surface casts: a slightly
-/// larger, very transparent black plate seated a few pixels below.
-fn floating_shadow(scene: &mut Scene, t: Affine, rect: Rect, radius: f64) {
+/// The drop shadow every floating map surface casts: the theme's elevation
+/// ladder, seated a few pixels below, so a light theme softens it.
+fn floating_shadow(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
     let shadow = Rect::new(rect.x0 - 1.0, rect.y0 + 3.0, rect.x1 + 1.0, rect.y1 + 5.0);
     fill_round(
         scene,
         t,
         shadow,
         radius + 1.0,
-        Color::from_rgba8(0, 0, 0, 46),
+        theme.tokens.elevation.e3.color,
     );
 }
 
 /// A soft elevated card floating over the map: shadow, fill, and the 1 px
 /// rest edge *derived* from the fill (`ui::surface::card`, HIG §9.5) — never
 /// a declared `border_standard`, which vanishes on a raised dark surface.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
-    floating_shadow(scene, t, rect, radius);
+pub fn card(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64, fill: Color) {
+    floating_shadow(scene, t, theme, rect, radius);
     ui::surface::card(scene, t, rect, radius, fill);
 }
 
@@ -149,13 +149,14 @@ pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) 
 pub fn card_ring(
     scene: &mut Scene,
     t: Affine,
+    theme: &Theme,
     rect: Rect,
     radius: f64,
     fill: Color,
     ring: Color,
     width: f64,
 ) {
-    floating_shadow(scene, t, rect, radius);
+    floating_shadow(scene, t, theme, rect, radius);
     fill_round(scene, t, rect, radius, fill);
     stroke_rrect(scene, t, rect, radius, width, ring);
 }

@@ -1,0 +1,215 @@
+name: Dev / ARM disk boot diagnostic
+
+# Reboot an existing, immutable dev disk candidate on native ARM KVM. This
+# avoids rebuilding the image, reinstalling it, or publishing another disk when
+# a graphical first boot needs diagnosis.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_manifest:
+        description: "Public tilo-vm-disk-candidate candidate.json URL from a dev-disk run."
+        required: true
+      source_revision:
+        description: "Exact 40-character source revision the candidate must name."
+        required: true
+      renderer_variant:
+        description: "Greeter render probe: gpu (default), vello-cpu, gl-softpipe, lp-zero, or lp-no-rast."
+        required: false
+        default: gpu
+      cpu_variant:
+        description: "Native KVM CPU: host (default) or host-no-sve to diagnose CPU feature selection."
+        required: false
+        default: host
+      capture_fault_pc:
+        description: "Lower ptrace scope in the disposable dev guest and trace the greeter after a reboot."
+        required: false
+        default: "false"
+      verity_samples:
+        description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
+        required: false
+        default: ""
+
+jobs:
+  boot:
+    runs-on: runner-disk-100g-arm64
+    timeout-minutes: 40
+    env:
+      TILO_DISTROBOX: ""
+      TILO_VM_ARCH: aarch64
+      TILO_ACCEL: kvm
+      TILO_USER: quickuser
+      TILO_PASS: tilo
+      TILO_RUN: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}
+      CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}
+      SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+      RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
+      CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
+      CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
+      VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install native VM tools
+        run: |
+          set -euo pipefail
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
+            curl ipxe-qemu jq openssh-client qemu-efi-aarch64 qemu-system-arm \
+            qemu-utils socat sshpass
+          test -r /usr/lib/ipxe/qemu/efi-virtio.rom
+          python3 os/dev/probe-kvm.py aarch64 || {
+            echo '::error::native ARM KVM is unavailable on this runner'
+            exit 1
+          }
+
+      - name: Download and verify only the candidate disk
+        run: |
+          set -euo pipefail
+          [[ $SOURCE_REVISION =~ ^[0-9a-f]{40}$ ]]
+          [[ $CANDIDATE_MANIFEST =~ ^https://code\.tilo\.so/api/packages/tilo/generic/tilo-vm-disk-candidate/[A-Za-z0-9._-]+/candidate\.json$ ]] || {
+            echo '::error::candidate_manifest must be a Tilo dev disk candidate URL'
+            exit 1
+          }
+          mkdir -p "$TILO_RUN"
+          base=${CANDIDATE_MANIFEST%/candidate.json}
+          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json" "$CANDIDATE_MANIFEST"
+          curl --fail --location --retry 3 --output "$TILO_RUN/candidate.json.sha256" "$CANDIDATE_MANIFEST.sha256"
+          (cd "$TILO_RUN" && sha256sum -c candidate.json.sha256)
+          jq -e --arg source "$SOURCE_REVISION" '
+            .schema == "https://tilo.sh/dev/disk-candidate/v1"
+            and .validation == "unvalidated"
+            and .arch == "aarch64"
+            and .sourceRevision == $source
+            and ([.files[] | select(.role == "disk")] | length) == 1
+          ' "$TILO_RUN/candidate.json" >/dev/null
+          file=$(jq -er '.files[] | select(.role == "disk") | .file' "$TILO_RUN/candidate.json")
+          [[ $file == tilo-vm-candidate-aarch64.qcow2 ]]
+          url=$(jq -er '.files[] | select(.role == "disk") | .url' "$TILO_RUN/candidate.json")
+          [[ $url == "$base/$file" ]]
+          sha=$(jq -er '.files[] | select(.role == "disk") | .sha256' "$TILO_RUN/candidate.json")
+          [[ $sha =~ ^[0-9a-f]{64}$ ]]
+          curl --fail --location --retry 3 --output "$TILO_RUN/$file" "$url"
+          (cd "$TILO_RUN" && printf '%s  %s\n' "$sha" "$file" | sha256sum -c -)
+          qemu-img check -f qcow2 "$TILO_RUN/$file"
+          echo "TILO_DISK=$TILO_RUN/$file" >> "$GITHUB_ENV"
+
+      - name: Boot, capture cage stderr, and check greeter
+        run: |
+          set -euo pipefail
+          [[ $RENDERER_VARIANT == gpu || $RENDERER_VARIANT == gpu-generic-cpu || $RENDERER_VARIANT == vello-cpu || $RENDERER_VARIANT == gl-softpipe || $RENDERER_VARIANT == lp-zero || $RENDERER_VARIANT == lp-no-rast ]] || {
+            echo '::error::renderer_variant must be gpu, gpu-generic-cpu, vello-cpu, gl-softpipe, lp-zero, or lp-no-rast'
+            exit 1
+          }
+          [[ $CPU_VARIANT == host || $CPU_VARIANT == host-no-sve ]] || {
+            echo '::error::cpu_variant must be host or host-no-sve'
+            exit 1
+          }
+          [[ $CAPTURE_FAULT_PC == true || $CAPTURE_FAULT_PC == false ]] || {
+            echo '::error::capture_fault_pc must be true or false'
+            exit 1
+          }
+          export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
+          overlay="$TILO_RUN/smoke.qcow2"
+          qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
+          finish() {
+            status=$?
+            if (( status != 0 )); then
+              ./os/dev/vm.sh cmd "screendump $TILO_RUN/boot-failure.ppm" >/dev/null 2>&1 || true
+              bash ./os/dev/diagnose-boot-failure.sh || true
+            fi
+            ./os/dev/vm.sh stop || true
+            rm -f -- "$overlay"
+            return "$status"
+          }
+          trap finish EXIT
+          ./os/dev/vm.sh boot --2d --disk "$overlay"
+          ready=false
+          for attempt in $(seq 1 120); do
+            if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then ready=true; break; fi
+            sleep 1
+          done
+          [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
+          read -r -a samples <<< "$VERITY_SAMPLES"
+          for sample in "${samples[@]}"; do
+            [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {
+              echo '::error::verity_samples contains an invalid object path'
+              exit 1
+            }
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sha256sum '/sysroot/composefs/objects/$sample' >/dev/null" || {
+              echo "::error::native KVM could not read composefs object $sample"
+              exit 1
+            }
+            echo "::notice::native KVM read composefs object $sample"
+          done
+          if [[ $CAPTURE_FAULT_PC == true ]]; then
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              os/dev/guest-ptrace-override.sh "$TILO_USER@127.0.0.1:/tmp/guest-ptrace-override.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-ptrace-override.sh"
+            ./os/dev/vm.sh stop
+            ./os/dev/vm.sh boot --2d --disk "$overlay"
+            ready=false
+            for attempt in $(seq 1 120); do
+              if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::debug guest did not reboot'; exit 1; }
+            ./os/dev/vm.sh ssh 'cat /proc/sys/kernel/yama/ptrace_scope; test "$(cat /proc/sys/kernel/yama/ptrace_scope)" = 0' || {
+              echo '::error::disposable guest ptrace override did not take effect'
+              exit 1
+            }
+            cc -O2 -Wall -Wextra -o "$TILO_RUN/tilo-greeter-ptrace-probe" \
+              os/dev/greeter-ptrace-probe.c
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              "$TILO_RUN/tilo-greeter-ptrace-probe" "$TILO_USER@127.0.0.1:/tmp/"
+          fi
+          if [[ $RENDERER_VARIANT == gpu-generic-cpu ]]; then
+            cc -O2 -Wall -Wextra -shared -fPIC -o "$TILO_RUN/libtilo-gallivm-cpu-interpose.so" \
+              os/dev/gallivm-cpu-interpose.c
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              "$TILO_RUN/libtilo-gallivm-cpu-interpose.so" "$TILO_USER@127.0.0.1:/tmp/"
+          fi
+          sshpass -p "$TILO_PASS" scp -q -P 2222 \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            os/dev/guest-greeter-diagnostic.sh "$TILO_USER@127.0.0.1:/tmp/guest-greeter-diagnostic.sh"
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' env GREETER_RENDER_VARIANT=$RENDERER_VARIANT GREETER_CAPTURE_FAULT_PC=$CAPTURE_FAULT_PC bash /tmp/guest-greeter-diagnostic.sh"
+          ./os/dev/vm.sh ssh 'cat /tmp/tilo-cage-diagnostic.log' > "$TILO_RUN/cage-diagnostic.log" || true
+          if [[ $RENDERER_VARIANT == gpu-generic-cpu ]]; then
+            grep -q 'TILO_GALLIVM_CPU=generic' "$TILO_RUN/cage-diagnostic.log" || {
+              echo '::error::LLVM CPU override did not load in the guest'
+              exit 1
+            }
+            ./os/dev/vm.sh ssh 'grep -lq first-frame-presented /tmp/tilo-greeter-metrics-*.json' || {
+              echo '::error::guest did not present its first frame'
+              exit 1
+            }
+          fi
+          sleep 3
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c 'test -c /dev/dri/card0 && systemctl is-active --quiet greetd && pgrep -x cage && pgrep -x tilo-greeter'" || {
+            echo '::error::native KVM guest did not keep a graphical greeter'
+            exit 1
+          }
+
+      - name: Upload failed framebuffer
+        if: failure()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: dev-kvm-greeter-failure
+          path: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-failure.ppm
+          if-no-files-found: ignore
+
+      - name: Upload greeter diagnostic log
+        if: failure()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: dev-kvm-cage-diagnostic
+          path: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/cage-diagnostic.log
+          if-no-files-found: ignore

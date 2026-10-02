@@ -48,6 +48,7 @@ pub struct RoomRecords {
     device: [u8; 32],
     user: [u8; 32],
     signing_key: ed25519_dalek::SigningKey,
+    metrics: std::sync::Arc<crate::metrics::Metrics>,
 }
 
 impl RoomRecords {
@@ -56,12 +57,14 @@ impl RoomRecords {
         device: [u8; 32],
         user: [u8; 32],
         signing_key: ed25519_dalek::SigningKey,
+        metrics: std::sync::Arc<crate::metrics::Metrics>,
     ) -> Self {
         Self {
             workspaces,
             device,
             user,
             signing_key,
+            metrics,
         }
     }
 
@@ -161,30 +164,13 @@ impl RoomRecords {
             .get(&workspace_id)
             .cloned()
             .ok_or("the workspace is not hosted here")?;
-        let mut guard = ws.lock_owned().await;
-        let now = unix_now_ns();
-        let seq = guard.next_seq(now);
-        let author = self.device;
         let envelope = Envelope::Delta {
             workspace_id,
-            author_device_public_key: author,
-            authored_at_ns: now,
-            delta: delta.clone(),
+            author_device_public_key: self.device,
+            authored_at_ns: unix_now_ns(),
+            delta,
             signature: [0; 64],
         };
-        // Persistence and the pinned merge block, as for a device's commit.
-        tokio::task::spawn_blocking(move || {
-            guard.fanout_delta(
-                &author,
-                crate::auth::PeerRole::Device,
-                &envelope,
-                &delta,
-                seq,
-            )
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
-        Ok(seq)
+        crate::peer::admit_host_state(&ws, envelope, std::sync::Arc::clone(&self.metrics)).await
     }
 }

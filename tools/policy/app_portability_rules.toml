@@ -176,7 +176,6 @@ crates = [
     "settings-store",
     # Absorbed into platform crates; their shims count down.
     "tilo-xdg-paths",
-    "tilo-atomic-file",
     "private-fs",
     "tilo-advisory-lock",
     "bounded-command",

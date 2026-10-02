@@ -195,6 +195,21 @@ tilo_image_source_time() {
 #           from a script that exists. The build's RUN containers are not what
 #           SELinux protects the host from; the image's own labels are unchanged.
 TILO_PODMAN_BUILD_FLAGS=(--jobs "${TILO_PODMAN_BUILD_JOBS:-4}" --security-opt label=disable)
+# An x86 builder with registered qemu-user can produce the aarch64 board image.
+# The flag is absent when the machine already is that architecture, so a native
+# ARM build is unchanged.
+if [ -n "${TILO_BUILD_ARCH:-}" ] && [ "$TILO_BUILD_ARCH" != "$(uname -m)" ]; then
+  case "$TILO_BUILD_ARCH" in
+    aarch64) _tilo_platform=linux/arm64 ;;
+    x86_64) _tilo_platform=linux/amd64 ;;
+    *) echo "TILO_BUILD_ARCH must be x86_64 or aarch64, not $TILO_BUILD_ARCH" >&2; exit 1 ;;
+  esac
+  case " ${TILO_PODMAN_BUILD_FLAGS[*]} " in
+    *" $_tilo_platform "*) ;;
+    *) TILO_PODMAN_BUILD_FLAGS+=(--platform "$_tilo_platform") ;;
+  esac
+  unset _tilo_platform
+fi
 
 # Parallel cargo jobs for an in-image compile: a CPU per job, as far as memory
 # holds out at $1 GiB a job; 8 when memory cannot be read.
@@ -205,6 +220,17 @@ cargo_build_jobs() {
   [ -n "$mem_jobs" ] && [ "$mem_jobs" -ge 1 ] || mem_jobs=8
   [ "$cpus" -le "$mem_jobs" ] || cpus="$mem_jobs"
   printf '%s\n' "$cpus"
+}
+
+# The two digests of bootc install's composefs refusal, read from its log $1:
+#   The UKI has the wrong composefs= parameter (is '<A>', should be '<B>')
+# Older bootc prefixed both with `sha512:` and left <B> unquoted; accept either.
+# Print nothing, and still succeed, when the log holds no such refusal.
+composefs_expected_digest() {
+  { sed -n "s/.*should be '\{0,1\}\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'\{0,1\}.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
+}
+composefs_sealed_digest() {
+  { sed -n "s/.*is '\(sha512:\)\{0,1\}\([0-9a-f]\{128\}\)'.*/\2/p" "$1" 2>/dev/null || true; } | tail -1
 }
 
 warn_slow_podman_storage() {
@@ -231,18 +257,24 @@ inenv() {
 }
 
 qemu_accel_args() {
+  local kvm_cpu=host
+  case "${TILO_KVM_CPU_VARIANT:-host}" in
+    host) ;;
+    host-no-sve) kvm_cpu=host,sve=off ;;
+    *) die "TILO_KVM_CPU_VARIANT must be host or host-no-sve" ;;
+  esac
   case "$TILO_ACCEL" in
     auto)
       # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
       local probe
       printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
       if inenv "$probe"; then
-        echo "-enable-kvm -cpu host"
+        echo "-enable-kvm -cpu $kvm_cpu"
       else
         echo "-accel tcg,thread=multi -cpu max"
       fi
       ;;
-    kvm) echo "-enable-kvm -cpu host" ;;
+    kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
     *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
   esac

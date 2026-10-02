@@ -34,7 +34,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{
-    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time, hue_to_rgb,
+    HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
     op_class_glyph,
 };
 use crate::widget::history_group::{
@@ -1987,7 +1987,7 @@ impl ActivityTimeline {
         cy: f64,
         entry: &HistoryEntry,
     ) -> f64 {
-        let (r, g, b) = hue_to_rgb(entry.author.avatar_hue);
+        let (r, g, b) = entry.author.rgb();
         let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
         let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
@@ -2609,7 +2609,7 @@ impl ActivityTimeline {
         let dot_cy = meta_y + f64::from(rel_h) / 2.0;
         let mut dx = row.x1 - TRAILING_INSET - 8.0 - f64::from(rel_w);
         for a in rg.authors.iter().take(3) {
-            let (r, g, b) = hue_to_rgb(a.avatar_hue);
+            let (r, g, b) = a.rgb();
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,

@@ -32,7 +32,7 @@ tilo-caps = { path = "../../sdk/tilo-caps" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 # The portability rules table deserializes into typed rules.
 serde.workspace = true
 serde_json.workspace = true
