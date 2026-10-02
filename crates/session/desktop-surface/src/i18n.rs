@@ -195,10 +195,13 @@ mod tests {
             }
         }
         let mut found = BTreeMap::new();
-        visit(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut found,
-        );
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        visit(&manifest.join("src"), &mut found);
+        // The native desktop resolves the rest of this catalogue.
+        let desktop = manifest.join("../desktop/src");
+        if desktop.is_dir() {
+            visit(&desktop, &mut found);
+        }
         found
     }
 
@@ -324,5 +327,23 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "i18n_copy_lint_tests.rs"]
-mod copy_lint_tests;
+mod copy_lint_tests {
+    /// Literals that look like prose but are not copy.
+    const ALLOWED: &[(&str, &str)] = &[];
+
+    /// The history pane and the notification views build every string from
+    /// the catalogue; the surface's navigation contract is a wire format.
+    #[test]
+    fn copy_builders_take_catalogue_strings_not_english_literals() {
+        for dir in ["activity", "notifications"] {
+            tilo_copy_lint::CopyLint::new(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/src/").to_owned() + dir,
+            )
+            .allow(ALLOWED)
+            // The activity pane's test fixture, compiled only under test.
+            .skip_files(&["testing.rs"])
+            .min_files(4)
+            .check();
+        }
+    }
+}

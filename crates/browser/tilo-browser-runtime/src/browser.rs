@@ -38,6 +38,23 @@ thread_local! {
     static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
         const { RefCell::new(std::collections::VecDeque::new()) };
     static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Mounts presenting a desktop, which applications' notifications wake.
+    static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
+        const { RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+/// Schedule a frame for every desktop: an application posted or withdrew a
+/// notification. Runs inside application code, so it reaches the mounts
+/// only through the event loop.
+fn wake_desktops() {
+    let ids = DESKTOPS.with_borrow(Clone::clone);
+    LOOP.with_borrow(|proxy| {
+        if let Some(proxy) = proxy {
+            for id in ids {
+                let _ = proxy.send_event(id);
+            }
+        }
+    });
 }
 
 #[derive(serde::Deserialize)]
@@ -298,7 +315,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     if let Some(p) = LOOP.with_borrow(Clone::clone) {
         return Ok(p);
     }
-    crate::host_services::install();
+    crate::host_services::install(Arc::new(wake_desktops));
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
@@ -377,6 +394,7 @@ pub fn mount(
 #[wasm_bindgen]
 pub fn close(id: u64) -> Result<JsValue, JsValue> {
     REQUESTS.with_borrow_mut(|r| r.remove(&id));
+    DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
     let Some(mut mount) = MOUNTS.with_borrow_mut(|m| m.remove(&id)) else {
         return Ok(js_sys::Array::new().into());
     };
@@ -618,8 +636,9 @@ fn present_desktop(
         InstanceViewStore::with_store(Rc::clone(&dyn_store), &config.device, &config.room)
             .map_err(error)?,
     );
+    let dyn_history_store = Rc::clone(&dyn_store);
     let wake = proxy()?;
-    let (surface, handle, shared, persistence) = crate::desktop::mount(
+    let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         crate::desktop::Inputs {
             owners: RecordOwners::with_store(Rc::clone(&dyn_store)),
             views,
@@ -639,6 +658,19 @@ fn present_desktop(
         }),
     )
     .map_err(error)?;
+    surface.set_history_source(Box::new(crate::history::PageHistory::new(
+        &config.room,
+        config.peer,
+        config.author(),
+        Rc::clone(&dyn_history_store),
+        shared.clone(),
+        Rc::clone(&persistence.history),
+    )));
+    surface.set_notifications(persistence.notifications.clone());
+    if let Some(inbox) = crate::host_services::notification_inbox() {
+        surface.set_app_notifications(inbox);
+    }
+    DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     Ok(Presentation {
         root: Root::Desktop(Box::new(surface)),
         stores: Rc::clone(&shared.stores),
@@ -866,6 +898,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 notify: Arc::new(move || {
                     let _ = wake.send_event(id);
                 }),
+                author: config.author(),
             },
         );
         if !attached {
@@ -2199,6 +2232,7 @@ pub fn modifiers(
 /// Follow `document.visibilityState`.
 #[wasm_bindgen]
 pub fn visible(id: u64, visible: bool) {
+    crate::host_services::set_hidden(!visible);
     MOUNTS.with_borrow_mut(|mounts| {
         if let Some(m) = mounts.get_mut(&id) {
             m.hidden = !visible;
