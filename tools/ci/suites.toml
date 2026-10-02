@@ -155,6 +155,7 @@ suites = [
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_windows_provider_candidates.py",
   "os/tests/test_fetch_windows_direct_manifests.py",
+  "os/tests/test_forgejo_dev_installer_metadata.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/test_wpe_recipe_inputs.py",
   "os/tests/test_wpe_stage_artifact.py",
