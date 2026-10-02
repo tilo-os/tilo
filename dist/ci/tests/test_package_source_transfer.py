@@ -77,6 +77,48 @@ class PackageSourceTransferTests(unittest.TestCase):
             self.assertGreater(previous.stat().st_size, 8 * 1024 * 1024)
             self.assertGreater(target.stat().st_size, 8 * 1024 * 1024)
 
+    def test_archive_carries_objects_borrowed_through_alternates(self):
+        def git(*args, cwd, env=None):
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                                   "-c", "init.defaultBranch=main", *args],
+                                  cwd=cwd, env=env, check=True, capture_output=True).stdout
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        host = self.root / "host.git"
+        seed = self.root / "seed"
+        seed.mkdir()
+        git("init", "-q", cwd=seed, env=clean)
+        (seed / "lib.rs").write_text("borrowed source\n")
+        (seed / "kept.rs").write_text("unchanged borrowed source\n")
+        git("add", ".", cwd=seed, env=clean)
+        git("commit", "-qm", "seed", cwd=seed, env=clean)
+        git("clone", "-q", "--bare", str(seed), str(host), cwd=self.root, env=clean)
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        borrowing = dict(clean, GIT_ALTERNATE_OBJECT_DIRECTORIES=str(host / "objects"))
+        git("init", "-q", cwd=checkout, env=borrowing)
+        git("fetch", "-q", str(host), "main", cwd=checkout, env=borrowing)
+        git("checkout", "-q", "FETCH_HEAD", cwd=checkout, env=borrowing)
+        (checkout / "lib.rs").write_text("local edit\n")
+        git("commit", "-qam", "local", cwd=checkout, env=borrowing)
+        self.assertNotEqual(subprocess.run(["git", "archive", "HEAD"], cwd=checkout, env=clean,
+                                           capture_output=True).returncode, 0)
+
+        for attempt in range(2):
+            stream = subprocess.run(["bash", str(CI / "archive-package-source.sh"), str(checkout)],
+                                    env=borrowing, check=True, capture_output=True).stdout
+            copy = self.root / f"copy-{attempt}"
+            copy.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(stream)) as archive:
+                archive.extractall(copy, filter="tar")
+            workspace = copy / "workspace"
+            self.assertEqual(git("log", "--format=%s", cwd=workspace, env=clean).decode(),
+                             "local\nseed\n")
+            with tarfile.open(fileobj=io.BytesIO(
+                    git("archive", "HEAD", cwd=workspace, env=clean))) as tree:
+                self.assertEqual(tree.extractfile("kept.rs").read(), b"unchanged borrowed source\n")
+        packs = list((checkout / ".git/objects/pack").glob("*.pack"))
+        self.assertEqual(len(packs), 1, "an already self-contained checkout is not packed again")
+
     def run_packaging_boundary(self, failure=""):
         binaries = self.root / "bin"
         binaries.mkdir()
