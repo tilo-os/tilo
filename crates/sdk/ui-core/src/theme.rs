@@ -1,3 +1,4 @@
+use crate::color_compat::ColorCompat;
 pub use crate::theme_layers::{
     AccessibilityLayer, BrandAccentRejection, ContentSurface, DISTRIBUTION_DEFAULTS_KEY,
     DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, PIN_ACCENT, PIN_PALETTE,
@@ -10,14 +11,19 @@ use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
 /// Schema this build writes. Readers still open schema 1 (colours, radius,
-/// spacing, font). Schema 2 adds motion, material, and icon scale.
-pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 2;
+/// spacing, font) and schema 2 (motion, material, and icon scale). Schema 3
+/// adds chrome weight, motion character, and material tint.
+pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 3;
 
 /// Oldest custom-theme schema this build still opens.
 pub const CUSTOM_THEME_SCHEMA_MIN: u32 = 1;
 
 fn authored_scale_one() -> f32 {
     1.0
+}
+
+fn authored_tint_zero() -> f32 {
+    0.0
 }
 
 /// Stable, app-independent representation of an authored OS theme.
@@ -57,6 +63,19 @@ pub struct CustomThemeSpec {
     /// Multiplier on icon sizes. Pointer targets stay put.
     #[serde(default = "authored_scale_one")]
     pub icon_scale: f32,
+    /// Thickness of the chrome rule, in logical pixels at 1×. `1` is the
+    /// hairline. `0` draws no rule. `3` is the heaviest edge this schema
+    /// will build.
+    #[serde(default = "authored_scale_one")]
+    pub chrome_weight: f32,
+    /// Feel of the shared UI springs. `1` is the stock snappy motion.
+    /// `0` settles like the subtle spring. `2` moves like the bouncy one.
+    /// Drag tracking and the heavy spring stay the shared physical vocabulary.
+    #[serde(default = "authored_scale_one")]
+    pub motion_character: f32,
+    /// How far glass carries the accent. `0` is the stock film.
+    #[serde(default = "authored_tint_zero")]
+    pub material_tint: f32,
 }
 
 impl CustomThemeSpec {
@@ -81,6 +100,18 @@ impl CustomThemeSpec {
     pub const ICON_SCALE_MIN: f32 = 0.75;
     /// See [`Self::ICON_SCALE_MIN`].
     pub const ICON_SCALE_MAX: f32 = 1.75;
+    /// No chrome rule.
+    pub const CHROME_WEIGHT_MIN: f32 = 0.0;
+    /// Heaviest chrome rule, in logical pixels at 1×.
+    pub const CHROME_WEIGHT_MAX: f32 = 3.0;
+    /// Calm motion: the default UI spring becomes the subtle one.
+    pub const MOTION_CHARACTER_MIN: f32 = 0.0;
+    /// Lively motion: the default UI spring becomes the bouncy one.
+    pub const MOTION_CHARACTER_MAX: f32 = 2.0;
+    /// Stock glass, with none of the accent in the film.
+    pub const MATERIAL_TINT_MIN: f32 = 0.0;
+    /// Strongest accent a film may carry and still read as glass.
+    pub const MATERIAL_TINT_MAX: f32 = 0.45;
     /// See [`Self::SPACING_PX_MIN`].
     pub const SPACING_PX_MAX: f32 = 22.0;
 
@@ -123,6 +154,15 @@ impl CustomThemeSpec {
         }
         if !self.icon_scale.is_finite() || !(0.5..=3.0).contains(&self.icon_scale) {
             return Err("invalid custom theme icon scale");
+        }
+        if !self.chrome_weight.is_finite() || !(0.0..=4.0).contains(&self.chrome_weight) {
+            return Err("invalid custom theme chrome weight");
+        }
+        if !self.motion_character.is_finite() || !(0.0..=4.0).contains(&self.motion_character) {
+            return Err("invalid custom theme motion character");
+        }
+        if !self.material_tint.is_finite() || !(0.0..=1.0).contains(&self.material_tint) {
+            return Err("invalid custom theme material tint");
         }
         Ok(())
     }
@@ -190,8 +230,51 @@ fn apply_authored_scales(tokens: &mut crate::tokens::Tokens, spec: &CustomThemeS
         CustomThemeSpec::ICON_SCALE_MAX,
     );
     scale_durations(&mut tokens.motion, motion);
+    apply_motion_character(&mut tokens.motion, spec.motion_character);
     scale_materials(tokens, material);
     scale_icons(&mut tokens.metrics, icons);
+    tokens.metrics.chrome_rule_px = spec.chrome_weight.clamp(
+        CustomThemeSpec::CHROME_WEIGHT_MIN,
+        CustomThemeSpec::CHROME_WEIGHT_MAX,
+    );
+    tokens.material_tint = spec.material_tint.clamp(
+        CustomThemeSpec::MATERIAL_TINT_MIN,
+        CustomThemeSpec::MATERIAL_TINT_MAX,
+    );
+    tokens.motion_character = spec.motion_character.clamp(
+        CustomThemeSpec::MOTION_CHARACTER_MIN,
+        CustomThemeSpec::MOTION_CHARACTER_MAX,
+    );
+}
+
+fn mix_spring(
+    a: crate::tokens::SpringParams,
+    b: crate::tokens::SpringParams,
+    t: f32,
+) -> crate::tokens::SpringParams {
+    crate::tokens::SpringParams {
+        stiffness: a.stiffness + (b.stiffness - a.stiffness) * t,
+        damping: a.damping + (b.damping - a.damping) * t,
+        mass: a.mass + (b.mass - a.mass) * t,
+    }
+}
+
+/// `1` leaves the stock springs. Below that the snappy spring moves toward
+/// subtle; above it, toward bouncy. Heavy and tracking stay put.
+fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
+    let character = character.clamp(
+        CustomThemeSpec::MOTION_CHARACTER_MIN,
+        CustomThemeSpec::MOTION_CHARACTER_MAX,
+    );
+    let stock = motion.springs;
+    let calm = (1.0 - character).clamp(0.0, 1.0);
+    let lively = (character - 1.0).clamp(0.0, 1.0);
+    motion.springs.snappy = mix_spring(
+        mix_spring(stock.snappy, stock.subtle, calm),
+        stock.bouncy,
+        lively,
+    );
+    motion.springs.bouncy = mix_spring(stock.bouncy, stock.snappy, calm);
 }
 
 fn scale_u32(value: u32, factor: f32) -> u32 {
@@ -236,6 +319,31 @@ fn scale_icons(metrics: &mut crate::tokens::Metrics, factor: f32) {
     metrics.icon_md = base.icon_md * factor;
     metrics.icon_lg = base.icon_lg * factor;
     metrics.icon_label_gap = base.icon_label_gap * factor;
+}
+
+fn tint_toward(base: Color, accent: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, CustomThemeSpec::MATERIAL_TINT_MAX);
+    if t == 0.0 {
+        return base;
+    }
+    let channel = |from: u8, toward: u8| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
+        )]
+        {
+            (f32::from(from) + (f32::from(toward) - f32::from(from)) * t)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        }
+    };
+    Color::from_rgba8(
+        channel(base.r(), accent.r()),
+        channel(base.g(), accent.g()),
+        channel(base.b(), accent.b()),
+        base.a(),
+    )
 }
 
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -510,6 +618,27 @@ impl Theme {
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
         Some(Self::from_tokens(&spec.name, theme.tokens))
+    }
+
+    /// Glass surface mixed toward the accent by [`Tokens::material_tint`].
+    /// Alpha stays the film's own.
+    #[must_use]
+    pub fn material_glass(&self) -> Color {
+        tint_toward(
+            self.tokens.colors.surfaces.glass,
+            self.accent_primary,
+            self.tokens.material_tint,
+        )
+    }
+
+    /// Glass film mixed the same way, for chrome that paints [`Colors::glass_film`].
+    #[must_use]
+    pub fn material_film(&self) -> Color {
+        tint_toward(
+            self.tokens.colors.glass_film(),
+            self.accent_primary,
+            self.tokens.material_tint,
+        )
     }
 
     /// Kept verbatim as a preset so nothing from the first design is lost.
@@ -1764,6 +1893,9 @@ mod tests {
                 motion_scale: 1.0,
                 material_scale: 1.0,
                 icon_scale: 1.0,
+                chrome_weight: 1.0,
+                motion_character: 1.0,
+                material_tint: 0.0,
             };
             let json = serde_json::json!({
                 "appearance": {
@@ -2020,6 +2152,9 @@ mod tests {
         assert_eq!(legacy.motion_scale, 1.0);
         assert_eq!(legacy.material_scale, 1.0);
         assert_eq!(legacy.icon_scale, 1.0);
+        assert_eq!(legacy.chrome_weight, 1.0);
+        assert_eq!(legacy.motion_character, 1.0);
+        assert_eq!(legacy.material_tint, 0.0);
         let theme = Theme::from_custom_spec(&legacy).unwrap();
         assert_eq!(
             theme.tokens.motion.durations.base_ms,
@@ -2044,6 +2179,51 @@ mod tests {
         assert_eq!(
             theme.tokens.metrics.min_pointer_target,
             crate::tokens::Metrics::BASE.min_pointer_target
+        );
+        assert!((theme.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
+        assert_eq!(
+            theme.tokens.motion.springs.snappy.stiffness,
+            Theme::dark().tokens.motion.springs.snappy.stiffness
+        );
+    }
+
+    #[test]
+    fn individual_roles_change_chrome_motion_and_the_material() {
+        let json = r#"{"schema_version":2,"id":"legacy","name":"Legacy","dark_base":true,"accent":[80,160,255],"accent_hover":[60,130,220],"surface_base":[16,18,24],"surface_raised":[28,32,40],"text_primary":[236,238,244],"text_dim":[170,176,188],"border":[60,66,78],"success":[40,160,90],"warning":[180,140,40],"danger":[190,60,60],"info":[60,140,200],"radius_px":8.0,"spacing_px":12.0,"font":"Inter","motion_scale":1.0,"material_scale":1.0,"icon_scale":1.0}"#;
+        let legacy: CustomThemeSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(legacy.chrome_weight, 1.0);
+        assert_eq!(legacy.motion_character, 1.0);
+        assert_eq!(legacy.material_tint, 0.0);
+        let opened = Theme::from_custom_spec(&legacy).unwrap();
+        assert!((opened.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
+        assert_eq!(
+            opened.material_glass().a(),
+            opened.tokens.colors.surfaces.glass.a()
+        );
+
+        let stock = Theme::dark();
+        let mut spec = legacy;
+        spec.schema_version = CUSTOM_THEME_SCHEMA_VERSION;
+        spec.chrome_weight = 3.0;
+        spec.motion_character = 0.0;
+        spec.material_tint = 0.45;
+        let calm = Theme::from_custom_spec(&spec).unwrap();
+        assert!((calm.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
+        assert_eq!(
+            calm.tokens.motion.springs.snappy.stiffness,
+            stock.tokens.motion.springs.subtle.stiffness
+        );
+        assert_eq!(
+            calm.tokens.motion.springs.heavy.stiffness,
+            stock.tokens.motion.springs.heavy.stiffness
+        );
+        assert!(calm.material_glass().b() > calm.tokens.colors.surfaces.glass.b());
+
+        spec.motion_character = 2.0;
+        let lively = Theme::from_custom_spec(&spec).unwrap();
+        assert_eq!(
+            lively.tokens.motion.springs.snappy.stiffness,
+            stock.tokens.motion.springs.bouncy.stiffness
         );
     }
 
@@ -2070,6 +2250,9 @@ mod tests {
             motion_scale: 1.0,
             material_scale: 1.0,
             icon_scale: 1.0,
+            chrome_weight: 1.0,
+            motion_character: 1.0,
+            material_tint: 0.0,
         }
     }
 

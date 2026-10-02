@@ -94,6 +94,18 @@ pub enum ThemesAction {
         id: String,
         icon_scale: f32,
     },
+    SetCustomThemeChrome {
+        id: String,
+        chrome_weight: f32,
+    },
+    SetCustomThemeMotionCharacter {
+        id: String,
+        motion_character: f32,
+    },
+    SetCustomThemeMaterialTint {
+        id: String,
+        material_tint: f32,
+    },
     /// Reset deliberately writes the independent token/shape/font fields, not
     /// a replacement record, so unrelated concurrent edits remain mergeable.
     ResetCustomTheme {
@@ -146,6 +158,20 @@ impl Action for ThemesAction {
             ThemesAction::SetCustomThemeIcon { id, icon_scale } => {
                 let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", *icon_scale);
             }
+            ThemesAction::SetCustomThemeChrome { id, chrome_weight } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "chrome_weight", *chrome_weight);
+            }
+            ThemesAction::SetCustomThemeMotionCharacter {
+                id,
+                motion_character,
+            } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "motion_character", *motion_character);
+            }
+            ThemesAction::SetCustomThemeMaterialTint { id, material_tint } => {
+                if (0.0..=1.0).contains(material_tint) {
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_tint", *material_tint);
+                }
+            }
             ThemesAction::ResetCustomTheme { id } => {
                 if let Some(current) = doc::load_catalog(doc, &ROOT)
                     .and_then(|c| c.into_iter().find(|s| s.id == *id && !s.builtin))
@@ -169,6 +195,10 @@ impl Action for ThemesAction {
                     let _ = doc::set_scale(doc, &ROOT, id, "motion_scale", base.motion_scale);
                     let _ = doc::set_scale(doc, &ROOT, id, "material_scale", base.material_scale);
                     let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", base.icon_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "chrome_weight", base.chrome_weight);
+                    let _ =
+                        doc::set_scale(doc, &ROOT, id, "motion_character", base.motion_character);
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_tint", base.material_tint);
                 }
             }
             ThemesAction::DeleteCustomTheme { id } => {
@@ -275,6 +305,30 @@ pub fn set_custom_theme_icon_action(id: impl Into<String>, icon_scale: f32) -> T
     ThemesAction::SetCustomThemeIcon {
         id: id.into(),
         icon_scale,
+    }
+}
+pub fn set_custom_theme_chrome_action(id: impl Into<String>, chrome_weight: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeChrome {
+        id: id.into(),
+        chrome_weight,
+    }
+}
+pub fn set_custom_theme_motion_character_action(
+    id: impl Into<String>,
+    motion_character: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMotionCharacter {
+        id: id.into(),
+        motion_character,
+    }
+}
+pub fn set_custom_theme_material_tint_action(
+    id: impl Into<String>,
+    material_tint: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMaterialTint {
+        id: id.into(),
+        material_tint,
     }
 }
 pub fn set_custom_theme_font_action(

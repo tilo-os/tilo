@@ -2668,6 +2668,53 @@ impl WorkspaceTree {
         Some(stored.id)
     }
 
+    /// Record `person` making `app` an author of `workspace_id`'s space —
+    /// what opening an app yourself means — unless it already is one. The
+    /// stored grant, or `None` when nothing was recorded: already an author,
+    /// or `person` lacks the authority, in which case the app opens a viewer.
+    pub fn grant_app_authorship(
+        &mut self,
+        workspace_id: WorkspaceId,
+        person: &UserId,
+        app: &str,
+    ) -> Option<CapOverride> {
+        let workspace = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)?;
+        let actor = workspace.actor_for_app(app);
+        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
+            return None;
+        }
+        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
+        let recorded = self.grant_in_workspace(workspace_id, person, grant)?;
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)?
+            .capabilities
+            .iter()
+            .find(|cap| cap.id == recorded)
+            .cloned()
+    }
+
+    /// The active workspace after the person at this machine opens `app`.
+    ///
+    /// The launch that follows must use this workspace: its capability list
+    /// is what the new process is told, and a workspace launch with no author
+    /// grant opens the app as a viewer.
+    pub fn workspace_after_opening_app(&mut self, app: &str) -> Option<Workspace> {
+        let (id, room) = {
+            let workspace = self.desktop.active_workspace()?;
+            (workspace.id, workspace.room)
+        };
+        let person = local_user_id_for_room(&room);
+        let _ = self.grant_app_authorship(id, &person, app);
+        self.desktop.active_workspace().cloned()
+    }
+
     /// Revoke a capability in `workspace_id`, mirroring the removal to
     /// peers and disk — a revoke that only touched the local cache left
     /// every peer still holding the capability and let a restart bring

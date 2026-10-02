@@ -46,6 +46,9 @@ pub const PIN_MATERIAL: &str = "material";
 /// Pin id for icon size.
 pub const PIN_ICONS: &str = "icons";
 
+/// Pin id for the chrome rule.
+pub const PIN_CHROME: &str = "chrome";
+
 /// Oldest distribution-defaults schema this build still opens.
 pub const DISTRIBUTION_DEFAULTS_SCHEMA_MIN: u32 = 1;
 
@@ -94,7 +97,7 @@ fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
 /// Policy pins on a distribution-defaults document.
 ///
 /// Pins name fields of the shared theme document: palette, accent, shape,
-/// density, type, motion, material, and icons. Accessibility fields
+/// density, type, motion, material, icons, and chrome. Accessibility fields
 /// (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
 /// `reduce_motion`) are not pinnable: a document may name them and they are
 /// ignored.
@@ -163,6 +166,12 @@ impl DistributionPolicy {
     #[must_use]
     pub fn pins_icons(&self) -> bool {
         self.pins_named(PIN_ICONS)
+    }
+
+    /// Whether the chrome rule is pinned.
+    #[must_use]
+    pub fn pins_chrome(&self) -> bool {
+        self.pins_named(PIN_CHROME)
     }
 
     fn pins_named(&self, name: &str) -> bool {
@@ -643,6 +652,7 @@ fn merge_shared_roles(
             user
         };
         theme.tokens.motion = src.tokens.motion;
+        theme.tokens.motion_character = src.tokens.motion_character;
     }
     if take(policy.pins_material()) {
         let src = if from_distribution {
@@ -660,11 +670,20 @@ fn merge_shared_roles(
         };
         copy_icons(theme, src);
     }
+    if take(policy.pins_chrome()) {
+        let src = if from_distribution {
+            distribution
+        } else {
+            user
+        };
+        theme.tokens.metrics.chrome_rule_px = src.tokens.metrics.chrome_rule_px;
+    }
 }
 
 fn copy_material(dst: &mut Theme, src: &Theme) {
     dst.tokens.elevation = src.tokens.elevation;
     dst.tokens.colors.surfaces.glass_blur_px = src.tokens.colors.surfaces.glass_blur_px;
+    dst.tokens.material_tint = src.tokens.material_tint;
 }
 
 fn copy_icons(dst: &mut Theme, src: &Theme) {
@@ -1182,6 +1201,9 @@ mod tests {
             motion_scale: 0.5,
             material_scale: 1.0,
             icon_scale: 1.5,
+            chrome_weight: 3.0,
+            motion_character: 1.0,
+            material_tint: 0.0,
         };
         let stock = Theme::light().tokens.motion.durations.base_ms;
         let only = resolve_theme_layers(&ThemeLayerStack {
@@ -1230,6 +1252,72 @@ mod tests {
     }
 
     #[test]
+    fn distribution_and_the_user_share_the_chrome_role() {
+        let spec = CustomThemeSpec {
+            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
+            id: "heavy-rule".into(),
+            name: "Heavy rule".into(),
+            dark_base: true,
+            accent: [12, 120, 220],
+            accent_hover: [8, 96, 190],
+            surface_base: [9, 18, 30],
+            surface_raised: [18, 32, 48],
+            text_primary: [238, 244, 250],
+            text_dim: [170, 184, 199],
+            border: [48, 68, 88],
+            success: [50, 190, 110],
+            warning: [230, 170, 50],
+            danger: [225, 75, 80],
+            info: [70, 165, 230],
+            radius_px: 8.0,
+            spacing_px: 12.0,
+            font: "Inter".into(),
+            motion_scale: 1.0,
+            material_scale: 1.0,
+            icon_scale: 1.0,
+            chrome_weight: 3.0,
+            motion_character: 0.0,
+            material_tint: 0.45,
+        };
+        let only = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec.clone()),
+                ..DistributionDefaults::default()
+            }),
+            ..ThemeLayerStack::default()
+        });
+        assert!((only.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
+        assert!(only.material_glass().b() > only.tokens.colors.surfaces.glass.b());
+
+        let user_wins = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec.clone()),
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(user_wins.bg_app, Theme::light().bg_app);
+        assert!((user_wins.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
+
+        let pinned = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                custom: Some(spec),
+                policy: DistributionPolicy {
+                    pins: vec![PIN_CHROME.into()],
+                    ..DistributionPolicy::default()
+                },
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(pinned.bg_app, Theme::light().bg_app);
+        assert!(
+            (pinned.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01,
+            "chrome pin keeps the distribution rule"
+        );
+    }
+
+    #[test]
     fn old_settings_open_and_out_of_band_spacing_is_clamped() {
         let legacy = Theme::resolved_from_settings(r#"{"appearance":{"theme":"Light"}}"#);
         assert_eq!(legacy.name, Theme::light().name);
@@ -1264,6 +1352,9 @@ mod tests {
             motion_scale: 1.0,
             material_scale: 1.0,
             icon_scale: 1.0,
+            chrome_weight: 1.0,
+            motion_character: 1.0,
+            material_tint: 0.0,
         };
         assert!(spec.validate().is_ok(), "2 px is inside the admitted range");
         let clamped = resolve_theme_layers(&ThemeLayerStack {

@@ -1815,6 +1815,14 @@ impl ShellDriver {
                         );
                     }
                 }
+                // Tab appends are layout and omitted from the explorer feed;
+                // rename so Ada still authors a Change row and stays filterable.
+                let mut ada_desktop = tree.desktop.clone();
+                if let Some(ws) = ada_desktop.active_workspace_mut() {
+                    ws.name = "Ada's desk".into();
+                }
+                tilo_desktop_model::desktop_doc::seed(&mut peer, &ada_desktop);
+                tilo_resource::history::commit_stamped_at(&mut peer, now.saturating_sub(DAY));
                 // Synchronise through the same dependency-closed delta path
                 // used by ordinary peers. Merging the synthetic full replica
                 // directly can leave a parked dependency that only surfaces

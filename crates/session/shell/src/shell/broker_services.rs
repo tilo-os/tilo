@@ -395,14 +395,7 @@ impl NativeLauncher {
         app: &str,
         workspace: &mut tilo_desktop_model::Workspace,
     ) {
-        use super::state::WorkspaceExt as _;
-        use collab_types::caps::{CapOverride, ResourceRef, Scope, Subject, Verb};
         let Some(tree) = &self.0 else { return };
-        let actor = workspace.actor_for_app(app);
-        if workspace.allows(&actor, &ResourceRef::Workspace, Verb::Write) {
-            return;
-        }
-        let grant = CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write);
         let mut tree = tree.write();
         let Some(id) = tree
             .desktop
@@ -413,22 +406,11 @@ impl NativeLauncher {
         else {
             return;
         };
-        let Some(recorded) = tree.grant_in_workspace(id, &person.to_string(), grant) else {
+        let Some(stored) = tree.grant_app_authorship(id, &person.to_string(), app) else {
             return;
         };
-        let stored = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .and_then(|candidate| candidate.capabilities.iter().find(|cap| cap.id == recorded))
-            .cloned();
-        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
         drop(tree);
-        if let Some(stored) = stored {
-            workspace.capabilities.push(stored);
-        }
+        workspace.capabilities.push(stored);
     }
 }
 
@@ -499,7 +481,13 @@ impl LauncherServices for NativeLauncher {
         if let Some(opened) = self.open_through_governor(app, workspace) {
             return opened;
         }
-        super::launcher::launch_in_workspace(app, workspace)
+        // Opening an app yourself makes it an author. A launch that only
+        // forwards the workspace's existing grants opens a viewer, and
+        // typing into it does nothing.
+        let mut workspace = workspace.clone();
+        let person = super::state::local_user_id_for_room(&workspace.room);
+        self.grant_authorship(&person, app, &mut workspace);
+        super::launcher::launch_in_workspace(app, &workspace)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -1651,6 +1639,35 @@ mod tests {
         assert_eq!(
             handle.read().desktop.workspaces[0].capabilities.len(),
             stored,
+            "granted once"
+        );
+    }
+
+    /// Clicking or otherwise opening an app on this machine is the person
+    /// here granting authorship, once.
+    #[test]
+    fn the_person_here_authors_an_app_they_open() {
+        use super::super::state::WorkspaceExt as _;
+        use collab_types::caps::{ResourceRef, Verb};
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let person = crate::shell::state::local_user_id();
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(9), "person open");
+        workspace.set_owner(person);
+        let id = workspace.id;
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = id;
+        let opened = tree
+            .workspace_after_opening_app("so.tilo.word-processor")
+            .expect("active workspace");
+        let actor = opened.actor_for_app("so.tilo.word-processor");
+        assert!(opened.allows(&actor, &ResourceRef::Workspace, Verb::Write));
+        let again = tree
+            .workspace_after_opening_app("so.tilo.word-processor")
+            .expect("still active");
+        assert_eq!(
+            again.capabilities.len(),
+            opened.capabilities.len(),
             "granted once"
         );
     }

@@ -988,7 +988,7 @@ fn launch_resolved_installed_app(
     catalogue::note_pending_notice(package_id, notice);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
-    let launched = {
+    {
         let st = chrome.borrow();
         let tree = st.tree();
         // Decided here, while selection and layout are still true — the
@@ -999,9 +999,14 @@ fn launch_resolved_installed_app(
             st.strip_viewport(),
             st.open_target,
         );
-        tree.desktop
-            .active_workspace()
-            .map(|ws| launcher::queue_launch_in_workspace(app.clone(), ws))
+    }
+    // The person opening the app is its author. The queued launch copies
+    // the capability list now, so the grant has to be in that copy.
+    let launched = {
+        let st = chrome.borrow();
+        let mut tree = st.tree_mut();
+        tree.workspace_after_opening_app(package_id)
+            .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.

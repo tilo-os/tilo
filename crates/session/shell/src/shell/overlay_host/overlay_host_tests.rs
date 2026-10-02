@@ -301,7 +301,15 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         {
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
-            h.host.room_activity_mut().refresh(&mut *tree);
+            // Bootstrap writes are setup/layout and omitted from the feed;
+            // rename so the explorer has a Change row to show.
+            let tree = &mut *tree;
+            if let Some(ws) = tree.desktop.workspaces.first_mut() {
+                ws.name = format!("{} · live", ws.name);
+            }
+            tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
+            tilo_resource::history::commit_stamped(&mut tree.doc);
+            h.host.room_activity_mut().refresh(tree);
         }
         h.host
             .room_activity_mut()
@@ -314,7 +322,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         );
         assert!(
             !h.host.room_activity().entries().is_empty(),
-            "a bootstrapped workspace tree has already written to its room document"
+            "a renamed workspace should appear in the activity feed"
         );
         let names: Vec<&str> = h
             .host
