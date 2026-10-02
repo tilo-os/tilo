@@ -544,7 +544,9 @@ impl Shape {
             Self::Path { d } => {
                 let mut path = BezPath::from_svg(d).unwrap_or_default();
                 path.apply_affine(Affine::translate((dx, dy)));
-                Self::Path { d: path.to_svg() }
+                Self::Path {
+                    d: path_data(&path),
+                }
             }
             Self::Text { .. } => {
                 let mut moved = self.clone();
@@ -572,6 +574,38 @@ impl Shape {
             },
         }
     }
+}
+
+/// A number as path data writes it: at most three decimals, no trailing
+/// zeros.
+#[must_use]
+pub fn short_number(value: f64) -> String {
+    let text = format!("{value:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" || text.is_empty() {
+        "0".into()
+    } else {
+        text.into()
+    }
+}
+
+/// SVG path data for `path`, to a thousandth of a unit.
+#[must_use]
+pub fn path_data(path: &BezPath) -> String {
+    use ui::vello::kurbo::PathEl;
+    let point = |p: Point| format!("{},{}", short_number(p.x), short_number(p.y));
+    let parts: Vec<String> = path
+        .elements()
+        .iter()
+        .map(|element| match *element {
+            PathEl::MoveTo(p) => format!("M{}", point(p)),
+            PathEl::LineTo(p) => format!("L{}", point(p)),
+            PathEl::QuadTo(a, p) => format!("Q{} {}", point(a), point(p)),
+            PathEl::CurveTo(a, b, p) => format!("C{} {} {}", point(a), point(b), point(p)),
+            PathEl::ClosePath => "Z".into(),
+        })
+        .collect();
+    parts.join(" ")
 }
 
 fn count(n: usize) -> f64 {

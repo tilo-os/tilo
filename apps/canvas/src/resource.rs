@@ -73,6 +73,21 @@ pub struct Inspect {
     pub region: Option<[f64; 4]>,
     /// Only marks on this layer.
     pub layer: Option<String>,
+    /// Also each mark's shape, style and transform, to edit exactly.
+    pub full: Option<bool>,
+}
+
+/// Render the artwork beside, over or against the reference picture, with
+/// how far apart they are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Compare {
+    /// `[x, y, width, height]`; the reference's frame when absent.
+    pub region: Option<[f64; 4]>,
+    /// `side-by-side` (default), `overlay` or `difference`.
+    pub mode: Option<String>,
+    /// Longest side of each picture, 64 to 1024 (default 640).
+    pub size: Option<u32>,
 }
 
 /// Render the artwork at full size as a PNG.
@@ -92,6 +107,8 @@ pub enum ViewOp {
     Media,
     Export(Export),
     History(HistoryView),
+    ExportSvg,
+    Compare(Compare),
 }
 
 /// The artwork's history: who changed what, in order.
@@ -332,6 +349,11 @@ impl Resource for ArtworkResource {
                 Ok(CanvasAction::SetReference(set))
             })
             .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
+            ActionDecl::new("import-svg", "Import SVG", params_of::<crate::svg::ImportSvg>(), |args, _now| {
+                let request: crate::svg::ImportSvg = read_args(args)?;
+                crate::svg::import(&request).map(CanvasAction::Draw)
+            })
+            .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
         ]
     }
 
@@ -340,27 +362,8 @@ impl Resource for ArtworkResource {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        let view = |id: &str,
-                    label: &str,
-                    params: Vec<ActionParam>,
-                    wrap: fn(&ui::tilo_actions::ActionArgs) -> ViewOp| {
-            ActionSpec::typed_operation(
-                id,
-                label,
-                label,
-                OperationKind::View,
-                VIEW_TYPE,
-                params,
-                move |args| {
-                    EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| {
-                        EncodedAction {
-                            type_id: VIEW_TYPE.into(),
-                            payload: Vec::new(),
-                        }
-                    })
-                },
-            )
-            .requiring(PermissionRequirement::Read)
+        let view = |id: &str, label: &str, params: Vec<ActionParam>, wrap: Wrap| {
+            operation(id, label, OperationKind::View, params, wrap)
         };
         let mut look = view("look", "Look at the artwork", params_of::<Look>(), |args| {
             ViewOp::Look(read_args(args).unwrap_or_default())
@@ -420,7 +423,8 @@ impl Resource for ArtworkResource {
         history.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
-        vec![look, inspect, media, export, history]
+        let [compare, svg] = vector_operations();
+        vec![look, inspect, media, export, history, compare, svg]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {
@@ -450,4 +454,51 @@ impl Resource for ArtworkResource {
         );
         entries
     }
+}
+
+/// How a view's arguments become the operation it asks for.
+type Wrap = fn(&ui::tilo_actions::ActionArgs) -> ViewOp;
+
+/// A read-only operation answered by the surface.
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    params: Vec<ActionParam>,
+    wrap: Wrap,
+) -> ActionSpec {
+    ActionSpec::typed_operation(id, label, label, kind, VIEW_TYPE, params, move |args| {
+        EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| EncodedAction {
+            type_id: VIEW_TYPE.into(),
+            payload: Vec::new(),
+        })
+    })
+    .requiring(PermissionRequirement::Read)
+}
+
+/// The views that compare against the reference and export SVG.
+fn vector_operations() -> [ActionSpec; 2] {
+    let mut compare = operation("compare", "Compare with reference", OperationKind::View, params_of::<Compare>(), |args| {
+            ViewOp::Compare(read_args(args).unwrap_or_default())
+        })
+        .with_description(
+            "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+        );
+    compare.contract.result = ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    let mut svg = operation(
+        "export-svg",
+        "Export SVG",
+        OperationKind::Effect,
+        Vec::new(),
+        |_| ViewOp::ExportSvg,
+    )
+        .with_description(
+            "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+        );
+    svg.contract.result = ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    [compare, svg]
 }

@@ -1546,6 +1546,7 @@ dependencies = [
 name = "canvas"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "image",
  "png",
@@ -1555,6 +1556,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-wet-media",
+ "usvg",
  "uuid",
  "workspace-hack",
 ]
