@@ -397,11 +397,17 @@ def scenario_argv(data, work, profile, target, out):
             str(medium_path(work, profile)),
             "--layout", "guided-alongside", "--target-disk", str(target),
             "--filesystem", "ext4", "--encrypt", "passphrase",
-            "--graphics", "software", "--out", str(out)]
+            "--graphics", "software", "--out", str(out), "--keep"]
     require(profile in PROFILES, "unknown WHPX profile")
     if profile == "lenovo-83ed":
         argv.append("--skip-target-boot")
     argv.extend(["--username", data["username"], "--credentials-stdin"])
+    retained = out / "install.json"
+    if retained.exists():
+        steps = read_json(retained).get("steps", [])
+        require(type(steps) is list and steps and steps[-1] == "power-off",
+                "retained scenario install did not complete; inspect it before retrying")
+        argv.append("--resume")
     return argv
 
 

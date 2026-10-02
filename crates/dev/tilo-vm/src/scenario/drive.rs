@@ -29,7 +29,7 @@ pub struct Choices {
 }
 
 /// What the install reported, secret-free.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Installed {
     /// Steps in the order the driver found them.
     pub steps: Vec<String>,

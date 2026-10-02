@@ -57,6 +57,7 @@ struct Plan {
     skip_target_boot: bool,
     layout: Layout,
     filesystem: Option<String>,
+    resume: bool,
     unlock: Unlock,
     username: String,
     graphics: crate::scenario::Graphics,
@@ -164,15 +165,19 @@ impl Plan {
     }
 
     fn describe(&self) -> Value {
-        let mut commands = vec![
-            self.vm(&["init-cycle"]).display(),
-            self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()])
-                .display(),
-            format!(
-                "drive the installer through its actions on {}",
-                self.console().display()
-            ),
-        ];
+        let mut commands = if self.resume {
+            vec!["check retained install record, target layout and guest image proof".to_owned()]
+        } else {
+            vec![
+                self.vm(&["init-cycle"]).display(),
+                self.vm(&["boot-installer", self.graphics.flag(), self.tpm_flag()])
+                    .display(),
+                format!(
+                    "drive the installer through its actions on {}",
+                    self.console().display()
+                ),
+            ]
+        };
         if !self.skip_target_boot {
             commands.push(
                 self.vm(&["boot-target", self.graphics.flag(), self.tpm_flag()])
@@ -199,6 +204,7 @@ impl Plan {
             "skip_target_boot": self.skip_target_boot,
             "install_timeout_seconds": self.install_timeout.as_secs(),
             "keep": self.keep,
+            "resume": self.resume,
             "commands": commands,
         })
     }
@@ -713,7 +719,7 @@ impl App {
         } else {
             None
         };
-        let cycle = format!(
+        let mut cycle = format!(
             "scenario-install-{}-{}",
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
             std::process::id()
@@ -722,6 +728,38 @@ impl App {
             .out
             .clone()
             .unwrap_or_else(|| root.join("target/tilo-vm-scenarios").join(&cycle));
+        if args.resume {
+            if !cfg!(windows) {
+                return Err(CliError::Unsupported {
+                    what: "install scenario resume".into(),
+                    alternative: "resume currently requires a retained Windows raw target".into(),
+                });
+            }
+            let saved: Value = serde_json::from_slice(
+                &std::fs::read(out.join("scenario.json"))
+                    .map_err(CliError::io("reading retained scenario"))?,
+            )
+            .map_err(|error| CliError::Unsupported {
+                what: "retained scenario".into(),
+                alternative: error.to_string(),
+            })?;
+            let old_cycle = saved.get("cycle").and_then(Value::as_str).unwrap_or("");
+            if !old_cycle
+                .strip_prefix("scenario-install-")
+                .is_some_and(|tail| {
+                    !tail.is_empty()
+                        && tail
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || matches!(c, 'T' | 'Z' | '-'))
+                })
+            {
+                return Err(CliError::Unsupported {
+                    what: "retained scenario cycle".into(),
+                    alternative: "use the original scenario output".into(),
+                });
+            }
+            old_cycle.clone_into(&mut cycle);
+        }
         let storage = out.join("storage");
         // Exactly the runtime directory vm.sh derives for a named cycle;
         // init-cycle refuses to clear any other.
@@ -736,6 +774,7 @@ impl App {
             skip_target_boot: args.skip_target_boot,
             layout: args.layout,
             filesystem: args.filesystem.clone(),
+            resume: args.resume,
             unlock: args.encrypt,
             username: username.to_owned(),
             graphics: args.graphics,
@@ -749,6 +788,31 @@ impl App {
             #[cfg(windows)]
             ports: WindowsPorts::reserve()?,
         };
+        if plan.resume {
+            let saved: Value = serde_json::from_slice(
+                &std::fs::read(plan.out.join("scenario.json"))
+                    .map_err(CliError::io("reading retained scenario"))?,
+            )
+            .map_err(|error| failed("resume", error.to_string(), &plan))?;
+            let current = plan.describe();
+            for key in [
+                "medium",
+                "target",
+                "layout",
+                "filesystem",
+                "encrypt",
+                "username",
+                "graphics",
+            ] {
+                if saved.get(key) != current.get(key) {
+                    return Err(failed(
+                        "resume",
+                        format!("retained scenario {key} differs; use its original inputs"),
+                        &plan,
+                    ));
+                }
+            }
+        }
         if args.dry_run {
             let plan_json = plan.describe();
             let text = format!(
@@ -909,117 +973,141 @@ impl App {
             plan.unlock.name(),
             plan.out.display()
         ));
-        let started = Instant::now();
-        let init = self.runner.output(&plan.vm(&["init-cycle"]))?;
-        if !init.success {
-            return Err(failed("prepare", init.stderr.trim(), plan));
-        }
-        #[cfg(windows)]
-        verify_external_target(plan, 0, "external-target-before.json")?;
         let mut preserved: Vec<Preserved> = Vec::new();
-        if plan.layout != Layout::Erase && plan.external_target.is_none() {
-            let scratch = fixture::scratch_dir(&plan.cycle_dir);
-            std::fs::create_dir_all(&scratch).map_err(CliError::io("creating fixture scratch"))?;
-            let raw = plan.cycle_dir.join("target.raw");
-            preserved = fixture::build(plan.layout, &raw, &scratch, &mut VmTools { plan })
-                .map_err(|detail| failed("prepare", detail, plan))?;
-            let target = plan.target().display().to_string();
-            VmTools { plan }
-                .run(
-                    "qemu-img",
-                    &[
-                        "create",
-                        "-f",
-                        "qcow2",
-                        "-F",
-                        "raw",
-                        "-b",
-                        &raw.display().to_string(),
-                        &target,
-                    ],
-                    None,
-                )
-                .map_err(|detail| failed("prepare", detail, plan))?;
-            write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
-        }
-        self.receipt
-            .record("prepare", started.elapsed().as_secs_f64());
-
-        let boot = Instant::now();
-        let booted = self.runner.output(&plan.vm(&[
-            "boot-installer",
-            plan.graphics.flag(),
-            plan.tpm_flag(),
-        ]))?;
-        if !booted.success {
-            return Err(failed("boot-installer", booted.stderr.trim(), plan));
-        }
-        say("installer medium booting; waiting for its console");
-        let mut console = SocketConsole::new(&plan.console());
-        let first = wait_for_app(&mut console, "installer", INSTALLER_BOOT).ok_or_else(|| {
-            failed(
-                "boot-installer",
-                format!(
-                    "the installer never answered on its console within {}s",
-                    INSTALLER_BOOT.as_secs()
-                ),
-                plan,
+        let installed = if plan.resume {
+            let installed: drive::Installed = serde_json::from_slice(
+                &std::fs::read(plan.out.join("install.json"))
+                    .map_err(CliError::io("reading retained install result"))?,
             )
-        })?;
-        write_json(&plan.out, "installer-state-first.json", &first)?;
-        self.receipt
-            .record("boot-installer", boot.elapsed().as_secs_f64());
+            .map_err(|error| failed("resume", error.to_string(), plan))?;
+            if installed.steps.last().map(String::as_str) != Some("power-off")
+                || !self.wait_stopped(plan, Duration::from_secs(2))
+            {
+                return Err(failed(
+                    "resume",
+                    "retained install is incomplete or its VM is running",
+                    plan,
+                ));
+            }
+            say("resuming completed install; checking target and guest proof before cold boot");
+            installed
+        } else {
+            let started = Instant::now();
+            let init = self.runner.output(&plan.vm(&["init-cycle"]))?;
+            if !init.success {
+                return Err(failed("prepare", init.stderr.trim(), plan));
+            }
+            #[cfg(windows)]
+            verify_external_target(plan, 0, "external-target-before.json")?;
+            if plan.layout != Layout::Erase && plan.external_target.is_none() {
+                let scratch = fixture::scratch_dir(&plan.cycle_dir);
+                std::fs::create_dir_all(&scratch)
+                    .map_err(CliError::io("creating fixture scratch"))?;
+                let raw = plan.cycle_dir.join("target.raw");
+                preserved = fixture::build(plan.layout, &raw, &scratch, &mut VmTools { plan })
+                    .map_err(|detail| failed("prepare", detail, plan))?;
+                let target = plan.target().display().to_string();
+                VmTools { plan }
+                    .run(
+                        "qemu-img",
+                        &[
+                            "create",
+                            "-f",
+                            "qcow2",
+                            "-F",
+                            "raw",
+                            "-b",
+                            &raw.display().to_string(),
+                            &target,
+                        ],
+                        None,
+                    )
+                    .map_err(|detail| failed("prepare", detail, plan))?;
+                write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
+            }
+            self.receipt
+                .record("prepare", started.elapsed().as_secs_f64());
 
-        let install = Instant::now();
-        let choices = Choices {
-            layout: plan.layout,
-            filesystem: plan.filesystem.clone(),
-            unlock: plan.unlock,
-            username: plan.username.clone(),
-            full_name: if plan.username == "scenario" {
-                "Scenario User".into()
-            } else {
-                plan.username.clone()
-            },
-            hostname: "scenario-tilo".into(),
-            account_secret: crate::scenario::Secret::new(credentials.account.expose()),
-            disk_secret: credentials
-                .disk
-                .as_ref()
-                .map(|secret| crate::scenario::Secret::new(secret.expose())),
+            let boot = Instant::now();
+            let booted = self.runner.output(&plan.vm(&[
+                "boot-installer",
+                plan.graphics.flag(),
+                plan.tpm_flag(),
+            ]))?;
+            if !booted.success {
+                return Err(failed("boot-installer", booted.stderr.trim(), plan));
+            }
+            say("installer medium booting; waiting for its console");
+            let mut console = SocketConsole::new(&plan.console());
+            let first =
+                wait_for_app(&mut console, "installer", INSTALLER_BOOT).ok_or_else(|| {
+                    failed(
+                        "boot-installer",
+                        format!(
+                            "the installer never answered on its console within {}s",
+                            INSTALLER_BOOT.as_secs()
+                        ),
+                        plan,
+                    )
+                })?;
+            write_json(&plan.out, "installer-state-first.json", &first)?;
+            self.receipt
+                .record("boot-installer", boot.elapsed().as_secs_f64());
+
+            let install = Instant::now();
+            let choices = Choices {
+                layout: plan.layout,
+                filesystem: plan.filesystem.clone(),
+                unlock: plan.unlock,
+                username: plan.username.clone(),
+                full_name: if plan.username == "scenario" {
+                    "Scenario User".into()
+                } else {
+                    plan.username.clone()
+                },
+                hostname: "scenario-tilo".into(),
+                account_secret: crate::scenario::Secret::new(credentials.account.expose()),
+                disk_secret: credentials
+                    .disk
+                    .as_ref()
+                    .map(|secret| crate::scenario::Secret::new(secret.expose())),
+            };
+            let installed = drive::install(
+                &mut console,
+                &choices,
+                plan.install_timeout,
+                &mut RealPace,
+                &mut |line| say(line),
+            );
+            // The live installer's serial console is never kept: the install
+            // backend's private output carries the one-time recovery key.
+            std::fs::write(
+                plan.out.join("installer-serial-withheld.txt"),
+                "withheld: live-installer serial may contain the one-time recovery key\n",
+            )
+            .map_err(CliError::io("writing the withheld-serial notice"))?;
+            if let Ok(state) = console.state() {
+                write_json(&plan.out, "installer-state-last.json", &state)?;
+            }
+            let installed =
+                installed.map_err(|error| failed("install", error.to_string(), plan))?;
+            write_json(&plan.out, "install.json", &json!(installed))?;
+            self.receipt
+                .record("install", install.elapsed().as_secs_f64());
+
+            let off = Instant::now();
+            if !self.wait_stopped(plan, POWER_OFF) {
+                return Err(failed(
+                    "power-off",
+                    "the installer's Power off action did not stop the VM",
+                    plan,
+                ));
+            }
+            self.receipt
+                .record("power-off", off.elapsed().as_secs_f64());
+            installed
         };
-        let installed = drive::install(
-            &mut console,
-            &choices,
-            plan.install_timeout,
-            &mut RealPace,
-            &mut |line| say(line),
-        );
-        // The live installer's serial console is never kept: the install
-        // backend's private output carries the one-time recovery key.
-        std::fs::write(
-            plan.out.join("installer-serial-withheld.txt"),
-            "withheld: live-installer serial may contain the one-time recovery key\n",
-        )
-        .map_err(CliError::io("writing the withheld-serial notice"))?;
-        if let Ok(state) = console.state() {
-            write_json(&plan.out, "installer-state-last.json", &state)?;
-        }
-        let installed = installed.map_err(|error| failed("install", error.to_string(), plan))?;
-        write_json(&plan.out, "install.json", &json!(installed))?;
-        self.receipt
-            .record("install", install.elapsed().as_secs_f64());
-
-        let off = Instant::now();
-        if !self.wait_stopped(plan, POWER_OFF) {
-            return Err(failed(
-                "power-off",
-                "the installer's Power off action did not stop the VM",
-                plan,
-            ));
-        }
-        self.receipt
-            .record("power-off", off.elapsed().as_secs_f64());
+        let mut console = SocketConsole::new(&plan.console());
 
         if !preserved.is_empty() {
             let verify = Instant::now();
@@ -1103,6 +1191,13 @@ impl App {
             }));
         }
 
+        #[cfg(windows)]
+        if plan.external_target.is_some() {
+            let discarded = self.runner.output(&plan.vm(&["discard-installer"]))?;
+            if !discarded.success {
+                return Err(failed("discard-installer", discarded.stderr.trim(), plan));
+            }
+        }
         let target_boot = Instant::now();
         let booted = self.runner.output(&plan.vm(&[
             "boot-target",
@@ -1566,6 +1661,7 @@ mod tests {
             skip_target_boot: false,
             layout,
             filesystem: None,
+            resume: false,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
             graphics: crate::scenario::Graphics::Software,
