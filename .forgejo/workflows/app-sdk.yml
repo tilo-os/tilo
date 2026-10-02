@@ -5,22 +5,12 @@ name: CI / app SDK
 # builds outside this repository, that every web-capable app runs in headless
 # Chromium, and that web bundles only shrink.
 on:
+  # Every pull request runs this workflow so its policy and web checks always
+  # report (as skipped when the change cannot affect them): a required check
+  # that never reports would block, and one that is merely absent was merged
+  # past by hand. `changes` applies the same path list as the push trigger.
   pull_request:
     branches: ["main"]
-    paths:
-      - ".cargo/config.toml"
-      - ".forgejo/workflows/app-sdk.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "apps/**"
-      - "crates/**"
-      - "rust-toolchain.toml"
-      - "tools/policy/app_capability*"
-      - "tools/policy/app_portability*"
-      - "tools/policy/check_app_*"
-      - "tools/sdk/**"
-      - "tools/web/**"
-      - "vendor/**"
   push:
     branches: ["main"]
     paths:
@@ -54,11 +44,54 @@ env:
   WASM_BINDGEN_VERSION: "0.2.108"
 
 jobs:
+  changes:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+    outputs:
+      relevant: ${{ steps.paths.outputs.relevant }}
+      main: ${{ steps.merge.outputs.main }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Does the change reach the app SDK lanes
+        id: paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ '${{ github.event_name }}' != pull_request ] || [ -z "$base" ]; then
+            echo relevant=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The push trigger's path list (keep the two in step).
+          git diff --name-only "$base...HEAD" | python3 -c '
+          import fnmatch, sys
+          patterns = [".cargo/config.toml", ".forgejo/workflows/app-sdk.yml", "Cargo.lock",
+                      "Cargo.toml", "apps/*", "crates/*", "rust-toolchain.toml",
+                      "tools/policy/app_capability*", "tools/policy/app_portability*",
+                      "tools/policy/check_app_*", "tools/sdk/*", "tools/web/*", "vendor/*"]
+          hit = any(fnmatch.fnmatch(path.strip(), p) for path in sys.stdin for p in patterns)
+          print("relevant=" + ("true" if hit else "false"))' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+      # Pull requests test the head merged onto main's current tip (a rerun
+      # included), and every job merges this same main commit.
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
+
   # Compile-free gates: portability rules and their shrink-only baseline, the
   # capabilities each app's code uses against its manifest, the
   # manifest-generated desktop registry, the SDK patch list outside apps
   # carry, the publishable crate set, and the web size budgets.
   policy:
+    needs: [changes]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: runner-quality
     timeout-minutes: 20
     container:
@@ -70,6 +103,11 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.changes.outputs.main }}
       - name: Apps and portable SDK crates hold no platform code
         run: python3 tools/policy/check_app_portability.py
       - name: Apps declare the capabilities their code uses
@@ -79,7 +117,8 @@ jobs:
       - name: Web size budgets only decrease
         shell: bash
         run: |
-          base='${{ github.event.pull_request.base.sha }}'
+          # A pull request's budgets compare with the main it was merged onto.
+          base='${{ steps.merge.outputs.main }}'
           if [ -z "$base" ] || [ "$base" = null ]; then base='${{ github.event.before }}'; fi
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ]; then base=HEAD~1; fi
           python3 tools/web/wasm_size_ratchet.py check-budget --base "$base"
@@ -90,6 +129,8 @@ jobs:
         run: python3 tools/sdk/publish_check.py --report-only
 
   builder:
+    needs: [changes]
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: runner-quality
     timeout-minutes: 5
     container:
@@ -108,7 +149,7 @@ jobs:
   # Linux: the CLI's own tests, the Linux artifact and .tapp of a
   # representative app, and a generated app built outside the repository.
   linux:
-    needs: [builder]
+    needs: [changes, builder]
     # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
     # app for two targets) share one target directory: they outgrow the
     # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
@@ -127,6 +168,10 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.changes.outputs.main }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
       - name: tilo-caps and the tilo-app target commands
@@ -233,7 +278,7 @@ jobs:
   # app mounted in headless Chromium on WebGPU, and the release bundle held
   # to its size budget.
   web:
-    needs: [builder]
+    needs: [changes, builder]
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
     runs-on: runner
@@ -248,6 +293,10 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
+      - name: Merge onto main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.changes.outputs.main }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
       - name: Web toolchain
