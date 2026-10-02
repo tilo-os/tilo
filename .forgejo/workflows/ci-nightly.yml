@@ -61,17 +61,21 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Check complete workspace formatting
-        run: cargo fmt --all --check
+        # Workspace members only: --all also formats path dependencies, and
+        # the vendor/ forks must stay byte-identical to their upstream trees.
+        run: cargo fmt --check
 
   complete:
     strategy:
       fail-fast: false
       matrix:
+        # The whole-workspace target tree does not fit beside a generic
+        # slot's caches; the disk classes have room for it.
         include:
           - arch: x86_64
-            runner: runner
+            runner: runner-disk-100g
           - arch: aarch64
-            runner: runner-arm64
+            runner: runner-disk-100g-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
