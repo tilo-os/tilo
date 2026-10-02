@@ -741,7 +741,7 @@ impl App {
             )
             .map_err(|error| CliError::Unsupported {
                 what: "retained scenario".into(),
-                alternative: error.to_string().into(),
+                alternative: error.to_string(),
             })?;
             let old_cycle = saved.get("cycle").and_then(Value::as_str).unwrap_or("");
             if !old_cycle
@@ -758,7 +758,7 @@ impl App {
                     alternative: "use the original scenario output".into(),
                 });
             }
-            cycle = old_cycle.to_owned();
+            old_cycle.clone_into(&mut cycle);
         }
         let storage = out.join("storage");
         // Exactly the runtime directory vm.sh derives for a named cycle;
