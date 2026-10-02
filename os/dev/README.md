@@ -58,7 +58,7 @@ TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 
 # …or drive it step by step:
 ./os/dev/vm.sh boot --gl                # GL so the DRM compositor can render
-./os/dev/vm.sh wait                     # block until greetd is up
+./os/dev/vm.sh wait                     # block until the greeter accepts input
 ./os/dev/vm.sh login --passcode-only    # one-account disk: types the passcode (tilo)
 ./os/dev/vm.sh login                    # two-field form: types tester / tilo
 ./os/dev/vm.sh shot desktop             # -> /tmp/tilo-vm/desktop.png
@@ -326,7 +326,7 @@ TILO_INSTALLER_DEV_PASSWORD='use-a-unique-local-secret' \
 
 # 3. Boot the installer with a blank target disk attached as /dev/vdb.
 ./os/dev/vm.sh boot-installer --gl     # GL so the installer UI can render
-./os/dev/vm.sh wait                    # block until greetd brings it up
+./os/dev/vm.sh wait                    # block until the installer answers its console
 #    (drive the UI: pick /dev/vdb, set user/pass, install)
 
 # 4. Stop, then boot the installed result.
