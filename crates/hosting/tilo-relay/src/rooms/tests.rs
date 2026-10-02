@@ -153,5 +153,5 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
         }
     })
     .await;
-    relay.shutdown().await;
+    crate::daemon::Relay::shutdown(relay).await;
 }

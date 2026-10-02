@@ -279,6 +279,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
+    drop(web);
     let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
@@ -536,5 +537,5 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     serving.abort();
     owner_native.close().await;
     guest_native.close().await;
-    relay.shutdown().await;
+    crate::daemon::Relay::shutdown(relay).await;
 }
