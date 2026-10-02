@@ -11560,7 +11560,8 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
             let Some(ctx) = self.wp_resource_ctx(doc) else {
                 return Vec::new();
             };
-            return crate::actions::live_presentation_resources(&ctx, doc);
+            let body = self.kept_body();
+            return crate::actions::live_presentation_resources(&ctx, doc, body.as_deref());
         }
         Self::publish_resources(self, doc)
     }
@@ -11596,7 +11597,11 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if self.hosted()
             && let Some(ctx) = self.wp_resource_ctx(doc)
         {
-            return find(&crate::actions::live_presentation_resources(&ctx, doc), id);
+            let body = self.kept_body();
+            return find(
+                &crate::actions::live_presentation_resources(&ctx, doc, body.as_deref()),
+                id,
+            );
         }
         None
     }

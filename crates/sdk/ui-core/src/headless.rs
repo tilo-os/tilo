@@ -4862,7 +4862,14 @@ impl FrameHarness {
                 self.handle_unconsumed_activation_key(event, &mut handled);
             }
             if history_input {
+                // Framework editors (and History chrome) capture the keyboard
+                // before the ordinary host tick. Still drain dispatched action
+                // brackets: ActionHost records them through get_heads, which
+                // closes the Automerge transaction so the next resource sync
+                // can refresh incrementally instead of re-reading the whole
+                // document on every keystroke.
                 self.poll_control_invocations();
+                self.idle_control_tick();
             } else {
                 self.host_tick();
             }

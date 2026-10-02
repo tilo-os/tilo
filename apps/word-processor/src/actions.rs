@@ -669,9 +669,15 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
 /// peer's caret. Not a second `word-processor.document` root. Typing, marks,
 /// placing an image, inserting a table, moving the caret, and page breaks stay
 /// addressable when the framework already publishes the document.
-pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+pub(crate) fn live_presentation_resources(
+    ctx: &WpResourceCtx,
+    doc: &AutoCommit,
+    body: Option<&tilo_document::BodyOrder>,
+) -> Vec<Resource> {
     let mut scratch = Resource::new("word-processor.live", "word_processor.live", "Live");
-    add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, None));
+    // Pass the kept body order so building erase/new-paragraph targets does not
+    // list and sort every paragraph on each keystroke.
+    add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, body));
     add_comment_resource_action(&mut scratch, ctx);
     if !ctx.search_hits.is_empty()
         && let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT)
@@ -695,10 +701,10 @@ pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit)
         extras.insert(0, selection);
     }
     let mut caret = Resource::new("word-processor.caret", "word_processor.caret", "Caret");
-    editing::add_operations(&mut caret, ctx, doc, None);
+    editing::add_operations(&mut caret, ctx, doc, body);
     add_document_edit_actions(&mut caret, ctx);
     add_caret_actions(&mut caret, ctx);
-    add_body_append_actions(&mut caret, ctx, doc, None);
+    add_body_append_actions(&mut caret, ctx, doc, body);
     view_ops::add_operations(&mut caret, ctx);
     // Hosted edits answer with the blocks they changed, same as the
     // standalone document root (see returning_changes).
@@ -1427,6 +1433,15 @@ pub(crate) fn structural_children(state: &tilo_document::RichTextState) -> Vec<R
         RegionKind::Footer,
         state.footer().as_slice(),
     );
+    // Same result contracts the standalone tree declares: append-row /
+    // append-column answer with the cells they added.
+    for table in root
+        .children
+        .iter_mut()
+        .filter(|child| child.kind == "word_processor.table")
+    {
+        declare_changes(table, TABLE_RETURNING_CHANGES);
+    }
     root.children
 }
 
@@ -2606,7 +2621,7 @@ mod tests {
     fn live_presentation_keeps_selection_without_a_document_root() {
         let doc = wp_seed();
         let ctx = wp_ctx(&doc);
-        let extras = live_presentation_resources(&ctx, &doc);
+        let extras = live_presentation_resources(&ctx, &doc, None);
         assert!(
             extras
                 .iter()
