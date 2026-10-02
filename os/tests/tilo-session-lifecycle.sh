@@ -34,6 +34,7 @@ done
 grep -Fqx 'ulimit -c 0' "$wrapper"
 grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
 grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
+grep -Fqx '(allow xdm_t home_root_t (dir (read)))' "$selinux_policy"
 # The compositor verifies and repairs an existing identity on every start;
 # there is no separate pre-session identity unit to order anything after.
 if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
