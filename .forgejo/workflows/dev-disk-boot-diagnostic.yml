@@ -178,18 +178,21 @@ jobs:
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
+          guest_evidence() {
+            timeout --kill-after=5s 20s ./os/dev/vm.sh ssh "$@"
+          }
           finish() {
             status=$?
             # A session can exit before the portal appears. Preserve its flight
             # recorder, rather than only the SSH chatter on the serial console.
-            ./os/dev/vm.sh ssh 'cat "$HOME/.local/state/tilo/session-logs/latest.log"' > "$TILO_RUN/desktop-session.log" 2>&1 || true
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b -u greetd --no-pager" > "$TILO_RUN/greetd.log" 2>&1 || true
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b --no-pager _UID=1000" > "$TILO_RUN/user-session.log" 2>&1 || true
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' dmesg --color=never" > "$TILO_RUN/kernel.log" 2>&1 || true
-            ./os/dev/vm.sh ssh 'systemd-analyze; systemctl show --property=InitRDTimestampMonotonic --property=UserspaceTimestampMonotonic --property=FirmwareTimestampMonotonic --property=LoaderTimestampMonotonic' > "$TILO_RUN/boot-phases.log" 2>&1 || true
+            guest_evidence 'cat "$HOME/.local/state/tilo/session-logs/latest.log"' > "$TILO_RUN/desktop-session.log" 2>&1 || true
+            guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b -u greetd --no-pager" > "$TILO_RUN/greetd.log" 2>&1 || true
+            guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b --no-pager _UID=1000" > "$TILO_RUN/user-session.log" 2>&1 || true
+            guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' dmesg --color=never" > "$TILO_RUN/kernel.log" 2>&1 || true
+            guest_evidence 'systemd-analyze; systemctl show --property=InitRDTimestampMonotonic --property=UserspaceTimestampMonotonic --property=FirmwareTimestampMonotonic --property=LoaderTimestampMonotonic' > "$TILO_RUN/boot-phases.log" 2>&1 || true
             if (( status != 0 )); then
-              ./os/dev/vm.sh cmd "screendump $TILO_RUN/boot-failure.ppm" >/dev/null 2>&1 || true
-              bash ./os/dev/diagnose-boot-failure.sh || true
+              timeout --kill-after=5s 20s ./os/dev/vm.sh cmd "screendump $TILO_RUN/boot-failure.ppm" >/dev/null 2>&1 || true
+              timeout --kill-after=5s 30s bash ./os/dev/diagnose-boot-failure.sh || true
             fi
             ./os/dev/vm.sh stop || true
             rm -f -- "$overlay"
@@ -219,12 +222,12 @@ jobs:
           (
             while kill -0 "$switch_pid" 2>/dev/null; do
               printf '\nTILO_SWITCH_PROGRESS time=%s\n' "$(date -u +%FT%TZ)"
-              df -h /sysroot /var /boot
-              df -i /sysroot /var /boot
-              ps -C bootc -o pid,etime,time,stat,wchan:24 || true
-              for pid in $(pgrep -x bootc || true); do
+              timeout --kill-after=1s 3s df -h /sysroot /var /boot || true
+              timeout --kill-after=1s 3s df -i /sysroot /var /boot || true
+              timeout --kill-after=1s 3s ps -C bootc -o pid,etime,time,stat,wchan:24 || true
+              for pid in $(timeout --kill-after=1s 3s pgrep -x bootc || true); do
                 printf 'bootc pid=%s\n' "$pid"
-                cat "/proc/$pid/io" 2>/dev/null || true
+                timeout --kill-after=1s 3s cat "/proc/$pid/io" 2>/dev/null || true
               done
               sleep 15
             done
@@ -240,7 +243,7 @@ jobs:
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o PreferredAuthentications=password -o PubkeyAuthentication=no \
               "$TILO_RUN/guest-switch.sh" "$TILO_USER@127.0.0.1:/tmp/guest-switch.sh"
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-switch.sh '$UPGRADE_IMAGE'" \
+            timeout --kill-after=10s 22m ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/guest-switch.sh '$UPGRADE_IMAGE'" \
               | tee "$TILO_RUN/image-switch.log"
             ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
             ready=false
