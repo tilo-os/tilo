@@ -229,7 +229,7 @@ mod tests {
             vers.len()
         );
         assert!(
-            vers.iter().all(|v| !v.actor_hex.is_empty()),
+            vers.iter().all(|v| !v.actor.is_empty()),
             "every change has an author"
         );
 

@@ -250,6 +250,10 @@ impl Resource for WorkbookDoc {
 }
 
 /// Containers for callers that already hold a live document.
+///
+/// # Errors
+///
+/// Returns [`ModelError`] when the sheet containers cannot be opened on `doc`.
 pub fn containers(doc: &Doc) -> Result<SheetContainers, ModelError> {
     open(doc, &ROOT).map_err(|error| ModelError::invalid(error.to_string()))
 }
