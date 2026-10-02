@@ -200,6 +200,8 @@ jobs:
             # A session can exit before the portal appears. Preserve its flight
             # recorder, rather than only the SSH chatter on the serial console.
             guest_evidence 'cat "$HOME/.local/state/tilo/session-logs/latest.log"' > "$TILO_RUN/desktop-session.log" 2>&1 || true
+            guest_evidence 'cat "$HOME/.local/state/tilo/session-logs/frame-trace.csv"' > "$TILO_RUN/frame-trace.csv" 2>&1 || true
+            guest_evidence 'printf "user=%s runtime=%s bus=%s\n" "$(id -un)" "${XDG_RUNTIME_DIR:-unset}" "${DBUS_SESSION_BUS_ADDRESS:-unset}"; busctl --user --timeout=3 status org.freedesktop.impl.portal.desktop.tilo; printf "portal_status=%s\n" "$?"; wc -l "$HOME/.local/state/tilo/session-logs/frame-trace.csv"; systemctl --user --no-pager --failed' > "$TILO_RUN/desktop-readiness.log" 2>&1 || true
             guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b -u greetd --no-pager" > "$TILO_RUN/greetd.log" 2>&1 || true
             guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b --no-pager _UID=1000" > "$TILO_RUN/user-session.log" 2>&1 || true
             guest_evidence "printf '%s\n' '$TILO_PASS' | sudo -S -p '' dmesg --color=never" > "$TILO_RUN/kernel.log" 2>&1 || true
@@ -423,7 +425,10 @@ jobs:
               fi
               sleep 1
             done
-            [[ $desktop_ready == true ]] || { echo '::error::native desktop did not present a frame and publish its portal'; exit 1; }
+            if [[ $desktop_ready != true ]]; then
+              echo '::error::native desktop did not satisfy portal and frame-trace readiness; preserving each predicate in desktop-readiness.log and frame-trace.csv'
+              exit 1
+            fi
             ./os/dev/vm.sh cmd "screendump $TILO_RUN/desktop.ppm" >/dev/null
           fi
 
@@ -434,6 +439,8 @@ jobs:
           name: dev-kvm-desktop-diagnostic
           path: |
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop-session.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop-readiness.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/frame-trace.csv
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/greetd.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/user-session.log
             /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/kernel.log
