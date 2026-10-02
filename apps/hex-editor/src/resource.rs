@@ -195,6 +195,10 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn publish_owns_document_door_and_hosted_keeps_only_live_extras() {
         let published = ui::tilo_resource::publish::<HexEditor>(
             "hex_editor.document",

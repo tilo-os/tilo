@@ -246,6 +246,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
+    )]
     fn hosted_resources_keep_find_hits_without_document_root() {
         let published = ui::tilo_resource::publish::<PdfViewer>(
             "pdf.document:sample",
