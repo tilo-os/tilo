@@ -1669,6 +1669,21 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
     find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +
   fi
   log "  applied the setup handoff"
+  SSH_REQUEST="$HANDOFF_SRC/etc/tilo/bringup-ssh.pub"
+  if [ -e "$SSH_REQUEST" ] || [ -L "$SSH_REQUEST" ]; then
+    # Only the dev image we actually self-install may opt in. A development
+    # live medium must never enable SSH on a distinct production target.
+    [ "$OFFLINE_TARGET" -eq 0 ] \
+      && [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = dev ] \
+      && [ -x /usr/sbin/sshd ] \
+      && [ -f /usr/lib/systemd/system/sshd.service ] \
+      || die "bring-up SSH requires a self-installed development image with OpenSSH"
+    python3 /usr/libexec/tilo-install-dev-ssh.py --etc "$DEPLOY_ETC" \
+      --username "$USERNAME" --key "$SSH_REQUEST" \
+      || die "could not configure owner-key bring-up SSH"
+    rm -f "$DEPLOY_ETC/tilo/bringup-ssh.pub"
+    log "  enabled owner-key SSH independently of desktop onboarding"
+  fi
 fi
 
 sync
