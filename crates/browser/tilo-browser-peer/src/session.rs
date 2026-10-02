@@ -1672,10 +1672,8 @@ impl Task {
         };
         let changes = self.channels.open(&route, crate::clock::now_ms());
         self.absorb(changes);
-        if !self.ciphers.contains_key(&route) && self.channels.gated(&route) {
-            // Never in the clear on an encrypted channel, nor before the
-            // page knows whether it is one: the frames wait for this
-            // device's keys or for the room's replay to name no governor.
+        if !self.ciphers.contains_key(&route) {
+            // Never in the clear: the frames wait for this device's keys.
             self.held_outbound.entry(route).or_default().extend(frames);
             self.persist_channels(true);
             return true;
@@ -1752,8 +1750,6 @@ impl Task {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
-                let changes = self.channels.replayed(workspace_id);
-                self.absorb(changes);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
             Envelope::NotAuthorised { reason, .. } => {
@@ -1960,8 +1956,7 @@ impl Task {
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
-            if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
-            {
+            if changes.keys.is_empty() && changes.outgoing.is_empty() {
                 self.persist_channels(false);
                 let mut channels = self.channels.describe();
                 for ((route, from), count) in &self.opened {
@@ -1991,11 +1986,6 @@ impl Task {
                 return delivered;
             }
             let held_before = self.held_outbound.len();
-            for route in changes.released {
-                if let Some(frames) = self.held_outbound.remove(&route) {
-                    delivered &= self.publish(route, frames, client).await;
-                }
-            }
             for (route, keys) in changes.keys {
                 self.ciphers
                     .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
