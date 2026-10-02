@@ -349,7 +349,7 @@ fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
     A::SHOT_VIEWPORT
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     LaunchSpec::from_definition(definition::<A>())
@@ -360,6 +360,13 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .scenarios(A::scenarios())
         .allowed_options(&["--data-dir"])
         .allowed_live_options(&["--data-dir"])
+}
+
+#[cfg(not(tilo_native_runner))]
+/// Named for the same apps that build a native [`LaunchSpec`]; the browser
+/// host mounts [`definition`] itself and never runs this path.
+pub fn launch_spec<A: ResourceApp>() -> crate::launch::LaunchSpec {
+    crate::launch::LaunchSpec::from_definition(definition::<A>())
 }
 
 #[cfg(feature = "native")]
