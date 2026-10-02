@@ -10,7 +10,7 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_crate::actions::{
+use ui::tilo_actions::{
     ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
     Resource as PublishedResource,
 };
@@ -45,7 +45,7 @@ impl Resource for Contacts {
     type State = ContactsState;
     type Action = ContactsAction;
 
-    fn register(registry: &mut tilo_crate::actions::ActionRegistry) {
+    fn register(registry: &mut ui::tilo_actions::ActionRegistry) {
         register(registry);
     }
 
@@ -176,8 +176,8 @@ impl ActionSink {
         doc: &mut AutoCommit,
         type_id: &str,
         action: &ContactsAction,
-        context: ui::tilo_crate::actions::ActionContext,
-    ) -> Result<(), tilo_crate::actions::ActionError> {
+        context: ui::tilo_actions::ActionContext,
+    ) -> Result<(), ui::tilo_actions::ActionError> {
         match &self.framework {
             Some(dispatcher) => {
                 self.last = Some(crate::actions::encode(action));
@@ -221,7 +221,7 @@ pub fn provide_resources(state: &ContactsState) -> Vec<PublishedResource> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_crate::actions::Action;
+    use ui::tilo_actions::Action;
     use ui::widget::Widget;
 
     #[test]
