@@ -17,7 +17,7 @@ kver=$(uname -r)
 rebuilt_initrd=/tmp/tilo-ptrace-initrd.img
 dracut --force --reproducible --compress zstd --kver "$kver" \
   --omit 'network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh' \
-  --omit-drivers xfs --add-drivers ext4 \
+  --omit-drivers "amdgpu nouveau xe xfs" --add-drivers ext4 \
   --add 'crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback' \
   --include "$override" "$override" "$rebuilt_initrd"
 [[ -s "$rebuilt_initrd" ]]

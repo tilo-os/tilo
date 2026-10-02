@@ -627,11 +627,11 @@ grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
   && ok 'initramfs supports Ext4 roots'
 grep -Fq -- '--add-drivers ext4' "$initramfs_recipe" \
   || bad 'initramfs cannot mount a supported Ext4 root'
-grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
   && ok 'initramfs excludes non-root XFS filesystem parser'
-grep -Fq -- '--omit-drivers xfs' "$initramfs_recipe" \
+grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
   || bad 'initramfs carries non-root XFS filesystem attack surface'
-grep -Fq "printf '%s\\n' xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
+grep -Fq "printf '%s\\n' amdgpu nouveau xe xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
   "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
 grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \

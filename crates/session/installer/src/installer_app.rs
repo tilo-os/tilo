@@ -191,9 +191,9 @@ fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS
             };
             *flag = false;
         } else {
-            // The Lenovo image also omits unrelated GPU drivers to keep its UKI
-            // within the verified-boot size limit. Those entries do not change
-            // which filesystem the installer can offer.
+            // Every image also omits the large-firmware GPU drivers to keep its
+            // UKI small. Those entries do not change which filesystem the
+            // installer can offer.
             if !matches!(line, "amdgpu" | "nouveau" | "xe") {
                 return Err("The image has an invalid initramfs driver manifest".into());
             }
