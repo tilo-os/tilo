@@ -15,6 +15,23 @@ on:
         required: false
         default: "btrfs"
         type: string
+      target_image:
+        description: "Optional separate ARM64 dev target pinned by digest; empty means installer self-copy"
+        required: false
+        type: string
+      target_ci_run_id:
+        description: "Internal Forgejo run ID that built the separate target (locator, not a signature)"
+        required: false
+        type: string
+      target_update_origin:
+        description: "Published tilo-vm update tag for the separate target"
+        required: false
+        type: string
+      target_profile:
+        description: "Separate target profile: generic or lenovo-83ed"
+        required: false
+        default: "lenovo-83ed"
+        type: string
 
 concurrency:
   group: os-dev-installer-${{ github.ref }}
@@ -30,6 +47,10 @@ jobs:
       TILO_OUTPUT: /var/tmp/tilo-dev-installer-${{ github.run_id }}
       TILO_IMAGE: ${{ github.event.inputs.os_image }}
       TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
+      TILO_DEV_TARGET_IMAGE: ${{ github.event.inputs.target_image }}
+      TILO_DEV_TARGET_RUN_ID: ${{ github.event.inputs.target_ci_run_id }}
+      TILO_DEV_TARGET_ORIGIN: ${{ github.event.inputs.target_update_origin }}
+      TILO_DEV_TARGET_PROFILE: ${{ github.event.inputs.target_profile || 'lenovo-83ed' }}
       # The nested Podman build must reach Cargo's GitHub sources; its private
       # network stalled there while the native runner's network was available.
       TILO_PODMAN_BUILD_NETWORK: host
@@ -83,6 +104,23 @@ jobs:
           }
           printf 'base_image=%s\nbase_source=%s\nbuild_source=%s\n' \
             "$TILO_IMAGE" "$source_revision" "$GITHUB_SHA" > dev-installer-source.txt
+          if [ -n "$TILO_DEV_TARGET_IMAGE" ]; then
+            # Keep the generic live UI and the board target separate, using
+            # the same source cohort. No OS rebuild or signature upload.
+            export TILO_INSTALLER_DEV_TARGET=1
+            export TILO_INSTALLER_OFFLINE_TARGET_DIR="$TILO_OUTPUT/dev-target"
+            mkdir -p "$TILO_OUTPUT"
+            python3 os/dev/prepare-dev-installer-target.py \
+              --image "$TILO_DEV_TARGET_IMAGE" --source-revision "$source_revision" \
+              --ci-run-id "$TILO_DEV_TARGET_RUN_ID" --hardware-profile "$TILO_DEV_TARGET_PROFILE" \
+              --update-origin "$TILO_DEV_TARGET_ORIGIN" \
+              --output "$TILO_INSTALLER_OFFLINE_TARGET_DIR"
+            printf 'target_image=%s\ntarget_ci_run_id=%s\ntarget_update_origin=%s\n' \
+              "$TILO_DEV_TARGET_IMAGE" "$TILO_DEV_TARGET_RUN_ID" "$TILO_DEV_TARGET_ORIGIN" \
+              >> dev-installer-source.txt
+          elif [ -n "$TILO_DEV_TARGET_RUN_ID$TILO_DEV_TARGET_ORIGIN" ]; then
+            echo '::error::target metadata requires target_image'; exit 1
+          fi
           if [[ "$TILO_IMAGE" = registry.tilo.so/tilo/tilo-vm@* ]]; then
             # Generic dev images deliberately have no UKI. The installer uses
             # the UKI boot layout for encrypted target installs; adapt only its
