@@ -1736,8 +1736,7 @@ impl PhotosResources {
 }
 
 pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource {
-    let edits = edits.clone();
-    let (w, h) = image.edited_size(&edits);
+    let (w, h) = image.edited_size(edits);
     let id = resource_id(image);
     let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
     if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {
@@ -1857,14 +1856,13 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
 
 /// Nested library catalogue rows for [`crate::resource::Photos::children`].
 pub(crate) fn library_children(library: &crate::model::PhotoLibrary) -> Vec<Resource> {
-    let mut children = Vec::new();
-    children.push(favorites_resource(
-        library.photos.iter().filter(|photo| photo.favorite).count(),
-    ));
-    children.push(albums_resource(library));
-    children.push(places_resource(library));
-    children.push(people_root_resource(library));
-    children.push(timeline_resource(library));
+    let mut children = vec![
+        favorites_resource(library.photos.iter().filter(|photo| photo.favorite).count()),
+        albums_resource(library),
+        places_resource(library),
+        people_root_resource(library),
+        timeline_resource(library),
+    ];
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         children.push(photo_resource(photo));
     }

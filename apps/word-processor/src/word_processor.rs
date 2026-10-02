@@ -803,7 +803,8 @@ impl WordProcessor {
         } else {
             start.offset == 0
         };
-        let adopt_first = was_empty && blocks[0].kind != "cell" && blocks[0].kind != "fidelity";
+        let adopt_first = was_empty
+            && blocks.first().is_some_and(|b| b.kind != "cell" && b.kind != "fidelity");
         let action = crate::actions::paste_fragment_action(
             self.action_region(),
             crate::actions::SelectionTarget {
@@ -906,7 +907,7 @@ impl WordProcessor {
     }
 
     fn set_block_attr(
-        &mut self,
+        &self,
         state: &mut AutoCommit,
         blocks: Vec<String>,
         key: &str,
@@ -924,8 +925,12 @@ impl WordProcessor {
         let _ = action.apply_under(state, &automerge::ROOT);
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct owned RichTextAction values at the call site"
+    )]
     fn apply_rich(
-        &mut self,
+        &self,
         state: &mut AutoCommit,
         action: crate::actions::RichTextAction,
     ) -> bool {
@@ -1200,7 +1205,7 @@ impl WordProcessor {
         self.review_change(state, None, false);
     }
 
-    fn review_change(&mut self, state: &mut AutoCommit, id: Option<&str>, accept: bool) {
+    fn review_change(&self, state: &mut AutoCommit, id: Option<&str>, accept: bool) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -1352,7 +1357,7 @@ impl WordProcessor {
     /// selection — the whole caret block. `clears` is a sibling mark removed
     /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually
     /// exclusive. Returns nothing; reads/writes happen in document order.
-    fn toggle_exclusive_run_mark(&mut self, state: &mut AutoCommit, name: &str, clears: &str) {
+    fn toggle_exclusive_run_mark(&self, state: &mut AutoCommit, name: &str, clears: &str) {
         let ranges = self.font_ranges(state);
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1936,26 +1941,23 @@ impl WordProcessor {
             return;
         }
         let remaining = self.ordered_blocks(state);
-        match before.or_else(|| remaining.first().cloned()) {
-            Some(t) => {
-                let off = self.block_len(state, &t);
+        if let Some(t) = before.or_else(|| remaining.first().cloned()) {
+            let off = self.block_len(state, &t);
+            self.caret = Caret {
+                block: t,
+                offset: off,
+            };
+        } else {
+            let action = crate::actions::RichTextAction::EnsureRegionBlock {
+                region: crate::actions::RegionKind::Body,
+            };
+            if self.apply_rich(state, action)
+                && let Some(id) = self.ordered_blocks(state).into_iter().next()
+            {
                 self.caret = Caret {
-                    block: t,
-                    offset: off,
+                    block: id,
+                    offset: 0,
                 };
-            }
-            None => {
-                let action = crate::actions::RichTextAction::EnsureRegionBlock {
-                    region: crate::actions::RegionKind::Body,
-                };
-                if self.apply_rich(state, action)
-                    && let Some(id) = self.ordered_blocks(state).into_iter().next()
-                {
-                    self.caret = Caret {
-                        block: id,
-                        offset: 0,
-                    };
-                }
             }
         }
         self.selection_anchor = None;
@@ -2167,7 +2169,7 @@ impl WordProcessor {
     // Each goes through the region-aware qdoc op (`*_in`) for the active region.
 
     fn region_splice(
-        &mut self,
+        &self,
         state: &mut AutoCommit,
         block: &str,
         idx: usize,
@@ -2190,7 +2192,7 @@ impl WordProcessor {
         let _ = action.apply_under(state, &automerge::ROOT);
     }
 
-    fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
+    fn region_set_kind(&self, state: &mut AutoCommit, block: &str, kind: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -2204,7 +2206,7 @@ impl WordProcessor {
         let _ = action.apply_under(state, &automerge::ROOT);
     }
 
-    fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
+    fn region_remove_block(&self, state: &mut AutoCommit, block: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -2226,7 +2228,7 @@ impl WordProcessor {
         reason = "clear-mark helper kept for region edits not yet on RichTextAction"
     )]
     fn region_remove_mark(
-        &mut self,
+        &self,
         state: &mut AutoCommit,
         block: &str,
         start: usize,
@@ -2336,13 +2338,11 @@ impl WordProcessor {
         let Some(containers) = self.containers.clone() else {
             return vec![];
         };
-        let old: Vec<String> = tilo_doc::model::materialize(state, &containers)
+        let caret_in_old = tilo_doc::model::materialize(state, &containers)
             .blocks
             .iter()
             .filter(|block| block_is_toc(block))
-            .map(|block| block.id.clone())
-            .collect();
-        let caret_in_old = old.contains(&self.caret.block);
+            .any(|block| block.id == self.caret.block);
         if !self.apply_rich(state, crate::actions::generate_toc_action(entries.to_vec())) {
             return vec![];
         }

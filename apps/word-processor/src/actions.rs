@@ -246,6 +246,10 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "empty rich-text document always initializes and reads"
+)]
 fn document_resource(doc: &AutoCommit) -> Resource {
     let state = <crate::framework::Document as ui::tilo_resource::Resource>::read(doc)
         .unwrap_or_else(|_| {
@@ -255,12 +259,11 @@ fn document_resource(doc: &AutoCommit) -> Resource {
             <crate::framework::Document as ui::tilo_resource::Resource>::read(&empty)
                 .expect("empty rich text reads")
         });
-    let root = ui::tilo_resource::publish::<crate::framework::Document>(
+    ui::tilo_resource::publish::<crate::framework::Document>(
         "word-processor.document",
         "Document",
         &state,
-    );
-    root
+    )
 }
 
 pub(crate) fn file_operation_specs(file: Option<&continuation::FileContext>) -> Vec<ActionSpec> {

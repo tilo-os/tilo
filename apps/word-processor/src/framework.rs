@@ -17,6 +17,7 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionContext, ActionError};
+use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::framework::{Dispatcher, Live, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{ActionDecl, Demand, Doc, ModelError, Reader, Resource};
@@ -94,7 +95,6 @@ impl Resource for Document {
                 build: decl.build,
             })
             .collect();
-        use tilo_actions::{ActionParam, ParamType};
         decls.push(
             ActionDecl::new(
                 "set-page-margins",

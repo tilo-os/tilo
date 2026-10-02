@@ -3690,7 +3690,7 @@ impl PhotosApp {
         }
         self.observed_content = Some(LiveContent {
             image: state.open.clone(),
-            edits: state.edits.clone(),
+            edits: state.edits,
             library: state.library.clone(),
         });
     }

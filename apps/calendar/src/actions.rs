@@ -1639,7 +1639,7 @@ impl Action for CalendarAction {
     }
 
     /// Outside-consequence undo: creating a remote event is undone by a
-    /// remote delete (del_outbox); undoing that delete re-upserts and
+    /// remote delete (`del_outbox`); undoing that delete re-upserts and
     /// re-queues the push. Computed before `apply` so a delete can still
     /// read the event it removes. Pure local CRDT edits leave this as `None`.
     fn inverse_before(&self, doc: &Doc) -> Option<Self> {
@@ -2253,6 +2253,10 @@ fn place_leaf(children: &mut Vec<Resource>, child: Resource) {
     children.push(child);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "standalone resource surface still overlays ctx-scoped entity children until Resource::children owns them"
+)]
 pub fn provide_resources(ctx: &CalendarResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let model = CalDoc::read_model(doc);
     // Document actions and view/effect ops come from `Resource::publish`.
