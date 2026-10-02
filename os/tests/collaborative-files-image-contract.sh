@@ -151,6 +151,7 @@ require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graph
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "tilo_session_unit_file_t"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow xdm_t tilo_session_unit_file_t (service (start stop status)))"
+require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
 require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
