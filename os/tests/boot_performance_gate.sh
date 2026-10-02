@@ -2,6 +2,11 @@
 # Gate kernel-plus-userspace boot latency on a running installed image. Firmware
 # timing is intentionally excluded: CI controls the Tilo kernel and userspace,
 # not a customer's UEFI implementation.
+#
+# The numbers are only meaningful in a KVM guest, like the release gate's VM.
+# os/dev/vm.sh falls back to TCG emulation on a host without usable KVM and
+# warns when it does; a TCG boot's phases are not comparable with KVM or
+# hardware in either direction.
 set -euo pipefail
 
 budget_seconds="${TILO_BOOT_USERSPACE_BUDGET_SEC:-20}"
