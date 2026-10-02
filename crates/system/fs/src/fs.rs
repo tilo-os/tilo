@@ -2374,7 +2374,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2689,7 +2689,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -2754,7 +2754,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if extension == "tilo-doc" {
+        let merged = if matches!(extension.as_str(), "tilo-doc" | "qdoc") {
             let preflight = crate::conflict_merge::preflight_exact(first, second, None);
             let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
                 // A failed preflight is deliberately indistinguishable from

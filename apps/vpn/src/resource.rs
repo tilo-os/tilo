@@ -185,6 +185,13 @@ impl ActionSink {
             self.local.last_dispatched()
         }
     }
+
+    /// Forget a seed-recorded dispatch when an operation intentionally writes
+    /// no collaborative action (local profile setup).
+    pub(crate) fn clear_last_dispatched(&mut self) {
+        self.last = None;
+        self.local.clear_last_dispatched();
+    }
 }
 
 /// Live launch through the framework host.

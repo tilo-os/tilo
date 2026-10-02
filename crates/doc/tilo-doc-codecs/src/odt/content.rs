@@ -517,7 +517,10 @@ pub(super) const ODT_STYLE: &str = "odt_style";
 /// Whether an automatic style is one the exporter generates from the model (`qdoc` in its
 /// name), which says nothing the model does not.
 fn is_generated_style(name: &str) -> bool {
-    name.contains("tilo-doc")
+    // Export invents `Lqdoc{n}` list styles (and historically `tilo-doc*`) when the
+    // model had no preserved ODT name. Re-import must not persist those as
+    // `odt_list_style` or a plain list round-trip grows attrs.
+    name.contains("tilo-doc") || name.starts_with("Lqdoc")
 }
 
 /// List-item attr: the style of the list it is in, referenced again on export (with every

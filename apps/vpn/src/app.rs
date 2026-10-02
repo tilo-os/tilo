@@ -772,6 +772,13 @@ impl VpnApp {
                     self.local_credentials.remove(&id);
                     self.local_details.remove(&id);
                     self.live_status.insert(id, ConnStatus::Disconnected);
+                    // Keep the in-memory vault status aligned with live_status so
+                    // shot/tests that read `app.vault` agree with published
+                    // availability (doc-backed publish always stores Disconnected).
+                    if let Some(connection) = self.vault.connections.iter_mut().find(|c| c.id == id)
+                    {
+                        connection.status = ConnStatus::Disconnected;
+                    }
                     self.compact_detail_open = true;
                 }
             }
@@ -780,6 +787,10 @@ impl VpnApp {
                     self.local_credentials.remove(&id);
                     self.local_details.remove(&id);
                     self.live_status.insert(id, ConnStatus::Disconnected);
+                    if let Some(connection) = self.vault.connections.iter_mut().find(|c| c.id == id)
+                    {
+                        connection.status = ConnStatus::Disconnected;
+                    }
                     self.provision_target = Some(id);
                     self.open_add(ConnKind::WireGuard);
                 }
@@ -1101,6 +1112,12 @@ impl VpnApp {
                                     &action,
                                 ),
                             );
+                        } else {
+                            // Local setup associates credentials only — no
+                            // collaborative AddConnection. Clear any seed
+                            // publish so post-setup inspection does not treat
+                            // demo vault actions as this operation.
+                            self.actions.clear_last_dispatched();
                         }
                         self.refresh(doc);
                         let mut persistence_error = None;

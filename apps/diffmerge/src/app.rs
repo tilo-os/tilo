@@ -1249,6 +1249,10 @@ impl Widget for DiffMergeApp {
                 self.merge.acknowledge_content(doc);
                 seeded = true;
             }
+            // Sync publishes are not a user gesture. Drop their undo bracket so
+            // a later chip resolution records heads at the pre-resolution point
+            // rather than inheriting the seed/shared-merge `commit_before`.
+            let _ = self.actions.take_committed();
         }
         if seeded {
             self.merge.sync(state, path);

@@ -1584,6 +1584,18 @@ fn index_resources(resource: &Resource, index: &mut std::collections::HashMap<St
 /// the eager page.
 fn overlay_missing(base: &mut Resource, extra: Resource) {
     for action in extra.actions {
+        // `post` always carries live roster mention resolution and agent
+        // authorship (`me` + Tide label). The published channel action was
+        // built from document users alone, so it must be replaced — not kept
+        // as the first writer of the same id.
+        if action.id == "post" {
+            if let Some(slot) = base.actions.iter_mut().find(|have| have.id == "post") {
+                *slot = action;
+            } else {
+                base.actions.push(action);
+            }
+            continue;
+        }
         if !base.actions.iter().any(|have| have.id == action.id) {
             base.actions.push(action);
         }
