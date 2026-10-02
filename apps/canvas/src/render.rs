@@ -13,8 +13,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tilo_wet_media::{
-    Blend, Canvas, Engines, Fill as WetFill, Heightfield, LayerPainter, Mark as WetMark, Painted,
-    Pigment, Settings, Stroke as WetStroke, StrokePoint as WetPoint, Texture,
+    Blend, Canvas, ColourField, Engines, FieldKind, Fill as WetFill, Heightfield, LayerPainter,
+    Mark as WetMark, Painted, Pigment, Settings, Stroke as WetStroke, StrokePoint as WetPoint,
+    Texture,
 };
 use ui::TextRenderer;
 use ui::vello::Scene;
@@ -366,6 +367,10 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
                         brush: narrow(brush * scale),
                         angle: narrow(style.angle.unwrap_or(0.0)),
                         params: params.clone(),
+                        field: style
+                            .gradient
+                            .as_ref()
+                            .and_then(|gradient| colour_field(gradient, palette, to_cells)),
                     }),
                 ));
             }
@@ -380,6 +385,32 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
         }
     }
     painted
+}
+
+/// A mark's gradient as the colour its paint is mixed to across it, in
+/// cell coordinates.
+fn colour_field(gradient: &Gradient, palette: &[Pigment], to_cells: Affine) -> Option<ColourField> {
+    let stops = gradient
+        .stops
+        .iter()
+        .filter_map(|(at, text)| {
+            let paint = tilo_wet_media::parse_paint(text, palette)?;
+            Some((narrow(*at), paint.colour, paint.alpha))
+        })
+        .collect();
+    let kind = if gradient.kind == "radial" {
+        FieldKind::Radial
+    } else {
+        FieldKind::Linear
+    };
+    let from = to_cells * Point::new(gradient.from[0], gradient.from[1]);
+    let to = to_cells * Point::new(gradient.to[0], gradient.to[1]);
+    ColourField::new(
+        kind,
+        (narrow(from.x), narrow(from.y)),
+        (narrow(to.x), narrow(to.y)),
+        stops,
+    )
 }
 
 /// A shape's outline as strokes of its stroke colour.
