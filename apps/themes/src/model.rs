@@ -26,19 +26,19 @@ pub const RADIUS_MAX: f32 = 22.0;
 /// Editable base-spacing range, in logical px, that the spacing slider spans.
 pub const SPACING_MIN: f32 = 6.0;
 pub const SPACING_MAX: f32 = 22.0;
-/// Duration scale the motion slider spans.
-pub const MOTION_MIN: f32 = 0.5;
-pub const MOTION_MAX: f32 = 2.0;
+/// Duration scale the motion slider spans. Same band as [`CustomThemeSpec`].
+pub const MOTION_MIN: f32 = CustomThemeSpec::MOTION_SCALE_MIN;
+pub const MOTION_MAX: f32 = CustomThemeSpec::MOTION_SCALE_MAX;
 /// Slider position that means stock timing (`motion_scale == 1`).
 pub const MOTION_NORM_AT_STOCK: f32 = (1.0 - MOTION_MIN) / (MOTION_MAX - MOTION_MIN);
 /// Elevation and glass-blur scale the materials slider spans.
-pub const MATERIAL_MIN: f32 = 0.0;
-pub const MATERIAL_MAX: f32 = 2.0;
+pub const MATERIAL_MIN: f32 = CustomThemeSpec::MATERIAL_SCALE_MIN;
+pub const MATERIAL_MAX: f32 = CustomThemeSpec::MATERIAL_SCALE_MAX;
 /// Slider position that means stock materials.
 pub const MATERIAL_NORM_AT_STOCK: f32 = (1.0 - MATERIAL_MIN) / (MATERIAL_MAX - MATERIAL_MIN);
 /// Icon-size scale the icons slider spans.
-pub const ICON_MIN: f32 = 0.75;
-pub const ICON_MAX: f32 = 1.75;
+pub const ICON_MIN: f32 = CustomThemeSpec::ICON_SCALE_MIN;
+pub const ICON_MAX: f32 = CustomThemeSpec::ICON_SCALE_MAX;
 /// Slider position that means stock icon size.
 pub const ICON_NORM_AT_STOCK: f32 = (1.0 - ICON_MIN) / (ICON_MAX - ICON_MIN);
 
