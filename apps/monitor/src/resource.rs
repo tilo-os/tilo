@@ -139,7 +139,7 @@ impl Resource for Monitor {
                         .to_owned();
                     let desc = args
                         .boolean("desc")
-                        .unwrap_or_else(|| !matches!(key.as_str(), "name" | "user"));
+                        .unwrap_or(!matches!(key.as_str(), "name" | "user"));
                     Ok(MonitorAction::SetSort { key, desc })
                 },
             )
@@ -312,6 +312,10 @@ mod tests {
     use super::*;
     use ui::widget::Widget;
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one integration check covers publish tree, hosted extras, and live overlay"
+    )]
     #[test]
     fn resource_publish_owns_process_door_and_hosted_keeps_only_live_extras() {
         let mut doc = AutoCommit::new();

@@ -4241,9 +4241,6 @@ impl ui::resources::PublishesResources for DisksApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.is_hosted() && id == "disks" {
-            return None;
-        }
         fn find(resources: &[Resource], id: &str) -> Option<Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -4254,6 +4251,9 @@ impl ui::resources::PublishesResources for DisksApp {
                 }
             }
             None
+        }
+        if self.is_hosted() && id == "disks" {
+            return None;
         }
         find(&self.publish_resources(doc), id)
     }

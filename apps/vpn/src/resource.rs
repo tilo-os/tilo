@@ -1,5 +1,5 @@
 //! VPN as a [`tilo_resource::Resource`]: tunnel profiles in the document;
-//! import / connect / disconnect / provision against NetworkManager are Effects.
+//! import / connect / disconnect / provision against `NetworkManager` are Effects.
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};

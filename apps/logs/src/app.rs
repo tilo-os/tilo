@@ -434,7 +434,7 @@ impl LogsApp {
         if self.search_input.value() != self.filter.search {
             self.search_input.set_text(&self.filter.search);
         }
-        self.selected_entry = state.selected_entry.clone();
+        self.selected_entry.clone_from(&state.selected_entry);
         self.sel_raw = self
             .selected_entry
             .as_ref()
@@ -469,10 +469,10 @@ impl LogsApp {
     fn apply_logs_action_locally(&mut self, action: &LogsAction) {
         match action {
             LogsAction::SetPriority { value } => self.filter.min_priority = (*value).clamp(0, 7),
-            LogsAction::SetUnit { value } => self.filter.unit = value.clone(),
-            LogsAction::SetBoot { value } => self.filter.boot = value.clone(),
+            LogsAction::SetUnit { value } => self.filter.unit.clone_from(value),
+            LogsAction::SetBoot { value } => self.filter.boot.clone_from(value),
             LogsAction::SetSearch { value } => {
-                self.filter.search = value.clone();
+                self.filter.search.clone_from(value);
                 self.search_input.set_text(&self.filter.search);
             }
             LogsAction::ClearFilters => {
@@ -2825,6 +2825,10 @@ impl Widget for LogsApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.search_input.cursor_shape(point)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic target table for every painted a11y control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2974,9 +2978,6 @@ impl ui::resources::PublishesResources for LogsApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.is_hosted() && id == crate::actions::JOURNAL_RESOURCE_ID {
-            return None;
-        }
         fn find(resources: &[Resource], id: &str) -> Option<Resource> {
             for resource in resources {
                 if resource.id.as_str() == id {
@@ -2987,6 +2988,9 @@ impl ui::resources::PublishesResources for LogsApp {
                 }
             }
             None
+        }
+        if self.is_hosted() && id == crate::actions::JOURNAL_RESOURCE_ID {
+            return None;
         }
         find(&self.publish_resources(doc), id)
     }
