@@ -26,7 +26,7 @@ thread_local! {
 /// `actor` writes for `author`, or for the agent `agent` names (an agent
 /// mount's display name). An actor stays with the first mount that noted
 /// it: a record's own writer is shared by every mount of it.
-pub(crate) fn note(actor: &automerge::ActorId, author: &str, agent: Option<&str>) {
+pub(crate) fn note(actor: &ui::automerge::ActorId, author: &str, agent: Option<&str>) {
     let author = match agent {
         Some(name) => Author {
             name: name.into(),
@@ -49,8 +49,16 @@ pub(crate) fn note(actor: &automerge::ActorId, author: &str, agent: Option<&str>
 /// is `writer`: its author's handle for actions, its author's writer on the
 /// record for edits, and the record's writer for what the record wrote
 /// before (its creation, when this mount made it).
-pub(crate) fn note_mount(writer: Option<&automerge::ActorId>, author: &str, agent: Option<&str>) {
-    note(&automerge::ActorId::from(author.as_bytes()), author, agent);
+pub(crate) fn note_mount(
+    writer: Option<&ui::automerge::ActorId>,
+    author: &str,
+    agent: Option<&str>,
+) {
+    note(
+        &ui::automerge::ActorId::from(author.as_bytes()),
+        author,
+        agent,
+    );
     if let Some(writer) = writer {
         note(&ui::record::author_writer(writer, author), author, agent);
         note(writer, author, agent);
@@ -71,7 +79,7 @@ pub(crate) fn register(directory: &mut AuthorDirectory, agents: &[String]) {
             };
             // The key a participant's own handle actor has, so an actor
             // history resolves by its handle alone agrees too.
-            let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
+            let identity = ui::automerge::ActorId::from(name.as_bytes()).to_hex_string();
             let rgb = ui::presence::user_color(&name);
             directory.register(actor, author_coloured(name, short_id(&identity), rgb));
         }
@@ -84,16 +92,16 @@ mod tests {
 
     #[test]
     fn noted_writers_resolve_to_their_mounts_authors_and_agents_as_agents() {
-        let phone = automerge::ActorId::random();
-        let reader = automerge::ActorId::random();
-        let agent = automerge::ActorId::random();
-        let stranger = automerge::ActorId::random();
+        let phone = ui::automerge::ActorId::random();
+        let reader = ui::automerge::ActorId::random();
+        let agent = ui::automerge::ActorId::random();
+        let stranger = ui::automerge::ActorId::random();
         note_mount(Some(&phone), "You", None);
         note(&reader, "Reading agent", None);
         note_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
         let mut directory = AuthorDirectory::new();
         register(&mut directory, &["Reading agent".into()]);
-        let name = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
+        let name = |actor: &ui::automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
         assert_eq!(name(&phone), "You");
         assert_eq!(
             name(&reader),
@@ -106,7 +114,9 @@ mod tests {
             "an agent mount's display name"
         );
         assert_eq!(
-            name(&automerge::ActorId::from("agent-task:reading".as_bytes())),
+            name(&ui::automerge::ActorId::from(
+                "agent-task:reading".as_bytes()
+            )),
             "Scribe · Agent",
             "and its actions"
         );
@@ -133,13 +143,13 @@ mod tests {
 
     #[test]
     fn every_mount_names_its_own_writer_on_a_shared_record_and_one_identity_per_author() {
-        let record = automerge::ActorId::random();
+        let record = ui::automerge::ActorId::random();
         note_mount(Some(&record), "Ada", None);
         note_mount(Some(&record), "Scout", None);
         note_mount(Some(&record), "agent-task:scout", Some("Scout"));
         let mut directory = AuthorDirectory::new();
         register(&mut directory, &["Scout".into()]);
-        let resolve = |actor: &automerge::ActorId| directory.resolve(&actor.to_hex_string());
+        let resolve = |actor: &ui::automerge::ActorId| directory.resolve(&actor.to_hex_string());
         let ada = resolve(&ui::record::author_writer(&record, "Ada"));
         assert_eq!(ada.name, "Ada");
         assert_eq!(
@@ -152,7 +162,7 @@ mod tests {
             "Ada",
             "the record's writer stays the first"
         );
-        let handle = resolve(&automerge::ActorId::from("Ada".as_bytes()));
+        let handle = resolve(&ui::automerge::ActorId::from("Ada".as_bytes()));
         assert_eq!(
             (handle.identity_short.as_str(), handle.avatar_hue),
             (ada.identity_short.as_str(), ada.avatar_hue),

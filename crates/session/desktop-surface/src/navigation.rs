@@ -68,12 +68,16 @@ pub enum ActivityView {
 }
 
 impl ActivityView {
-    /// Why this surface cannot present `self`, if it cannot. Only Tasks is
-    /// carried by the desktop model; the other views read retained record
-    /// and desktop history, which the model does not hold.
-    pub fn unavailable(self) -> Option<&'static str> {
+    /// Why a surface with `capabilities` cannot present `self`, if it
+    /// cannot. Tasks is carried by the desktop model; the other views read
+    /// retained record and desktop history, which only a host that installed
+    /// a history source holds.
+    pub fn unavailable(self, capabilities: &Capabilities) -> Option<&'static str> {
         match self {
-            Self::Tasks => None,
+            Self::Tasks if capabilities.workspace_tasks => None,
+            Self::CatchUp | Self::Explore if capabilities.workspace_history => None,
+            Self::Replay if capabilities.workspace_replay => None,
+            Self::Tasks => Some("Tasks are unavailable on this desktop"),
             Self::CatchUp => {
                 Some("Catch up needs retained record history, which this desktop does not carry")
             }
@@ -117,6 +121,10 @@ pub enum Command {
     CloseWorkspaceActivity {
         generation: String,
         workspace: String,
+    },
+    NotificationCenter {
+        generation: String,
+        open: bool,
     },
     History {
         generation: String,
@@ -175,6 +183,7 @@ impl Command {
             | Self::Workspace { generation, .. }
             | Self::WorkspaceActivity { generation, .. }
             | Self::CloseWorkspaceActivity { generation, .. }
+            | Self::NotificationCenter { generation, .. }
             | Self::Pan { generation, .. }
             | Self::History { generation, .. }
             | Self::Select { generation, .. }
@@ -237,6 +246,8 @@ pub enum Admitted {
     History(RouteIds, HistoryDirection),
     Activity(WorkspaceId, ActivityView),
     CloseActivity(WorkspaceId),
+    /// Open or close the notification centre.
+    NotificationCenter(bool),
 }
 
 /// The scroll region key of `route`'s primary region `key`.
@@ -260,8 +271,10 @@ fn parse_scroll_region(region: &str) -> Result<RouteIds, String> {
     route.ids()
 }
 
-/// Which commands this surface performs. The rest are refused with a
-/// reason rather than silently ignored.
+/// Which commands this surface performs without host services. The rest are
+/// refused with a reason rather than silently ignored. A host that installs
+/// a history source adds Catch up, Explore and Replay, and one that installs
+/// notifications adds the centre.
 pub const CAPABILITIES: Capabilities = Capabilities {
     select: true,
     width: true,
@@ -280,6 +293,7 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     scroll: true,
     history: true,
     swipe: true,
+    notifications: false,
 };
 
 /// Check `command` against `generation` and `tree` without changing either.
@@ -288,6 +302,19 @@ pub const CAPABILITIES: Capabilities = Capabilities {
 /// Refuses a stale generation, a malformed or absent identity, or a command
 /// this surface does not perform.
 pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<Admitted, String> {
+    admit_with(command, generation, tree, &CAPABILITIES)
+}
+
+/// [`admit`] for a surface performing `capabilities`.
+///
+/// # Errors
+/// As [`admit`].
+pub fn admit_with(
+    command: &Command,
+    generation: &str,
+    tree: &DesktopTree,
+    capabilities: &Capabilities,
+) -> Result<Admitted, String> {
     if command.generation() != generation {
         return Err("Stale desktop surface".into());
     }
@@ -342,7 +369,7 @@ pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<
             workspace: w, view, ..
         } => {
             let workspace = active_workspace(w)?;
-            match view.unavailable() {
+            match view.unavailable(capabilities) {
                 Some(reason) => Err(reason.into()),
                 None => Ok(Admitted::Activity(workspace, *view)),
             }
@@ -350,6 +377,7 @@ pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<
         Command::CloseWorkspaceActivity { workspace: w, .. } => {
             active_workspace(w).map(Admitted::CloseActivity)
         }
+        Command::NotificationCenter { open, .. } => admit_notifications(*open, capabilities),
         Command::History {
             route: r, target, ..
         } => {
@@ -386,6 +414,13 @@ pub fn admit(command: &Command, generation: &str, tree: &DesktopTree) -> Result<
             Ok(Admitted::Launch(app.clone()))
         }
     }
+}
+
+fn admit_notifications(open: bool, capabilities: &Capabilities) -> Result<Admitted, String> {
+    capabilities
+        .notifications
+        .then_some(Admitted::NotificationCenter(open))
+        .ok_or_else(|| "Notifications are unavailable on this desktop".into())
 }
 
 fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceId, String> {
@@ -495,6 +530,9 @@ pub struct Capabilities {
     /// the strip under the fingers and a mouse's wheel click steps focus. A
     /// host must leave it the wheel rather than turn it into `pan` commands.
     pub swipe: bool,
+    /// The surface shows notification banners and opens the notification
+    /// centre on `notification-center`.
+    pub notifications: bool,
 }
 
 /// The shown strip's horizontal geometry, in logical px.
@@ -531,6 +569,8 @@ pub struct HistoryState {
 pub enum ActivityCloseReason {
     Dismissed,
     WorkspaceChanged,
+    /// The person opened a resource from the history; focus goes to it.
+    ResourceOpened,
 }
 
 /// Presentation the surface holds beside the tree: nothing here is saved
@@ -542,6 +582,31 @@ pub struct Presentation {
     pub history: Option<HistoryState>,
     pub activity: Option<(WorkspaceId, ActivityView)>,
     pub activity_close_reason: Option<ActivityCloseReason>,
+    /// The history pane the surface draws for `activity`, when it draws one.
+    pub pane: Option<PaneState>,
+    /// The host installed a history source: Catch up, Explore and Replay.
+    pub retained_history: bool,
+    /// The host installed notifications, and what they show.
+    pub notifications: Option<NotificationsState>,
+}
+
+/// The history pane as the surface draws it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaneState {
+    pub playing: bool,
+    /// Some referenced history could not be read.
+    pub partial: bool,
+}
+
+/// What the surface's notifications show, for a host's tray control.
+#[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationsState {
+    /// Banners on screen.
+    pub active: usize,
+    /// Notifications retained in the centre.
+    pub retained: usize,
+    pub center_open: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -565,9 +630,18 @@ pub struct ActivityState {
     pub playing: bool,
     pub coverage: &'static str,
     pub tasks: Vec<TaskEntry>,
+    /// The surface draws this view itself (the shared history pane), so a
+    /// host presents no view of its own for it.
+    #[serde(rename = "inSurface")]
+    pub in_surface: bool,
 }
 
-fn activity_state(tree: &DesktopTree, workspace: WorkspaceId, view: ActivityView) -> ActivityState {
+fn activity_state(
+    tree: &DesktopTree,
+    workspace: WorkspaceId,
+    view: ActivityView,
+    pane: Option<PaneState>,
+) -> ActivityState {
     let mut tasks: Vec<TaskEntry> = tree
         .workspaces
         .iter()
@@ -596,9 +670,14 @@ fn activity_state(tree: &DesktopTree, workspace: WorkspaceId, view: ActivityView
     ActivityState {
         workspace: workspace.0.to_string(),
         view,
-        playing: false,
-        coverage: "complete",
+        playing: pane.is_some_and(|pane| pane.playing),
+        coverage: if pane.is_some_and(|pane| pane.partial) {
+            "partial"
+        } else {
+            "complete"
+        },
         tasks,
+        in_surface: pane.is_some(),
     }
 }
 
@@ -651,6 +730,8 @@ pub struct Snapshot {
     pub workspace_activity_close_reason: Option<ActivityCloseReason>,
     pub history: Option<HistoryState>,
     pub scroll: Option<ScrollState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications: Option<NotificationsState>,
 }
 
 /// Project `tree` into the navigation snapshot for `generation`.
@@ -702,7 +783,7 @@ pub fn snapshot_with(
     let workspace_activity = presentation
         .activity
         .filter(|(workspace, _)| *workspace == tree.active)
-        .map(|(workspace, view)| activity_state(tree, workspace, view));
+        .map(|(workspace, view)| activity_state(tree, workspace, view, presentation.pane));
     Snapshot {
         version: 1,
         generation: generation.to_owned(),
@@ -731,12 +812,25 @@ pub fn snapshot_with(
         active: active.map(Route::from_ids),
         width_permille: active_group.map(|g| g.width.permille()),
         maximized: active_group.is_some_and(|g| g.maximized),
-        capabilities: CAPABILITIES,
+        capabilities: presentation.capabilities(),
         desktop_pan,
         workspace_activity,
         workspace_activity_close_reason: presentation.activity_close_reason,
         history,
         scroll,
+        notifications: presentation.notifications,
+    }
+}
+
+impl Presentation {
+    /// [`CAPABILITIES`] plus what the host's installed services add.
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            workspace_history: self.retained_history,
+            workspace_replay: self.retained_history,
+            notifications: self.notifications.is_some(),
+            ..CAPABILITIES
+        }
     }
 }
 
@@ -1015,6 +1109,62 @@ mod tests {
     }
 
     #[test]
+    fn a_history_source_admits_every_view_and_the_snapshot_says_who_draws_it() {
+        let tree = tree();
+        let w = u64::MAX.to_string();
+        let presentation = Presentation {
+            retained_history: true,
+            notifications: Some(NotificationsState::default()),
+            ..Presentation::default()
+        };
+        let capabilities = presentation.capabilities();
+        for (wire, view) in [
+            ("catch-up", ActivityView::CatchUp),
+            ("explore", ActivityView::Explore),
+            ("replay", ActivityView::Replay),
+            ("tasks", ActivityView::Tasks),
+        ] {
+            let command: Command = serde_json::from_value(
+                serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":w,"view":wire}),
+            )
+            .unwrap();
+            assert_eq!(
+                admit_with(&command, "g", &tree, &capabilities),
+                Ok(Admitted::Activity(WorkspaceId(u64::MAX), view))
+            );
+        }
+        let center: Command = serde_json::from_value(
+            serde_json::json!({"kind":"notification-center","generation":"g","open":true}),
+        )
+        .unwrap();
+        assert_eq!(
+            admit_with(&center, "g", &tree, &capabilities),
+            Ok(Admitted::NotificationCenter(true))
+        );
+        assert_eq!(
+            admit(&center, "g", &tree).unwrap_err(),
+            "Notifications are unavailable on this desktop"
+        );
+        let shown = Presentation {
+            activity: Some((WorkspaceId(u64::MAX), ActivityView::Replay)),
+            pane: Some(PaneState {
+                playing: true,
+                partial: true,
+            }),
+            ..presentation
+        };
+        let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &shown)).unwrap();
+        assert_eq!(json["capabilities"]["workspaceHistory"], true);
+        assert_eq!(json["capabilities"]["workspaceReplay"], true);
+        assert_eq!(json["capabilities"]["notifications"], true);
+        assert_eq!(json["workspaceActivity"]["view"], "replay");
+        assert_eq!(json["workspaceActivity"]["inSurface"], true);
+        assert_eq!(json["workspaceActivity"]["playing"], true);
+        assert_eq!(json["workspaceActivity"]["coverage"], "partial");
+        assert_eq!(json["notifications"]["retained"], 0);
+    }
+
+    #[test]
     fn stale_presentation_is_left_out_of_the_snapshot() {
         let tree = tree();
         let active = active_route(&tree).unwrap();
@@ -1039,7 +1189,7 @@ mod tests {
                 can_forward: false,
             }),
             activity: Some((WorkspaceId(2), ActivityView::Tasks)),
-            activity_close_reason: None,
+            ..Presentation::default()
         };
         let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();
         assert!(json["desktopPan"].is_null(), "another strip");
