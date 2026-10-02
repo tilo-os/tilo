@@ -1028,6 +1028,157 @@ pub(crate) fn skips_full_framebuffer_readback(unchanged: bool, overview: bool) -
     unchanged || overview
 }
 
+/// One head of a multi-output present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PresentedHead {
+    /// A real connector page-flips. A virtual head publishes a clip.
+    pub pageflip: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The clip a virtual head publishes from an already-encoded frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PublishedClip {
+    pub head: usize,
+    pub scene_x: u32,
+    pub scene_y: u32,
+    pub local_x: u16,
+    pub local_y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// Bytes copied onto scanouts for these clips.
+pub(crate) fn encoded_clip_bytes(clips: &[PublishedClip]) -> u64 {
+    clips.iter().fold(0_u64, |bytes, clip| {
+        bytes.saturating_add(
+            u64::from(clip.width)
+                .saturating_mul(u64::from(clip.height))
+                .saturating_mul(4),
+        )
+    })
+}
+
+/// Clips a two-head virtual present publishes.
+///
+/// `None` keeps the combined readback, which is what a real connector
+/// page-flips. An empty `clips` list still publishes only the first head:
+/// the other scanout's buffer is already showing its encoded frame.
+pub(crate) fn virtual_encoded_clips(
+    heads: &[PresentedHead],
+    clips: &[vello::FineDamageRect],
+) -> Option<Vec<PublishedClip>> {
+    if heads.len() < 2 || heads.iter().any(|head| head.pageflip) {
+        return None;
+    }
+    let boxes: Vec<(i32, i32, u32, u32)> = heads
+        .iter()
+        .map(|head| (head.x, head.y, head.width, head.height))
+        .collect();
+    let mut regions = Vec::new();
+    if clips.is_empty() {
+        let head = heads.first()?;
+        regions.push(vello::FineDamageRect {
+            x: u32::try_from(head.x.max(0)).ok()?,
+            y: u32::try_from(head.y.max(0)).ok()?,
+            width: head.width,
+            height: head.height,
+        });
+    } else {
+        regions.extend_from_slice(clips);
+    }
+    let mut published = Vec::with_capacity(regions.len());
+    for clip in regions {
+        let clip = if close_frame_spares_other_scanouts(clip, &boxes) {
+            clip
+        } else {
+            clip_to_primary_scanout(clip, &boxes)?
+        };
+        if !close_frame_spares_other_scanouts(clip, &boxes) {
+            return None;
+        }
+        let head = boxes.iter().position(|&(x, y, width, height)| {
+            output_local_clip(x, y, (width, height), clip).is_some()
+        })?;
+        let (x, y, width, height) = boxes.get(head).copied()?;
+        let (local_x, local_y, local_w, local_h) = output_local_clip(x, y, (width, height), clip)?;
+        let scene_x = u32::try_from(i64::from(x).saturating_add(i64::from(local_x))).ok()?;
+        let scene_y = u32::try_from(i64::from(y).saturating_add(i64::from(local_y))).ok()?;
+        published.push(PublishedClip {
+            head,
+            scene_x,
+            scene_y,
+            local_x,
+            local_y,
+            width: local_w,
+            height: local_h,
+        });
+    }
+    (!published.is_empty()).then_some(published)
+}
+
+/// Swizzle one already-encoded clip into an XRGB scanout. Pixels outside
+/// the clip stay as they are, so the other output is not part of the copy.
+pub(crate) fn write_encoded_clip_xrgb(
+    source: SubrectSource<'_>,
+    clip: (u16, u16, u16, u16),
+    dst: &mut [u8],
+    pitch: usize,
+) {
+    let (clip_x, clip_y, clip_w, clip_h) = clip;
+    let clip_x = usize::from(clip_x);
+    let clip_y = usize::from(clip_y);
+    let clip_w = usize::from(clip_w);
+    let clip_h = usize::from(clip_h);
+    if pitch == 0 {
+        return;
+    }
+    for row in 0..clip_h {
+        let dest_y = clip_y.saturating_add(row);
+        let src_y = source.src_y.saturating_add(dest_y);
+        if src_y >= source.src_h {
+            break;
+        }
+        let Some(row_off) = dest_y.checked_mul(pitch) else {
+            break;
+        };
+        for col in 0..clip_w {
+            let dest_x = clip_x.saturating_add(col);
+            let src_x = source.src_x.saturating_add(dest_x);
+            if src_x >= source.src_w {
+                continue;
+            }
+            let Some(src_off) = src_y
+                .checked_mul(source.src_w)
+                .and_then(|offset| offset.checked_add(src_x))
+                .and_then(|offset| offset.checked_mul(4))
+            else {
+                continue;
+            };
+            let Some(src_pix) = source.src_rgba.get(src_off..src_off.saturating_add(4)) else {
+                continue;
+            };
+            let Some(dest_off) = row_off.checked_add(dest_x.saturating_mul(4)) else {
+                continue;
+            };
+            let Some(dest_pix) = dst.get_mut(dest_off..dest_off.saturating_add(4)) else {
+                continue;
+            };
+            if let ([dest_b, dest_g, dest_r, dest_x], [src_r, src_g, src_b, _]) =
+                (dest_pix, src_pix)
+            {
+                *dest_b = *src_b;
+                *dest_g = *src_g;
+                *dest_r = *src_r;
+                *dest_x = 0xFF;
+            }
+        }
+    }
+}
+
 /// How a workspace-switch frame reaches the scanouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceUpload {
@@ -1583,6 +1734,21 @@ fn render_combined_readback(
         }
         return PaintScanoutSample::default();
     }
+    if hdr_layers.is_empty()
+        && let Some(sample) = publish_already_encoded_clips(
+            scanouts,
+            outputs,
+            paint,
+            &EncodedClipPresent {
+                scene,
+                regions: damage.and_then(|damage| damage.regions).unwrap_or(&[]),
+                pointer,
+                workspace_id,
+            },
+        )
+    {
+        return sample;
+    }
     let Some(bridge) = paint.as_mut() else {
         return PaintScanoutSample::default();
     };
@@ -1598,6 +1764,87 @@ fn render_combined_readback(
             note_workspace: overview.is_none(),
         },
     )
+}
+
+struct EncodedClipPresent<'a> {
+    scene: &'a Scene,
+    regions: &'a [vello::FineDamageRect],
+    pointer: (f64, f64),
+    workspace_id: Option<u64>,
+}
+
+fn presented_heads(scanouts: &[ScanoutEntry], outputs: &[Output]) -> Vec<PresentedHead> {
+    scanouts
+        .iter()
+        .filter(|entry| !entry.powered_off)
+        .map(|entry| {
+            let size = outputs
+                .iter()
+                .find(|output| output.id == entry.id)
+                .map_or_else(|| entry.scanout.size(), |output| output.size);
+            PresentedHead {
+                pageflip: entry.scanout.event_pageflips_available(),
+                x: entry.position.0,
+                y: entry.position.1,
+                width: size.0,
+                height: size.1,
+            }
+        })
+        .collect()
+}
+
+/// Publish clips from the desktop image this bridge already encoded.
+///
+/// A missing image, or a clip the GPU cannot refresh, falls through to the
+/// combined readback. That path is also how a real connector page-flips.
+fn publish_already_encoded_clips(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    present: &EncodedClipPresent<'_>,
+) -> Option<PaintScanoutSample> {
+    let published = virtual_encoded_clips(&presented_heads(scanouts, outputs), present.regions)?;
+    tracing::trace!(
+        bytes = encoded_clip_bytes(&published),
+        heads = published.len(),
+        "virtual present publishes the encoded clip"
+    );
+    let bridge = paint.as_mut()?;
+    if !bridge.has_complete_readback() {
+        return None;
+    }
+    for clip in &published {
+        let rect = vello::FineDamageRect {
+            x: clip.scene_x,
+            y: clip.scene_y,
+            width: u32::from(clip.width),
+            height: u32::from(clip.height),
+        };
+        if bridge.refresh_encoded_clip(present.scene, rect).is_err() {
+            return None;
+        }
+    }
+    let started = Instant::now();
+    {
+        let rgba = bridge.encoded_rgba()?;
+        for clip in &published {
+            let rect = vello::FineDamageRect {
+                x: clip.scene_x,
+                y: clip.scene_y,
+                width: u32::from(clip.width),
+                height: u32::from(clip.height),
+            };
+            present_composed_readback(scanouts, outputs, present.pointer, rgba, Some(rect));
+        }
+    }
+    if let Some(id) = present.workspace_id {
+        bridge.note_shown_workspace(id);
+    }
+    Some(PaintScanoutSample {
+        legacy_attempted: true,
+        scanout_us: started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    })
 }
 
 struct CombinedUpload<'a> {
@@ -1698,8 +1945,16 @@ fn present_workspace_hold(
         WorkspaceUpload::Replay => {
             let id = workspace.id?;
             let bytes = bridge.replay_workspace(id)?;
+            let clip = virtual_encoded_clips(&presented_heads(scanouts, outputs), &[])
+                .and_then(|clips| clips.first().copied())
+                .map(|clip| vello::FineDamageRect {
+                    x: clip.scene_x,
+                    y: clip.scene_y,
+                    width: u32::from(clip.width),
+                    height: u32::from(clip.height),
+                });
             Some(present_composed_readback(
-                scanouts, outputs, pointer, &bytes, None,
+                scanouts, outputs, pointer, &bytes, clip,
             ))
         }
         WorkspaceUpload::Render => {
@@ -1913,6 +2168,45 @@ fn page_flip_completion_recipients<T: Copy + Eq>(
         .collect()
 }
 
+/// Software-cursor position on this output, in physical pixels.
+fn output_local_cursor(
+    origin: (i32, i32),
+    logical_size: (u32, u32),
+    pointer: (f64, f64),
+    transform: settings_store::hardware::OutputTransform,
+) -> Option<(f64, f64)> {
+    let (px, py) = origin;
+    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
+    let right = px.saturating_add(width_i32);
+    let bottom = py.saturating_add(height_i32);
+    if pointer.0 < f64::from(px)
+        || pointer.0 >= f64::from(right)
+        || pointer.1 < f64::from(py)
+        || pointer.1 >= f64::from(bottom)
+    {
+        return None;
+    }
+    // Sub-pixel pointer position intentionally truncates to a pixel
+    // coordinate; bounded to on-screen extents, well within `i32`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
+    )]
+    let (local_x, local_y) = (
+        (pointer.0 - f64::from(px)) as i32,
+        (pointer.1 - f64::from(py)) as i32,
+    );
+    let (x, y) = scanout::logical_to_physical_point(
+        local_x,
+        local_y,
+        logical_size.0,
+        logical_size.1,
+        transform,
+    );
+    Some((f64::from(x), f64::from(y)))
+}
+
 /// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
 /// keep that function short. Computes the software-cursor position and the
 /// (possibly colour-transformed) sub-rect for `e`, then presents it —
@@ -1934,44 +2228,7 @@ fn paint_one_scanout(
         .iter()
         .find(|output| output.id == e.id)
         .map_or((physical_w, physical_h), |output| output.size);
-    // Widths/heights come from the connector's mode; clamp rather than
-    // wrap on the (unreachable in practice) case of a driver-reported
-    // extent past `i32::MAX`.
-    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
-    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
-    let right = px.saturating_add(width_i32);
-    let bottom = py.saturating_add(height_i32);
-    // Software-cursor fallback only: draw the cursor (output-local
-    // coords) on the output it's over. The hardware cursor plane, when
-    // active, ignores this and is driven from the input path via
-    // `CursorPlanes`.
-    let local_cursor = if pointer.0 >= f64::from(px)
-        && pointer.0 < f64::from(right)
-        && pointer.1 >= f64::from(py)
-        && pointer.1 < f64::from(bottom)
-    {
-        // Sub-pixel pointer position intentionally truncates to a pixel
-        // coordinate (a hardware cursor plane snaps to a whole pixel
-        // anyway); bounded to on-screen extents, well within `i32`.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
-        )]
-        let (local_x, local_y) = (
-            (pointer.0 - f64::from(px)) as i32,
-            (pointer.1 - f64::from(py)) as i32,
-        );
-        let (x, y) = scanout::logical_to_physical_point(
-            local_x,
-            local_y,
-            logical_size.0,
-            logical_size.1,
-            e.transform,
-        );
-        Some((f64::from(x), f64::from(y)))
-    } else {
-        None
-    };
+    let local_cursor = output_local_cursor((px, py), logical_size, pointer, e.transform);
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
@@ -2016,13 +2273,25 @@ fn paint_one_scanout(
     // starts at the output, the combined frame at the scene's origin.
     let scene_origin = if copied { (sx, sy) } else { (0, 0) };
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
-    match damage.map(|rect| output_local_clip(px, py, logical_size, rect)) {
-        Some(Some(clip)) => e.scanout.set_damage_rect(Some(clip)),
-        Some(None) => return,
-        None => e.scanout.set_damage_rect(None),
+    let local = damage.map(|rect| output_local_clip(px, py, logical_size, rect));
+    let pageflip = e.scanout.event_pageflips_available();
+    if matches!(local, Some(None)) && !pageflip {
+        return;
     }
-    e.scanout
-        .present_no_drain(local_cursor, |dst, pitch| match &encoder {
+    let clip = local.flatten();
+    e.scanout.set_damage_rect(clip);
+    let clip_write = clip.filter(|_| {
+        !pageflip
+            && encoder.is_none()
+            && transform == settings_store::hardware::OutputTransform::Normal
+            && composite.is_none()
+    });
+    e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+        if let Some(clip) = clip_write {
+            write_encoded_clip_xrgb(subrect, clip, dst, pitch);
+            return;
+        }
+        match &encoder {
             Some(encoder) => encode_subrect_rgba_to_xbgr2101010_transformed(
                 subrect,
                 dst,
@@ -2040,7 +2309,8 @@ fn paint_one_scanout(
                 transform,
                 composite,
             ),
-        });
+        }
+    });
 }
 
 impl Presenter for DrmPresenter {
@@ -2312,6 +2582,99 @@ mod tests {
         assert!(super::skips_full_framebuffer_readback(true, false));
         assert!(super::skips_full_framebuffer_readback(false, true));
         assert!(!super::skips_full_framebuffer_readback(false, false));
+    }
+
+    #[test]
+    fn two_head_virtual_present_publishes_the_encoded_clip_not_both_outputs() {
+        let heads = [
+            super::PresentedHead {
+                pageflip: false,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            super::PresentedHead {
+                pageflip: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 800,
+            },
+        ];
+        let clip = vello::FineDamageRect {
+            x: 80,
+            y: 40,
+            width: 300,
+            height: 48,
+        };
+        let published = super::virtual_encoded_clips(&heads, &[clip])
+            .expect("a virtual pair publishes the encoded clip");
+        assert_eq!(published.len(), 1, "the other scanout is not copied");
+        assert_eq!(published[0].head, 0);
+        let bytes = super::encoded_clip_bytes(&published);
+        assert_eq!(bytes, 300 * 48 * 4);
+        let both_outputs = (1920 * 1080 + 1280 * 800) * 4;
+        assert!(
+            bytes < both_outputs,
+            "the clip publish is not a combined framebuffer copy"
+        );
+        let primary = super::virtual_encoded_clips(&heads, &[])
+            .expect("without a smaller clip the first head is the publish");
+        assert_eq!(primary.len(), 1, "the second scanout is not copied");
+        assert_eq!(primary[0].head, 0);
+        assert_eq!(super::encoded_clip_bytes(&primary), 1920 * 1080 * 4);
+        assert!(
+            super::virtual_encoded_clips(
+                &[
+                    super::PresentedHead {
+                        pageflip: true,
+                        ..heads[0]
+                    },
+                    heads[1],
+                ],
+                &[clip],
+            )
+            .is_none(),
+            "a real connector stays on the combined present and page-flips"
+        );
+    }
+
+    #[test]
+    fn encoded_clip_write_leaves_the_other_output_untouched() {
+        let width = 8_usize;
+        let height = 4_usize;
+        let mut rgba = vec![0_u8; width.saturating_mul(height).saturating_mul(4)];
+        let source_at = 1_usize
+            .saturating_mul(width)
+            .saturating_add(1)
+            .saturating_mul(4);
+        rgba[source_at] = 255;
+        let mut destination = vec![7_u8; rgba.len()];
+        super::write_encoded_clip_xrgb(
+            super::SubrectSource {
+                src_rgba: &rgba,
+                src_w: width,
+                src_h: height,
+                src_x: 0,
+                src_y: 0,
+            },
+            (1, 1, 1, 1),
+            &mut destination,
+            width.saturating_mul(4),
+        );
+        let written = &destination[source_at..source_at.saturating_add(4)];
+        assert_eq!(written, &[0, 0, 255, 255]);
+        let clip_pixel = width.saturating_add(1);
+        assert!(
+            destination
+                .chunks_exact(4)
+                .enumerate()
+                .all(|(pixel, bytes)| {
+                    pixel == clip_pixel || bytes.iter().all(|byte| *byte == 7)
+                }),
+            "pixels outside the clip, including the other output, stay put"
+        );
     }
 
     #[test]

@@ -2323,6 +2323,7 @@ impl DrmScanout {
                 .fb_at(idx)
                 .is_some_and(|fb| self.card.dirty_framebuffer(fb, &[clip]).is_ok());
             let flip_ok = self.flip_to(idx);
+            self.note_publish(dirty_ok, flip_ok);
             if !pageflip_history_commit_is_safe(dirty_ok, flip_ok) {
                 self.invalidate_xrgb_history();
             }
@@ -2425,10 +2426,11 @@ impl DrmScanout {
             // Best-effort CPU→host transfer before flipping: on virtual GPUs dirty_framebuffer flushes the
             // dumb buffer into the host resource (without it a bare flip presents unreceived bytes); no-op/unsupported on real GPUs.
             let clips = self.take_dirty_clips();
-            if let Some(fb) = self.fb_at(idx) {
-                let _ = self.card.dirty_framebuffer(fb, &clips);
-            }
-            let _ = self.flip_to(idx);
+            let dirty_ok = self
+                .fb_at(idx)
+                .is_some_and(|fb| self.card.dirty_framebuffer(fb, &clips).is_ok());
+            let flip_ok = self.flip_to(idx);
+            self.note_publish(dirty_ok, flip_ok);
         } else {
             let _ = self.flush_dirty(idx);
         }
@@ -2464,9 +2466,9 @@ impl DrmScanout {
             .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
         {
             Ok(()) => {
-                self.flip_pending = true;
                 self.flip_queued_at = Some(std::time::Instant::now());
                 self.front = idx;
+                self.note_publish(false, true);
                 tracing::trace!(
                     crtc = ?self.crtc,
                     buffer = idx,
@@ -2508,12 +2510,9 @@ impl DrmScanout {
 
     /// `None` flushes the whole mode on the next present.
     pub fn set_damage_rect(&mut self, rect: Option<(u16, u16, u16, u16)>) {
-        self.damage_clips = match rect {
-            Some((x, y, width, height)) if width > 0 && height > 0 => {
-                vec![ClipRect::new(x, y, width, height)]
-            }
-            _ => Vec::new(),
-        };
+        self.damage_clips = rect
+            .and_then(|(x, y, width, height)| damage_to_clip(x, y, width, height))
+            .map_or(Vec::new(), |clip| vec![clip]);
     }
 
     fn take_dirty_clips(&mut self) -> Vec<ClipRect> {
@@ -2522,28 +2521,62 @@ impl DrmScanout {
             return clips;
         }
         let (cw, ch) = self.clip_dims();
-        vec![ClipRect::new(0, 0, cw, ch)]
+        damage_to_clip(0, 0, cw, ch).map_or(Vec::new(), |clip| vec![clip])
     }
 
     fn flush_dirty(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
         if self.dirtyfb_unsupported {
             self.force_flush_via_set_crtc();
+            self.note_publish(false, false);
             return false;
         }
         let Some(fb) = self.fb_at(idx) else {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; falling back to set_crtc");
             self.force_flush_via_set_crtc();
+            self.note_publish(false, false);
             return false;
         };
         let clips = self.take_dirty_clips();
-        if let Err(e) = self.card.dirty_framebuffer(fb, &clips) {
-            tracing::warn!("DRM scanout: dirty_framebuffer unsupported ({e}); using set_crtc");
-            self.dirtyfb_unsupported = true;
-            self.force_flush_via_set_crtc();
-            false
-        } else {
-            true
+        match self.card.dirty_framebuffer(fb, &clips) {
+            Ok(()) => {
+                // The clip is accepted. A virtual CRTC never delivers the
+                // page-flip event, so this return is the retirement.
+                self.note_publish(true, false);
+                true
+            }
+            Err(error) => {
+                let code = error.raw_os_error().unwrap_or(0);
+                if dirty_errno_is_transient(code) {
+                    tracing::trace!(
+                        "DRM scanout: dirty_framebuffer busy (errno {code}); not modesetting"
+                    );
+                    // set_crtc would wait for the page-flip event the busy
+                    // commit is already holding. Drop the userspace count so
+                    // the next frame can start.
+                    self.note_publish(false, false);
+                    return false;
+                }
+                tracing::warn!(
+                    "DRM scanout: dirty_framebuffer unsupported ({error}); using set_crtc"
+                );
+                self.dirtyfb_unsupported = true;
+                self.force_flush_via_set_crtc();
+                self.note_publish(false, false);
+                false
+            }
+        }
+    }
+
+    /// Record whether this publish still owns a buffer.
+    ///
+    /// `dirty_accepted` retires a virtual scanout immediately. A queued page
+    /// flip on a real connector stays in flight until its event.
+    fn note_publish(&mut self, dirty_accepted: bool, page_flip_queued: bool) {
+        let inflight = inflight_after_publish(self.use_pageflip, dirty_accepted, page_flip_queued);
+        self.flip_pending = inflight > 0;
+        if inflight == 0 {
+            self.flip_queued_at = None;
         }
     }
 
@@ -2554,7 +2587,8 @@ impl DrmScanout {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
                     self.log_flip_completion();
-                    self.flip_pending = false;
+                    self.flip_pending =
+                        inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
                 }
             }
         }
@@ -2623,7 +2657,7 @@ impl DrmScanout {
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
             self.log_flip_completion();
-            self.flip_pending = false;
+            self.flip_pending = inflight_after_page_flip_event(u8::from(self.flip_pending)) > 0;
         }
     }
 
@@ -3093,12 +3127,49 @@ fn connector_uses_pageflip(card: &Card, connector: connector::Handle) -> bool {
     }
 }
 
+/// In-flight presents after one publish attempt.
+///
+/// A real connector's queued page flip stays in flight until
+/// [`inflight_after_page_flip_event`]. A virtual scanout has no such event:
+/// `dirty_framebuffer` retiring the clip (`dirty_accepted`) drops the count
+/// even when a flip was queued, so the next frame can start.
+fn inflight_after_publish(use_pageflip: bool, dirty_accepted: bool, page_flip_queued: bool) -> u8 {
+    let virtual_clip_retired = !use_pageflip && dirty_accepted;
+    u8::from(page_flip_queued && !virtual_clip_retired)
+}
+
+/// The page-flip event is the retirement for a connector that queued one.
+fn inflight_after_page_flip_event(inflight: u8) -> u8 {
+    inflight.saturating_sub(1)
+}
+
+/// `EBUSY` / `EAGAIN` mean a previous clip is still inside the kernel.
+/// `set_crtc` waits on that same page-flip event; a virtual CRTC never sends
+/// it, and the presenter would stay full.
+fn dirty_errno_is_transient(errno: i32) -> bool {
+    errno == libc::EBUSY || errno == libc::EAGAIN
+}
+
+/// Damage `(x, y, width, height)` as the clip `dirty_framebuffer` accepts.
+///
+/// `ClipRect` is the inclusive-origin exclusive-end rectangle `(x1, y1, x2, y2)`.
+/// Passing the width and height as the end corner publishes the wrong region
+/// whenever the transition clip does not start at the origin.
+fn damage_to_clip(x: u16, y: u16, width: u16, height: u16) -> Option<ClipRect> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x2 = x.checked_add(width)?;
+    let y2 = y.checked_add(height)?;
+    Some(ClipRect::new(x, y, x2, y2))
+}
+
 /// A page flip that the kernel has not accepted yet owns both dumb buffers.
 /// The next frame has to wait, or it would write a buffer the CRTC still
 /// scans. A virtual scanout never takes that path: `dirty_framebuffer`
 /// returns when the clip is accepted, and the following frame may start.
 fn pending_pageflip_refuses_frame(use_pageflip: bool, flip_pending: bool) -> bool {
-    use_pageflip && flip_pending
+    inflight_after_publish(use_pageflip, !use_pageflip, flip_pending) > 0
 }
 
 /// A mapped scanout buffer becomes presentable only after the producer says
@@ -3178,6 +3249,38 @@ mod tests {
         assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
         // Phase `an_interaction_frame_starts_before_virtual_flip_acceptance`.
         assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
+    }
+
+    #[test]
+    fn virtual_dirty_accept_retires_without_a_page_flip_event() {
+        // Phase `an_accepted_virtual_clip_drops_the_in_flight_count`.
+        assert_eq!(
+            inflight_after_publish(false, true, true),
+            0,
+            "dirty_framebuffer acceptance retires a virtual present; the page-flip event never arrives"
+        );
+        assert_eq!(inflight_after_publish(false, true, false), 0);
+        assert!(
+            !pending_pageflip_refuses_frame(false, true),
+            "the next transition frame starts while a virtual flip would still be pending"
+        );
+        // Phase `a_real_connector_stays_in_flight_until_the_page_flip_event`.
+        assert_eq!(inflight_after_publish(true, true, true), 1);
+        assert_eq!(inflight_after_publish(true, false, true), 1);
+        assert_eq!(inflight_after_page_flip_event(1), 0);
+        assert!(pending_pageflip_refuses_frame(true, true));
+        assert!(!pending_pageflip_refuses_frame(true, false));
+        // Phase `a_busy_dirty_does_not_fall_through_to_a_blocking_modeset`.
+        assert!(dirty_errno_is_transient(libc::EBUSY));
+        assert!(dirty_errno_is_transient(libc::EAGAIN));
+        assert!(!dirty_errno_is_transient(libc::ENOSYS));
+        assert!(!dirty_errno_is_transient(0));
+        // Phase `a_transition_clip_is_the_rectangle_dirty_framebuffer_accepts`.
+        let clip = damage_to_clip(80, 40, 300, 200).expect("non-empty damage");
+        assert_eq!(
+            (clip.x1(), clip.y1(), clip.x2(), clip.y2()),
+            (80, 40, 380, 240)
+        );
     }
 
     #[test]
