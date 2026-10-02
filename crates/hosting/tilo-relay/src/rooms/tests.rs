@@ -81,22 +81,25 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
     use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = crate::daemon::Relay::start_with_relay_mode(
-        crate::RelayConfig {
-            state_root: dir.path().to_owned(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    let rooms = relay.rooms().unwrap();
+    let (relay, rooms) = {
+        let relay = crate::daemon::Relay::start_with_relay_mode(
+            crate::RelayConfig {
+                state_root: dir.path().to_owned(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key.clone(),
+                device_cert: cert.clone(),
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        let rooms = relay.rooms().unwrap().clone();
+        (relay, rooms)
+    };
     let created = rooms.create("Legacy write restriction").await.unwrap();
     assert_eq!(
         rooms
@@ -153,5 +156,6 @@ async fn legacy_window_write_respects_current_owner_capability_restrictions() {
         }
     })
     .await;
+    drop(rooms);
     crate::daemon::Relay::shutdown(relay).await;
 }
