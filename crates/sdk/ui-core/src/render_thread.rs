@@ -231,6 +231,13 @@ impl<T> BufferPool<T> {
         }
     }
 
+    /// Put a reserved buffer back when this redraw will not present.
+    /// Dropping it would shrink the pool until the worker had nothing to return.
+    #[cfg(feature = "native")]
+    pub(crate) fn unprepare(&mut self, buffers: T) {
+        self.prepared = Some(buffers);
+    }
+
     #[cfg(feature = "native")]
     pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
         if let Some(buffers) = self.prepared.take() {
@@ -344,6 +351,7 @@ pub fn spawn_render_thread(
     let join = std::thread::Builder::new()
         .name("ui-render".into())
         .spawn(move || {
+            tilo_startup_metrics::mark("render-worker-start");
             tilo_rt::mark_ui_thread();
             // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
@@ -372,6 +380,9 @@ pub fn spawn_render_thread(
                 let before_receive = receive_bounds.and_then(|bounds| bounds.before);
                 let received = receive_bounds.and_then(|bounds| bounds.after);
                 let Ok(msg) = message else { break };
+                if frame_ix == 0 {
+                    tilo_startup_metrics::mark("render-worker-first-frame-received");
+                }
                 let (
                     mut scene,
                     width,
@@ -1057,6 +1068,9 @@ fn render_one_frame(
         tracing::info!("render device index out of range; stopping the render thread");
         return FrameOutcome::SurfaceGone;
     };
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-acquire-start");
+    }
 
     // Acquire before encoding. An occluded, timed-out, outdated, or destroyed
     // swapchain cannot consume the frame; discovering that only after Vello
@@ -1099,8 +1113,14 @@ fn render_one_frame(
     };
 
     let acquire_us = t_acquire.map(|t| t.elapsed().as_secs_f64() * 1e6);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-acquire-done");
+    }
 
     let t_encode = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-raster-start");
+    }
     let raster_pixels = match rasterize_damage(
         device_handle,
         surface,
@@ -1121,6 +1141,9 @@ fn render_one_frame(
             return FrameOutcome::Skipped;
         }
     };
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-raster-done");
+    }
 
     // Composite any post-processor content (the browser's zero-copy WebView
     // texture) into the intermediate texture before it goes to the surface.
@@ -1140,31 +1163,81 @@ fn render_one_frame(
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_submit = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-start");
+    }
     let mut encoder =
         device_handle
             .device
             .create_command_encoder(&vello::wgpu::CommandEncoderDescriptor {
                 label: Some("ui-render-thread blit-to-surface"),
             });
-    surface.blitter.copy(
-        &device_handle.device,
-        &mut encoder,
-        &surface.target_view,
-        &surface_texture
-            .texture
-            .create_view(&vello::wgpu::TextureViewDescriptor::default()),
-    );
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-encoder-done");
+    }
+    if surface
+        .config
+        .usage
+        .contains(vello::wgpu::TextureUsages::COPY_DST)
+    {
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-start");
+        }
+        encoder.copy_texture_to_texture(
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface.target_texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: vello::wgpu::Origin3d::ZERO,
+                aspect: vello::wgpu::TextureAspect::All,
+            },
+            vello::wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        if frame_ix == 0 {
+            tilo_startup_metrics::mark("render-worker-first-direct-copy-done");
+        }
+    } else {
+        surface.blitter.copy(
+            &device_handle.device,
+            &mut encoder,
+            &surface.target_view,
+            &surface_texture
+                .texture
+                .create_view(&vello::wgpu::TextureViewDescriptor::default()),
+        );
+    }
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-copy-done");
+    }
     device_handle.queue.submit([encoder.finish()]);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-blit-done");
+    }
 
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(crate::time::now);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-present-start");
+    }
     if let Some(observer) = presentation {
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
         surface_texture.present();
     });
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-present-done");
+    }
     if present_dbg {
         let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
         let encoding = scene.encoding();
@@ -1210,6 +1283,9 @@ fn render_one_frame(
     }
     // `Poll` is the non-blocking variant — nudges the queue without stalling.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
+    if frame_ix == 0 {
+        tilo_startup_metrics::mark("render-worker-first-poll-done");
+    }
     FrameOutcome::Presented
 }
 

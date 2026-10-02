@@ -20,7 +20,6 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
 
-use ui::ColorCompat;
 use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::TextRenderer;
 use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boundaries};
@@ -1065,8 +1064,7 @@ fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
 
 /// A translucent accent used for the selection highlight over the page.
 fn selection_color(theme: &Theme) -> Color {
-    let a = theme.accent_primary;
-    Color::from_rgba8(a.r(), a.g(), a.b(), 90)
+    ui::paint::with_alpha(theme.accent_primary, 90)
 }
 
 #[cfg(test)]

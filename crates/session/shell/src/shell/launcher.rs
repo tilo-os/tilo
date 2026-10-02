@@ -19,7 +19,7 @@ use std::process::Command;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Stdio;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 #[cfg(any(test, target_os = "linux"))]
 use std::io::{self, Read, Write};
@@ -35,12 +35,13 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
+use notify::Watcher as _;
 use os_actions::{TOOL_CONTEXT_ENV, ToolIntent};
 
-/// How long an installed-package enumeration is reused before re-reading
-/// the registry. Short enough that an app installed elsewhere shows up
-/// while the palette query is still being typed.
-const APP_CACHE_TTL: Duration = Duration::from_secs(2);
+/// Fallback only: the registry is watched with inotify, so a new install
+/// shows up on the next `installed_apps()` without waiting. This bound
+/// catches a missed watch (NFS, the watch limit, a swapped `TILO_APPS_DATA_DIR`).
+const APP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Stderr tail kept for a failed launch — enough to carry `bwrap`'s or
 /// the dynamic loader's complaint, small enough a chatty app can't grow
@@ -940,7 +941,18 @@ pub(crate) struct SessionLaunches {
     /// The launch key each mapped surface was attributed to.
     surfaces: Mutex<HashMap<u64, String>>,
     /// Launch keys whose app has shown a window since it last started.
-    presented: Mutex<std::collections::HashSet<String>>,
+    presented: Mutex<HashSet<String>>,
+    /// User launches still waiting for a window. This outlives the short
+    /// placement claim: Wine's first window can announce `wineboot.exe` long
+    /// after that claim expires, and it still belongs to the launch the
+    /// person asked for. Session autostart never enters this set.
+    awaiting_window: Mutex<HashSet<String>>,
+    /// User launches that already own a window whose toolkit id is not the
+    /// desktop id (`wineboot.exe`, `control.exe`).
+    unresolved_owners: Mutex<HashSet<String>>,
+    /// XDG autostart entries. Their exit is not a failed open of the app the
+    /// person just launched.
+    session_helpers: Mutex<HashSet<String>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -959,6 +971,9 @@ impl Default for SessionLaunches {
             launched: Mutex::default(),
             surfaces: Mutex::default(),
             presented: Mutex::default(),
+            awaiting_window: Mutex::default(),
+            unresolved_owners: Mutex::default(),
+            session_helpers: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -1042,8 +1057,15 @@ pub(crate) fn spawn_reporting<T: Send + 'static>(
     })
 }
 
-static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
+/// Last enumeration and when it was memoised; `None` marks it stale, so it
+/// is only the baseline the next read compares against.
+static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Option<Instant>)>> = Mutex::new(None);
 static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
+/// Bumped when a watch (or an explicit invalidate) makes the memoised
+/// snapshot untrustworthy. Distinct from [`APP_CACHE_REVISION`]: a
+/// recursive inotify walk must not look like a new generation of apps.
+static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
+static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -1398,39 +1420,132 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     {
         let cache = lock(&APP_CACHE);
-        if let Some((apps, at)) = cache.as_ref()
+        if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
             return Ok(apps.clone());
         }
     }
-    let revision = APP_CACHE_REVISION.load(Ordering::Acquire);
+    let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
+    record_app_read(epoch, &apps);
+    // Watch after the first memoize so opening the registry to fill the
+    // cache cannot look like an install and wipe the snapshot we just wrote.
+    ensure_app_cache_watch();
+    Ok(apps)
+}
+
+/// Store a registry read that started at `read_epoch` as the new baseline.
+fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
     let mut cache = lock(&APP_CACHE);
-    if APP_CACHE_REVISION.load(Ordering::Acquire) != revision {
-        // The cache was invalidated (an install, a removal, a repointed
-        // registry) while this read was in flight, so the read may predate
-        // it. Memoising it would hide the change for a whole TTL.
-        drop(cache);
-        return Ok(apps);
-    }
-    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != &apps);
-    *cache = Some((apps.clone(), Instant::now()));
+    // An invalidation (install, removal, watch event, repointed registry)
+    // that raced this read means the read may predate it: keep it only as
+    // a stale baseline so the next call re-reads instead of hiding the
+    // change for a whole TTL.
+    let fresh = (APP_CACHE_EPOCH.load(Ordering::Acquire) == read_epoch).then(Instant::now);
+    let changed = cache.as_ref().is_none_or(|(cached, _)| cached != apps);
     // The TTL controls disk freshness, not search identity. Advancing this
     // generation for identical records invalidates both native and host app
     // indexes, making a just-discovered action disappear before invocation.
     if changed {
         APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     }
-    drop(cache);
-    Ok(apps)
+    *cache = Some((apps.to_vec(), fresh));
 }
 
 /// Drop the memoised enumeration. Used after an install/remove and by
 /// tests that repoint `TILO_APPS_DATA_DIR`.
 pub fn invalidate_app_cache() {
-    *lock(&APP_CACHE) = None;
+    // Bump the epoch under the lock so a read finishing right after cannot
+    // memoise itself as fresh.
+    let mut cache = lock(&APP_CACHE);
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+    *cache = None;
+}
+
+fn expire_watched_app_cache() {
+    let mut cache = lock(&APP_CACHE);
+    APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+    if let Some((_, at)) = cache.as_mut() {
+        *at = None;
+    }
+}
+
+fn app_cache_roots() -> Vec<PathBuf> {
+    [
+        package_store::layout::default_user_root(),
+        package_store::layout::system_data_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn ensure_app_cache_watch() {
+    let roots = app_cache_roots();
+    if roots.is_empty() {
+        return;
+    }
+    let mut watched = lock(&APP_CACHE_WATCH);
+    if watched.as_ref() == Some(&roots) {
+        return;
+    }
+    let watch_roots = roots.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    if std::thread::Builder::new()
+        .name("tilo-apps-watch".into())
+        .spawn(move || watch_app_cache_roots(&watch_roots, &ready_tx))
+        .is_ok()
+    {
+        *watched = Some(roots);
+        drop(watched);
+        // A write that lands before the recursive watch is armed never
+        // arrives; wait so the first fill is already subscribed.
+        let _ = ready_rx.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+fn app_cache_event_matters(event: &notify::Event) -> bool {
+    use notify::event::{EventKind, ModifyKind};
+    match event.kind {
+        EventKind::Modify(ModifyKind::Metadata(_))
+        | EventKind::Access(_)
+        | EventKind::Any
+        | EventKind::Other => false,
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) => true,
+    }
+}
+
+fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok_and(|event| app_cache_event_matters(&event)) {
+            let _ = tx.send(());
+        }
+    });
+    let mut watcher = match watcher {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::warn!(%error, "app registry cannot be watched; falling back to TTL");
+            let _ = ready.send(());
+            return;
+        }
+    };
+    for root in roots {
+        if let Err(error) = watcher.watch(root, notify::RecursiveMode::Recursive) {
+            tracing::info!(%error, path = %root.display(), "app registry path is not watched");
+        }
+    }
+    // Keep `watcher` alive for the thread lifetime. Drop the walk that
+    // `watch` itself performs so it does not look like a registry change.
+    let _watcher = watcher;
+    while rx.try_recv().is_ok() {}
+    let _ = ready.send(());
+    while rx.recv().is_ok() {
+        while rx.try_recv().is_ok() {}
+        expire_watched_app_cache();
+    }
 }
 
 /// Immutable installed-app snapshot revision for retained search projections.
@@ -3039,6 +3154,119 @@ pub(crate) fn note_launch_presented(key: &str) {
     lock(&LaunchSession::current().presented).insert(key.to_string());
 }
 
+/// Remember an XDG autostart entry. Its process exiting is not the person
+/// failing to open the app they just launched.
+pub(crate) fn note_session_helper(package_id: &str) {
+    lock(&LaunchSession::current().session_helpers).insert(package_id.to_string());
+}
+
+/// A signal exit of an autostart helper that the person did not ask to open.
+///
+/// A later palette launch of the same id sets [`set_pending_placement`] and
+/// is reported normally.
+pub(crate) fn unasked_session_helper(package_id: &str) -> bool {
+    let session = LaunchSession::current();
+    let helpers = lock(&session.session_helpers);
+    if !helpers.iter().any(|id| id.eq_ignore_ascii_case(package_id)) {
+        return false;
+    }
+    drop(helpers);
+    let awaiting = lock(&session.awaiting_window);
+    !awaiting
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case(package_id))
+}
+
+/// Bind a host window whose toolkit id matches no desktop entry to the one
+/// user launch still waiting for a window, then remember that later windows
+/// from that launch (`control.exe` after `wineboot.exe`) belong to it too.
+pub(crate) fn attribute_unresolved_host_window(surface_id: u64, app_id: &str) {
+    if app_id.trim().is_empty() || app_id.starts_with("anon-") {
+        return;
+    }
+    if launch_key_for_surface(surface_id).is_some() || launch_key_for_app_id(app_id).is_some() {
+        return;
+    }
+    let Some(key) = unresolved_user_launch_key() else {
+        return;
+    };
+    attribute_surface_launch(surface_id, &key);
+    let session = LaunchSession::current();
+    lock(&session.unresolved_owners).insert(key.clone());
+    lock(&session.awaiting_window).retain(|id| !id.eq_ignore_ascii_case(&key));
+}
+
+/// The compositor observed a toplevel. Record it against the launch that
+/// owns the window, including when the announced id is not the desktop id.
+pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
+    if app_id.trim().is_empty() || app_id.starts_with("anon-") {
+        return;
+    }
+    attribute_unresolved_host_window(surface_id, app_id);
+    note_launch_presented(&crate::shell::persist::durable_app_id(surface_id, app_id));
+}
+
+/// Live unconfined launches a close of an unmatched toolkit window may stop.
+///
+/// One live launch is that launch. Several live launches means session
+/// helpers are up beside the app the person opened: only the launch that
+/// asked for a window, or that already owns an unmatched window, is stopped.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn unconfined_launches_for_unresolved_close() -> Vec<String> {
+    let session = LaunchSession::current();
+    let awaiting = lock(&session.awaiting_window).clone();
+    let owners = lock(&session.unresolved_owners).clone();
+    let live = live_unconfined_package_ids();
+    let targets: Vec<String> = live
+        .iter()
+        .filter(|id| {
+            awaiting
+                .iter()
+                .any(|marked| marked.eq_ignore_ascii_case(id))
+                || owners.iter().any(|marked| marked.eq_ignore_ascii_case(id))
+        })
+        .cloned()
+        .collect();
+    if targets.len() == 1 {
+        return targets;
+    }
+    if targets.is_empty() && live.len() == 1 {
+        return live;
+    }
+    Vec::new()
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn unresolved_user_launch_key() -> Option<String> {
+    let session = LaunchSession::current();
+    let awaiting = lock(&session.awaiting_window).clone();
+    let owners = lock(&session.unresolved_owners).clone();
+    let live = live_unconfined_package_ids();
+    let pick = |marked: &HashSet<String>| -> Vec<String> {
+        live.iter()
+            .filter(|id| marked.iter().any(|item| item.eq_ignore_ascii_case(id)))
+            .cloned()
+            .collect()
+    };
+    let waiting = pick(&awaiting);
+    if waiting.len() == 1 {
+        return waiting.into_iter().next();
+    }
+    if !waiting.is_empty() {
+        return None;
+    }
+    let owned = pick(&owners);
+    if owned.len() == 1 {
+        return owned.into_iter().next();
+    }
+    None
+}
+
+#[cfg(not(any(test, target_os = "linux")))]
+fn unresolved_user_launch_key() -> Option<String> {
+    None
+}
+
 /// Whether launch `key` has shown a window since it last started, clearing
 /// the mark: a later launch of the same app starts unproven.
 pub(crate) fn take_launch_presented(key: &str) -> bool {
@@ -3057,6 +3285,10 @@ pub(crate) fn clear_launched_for_test() {
     let session = LaunchSession::current();
     lock(&session.launched).clear();
     lock(&session.surfaces).clear();
+    lock(&session.awaiting_window).clear();
+    lock(&session.unresolved_owners).clear();
+    lock(&session.session_helpers).clear();
+    lock(&session.presented).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -3118,6 +3350,10 @@ pub fn set_pending_placement_for_identities(
     placement: crate::shell::tab_binding::Placement,
 ) {
     let session = LaunchSession::current();
+    // The person asked for this window. Autostart does not come through here,
+    // so a later toolkit id that no desktop entry declared (wineboot.exe)
+    // can still be tied to this launch and not to a session helper.
+    lock(&session.awaiting_window).insert(key.to_string());
     let mut pending = lock(&session.pending);
     pending.push(PendingPlacement {
         key: key.to_string(),
@@ -3388,6 +3624,11 @@ pub fn clear_pending_placements() {
     for note in pending.drain(..) {
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
+    drop(pending);
+    lock(&session.awaiting_window).clear();
+    lock(&session.unresolved_owners).clear();
+    lock(&session.session_helpers).clear();
+    lock(&session.presented).clear();
 }
 
 /// Test hook: publish a socket path directly (production goes through
@@ -4198,9 +4439,7 @@ mod tests {
             let initial = installed_apps().unwrap();
             let initial_generation = gui_apps_generation();
             let expire = || {
-                lock(&APP_CACHE).as_mut().unwrap().1 = Instant::now()
-                    .checked_sub(APP_CACHE_TTL)
-                    .expect("test clock has enough history to expire the app cache");
+                lock(&APP_CACHE).as_mut().unwrap().1 = None;
             };
             expire();
             let unchanged = installed_apps().unwrap();
@@ -4231,6 +4470,52 @@ mod tests {
             assert_ne!(changed_generation, unchanged_generation);
             assert!(removed.is_empty());
             assert_ne!(removed_generation, changed_generation);
+        }
+
+        fn raced_app_cache_refresh_keeps_its_read_as_the_baseline() {
+            let tmp = tempfile::tempdir().unwrap();
+            let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_APPS_DATA_DIR", tmp.path());
+            invalidate_app_cache();
+            // Seed and re-read through `record_app_read` only. `installed_apps`
+            // arms the real watch; earlier helpers (or a dropped tempdir) can
+            // leave that watch firing `expire_watched_app_cache` mid-read and
+            // falsely fail the uncontested memoisation assert below.
+            record_app_read(
+                APP_CACHE_EPOCH.load(Ordering::Acquire),
+                &read_installed_apps().unwrap(),
+            );
+            let manifest = payload.join("manifest.toml");
+            let changed_manifest = std::fs::read_to_string(&manifest)
+                .unwrap()
+                .replace("1.2.3", "1.2.4");
+            std::fs::write(&manifest, changed_manifest).unwrap();
+            let before_race = gui_apps_generation();
+            // A watch event lands while this refresh is reading the registry.
+            let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
+            let raced = read_installed_apps().unwrap();
+            expire_watched_app_cache();
+            record_app_read(read_epoch, &raced);
+            let raced_generation = gui_apps_generation();
+            let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
+            let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
+            let reread = read_installed_apps().unwrap();
+            record_app_read(reread_epoch, &reread);
+            let reread_generation = gui_apps_generation();
+            let fresh = lock(&APP_CACHE).as_ref().unwrap().1.is_some();
+            env.remove("TILO_APPS_DATA_DIR");
+            invalidate_app_cache();
+
+            assert_eq!(raced[0].version, "1.2.4");
+            assert_ne!(raced_generation, before_race, "the raced read saw a change");
+            assert!(stale, "a raced read must not be memoised as fresh");
+            assert_eq!(reread, raced);
+            assert_eq!(
+                reread_generation, raced_generation,
+                "an identical re-read after a raced refresh keeps the generation"
+            );
+            assert!(fresh, "the uncontested re-read is memoised");
         }
 
         fn enumeration_reads_the_registry_and_flags_gui_apps() {
@@ -4323,11 +4608,35 @@ mod tests {
             assert!(second > first);
         }
 
+        raced_app_cache_refresh_keeps_its_read_as_the_baseline();
         unchanged_app_cache_refresh_preserves_search_generation();
         enumeration_reads_the_registry_and_flags_gui_apps();
         installed_continuity_lookup_reads_signed_manifest_contract();
         display_name_title_cases_the_trailing_component();
         managed_entry_registry_generation_changes_only_with_its_snapshot();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn app_registry_watch_invalidates_without_waiting_for_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        invalidate_app_cache();
+        let initial = installed_apps().unwrap();
+        assert_eq!(initial[0].version, "1.2.3");
+        let manifest = payload.join("manifest.toml");
+        let changed = std::fs::read_to_string(&manifest)
+            .unwrap()
+            .replace("1.2.3", "1.2.4");
+        std::fs::write(&manifest, changed).unwrap();
+        tilo_test_env::wait_until("inotify invalidates the app cache", || {
+            installed_apps()
+                .is_ok_and(|apps| apps.first().is_some_and(|app| app.version == "1.2.4"))
+        });
+        env.remove("TILO_APPS_DATA_DIR");
+        invalidate_app_cache();
     }
 
     #[test]
@@ -5265,6 +5574,286 @@ mod tests {
             "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn an_opened_wine_window_is_not_a_crash_and_helpers_are_not_toasted() {
+        let _ = drain_events();
+        clear_pending_placements();
+        clear_launched_for_test();
+
+        let wine = LauncherStandIn::spawn();
+        let geoclue = LauncherStandIn::spawn();
+        let applet = LauncherStandIn::spawn();
+        register_launched_process(wine.pid(), "wine-winefile", None, false);
+        register_launched_process(geoclue.pid(), "geoclue-demo-agent", None, false);
+        register_launched_process(applet.pid(), "nm-applet", None, false);
+        set_pending_placement(
+            "wine-winefile",
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        note_session_helper("geoclue-demo-agent");
+        note_session_helper("nm-applet");
+        // The compositor records the toplevel the client actually announced.
+        record_host_window_open(501, "wineboot.exe");
+        record_host_window_open(502, "control.exe");
+        assert_eq!(
+            launch_key_for_surface(501).as_deref(),
+            Some("wine-winefile"),
+            "wineboot.exe is the window Wine File opened"
+        );
+        assert_eq!(
+            launch_key_for_surface(502).as_deref(),
+            Some("wine-winefile")
+        );
+
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
+            (1, "wineboot.exe", 501),
+            (2, "control.exe", 502),
+        ]));
+        // group.close of the Wine File group. Wine Mono's window stays.
+        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 1)
+            .expect("close Wine File's wineboot.exe window");
+        assert!(
+            process_is_live(wine.pid())
+                && process_is_live(geoclue.pid())
+                && process_is_live(applet.pid()),
+            "a second X11 window keeps Wine File, and helpers stay up"
+        );
+        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), 2)
+            .expect("close the last X11 window");
+        tilo_test_env::wait_until("Wine File exits after its last window closes", || {
+            !process_is_live(wine.pid()) && !process_is_live(wine.descendant())
+        });
+        assert!(
+            process_is_live(geoclue.pid())
+                && process_is_live(geoclue.descendant())
+                && process_is_live(applet.pid())
+                && process_is_live(applet.descendant()),
+            "closing Wine File must not signal Geoclue or the NetworkManager applet"
+        );
+
+        let crashed = "The app crashed before opening. Open Applications and try again.";
+        let event = |package_id: &str, display_name: &str| LaunchEvent {
+            package_id: package_id.to_string(),
+            display_name: display_name.to_string(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: LaunchEventKind::Failed {
+                code: None,
+                stderr_tail: String::new(),
+            },
+        };
+        for (id, name) in [
+            ("wine-winefile", "Wine File"),
+            ("geoclue-demo-agent", "Geoclue Demo agent"),
+            ("nm-applet", "NetworkManager Applet"),
+        ] {
+            let notice = event(id, name)
+                .failure_notice()
+                .expect("a signal exit is the crash notice");
+            assert_eq!(notice.body, crashed, "{name} is classified as a crash");
+            push_event(event(id, name));
+        }
+        let mut host = crate::shell::overlay_host::ShellOverlayHost::with_fixture_content(
+            Box::new(ui::widget::Container::new()),
+        )
+        .with_chrome(chrome.clone());
+        host.enable_persisted_launch_drain_for_test();
+        let _ = host.drain_launch_events();
+        drop(host);
+        let posted: Vec<(String, String)> = chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|note| (note.title.clone(), note.body.clone()))
+            .collect();
+        assert!(
+            posted
+                .iter()
+                .all(|(title, body)| body != crashed && !title.starts_with("Couldn't open")),
+            "an opened Wine File window and session helpers must not toast a crash: {posted:?}"
+        );
+
+        unregister_launched_process(wine.pid());
+        unregister_launched_process(geoclue.pid());
+        unregister_launched_process(applet.pid());
+        clear_pending_placements();
+        clear_launched_for_test();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wine_session_with_a_second_x11_window() -> crate::shell::state::WorkspaceTree {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        let mut groups = Vec::new();
+        for i in 1..=20u64 {
+            groups.push(WindowGroup {
+                id: i,
+                tabs: vec![Tab {
+                    id: 1_000_u64.saturating_add(i),
+                    title: format!("Notes {i}"),
+                    tile: TileContent::LocalApp {
+                        app_id: "so.tilo.notes".into(),
+                        label: format!("Notes {i}"),
+                        note: String::new(),
+                    },
+                }],
+                active_tab: 1_000_u64.saturating_add(i),
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        }
+        for (group_id, tab_id, title, app_id, surface) in [
+            (9_001, 9_101, "Wine File", "wineboot.exe", 501),
+            (9_002, 9_102, "Wine Mono Installer", "control.exe", 502),
+        ] {
+            groups.push(WindowGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: title.into(),
+                    tile: TileContent::Foreign {
+                        app_id: app_id.into(),
+                        surface_id: surface,
+                    },
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        }
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        tree.desktop.workspaces[0].strips[0].window_groups = groups;
+        // Focus a Tilo window, not either X11 group. A07's installer took
+        // focus; the original Wine File group is the one closed first.
+        tree.desktop.set_active_group(strip, 1);
+        tree.seed_doc_from_cache();
+        tree
+    }
+
+    #[cfg(target_os = "linux")]
+    fn group_close_is_visible(
+        chrome: &crate::shell::chrome_state::Chrome,
+        registry: &crate::shell::search::SearchRegistry,
+        doc: &automerge::AutoCommit,
+        id: &str,
+    ) -> bool {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use automerge::ROOT;
+        let state = chrome.borrow();
+        ActionCatalog::build_for_resource(
+            registry,
+            &ResourceRef::new("desktop-windows", id),
+            SearchScope::All,
+            None,
+            &state,
+            doc,
+            &ROOT,
+            &AllVisible,
+        )
+        .select(&ResourceRef::new("desktop-windows", id))
+        .is_some()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn invoke_group_close(
+        chrome: &crate::shell::chrome_state::Chrome,
+        registry: &crate::shell::search::SearchRegistry,
+        doc: &mut automerge::AutoCommit,
+        id: &str,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use automerge::ROOT;
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build_for_resource(
+                registry,
+                &ResourceRef::new("desktop-windows", id),
+                SearchScope::All,
+                None,
+                &state,
+                doc,
+                &ROOT,
+                &AllVisible,
+            )
+        };
+        catalog
+            .select(&ResourceRef::new("desktop-windows", id))
+            .unwrap_or_else(|| panic!("{id} must stay a visible action"))
+            .invoke(doc, &ROOT, chrome, [])
+            .unwrap_or_else(|err| panic!("{id} failed: {err}"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn a_second_x11_window_stays_group_close_addressable() {
+        use std::rc::Rc;
+
+        use automerge::{AutoCommit, ROOT};
+
+        use crate::shell::search::providers::DesktopWindowsProvider;
+        use crate::shell::search::{SearchProvider, SearchRegistry};
+
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome =
+            crate::shell::chrome_state::ChromeState::new(wine_session_with_a_second_x11_window());
+        let mut doc = AutoCommit::new();
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(DesktopWindowsProvider::new()));
+        let wine = "group.close:9001";
+        let mono = "group.close:9002";
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, wine),
+            "exact group.close resolves the unfocused Wine File group"
+        );
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, mono),
+            "exact group.close resolves the other X11 group past the palette page"
+        );
+        {
+            let state = chrome.borrow();
+            let page = DesktopWindowsProvider::new().query_page(
+                crate::shell::search::SearchContext {
+                    needle: "",
+                    wanted: &[],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &ROOT,
+                },
+                None,
+                crate::shell::search::SearchBudget::PALETTE,
+            );
+            assert!(
+                !page
+                    .results
+                    .iter()
+                    .any(|row| row.id == mono || row.id == wine),
+                "the empty palette page truncates both X11 closes: {:?}",
+                page.results.iter().map(|row| &row.id).collect::<Vec<_>>()
+            );
+        }
+        invoke_group_close(&chrome, &registry, &mut doc, wine);
+        assert!(
+            process_is_live(standin.pid()) && process_is_live(standin.descendant()),
+            "Wine Mono's window is still open, so the wine-winefile launch stays"
+        );
+        assert!(
+            group_close_is_visible(&chrome, &registry, &doc, mono),
+            "group.close of the remaining X11 group stays in the catalogue"
+        );
+        invoke_group_close(&chrome, &registry, &mut doc, mono);
+        tilo_test_env::wait_until("the launch exits after its last X11 window closes", || {
+            !process_is_live(standin.pid()) && !process_is_live(standin.descendant())
+        });
     }
 
     #[test]

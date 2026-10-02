@@ -26,7 +26,13 @@ cd "$root"
 find . \( -path ./target -o -path ./.cargo-home -o -path ./.sccache -o -path ./.git \) -prune \
   -o -type f -print0 | sort -z | xargs -0 -r sha256sum > "$now"
 
+# Every file starts at the same time a reusing build gives an unchanged one.
+# Cargo fingerprints a path package whose build script declares no inputs
+# (workspace-hack, vendored crates) by its newest file time, so a clean build
+# that kept the checkout's times made the next build see every such package
+# change and rebuild nearly everything once more.
 if [ ! -s "$record" ]; then
+  sed 's/^[0-9a-f]*  //' "$now" | tr '\n' '\0' | xargs -0 -r touch -c -h -d @1 --
   cp "$now" "$record"
   echo "cargo-freshness: no content record yet; cleaning the target directory once"
   exit 3

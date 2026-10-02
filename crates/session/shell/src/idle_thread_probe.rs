@@ -12,7 +12,7 @@ fn thread_ids() -> BTreeSet<String> {
         .collect()
 }
 
-fn context_switches(tid: &str) -> u64 {
+pub(crate) fn context_switches(tid: &str) -> u64 {
     std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
         .expect("thread status")
         .lines()

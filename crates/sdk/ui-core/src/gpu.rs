@@ -336,15 +336,27 @@ impl RenderContext {
             .ok_or(CreateSurfaceError::NoCompatibleDevice)?;
         tilo_startup_metrics::mark("surface-capabilities-start");
         let capabilities = surface.get_capabilities(&handle.adapter);
-        let format = capabilities
-            .formats
-            .into_iter()
-            .find(|it| matches!(it, TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm))
-            .ok_or(CreateSurfaceError::UnsupportedSurfaceFormat)?;
+        // The intermediate target is RGBA8. Prefer a matching surface format
+        // so capable backends can present it with a texture copy instead of
+        // compiling a fullscreen blit shader for every new surface.
+        let format = if capabilities.formats.contains(&TextureFormat::Rgba8Unorm) {
+            TextureFormat::Rgba8Unorm
+        } else if capabilities.formats.contains(&TextureFormat::Bgra8Unorm) {
+            TextureFormat::Bgra8Unorm
+        } else {
+            return Err(CreateSurfaceError::UnsupportedSurfaceFormat);
+        };
+        let direct_copy = format == TextureFormat::Rgba8Unorm
+            && capabilities.usages.contains(wgpu::TextureUsages::COPY_DST);
         tilo_startup_metrics::mark("surface-capabilities-done");
 
         let config = SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if direct_copy {
+                    wgpu::TextureUsages::COPY_DST
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format,
             width,
             height,

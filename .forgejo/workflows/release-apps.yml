@@ -627,6 +627,9 @@ jobs:
             dist/app-release/verification-policy.json
             dist/app-release/tilo-app-package
           if-no-files-found: error
+          # Read only by this run's qualify-collection and publish jobs; the
+          # cross-run baseline is final-app-collection-<arch>.
+          retention-days: 1
   qualify-collection:
     # Coordinator guard keeps this qualification disabled; no publisher OIDC.
     if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'

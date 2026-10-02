@@ -304,6 +304,7 @@ mod tests {
     use crate::shell::search::{SearchProvider, SearchRegistry, SearchScope};
     use crate::shell::state::{FreshId as _, Tab, TileContent, WindowGroup, WindowWidth};
     use automerge::{AutoCommit, ROOT};
+    use tilo_desktop::search::window_row_tile;
 
     fn fixture() -> (Chrome, AutoCommit) {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
@@ -755,6 +756,10 @@ mod tests {
         );
         assert!(rows.iter().any(|row| row.id == "room.activity.open"));
         assert!(
+            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
+            "help stays on the empty palette even when it is last in the catalogue"
+        );
+        assert!(
             groups
                 .iter()
                 .all(|group| group.total == group.results.len())
@@ -799,6 +804,52 @@ mod tests {
                     == 40,
             "agents still enumerate every action and app"
         );
+    }
+
+    #[test]
+    fn every_window_row_resolves_to_the_tile_whose_face_it_wears() {
+        let (chrome, _doc) = fixture();
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let rows = window_rows(&tree.desktop, "");
+        assert!(
+            !rows.is_empty(),
+            "the fixture must offer window rows to resolve"
+        );
+        for row in &rows {
+            let tile = window_row_tile(&tree.desktop, &row.id)
+                .unwrap_or_else(|| panic!("{} must resolve to the tile it wears", row.id));
+            let app = match tile {
+                TileContent::Foreign { app_id, .. }
+                | TileContent::LocalApp { app_id, .. }
+                | TileContent::PeerWindow { app_id, .. } => app_id.as_str(),
+                other => panic!("{} wore a tile with no app face: {other:?}", row.id),
+            };
+            let expected = if row.id.contains(":100:2") || row.id == "group.close:100" {
+                "com.openai.ChatGPT"
+            } else if row.id.contains(":100:1")
+                || row.id.contains(":200:3")
+                || row.id == "group.close:200"
+            {
+                "com.google.Chrome"
+            } else {
+                panic!("unexpected window row {}", row.id);
+            };
+            assert_eq!(
+                app, expected,
+                "{} must wear the same face as its tab or group",
+                row.id
+            );
+        }
+        assert!(
+            window_row_tile(&tree.desktop, "tab.focus:100:1").is_some(),
+            "an address still resolves when it is not in this listing"
+        );
+        assert!(
+            window_row_tile(&tree.desktop, "no-such-row").is_none(),
+            "an unknown address has no face"
+        );
+        drop(tree);
     }
 
     fn many_groups(count: usize, focused: u64) -> (Chrome, AutoCommit) {

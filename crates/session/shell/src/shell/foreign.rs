@@ -1513,6 +1513,7 @@ impl ForeignFrameStore {
         buffer: &WlBuffer,
         capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        note_client_pump();
         if let Some(token) = capture_token {
             self.with_entry(id, |entry| entry.mapped = true);
             return self
@@ -1779,6 +1780,7 @@ impl ForeignFrameStore {
     /// frame, while keeping placement bookkeeping until the toplevel is
     /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
+        note_client_pump();
         self.with_entry(id, |e| {
             e.mapped = false;
             e.rgba.clear();
@@ -3265,9 +3267,10 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
 }
 
 /// Whether a surface [`release_frame_throttle`] serves is waiting for
-/// `wl_surface.frame`. The loop must paint for it: a callback can arrive
-/// on a commit without a new buffer (a configure ack, a title), which
-/// changes nothing on screen, and the client draws nothing until it fires.
+/// `wl_surface.frame`. A callback can arrive on a commit without a new
+/// buffer (a configure ack, a title). Nothing on screen changes, so the
+/// loop must not build a frame for it; [`release_idle_frame_callbacks`]
+/// fires it instead. A FIFO client draws nothing until the callback fires.
 #[cfg(target_os = "linux")]
 pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
     state
@@ -3286,6 +3289,35 @@ pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool 
                     .is_empty()
             })
         })
+}
+
+/// Fire frame callbacks when this tick will not present.
+///
+/// The callback still has to run, or a FIFO swapchain waits forever and
+/// takes every later sync with it. Building a scene only to release it
+/// kept the shell busy while the apps sat still: the tree, the layout
+/// and any animation had not changed.
+///
+/// Returns whether any callback was released.
+#[cfg(target_os = "linux")]
+pub fn release_idle_frame_callbacks(state: &mut crate::compositor::state::State) -> bool {
+    if !frame_callbacks_waiting(state) {
+        return false;
+    }
+    release_frame_throttle(state) > 0
+}
+
+/// Bumped when a client commit changes something the frame pump must see
+/// (a buffer, a title, a new toplevel). A `wl_surface.frame` on its own does
+/// not: answering it must not schedule another shell tick.
+static CLIENT_PUMP_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub fn note_client_pump() {
+    CLIENT_PUMP_EPOCH.fetch_add(1, Ordering::Release);
+}
+
+pub fn client_pump_epoch() -> u64 {
+    CLIENT_PUMP_EPOCH.load(Ordering::Acquire)
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen

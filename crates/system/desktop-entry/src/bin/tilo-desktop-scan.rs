@@ -10,7 +10,7 @@
 use std::process::ExitCode;
 
 use desktop_entry::launch::{LaunchEnv, plan};
-use desktop_entry::scan::{CURRENT_DESKTOP, Scan, application_dirs, scan_dirs};
+use desktop_entry::scan::{Scan, application_dirs, scan_dirs};
 
 /// What `parse_args` found: either the flags to run with, or an outcome
 /// (help printed, a usage error) that ends the program right away.
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
     };
 
     let dirs = application_dirs();
-    let scan = scan_dirs(&dirs, &[CURRENT_DESKTOP.to_string()]);
+    let scan = scan_dirs(&dirs, &desktop_entry::scan::current_desktops());
 
     if let Some(id) = plan_id {
         return print_plan(&scan, &id);

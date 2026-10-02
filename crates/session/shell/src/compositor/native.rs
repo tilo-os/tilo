@@ -237,8 +237,17 @@ fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Optio
 /// title, a selection) is only picked up by the next tick's pump. Nothing
 /// else need wake that tick on a backend that is never polled, so run it at
 /// once; a tick that dispatches nothing parks normally.
-fn client_followup_deadline(clients_dispatched: bool, now: Instant) -> Option<Instant> {
-    clients_dispatched.then_some(now)
+///
+/// A commit that only carries `wl_surface.frame` changes neither pixels nor
+/// protocol the pump reads. Answering that callback is not a reason to run
+/// the pump again: doing so woke an idle desktop about twice a second and
+/// painted the client's echo.
+fn client_followup_needed(clients_dispatched: bool, pump_visible: bool) -> bool {
+    clients_dispatched && pump_visible
+}
+
+fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> {
+    pump_needed.then_some(now)
 }
 
 fn dispatch_wayland_clients_fairly(
@@ -364,12 +373,36 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
+/// A widget poll already ran in this tick's pump. Its deadline waking the
+/// loop is not a present: the tree, the layout, and any animation are the
+/// pump's result and the animation bit. Painting because the deadline
+/// merely came due kept idle apps submitting frames.
+fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
+    pump_changed
+}
+
+/// A `wl_surface.frame` on a commit that did not change the tree, the
+/// layout, or an animation is not a present. Release it on its own.
+/// While locked the desktop is not shown, and the callback stays until a
+/// real lock or unlock frame, as it did before idle apps stopped driving
+/// cadence.
+fn release_idle_client_callback(locked: bool, content_changed: bool) -> bool {
+    !locked && !content_changed
+}
+
 /// Whether the next park must keep the frame deadline for a pending frame.
 /// While the bounded presenter is full, an already-due frame deadline would
 /// make every park a zero timeout and spin the loop until a frame retires;
 /// the presenter's retirement ping wakes calloop as soon as capacity returns.
 fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
+}
+
+/// A transition the presenter could not take stays pending. The park while
+/// the pipe is full is not animation time; the next submit still has the
+/// frame run ahead of it.
+fn present_hold_credit(presenter_full: bool, transition_pending: bool) -> bool {
+    presenter_full && transition_pending
 }
 
 /// A widget deadline only matters while the presenter can accept the frame
@@ -6123,14 +6156,12 @@ fn start_portal_backend(
         "portal",
         async move {
             let conn = zbus::connection::Builder::session()?.build().await?;
-            crate::portal::serve_with_inhibit_and_clipboard(
-                conn,
-                ctx,
-                inhibit_registry,
-                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(
-                    crate::portal::clipboard::CompositorClipboardBroker::new(selection),
-                )),
-            )
+            crate::portal::serve_with_inhibit_and_clipboard(conn, ctx, inhibit_registry, {
+                let broker = crate::portal::clipboard::CompositorClipboardBroker::new(selection);
+                let wake = broker.wake.clone();
+                crate::portal::clipboard::ClipboardBrokerHandle::new(Arc::new(broker))
+                    .with_selection_wake(wake)
+            })
             .await
         },
         move |server: &crate::portal::ServerHandle| {
@@ -7498,10 +7529,24 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
+    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
+    // frame. An idle park must not arm that watch on a timer.
+    let mut privacy_frame_open = false;
+    // Park spent waiting on a full presenter. Applied on the next tick,
+    // before animation demand is sampled, so the transition does not finish
+    // in the model with nothing presented.
+    let mut transition_hold_sleep = Duration::ZERO;
+    let mut credit_transition_hold;
     while !close_requested {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        if !transition_hold_sleep.is_zero() {
+            frame_builder
+                .host_mut()
+                .defer_running_transitions(transition_hold_sleep);
+            transition_hold_sleep = Duration::ZERO;
+        }
         if let Some((serial, retired_at)) = present_pipe
             .as_ref()
             .and_then(present::PresentPipe::latest_retirement)
@@ -9644,7 +9689,12 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed || widget_deadline_due || foreign::frame_callbacks_waiting(&state),
+            // A client frame callback is not a present. A configure ack or a
+            // title carries one and changes no pixels; painting to release
+            // it kept the shell busy while apps sat still. The callback is
+            // fired after dispatch when this tick will not build a frame,
+            // and that answer does not schedule another pump.
+            apps: present_for_app_poll(apps_changed, widget_deadline_due),
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -9676,6 +9726,10 @@ pub fn run() {
         let pipe_ready = present_pipe
             .as_ref()
             .is_none_or(super::present::PresentPipe::has_capacity);
+        credit_transition_hold = present_hold_credit(
+            !pipe_ready,
+            frame_builder.host().transition_present_pending(),
+        );
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -9693,6 +9747,14 @@ pub fn run() {
             pipe_ready,
             (content_changed && !cadence_due) || (!session.is_locked() && animating),
         );
+        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
+            privacy_frame_open,
+            should_paint || cadence_needed,
+        );
+        privacy_frame_open = frame_open;
+        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
+            bridge.notify_frame_requested();
+        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -10421,6 +10483,7 @@ pub fn run() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
         let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
             Ok(dispatched) => {
@@ -10445,7 +10508,8 @@ pub fn run() {
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
-        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+        let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        if capture_ready {
             injected_redraw_pending = true;
         }
         if let Err(err) = display.flush_clients() {
@@ -10467,6 +10531,25 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        let client_changed = foreign::client_pump_epoch() != pump_epoch;
+        // A frame callback that arrived without a new buffer, title, or
+        // configure is not a present and not another pump. Release it here,
+        // on the tick that saw the commit, so the client is not left waiting
+        // on FIFO and the shell does not wake itself to do the same work again.
+        if release_idle_client_callback(session.is_locked(), content_changed)
+            && !client_changed
+            && configured_after_dispatch == 0
+            && !capture_ready
+            && foreign::release_idle_frame_callbacks(&mut state)
+            && let Err(err) = display.flush_clients()
+        {
+            eprintln!("tilo compositor: idle frame callback flush error: {err}");
+            break;
+        }
+        let client_pump_needed = client_followup_needed(
+            clients_dispatched,
+            client_changed || configured_after_dispatch > 0 || capture_ready,
+        );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
         if (loop_timing || t_work_done > Duration::from_millis(100))
@@ -10540,7 +10623,7 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 (
                     "client-followup",
-                    client_followup_deadline(clients_dispatched, park_now),
+                    client_followup_deadline(client_pump_needed, park_now),
                 ),
             ],
         );
@@ -10551,6 +10634,9 @@ pub fn run() {
         }
         let slept = t_sleep_start.elapsed();
         metrics.mark_sleep(slept);
+        if credit_transition_hold {
+            transition_hold_sleep = slept;
+        }
         let wake = park_wake_reason(park, park_deadline, slept);
         metrics.mark_wake(wake);
         if paint_stats {
@@ -10746,14 +10832,22 @@ fn spawn_auto_brightness_worker() {
         .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
+            let mut seen = false;
+            let mut cached_stamp = None;
+            let mut enabled = false;
             loop {
-                let settings = settings_store::load();
-                let enabled = settings_store::bool_at(
-                    &settings,
-                    "display",
-                    "auto_brightness",
-                )
-                .unwrap_or(false);
+                let current = settings_store::stamp();
+                if settings_store::document_changed(seen, cached_stamp, current) {
+                    let settings = settings_store::load();
+                    enabled = settings_store::bool_at(
+                        &settings,
+                        "display",
+                        "auto_brightness",
+                    )
+                    .unwrap_or(false);
+                    seen = true;
+                    cached_stamp = current;
+                }
                 if enabled && !crate::compositor::screen_dim::backlight_held() {
                     if let Some(lux) = os_actions::ambient_lux()
                         && let Some(percent) = controller.update(lux)
@@ -10816,6 +10910,33 @@ mod tests {
             ),
             None,
             "a tick that dispatched nothing parks"
+        );
+        assert!(
+            !client_followup_needed(true, false),
+            "a wl_surface.frame with no new pixels, title, or configure must not schedule another shell tick"
+        );
+        assert!(
+            client_followup_needed(true, true),
+            "a buffer or protocol change still pumps on the next tick"
+        );
+        assert!(
+            release_idle_client_callback(false, false),
+            "an unchanged desktop releases a waiting callback without presenting"
+        );
+        assert!(
+            !present_for_app_poll(false, true),
+            "a poll whose tree, layout, and animations did not change must not present"
+        );
+        assert!(present_for_app_poll(true, true));
+        assert!(!present_for_app_poll(false, false));
+        assert_eq!(
+            client_followup_deadline(client_followup_needed(true, false), now),
+            None,
+            "answering that callback must not schedule another shell tick"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
         );
     }
 
@@ -11073,6 +11194,16 @@ mod tests {
     }
 
     #[test]
+    fn a_full_presenter_holds_a_pending_transition() {
+        assert!(present_hold_credit(true, true));
+        assert!(!present_hold_credit(false, true));
+        assert!(
+            !present_hold_credit(true, false),
+            "an idle desktop must not freeze its clock on a full presenter"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -11113,6 +11244,19 @@ mod tests {
         assert!(
             !retain_session_redraw(false, false),
             "ordinary idle ticks must not manufacture redraw work"
+        );
+        // Phase `an_idle_frame_callback_does_not_present`.
+        assert!(
+            release_idle_client_callback(false, false),
+            "a callback with no tree, layout, or animation change is released without a frame"
+        );
+        assert!(
+            !release_idle_client_callback(false, true),
+            "a real change still presents, and that present releases the callback"
+        );
+        assert!(
+            !release_idle_client_callback(true, false),
+            "a locked session does not answer hidden clients with an idle release"
         );
         // Phase `available_presenter_keeps_overdue_work_immediate`.
         {
