@@ -400,6 +400,18 @@ published cohort tag/digest and Lenovo disk job. Fetch the config with
 The command records explicit developer CI evidence and never authorizes a disk
 write. It is distinct from release Cosign/SLSA verification; the physical copy
 guard still requires source/VM evidence and its separate developer admission.
+The final-source `receipt` and final-copy `execute` commands accept explicit
+`--development` admission. Supply the board/generic child manifests and raw
+configs, their internal `os-dev.yml` run IDs, the board/generic installer run
+IDs, both tested profile media and `--dev-setup-handoff`. The gate rechecks live
+CI publication and media metadata, hashes both CI backing disks, verifies that
+the overlays change only the authorized Wi-Fi/SSH tail, and requires board
+proof v4 plus complete generic encrypted first-boot proof v3 from the same CI
+cohort and installer assembly. It records developer authority without a release
+key or SLSA claim. Normal admission continues to require signed release evidence.
+All physical identity, source extent, EFI file and full readback checks still
+apply. The final copy leaves C: untouched, so its pagefile can remain active;
+partition shrinking retains the pagefile restriction.
 `python3 os/dev/forgejo-dev-installer-metadata.py INTERNAL_RUN_ID` reads the
 source and disk checksums from the successful installer run's authenticated
 artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
