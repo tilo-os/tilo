@@ -307,7 +307,17 @@ pub const MAX_ARGS_SUMMARY: usize = 160;
 /// than listed. `None` for a payload that is not JSON or says nothing.
 pub fn args_summary(payload: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let value = arguments_of(&value);
+    let mut value = arguments_of(&value).clone();
+    // An internally tagged action names itself beside its arguments.
+    if let serde_json::Value::Object(fields) = &mut value
+        && fields.len() > 1
+        && fields
+            .get("action")
+            .is_some_and(serde_json::Value::is_string)
+    {
+        fields.remove("action");
+    }
+    let value = &value;
     if value.is_null() || value.as_object().is_some_and(serde_json::Map::is_empty) {
         return None;
     }
@@ -349,12 +359,29 @@ fn brief(value: &serde_json::Value, depth: usize, out: &mut String) {
             let ellipsis = if cut.len() < text.len() { "…" } else { "" };
             let _ = write!(out, "{:?}", format!("{cut}{ellipsis}"));
         }
-        serde_json::Value::Array(items) if depth > 0 || items.len() > 4 => {
-            let _ = write!(out, "[{} items]", items.len());
-        }
         serde_json::Value::Array(items) => {
+            // Nested, a short list still says what it holds when its items
+            // are plain values or name themselves by id.
+            let named: Option<Vec<&serde_json::Value>> = items
+                .iter()
+                .map(|item| match item {
+                    serde_json::Value::Object(fields) => {
+                        fields.get("id").filter(|id| id.is_string())
+                    }
+                    serde_json::Value::Array(_) => None,
+                    plain => (depth == 0 || !plain.is_null()).then_some(plain),
+                })
+                .collect();
+            let listed = match named {
+                Some(named) if items.len() <= 4 && depth > 0 => named,
+                _ if items.len() <= 4 && depth == 0 => items.iter().collect(),
+                _ => {
+                    let _ = write!(out, "[{} items]", items.len());
+                    return;
+                }
+            };
             out.push('[');
-            for (at, item) in items.iter().enumerate() {
+            for (at, item) in listed.into_iter().enumerate() {
                 if at > 0 {
                     out.push(',');
                 }
@@ -608,6 +635,13 @@ mod tests {
         assert_eq!(args_summary(b"\"Clear\""), Some("\"Clear\"".into()));
         assert_eq!(args_summary(b"{\"Clear\":{}}"), None);
         assert_eq!(args_summary(b"not json"), None);
+        let named = br#"{"Draw":{"marks":[{"id":"sun","shape":{}},{"id":"sky"}],"ids":["a","b"]}}"#;
+        assert_eq!(
+            args_summary(named).as_deref(),
+            Some(r#"{marks:["sun","sky"],ids:["a","b"]}"#)
+        );
+        let tagged = br#"{"op":{"action":"draw","marks":[{"id":"blot"}]},"at":17}"#;
+        assert_eq!(args_summary(tagged).as_deref(), Some(r#"{marks:["blot"]}"#));
         let stamped = br#"{"op":{"action":"add","args":{"text":"milk"}},"at":17}"#;
         assert_eq!(args_summary(stamped).as_deref(), Some(r#"{text:"milk"}"#));
 

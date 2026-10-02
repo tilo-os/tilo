@@ -196,9 +196,8 @@ pub(crate) fn specs() -> Vec<ActionSpec> {
 }
 
 fn edit_specs() -> Vec<ActionSpec> {
-    let steps = || {
-        ActionParam::optional("steps", ParamType::Integer, "How many steps, newest first")
-            .nullable()
+    let steps = |description: &'static str| {
+        ActionParam::optional("steps", ParamType::Integer, description).nullable()
     };
     vec![
         edit(
@@ -206,7 +205,7 @@ fn edit_specs() -> Vec<ActionSpec> {
             "Undo",
             "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
             vec![
-                steps(),
+                steps("How many steps, newest first"),
                 ActionParam::optional("run", ParamType::Text, "An agent run id from history")
                     .nullable(),
             ],
@@ -220,8 +219,8 @@ fn edit_specs() -> Vec<ActionSpec> {
         edit(
             "redo",
             "Redo",
-            "Bring back your last undone steps.",
-            vec![steps()],
+            "Bring back what your last undo took back.",
+            vec![steps("How many undos, newest first")],
             |args| {
                 Ok(HistoryEdit::Redo {
                     steps: steps_arg(args)?,
