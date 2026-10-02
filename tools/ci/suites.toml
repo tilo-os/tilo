@@ -152,6 +152,7 @@ suites = [
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_dev_provenance.py",
+  "os/tests/test_windows_direct_dev_admission.py",
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_windows_provider_candidates.py",
   "os/tests/test_fetch_windows_direct_manifests.py",

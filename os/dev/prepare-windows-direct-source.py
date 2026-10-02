@@ -306,20 +306,26 @@ def make_receipt(args):
     require(raw.is_file() and not raw.is_symlink()
             and raw.stat().st_size == plan["windows_disk"]["size_bytes"],
             "VM-installed source raw size differs from reviewed disk")
-    index_digest, child_digest, children, kind = provenance.signed_ci_child(
-        args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
-    ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
-                                      getattr(args, "cosign_command_json", None),
-                                      getattr(args, "cosign_key_arg", None))
-    checked = provenance.checked_guest_proof(
-        args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
-    if kind == "lenovo-83ed":
-        require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
-                "Lenovo physical source requires backend-derived signed target proof v2")
-        dual_gate = provenance.dual_ci_medium_gate(
-            args, checked, child_digest, ci_provenance["source_revision"])
+    if getattr(args, "development", False):
+        ci_provenance, checked, dual_gate = direct.development.verify(args)
+        index_digest = child_digest = args.ci_image.split("@", 1)[1]
     else:
-        dual_gate = {}
+        require(args.verify_key is not None and args.ci_index_manifest is not None,
+                "signed source receipt requires CI verification key and index manifest")
+        index_digest, child_digest, children, kind = provenance.signed_ci_child(
+            args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+        ci_provenance = verified_ci_image(args.ci_image, args.verify_key, children, kind,
+                                          getattr(args, "cosign_command_json", None),
+                                          getattr(args, "cosign_key_arg", None))
+        checked = provenance.checked_guest_proof(
+            args.vm_proof_checked, child_digest, args.ci_image, ci_provenance)
+        if kind == "lenovo-83ed":
+            require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
+                    "Lenovo physical source requires backend-derived signed target proof v2")
+            dual_gate = provenance.dual_ci_medium_gate(
+                args, checked, child_digest, ci_provenance["source_revision"])
+        else:
+            dual_gate = {}
     with raw.open("rb", buffering=0) as stream:
         disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
@@ -352,7 +358,8 @@ def make_receipt(args):
                "installed_uki_sha256": uki_hash}
     receipt.update(dual_gate)
     direct.stage.atomic_json(args.output, receipt)
-    print(f"VM source readback and CI signature receipt: {args.output}")
+    authority = "live development CI" if getattr(args, "development", False) else "CI signature"
+    print(f"VM source readback and {authority} receipt: {args.output}")
 
 
 def main(argv=None):
@@ -374,12 +381,13 @@ def main(argv=None):
     receipt.add_argument("--plan", type=Path, required=True)
     receipt.add_argument("--source-raw", type=Path, required=True)
     receipt.add_argument("--ci-image", required=True)
-    receipt.add_argument("--verify-key", type=Path, required=True)
+    receipt.add_argument("--verify-key", type=Path)
     receipt.add_argument("--cosign-command-json", type=Path)
     receipt.add_argument("--cosign-key-arg")
-    receipt.add_argument("--ci-index-manifest", type=Path, required=True)
+    receipt.add_argument("--ci-index-manifest", type=Path)
     receipt.add_argument("--ci-child-manifest", type=Path, required=True)
     receipt.add_argument("--vm-proof-checked", type=Path, required=True)
+    direct.development.add_arguments(receipt)
     for name in ("generic-ci-image", "generic-index-manifest",
                  "generic-child-manifest", "generic-vm-proof-checked",
                  "generic-medium-identity", "generic-ci-guest-proof",
