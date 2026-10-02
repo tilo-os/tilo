@@ -72,6 +72,7 @@ fn launch_spec_with_root(
 ) -> LaunchSpec {
     LaunchSpec::new_with_args("so.tilo.terminal", root)
         .history(&terminal::framework_history::HISTORY)
+        .configure_app(|app| terminal::actions::register(app.action_registry_mut()))
         .live_handler(run_live)
         .shot_handler(run_shot)
         .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -328,7 +329,7 @@ fn run_scenario(
                           the sample code's own println! syntax, not a format template here"
             )]
             let lines = [
-                "fn main() {",
+                "fn start() {",
                 "    // alternate-screen redraw via CSI ?1049h",
                 "    let greeting = \"hello, Tilo\";",
                 "    for i in 0..3 {",
