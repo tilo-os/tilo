@@ -37,7 +37,7 @@ if (( run_cargo )); then
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
     # those large binaries even though stage-payload never ships them.
-    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --no-default-features )
+    ( cd "$repo_root" && cargo build --release --locked -p shell --bin shell --bin tilo-runtime-mcp --no-default-features )
 fi
 
 # Cargo resolves a relative CARGO_TARGET_DIR from the repository root (the
