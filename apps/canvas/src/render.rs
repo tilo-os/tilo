@@ -803,9 +803,7 @@ fn draw_text_shape(
             x,
             y,
             text: words,
-            size,
             align,
-            line_height,
             width,
             ..
         },
@@ -820,11 +818,9 @@ fn draw_text_shape(
         (None, Some("end")) => x - wide,
         _ => *x,
     };
-    // The first baseline sits about 0.8 of the size below a line's top at
-    // the renderer's default leading, and half the extra leading lower.
-    let top = y - size * (0.8 + (line_height.unwrap_or(1.2) - 1.25) / 2.0);
     let max = (width.is_some() || align.as_deref().is_some_and(|align| align != "start"))
         .then(|| narrow(wide));
+    let top = y - f64::from(text.first_baseline_style(words, max, &style));
     text.draw_style(
         scene,
         words,

@@ -67,3 +67,66 @@ fn a_look_shows_the_painting_whole_and_up_close() {
         .unwrap();
     assert!(error.contains("outside the artwork"), "{error}");
 }
+
+/// Text stands on the baseline its mark names, whatever its size and
+/// leading: letters without descenders end on `y`.
+#[test]
+fn text_stands_on_its_baseline() {
+    use canvas::CanvasAction;
+    use canvas::actions::{Draw, NewMark};
+    use canvas::model::Shape;
+    use ui::vello::kurbo::Rect;
+
+    for (size, line_height) in [(60.0, None), (24.0, Some(2.0)), (120.0, Some(0.9))] {
+        let mut replica = Replica::<ArtworkResource>::new();
+        let mark = NewMark {
+            fill: Some("#000000".into()),
+            ..NewMark::new(Shape::Text {
+                x: 20.0,
+                y: 200.0,
+                text: "HIEH".into(),
+                size,
+                font: None,
+                weight: None,
+                italic: false,
+                align: None,
+                line_height,
+                width: None,
+            })
+        };
+        let draw = CanvasAction::Draw(Draw {
+            layer: None,
+            marks: vec![mark],
+        });
+        replica.apply(Invoke::apply(&draw).unwrap()).unwrap();
+        let art = replica.state().unwrap();
+        let mut renderer = Renderer::default();
+        let mut text = ui::TextRenderer::new();
+        let options = canvas::render::Options {
+            bare: true,
+            ..canvas::render::Options::default()
+        };
+        let (rgba, width, _) =
+            view_ops::pixels(Rect::new(0.0, 0.0, 400.0, 300.0), 1.0, true, |scene, to| {
+                renderer.draw(&art, scene, to, &mut text, &options);
+            })
+            .unwrap();
+        let inked: Vec<usize> = rgba
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(_, pixel)| pixel[3] > 128)
+            .map(|(index, _)| index / usize::try_from(width).unwrap())
+            .collect();
+        let bottom = *inked.iter().max().expect("the text is drawn");
+        let top = *inked.iter().min().unwrap();
+        assert!(
+            (199..=201).contains(&bottom),
+            "size {size}: letters end at row {bottom}, not on the baseline at 200"
+        );
+        let cap = 200.0 - f64::from(u32::try_from(top).unwrap());
+        assert!(
+            cap > size * 0.6 && cap < size * 0.8,
+            "size {size}: capitals {cap} tall"
+        );
+    }
+}
