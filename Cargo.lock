@@ -15921,6 +15921,7 @@ dependencies = [
  "iroh-relay",
  "launcher",
  "libc",
+ "moq-net",
  "n0-future",
  "package-store",
  "postcard",

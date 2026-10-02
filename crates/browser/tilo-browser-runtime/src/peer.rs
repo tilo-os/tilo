@@ -952,6 +952,53 @@ impl WasmPeer {
         .map_err(js_error)
     }
 
+    /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally
+    /// tagged: `{"PointerMotion": {"x": 1, "y": 2}}`) for the legacy window
+    /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
+    /// no events it only asks whether this device may drive the window.
+    /// Resolves `false` when it may not.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed arguments, or when the host is not reached, the
+    /// window is gone or its session is not reachable.
+    #[wasm_bindgen(js_name = legacyInput)]
+    pub async fn legacy_input(
+        &self,
+        room: String,
+        publisher: String,
+        surface: String,
+        events: String,
+    ) -> Result<bool, JsError> {
+        let publisher: [u8; 32] = hex::decode(&publisher)
+            .ok()
+            .and_then(|key| key.try_into().ok())
+            .ok_or_else(|| js_error("publisher is not a device key"))?;
+        let surface = u64::from_str_radix(&surface, 16).map_err(js_error)?;
+        let request = tilo_relay_protocol::legacy_window::InputRequest {
+            workspace_id: workspace(&room)?,
+            publisher,
+            surface,
+            events: serde_json::from_str(&events).map_err(js_error)?,
+        };
+        if !request.valid() {
+            return Err(js_error("input out of bounds"));
+        }
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .legacy_input_then(
+                request,
+                Box::new(move |sent| {
+                    let _ = reply.send(sent);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
+
     /// Records whose durable change landed since the last call, as a JSON
     /// array of `{kind: 'durable', record}`: the live layer drops their
     /// previews and snaps drags.
