@@ -936,17 +936,35 @@ jobs:
             [worker.oci]
               max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
               gc = ${{ github.event_name == 'workflow_call' && 'true' || 'false' }}
-              reservedSpace = "40%"
+              reservedSpace = "2GB"
               maxUsedSpace = "75%"
               minFreeSpace = "20%"
 
       - name: Record builder storage before image stages
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
           set -euo pipefail
+          if [[ $DEV_BUILD == true ]]; then
+            # Only this job's builder cache: Docker's images and the runner
+            # configuration are outside this cleanup. Reserve enough space
+            # before compiles start, rather than racing the background GC.
+            timeout --kill-after=30s 180s docker buildx prune \
+              --builder "$BUILDER_NAME" --force --all \
+              --min-free-space 48GB --reserved-space 2GB
+          fi
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
+          if [[ $DEV_BUILD == true ]]; then
+            available=$(docker exec "buildx_buildkit_${BUILDER_NAME}0" \
+              sh -c 'df -Pk /var/lib/buildkit | awk "NR == 2 { print \$4 }"')
+            [[ $available =~ ^[0-9]+$ ]] || { echo '::error::could not measure builder storage'; exit 1; }
+            if (( available < 40 * 1024 * 1024 )); then
+              echo "::error::OS dev needs 40 GiB free before image stages; this job's cache cleanup left $(( available / 1024 / 1024 )) GiB. Restore runner-store headroom."
+              exit 1
+            fi
+          fi
 
       # A board build's layers include its private firmware, so its layer
       # cache must never reach the public registry.
