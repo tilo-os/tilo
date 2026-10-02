@@ -5,6 +5,23 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
+fn a_standalone_project_import_is_submitted_through_the_action() {
+    let mut app = CodeApp::with_sample();
+    assert!(!app.actions.is_hosted());
+    let mut doc = AutoCommit::new();
+    app.import_project_file_records(&mut doc);
+    let recorded = app
+        .actions
+        .last_dispatched()
+        .expect("imported files are submitted through the action sink");
+    assert_eq!(recorded.type_id.as_str(), actions::CODE_EDITOR_ACTION_TYPE);
+    assert!(
+        !EditorDoc::files(&doc).is_empty(),
+        "the sample project is in the document"
+    );
+}
+
+#[test]
 fn a_standalone_project_is_created_by_the_action() {
     let mut app = CodeApp::new();
     assert!(!app.actions.is_hosted());
