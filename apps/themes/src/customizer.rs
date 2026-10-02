@@ -58,7 +58,8 @@ fn gap() -> f32 {
 /// stacked/scrolling layout, where the panel can't claim `percent(1.0)`)
 /// matches what the controls actually take. A stale mirror here under-
 /// reserved the stack by 4 px and the column squeezed the font dropdown to
-/// 38 px beside 40 px action buttons.
+/// 38 px beside 40 px action buttons. The five sliders (radius, spacing,
+/// motion, materials, icons) are each one `SLIDER_H` row.
 const PICKER_H: f32 = 220.0;
 /// `Slider` lays out on `metrics.min_pointer_target`.
 const SLIDER_H: f32 = Metrics::BASE.min_pointer_target;
@@ -133,9 +134,9 @@ pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f
     let scale = text_scale.max(1.0);
     PAD * 2.0
         + chip_grid_height_scaled(panel_width - PAD * 2.0, scale)
-        + gap() * scale * 5.0
+        + gap() * scale * 8.0
         + PICKER_H
-        + SLIDER_H * 2.0
+        + SLIDER_H * 5.0
         + DROPDOWN_H
         + ACTIONS_H
 }
