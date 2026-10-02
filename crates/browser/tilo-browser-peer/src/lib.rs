@@ -1,9 +1,10 @@
 //! `tilo-browser-peer` — the browser as a real Tilo peer.
 //!
-//! The page holds only a device key. [`custody::certify`] asks the user's
+//! A paired page holds a device key. [`custody::certify`] asks the user's
 //! host for a root-signed `DeviceCert`, which a root-holding device issues
-//! through the host. [`session::PeerHandle`] then keeps one certified relay
-//! session to that host:
+//! through the host. An invited person instead uses [`invite`] to certify
+//! their device with their own root and obtain governed room access.
+//! [`session::PeerHandle`] keeps one certified relay session to that host:
 //!
 //! - the **durable plane**: signed document envelopes ([`document`]) sent as
 //!   acknowledged commits from a persisted outbox and replayed after every
@@ -39,6 +40,7 @@ mod clock;
 pub mod custody;
 pub mod document;
 pub mod health;
+pub mod invite;
 pub mod live;
 #[cfg(feature = "net")]
 pub mod net;
@@ -56,7 +58,7 @@ pub use live::{LiveChange, LiveState, RemoteMember};
 pub use net::NetHttp;
 pub use session::{
     Failure, FailureSubject, Host, LocalState, PAGE_FAILURE_CODES, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerStatus, TransportPhase,
+    PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

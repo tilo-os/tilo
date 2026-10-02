@@ -291,6 +291,7 @@ enum Command {
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
     VoiceLeave(u64),
+    Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     Refresh,
@@ -303,6 +304,9 @@ pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live grant, see [`PeerHandle::live_grant_then`].
 pub type GrantCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::LiveGrant, String>) + Send>;
+/// Called once with the host's answer, see [`PeerHandle::rooms_then`].
+pub type RoomsCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
 
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
@@ -671,6 +675,20 @@ impl PeerHandle {
         self.send(Command::VoiceLeave(workspace_id))
     }
 
+    /// Send `request` to the host's room administration over the current
+    /// HTTPS session; `done` receives the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn rooms_then(
+        &self,
+        request: tilo_relay_protocol::rooms::RoomsRequest,
+        done: RoomsCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Rooms(request, done))
+    }
+
     /// Drop the connection and reconnect now, also after a failure.
     ///
     /// # Errors
@@ -886,8 +904,9 @@ struct Task {
     /// Retained entry ids of every document delivered or published per
     /// route: what a snapshot of the route contains.
     delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
-    /// Entry ids delivered since this page last subscribed. A subscribe asks
-    /// for them again (a refresh wants the rooms whole), so it clears them.
+    /// Entry ids delivered since this page last subscribed whole. A resumed
+    /// subscription keeps them; a whole one asks for them again (a refresh
+    /// wants the rooms whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
@@ -1127,7 +1146,38 @@ impl Task {
         lock(&self.shared).status.clone()
     }
 
+    fn bind_record_identity(&mut self) -> Result<(), &'static str> {
+        let same_identity = |saved: &DeviceCert, configured: &DeviceCert| {
+            saved.user_public_key == configured.user_public_key
+                && saved.device_public_key == configured.device_public_key
+        };
+        if self
+            .record
+            .cert
+            .as_ref()
+            .is_some_and(|saved| !same_identity(saved, &self.config.cert))
+            || self
+                .record
+                .host_cert
+                .as_ref()
+                .is_some_and(|saved| !same_identity(saved, &self.config.host_cert))
+        {
+            return Err("The saved peer identity or host does not match this session.");
+        }
+        // A read-only invited page may never publish. Keep its certificate
+        // and host pin before the first connection, as well as its outbox.
+        self.record.cert = Some(self.config.cert.clone());
+        self.record.host_cert = Some(self.config.host_cert.clone());
+        self.persist();
+        Ok(())
+    }
+
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
+        if let Err(message) = self.bind_record_identity() {
+            self.fail("certificate-rejected", message);
+            self.update(|status| status.phase = TransportPhase::Failed);
+            return;
+        }
         let mut attempt: u32 = 0;
         let mut refusals: u32 = 0;
         loop {
@@ -1205,6 +1255,7 @@ impl Task {
                         Some(Command::Reconnect) => break,
                         Some(Command::Refresh) => {
                             self.positions.clear();
+                            self.received.clear();
                             break;
                         }
                         Some(command) => {
@@ -1235,6 +1286,7 @@ impl Task {
                 Some(Command::Reconnect) => return true,
                 Some(Command::Refresh) => {
                     self.positions.clear();
+                    self.received.clear();
                     return true;
                 }
                 Some(command) => {
@@ -1424,26 +1476,17 @@ impl Task {
                 true
             }
             Command::LiveGrant(workspace_id, agent, done) => {
-                match client {
-                    Some(Link::Https(link)) => {
-                        let http = link.client().clone();
-                        let session = link.session().to_owned();
-                        n0_future::task::spawn(async move {
-                            let grant =
-                                live_grant(http.as_ref(), &session, workspace_id, agent).await;
-                            done(grant.map_err(|error| error.to_string()));
-                        });
-                    }
-                    #[cfg(feature = "iroh")]
-                    Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
-                    None => done(Err("not connected to the host".into())),
-                }
+                Self::request_live_grant(workspace_id, agent, done, client);
                 true
             }
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
+            Command::Rooms(request, done) => {
+                Self::request_rooms(request, done, client);
+                true
+            }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
         }
@@ -1452,7 +1495,11 @@ impl Task {
     /// Restore this session's rooms, pending commits and call participations.
     fn resume_session(&mut self, client: &Link) -> bool {
         let mut sent_ok = true;
-        self.received.clear();
+        // A resuming subscription can replay a frame before its covering position.
+        // Keep duplicate detection until the host requests a whole subscription.
+        if !client.resumable() {
+            self.received.clear();
+        }
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
         }
@@ -1523,6 +1570,47 @@ impl Task {
         match (client, out) {
             (Some(client), Some(leave)) => client.send(leave).is_ok(),
             _ => true,
+        }
+    }
+
+    fn request_live_grant(
+        workspace_id: u64,
+        agent: Option<String>,
+        done: GrantCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let grant = live_grant(http.as_ref(), &session, workspace_id, agent).await;
+                    done(grant.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    fn request_rooms(
+        request: tilo_relay_protocol::rooms::RoomsRequest,
+        done: RoomsCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let reply = crate::carrier::rooms(http.as_ref(), &session, &request).await;
+                    done(reply.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
         }
     }
 

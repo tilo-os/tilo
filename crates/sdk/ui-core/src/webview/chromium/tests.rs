@@ -842,7 +842,9 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         tilo_test_env::wait_until("the closed event to release the native reservation", || {
             !first.runtime.routes.lock().unwrap().contains_key(&32)
         });
-        assert!(first.create_tab().is_ok());
+        first
+            .create_tab()
+            .expect("capacity released after closed acknowledgment");
     }
     // phase: hiding_retains_last_frame_for_recomposed_tab_until_next_paint
     {
@@ -869,6 +871,8 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             .iter()
             .map(|byte| format!("\\{:03o}", byte))
             .collect();
+        // Detach frees the route before Drop. Create the replacement while the
+        // owner Arc still lives so a Drop reservation cannot hide a leak.
         let (dir, host) = helper_fixture(&format!(
             "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
         ));
@@ -887,11 +891,17 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             !routes.lock().unwrap().contains_key(&2),
             "route is retired before detach is observable"
         );
-        drop(detached);
+        // Capacity is released by the detach acknowledgment, while the owner
+        // Arc is still alive — Drop must not be what frees the visible slot.
         assert_eq!(routes.lock().unwrap().len(), 1);
-        assert!(
-            first.create_tab().is_ok(),
-            "detached transfer owner does not use a visible slot"
+        first
+            .create_tab()
+            .expect("detached transfer owner does not use a visible slot");
+        drop(detached);
+        assert_eq!(
+            routes.lock().unwrap().len(),
+            2,
+            "dropping a detached owner must not reserve capacity again"
         );
     }
     // phase: admitted_close_does_not_reinsert_capacity_when_endpoint_drops

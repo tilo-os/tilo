@@ -438,6 +438,12 @@ mkdir -p "$OUTDIR"
 # Absolute, because Podman binds this directory into the installer container.
 # A relative source would resolve against Podman's current working directory.
 OUTDIR="$(cd "$OUTDIR" && pwd)"
+# DrvFs is 9p inside WSL. Its raw loop-backed image can allocate the entire
+# logical disk on Windows before qemu-img has a chance to make a sparse qcow2.
+# Build on WSL's native ext4 filesystem, then export only the final qcow2.
+if [ "$(stat -f -c %T "$OUTDIR")" = v9fs ]; then
+  die "disk image output $OUTDIR is on a 9p filesystem; use a native Linux filesystem for the raw build, then export the qcow2"
+fi
 RAW="$OUTDIR/disk.raw"
 QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
@@ -492,7 +498,7 @@ start_registry() {
   fi
   # Someone else's registry already listening (the composefs spike leaves one on
   # :5000) is fine to push to — one local registry is as good as another.
-  if curl -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
+  if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
     msg "reusing the registry already listening on :$want" >&2
     echo "localhost:$want"; return
   fi
@@ -503,10 +509,10 @@ start_registry() {
         continue
       }
     for _ in $(seq 1 30); do
-      curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
+      curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
       sleep 1
     done
-    if curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
+    if curl --connect-timeout 2 --max-time 4 -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
       msg "started a registry on :$port for the install source" >&2
       echo "localhost:$port"; return
     fi
@@ -763,6 +769,15 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   Full log: $LOG"
   fi
   die "bootc install failed; full log: $LOG"
+fi
+
+# A composefs repository whose objects carry no fs-verity still boots, but its
+# first `bootc upgrade` fails with EIO ("lower file ... has no fs-verity
+# digest"). bootc installs such a repository without a word when the kernel it
+# runs on lacks fs-verity, so check every object here.
+if [ "$COMPOSEFS" = yes ]; then
+  sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
+    || die "the installed composefs objects lack fs-verity: the kernel running this install ($(uname -r)) needs fs-verity support for $ROOTFS"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------

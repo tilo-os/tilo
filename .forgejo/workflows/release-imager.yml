@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: false
+      installer_rootfs:
+        description: "Live installer root filesystem: btrfs (default) or ext4. Use ext4 for WHPX diagnostics with a matching OS image."
+        type: string
+        required: false
+        default: "btrfs"
       published_os_image:
         description: "Optional signed Tilo manifest-list digest; empty uses vars.TILO_INSTALLER_OS_IMAGE."
         type: string
@@ -70,8 +75,13 @@ jobs:
           LENOVO_TARGET_IMAGE: ${{ github.event.inputs.lenovo_target_image }}
           GENERIC_TARGET: ${{ github.event.inputs.generic_target }}
           INSTALLER_ONLY: ${{ github.event.inputs.installer_only }}
+          INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs }}
           PUBLISHED_OS_SOURCE_REVISION: ${{ github.event.inputs.published_os_source_revision }}
         run: |
+          case "${INSTALLER_ROOTFS:-btrfs}" in
+            btrfs|ext4) ;;
+            *) echo '::error::installer_rootfs must be btrfs or ext4'; exit 1 ;;
+          esac
           if [[ -n ${LENOVO_TARGET_IMAGE:-} || ${GENERIC_TARGET:-false} == true ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                && ${INSTALLER_ONLY:-false} == true \
@@ -141,6 +151,7 @@ jobs:
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
       TILO_LENOVO_TARGET_IMAGE: ${{ matrix.target_profile == 'lenovo-83ed' && github.event.inputs.lenovo_target_image || '' }}
       TILO_GENERIC_TARGET: ${{ matrix.target_profile == 'generic' && 'true' || 'false' }}
+      TILO_INSTALLER_ROOTFS: ${{ github.event.inputs.installer_rootfs || 'btrfs' }}
       # The live medium must boot QEMU virt; the separately signed Lenovo
       # target carries its physical DTB and is staged as an offline payload.
       TILO_HARDWARE_PROFILE: generic

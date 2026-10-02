@@ -136,6 +136,7 @@ pub struct BrokerHandle {
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
+    drain_wake: Option<std::sync::Arc<crate::idle_wake::DrainPark>>,
     /// Trusted shell-only MLS lifecycle transaction boundary. This is never
     /// exposed through the app-facing Cap'n Proto service.
     mls_authority: Option<
@@ -231,6 +232,9 @@ impl Drop for BrokerHandle {
     fn drop(&mut self) {
         self.local_session.lifecycle().close();
         self.drain_quit.store(true, Ordering::Relaxed);
+        if let Some(wake) = &self.drain_wake {
+            wake.poke();
+        }
         if let Some(t) = self.drain_thread.take() {
             let _ = t.join();
         }
@@ -613,7 +617,8 @@ fn spawn_inner(
         Arc::new(Mutex::new(HashMap::new()));
 
     // Inbound-drain: when peer-sync is on, drain signed documents, presence,
-    // and cooperative scrollback requests/responses every 100ms.
+    // and cooperative scrollback. The thread parks until a frame arrives,
+    // or for a second while a channel still has governance to pump.
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
@@ -632,6 +637,7 @@ fn spawn_inner(
             channel_encryption: channel_encryption.clone(),
         };
         let quit = Arc::clone(&drain_quit);
+        let wake = std::sync::Arc::clone(&net.drain_wake);
         std::thread::Builder::new()
             .name("tilo-collab-broker-drain".into())
             .spawn(move || {
@@ -647,7 +653,12 @@ fn spawn_inner(
                     if !queues.drain_once(&mut labels, &mut announced) {
                         break;
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    let timeout = queues
+                        .channel_encryption
+                        .as_ref()
+                        .filter(|service| service.has_live_channels())
+                        .map(|_| Duration::from_secs(1));
+                    wake.wait(timeout);
                 }
             })
             .ok()
@@ -754,6 +765,7 @@ fn spawn_inner(
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
         drain_quit,
+        drain_wake: peer_sync.map(|net| std::sync::Arc::clone(&net.drain_wake)),
         mls_authority,
         channel_encryption,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),

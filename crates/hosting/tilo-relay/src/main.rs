@@ -355,22 +355,12 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
         fs::full_replica::save_status(&status_path, &status).unwrap();
-        // The filesystem process keeps its status fresh; the relay honours
-        // only a recent one. Relay start can take longer than that bound.
-        let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let heartbeat = std::thread::spawn({
-            let (path, beating) = (status_path.clone(), std::sync::Arc::clone(&beating));
-            move || {
-                while beating.load(std::sync::atomic::Ordering::Acquire) {
-                    let mut status = status.clone();
-                    status.updated_at_ms = tilo_clock::unix_now_ms();
-                    let staged = path.with_extension("staged");
-                    std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
-                    std::fs::rename(&staged, &path).unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                }
-            }
-        });
+        // The relay judges the stamp by a clock stopped where it was written,
+        // so it stays recent however long the relay takes to start.
+        let stamped = fs::full_replica::load_status(&status_path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
 
         let bundle_path = temp.path().join("home-peer.toml");
         let bundle = fs::full_replica::HomePeerSet {
@@ -401,7 +391,7 @@ mod tests {
         config.save(&config_path).unwrap();
         let config = RelayConfig::load(&config_path).unwrap();
 
-        let relay = Relay::start(
+        let relay = Relay::start_with_replica_clock(
             config,
             RelayIdentity {
                 user_public_key: user.public_key,
@@ -409,6 +399,7 @@ mod tests {
                 device_cert: cert,
                 revocations: RevocationList::new(),
             },
+            std::sync::Arc::new(tilo_clock::FixedClock(stamped)),
         )
         .await
         .unwrap();
@@ -419,8 +410,6 @@ mod tests {
         );
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
-        beating.store(false, std::sync::atomic::Ordering::Release);
-        heartbeat.join().unwrap();
         relay.shutdown().await;
     }
 }

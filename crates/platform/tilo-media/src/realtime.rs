@@ -712,6 +712,13 @@ mod unavailable {
             Err(RealtimeError::NotCompiled)
         }
 
+        /// # Errors
+        ///
+        /// Never returns: no encoder exists to finish.
+        pub fn finish(self) -> Result<Vec<EncodedUnit>, RealtimeError> {
+            match self.never {}
+        }
+
         pub fn force_keyframe(&mut self) {}
 
         pub fn set_bitrate(&mut self, _bits_per_second: u64) {}

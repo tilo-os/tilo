@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch a greeter or installer in cage. Native ARM KVM's 2D virtio GPU
+# requires software rendering together with legacy DRM modesetting; physical
+# GPUs keep their normal renderer and atomic modesetting path.
+set -euo pipefail
+
+if (( $# < 1 )); then
+  echo 'usage: tilo-cage-session PROGRAM [ARGS...]' >&2
+  exit 2
+fi
+
+for card in /sys/class/drm/card[0-9]*; do
+  if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
+    export WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1
+    break
+  fi
+done
+
+export WLR_NO_HARDWARE_CURSORS=1
+exec /usr/bin/cage -s -- "$@"

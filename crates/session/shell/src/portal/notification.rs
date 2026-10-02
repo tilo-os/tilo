@@ -63,6 +63,7 @@ pub struct PortalNotificationAction {
 pub struct NotificationPortalHandle {
     state: Arc<Mutex<NotificationState>>,
     pending_actions: Arc<Mutex<VecDeque<(u32, String)>>>,
+    wake: crate::idle_wake::IdleWake,
 }
 
 impl NotificationPortalHandle {
@@ -84,6 +85,7 @@ impl NotificationPortalHandle {
                 actions.pop_front();
             }
             actions.push_back((numeric_id, action.into()));
+            self.wake.poke();
         }
     }
 
@@ -210,10 +212,13 @@ pub fn spawn_action_emitter(
         let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
         loop {
-            interval.tick().await;
-            for action in portal.drain_actions() {
+            let actions = portal.drain_actions();
+            if actions.is_empty() {
+                portal.wake.wait().await;
+                continue;
+            }
+            for action in actions {
                 let _ = NotificationBackend::action_invoked(
                     &context,
                     &action.app_id,

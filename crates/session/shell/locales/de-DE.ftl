@@ -518,6 +518,7 @@ host-search-in-resource-fallback = Ressource
 host-search-scope-app = App { $title }
 host-json-arguments = JSON-Argumente: {"{"}{ $names }{"}"}
 host-a11y-filter-all = Filter: Alle
+host-a11y-filter-more = Filter: Mehr
 host-a11y-filter-kind = Filter: { $kind }
 host-a11y-scope = Bereich: { $scope }
 host-a11y-search-filters = Suchfilter
@@ -814,6 +815,7 @@ follow-stop = Beenden
 
 # Filterchips der Suche
 search-filter-all = Alle
+search-filter-more = Mehr
 
 # Schnelleinstellungen: Zeilen für Geräte und Medien
 qs-devices-mic-other = Mikrofon · von hier aufnehmen

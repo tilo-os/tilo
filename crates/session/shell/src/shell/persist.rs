@@ -728,7 +728,7 @@ mod tests {
             std::fs::create_dir_all(&applications).expect("applications directory");
             std::fs::write(
                 applications.join("rygel-preferences.desktop"),
-                "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nNotShowIn=GNOME;\n",
+                "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nNotShowIn=KDE;\n",
             )
             .expect("desktop entry");
             let mut env = tilo_test_env::ScopedEnv::new();
