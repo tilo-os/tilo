@@ -130,6 +130,12 @@ pub fn look(
         layers: look.layers.clone(),
         grid: look.grid.unwrap_or(false),
         view: Some(region),
+        reference: look.reference.unwrap_or_else(|| {
+            art.reference
+                .as_ref()
+                .is_some_and(|reference| reference.visible)
+        }),
+        bare: false,
     };
     let picture = render(renderer, text, art, region, scale, &options)?;
     let info = json!({

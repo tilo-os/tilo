@@ -15,7 +15,9 @@ use ui::prelude::TestApp;
 
 /// The most the whole surface may weigh, in bytes of JSON: what an agent
 /// reads before it can act. Growing past it is a design decision, not drift.
-const BUDGET: usize = 64 * 1024;
+/// Vector design (stroke styling, blends, shadows, groups, clips,
+/// typography, align, SVG and a reference to work from) took it from 64 KiB.
+const BUDGET: usize = 96 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {

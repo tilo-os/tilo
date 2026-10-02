@@ -33,22 +33,14 @@ fn rect(id: &str, x: f64, fill: &str) -> NewMark {
     NewMark {
         id: Some(id.into()),
         name: Some(id.into()),
-        shape: Shape::Rect {
+        fill: Some(fill.into()),
+        ..NewMark::new(Shape::Rect {
             x,
             y: 10.0,
             width: 50.0,
             height: 40.0,
             radius: 0.0,
-        },
-        fill: Some(fill.into()),
-        gradient: None,
-        stroke: None,
-        stroke_width: None,
-        opacity: None,
-        brush: None,
-        angle: None,
-        wet: None,
-        params: None,
+        })
     }
 }
 
@@ -112,7 +104,7 @@ fn named_marks_are_edited_arranged_and_removed_by_id() {
     .unwrap();
     apply(
         &mut art,
-        CanvasAction::EditMarks(EditMarks {
+        CanvasAction::edit(EditMarks {
             ids: vec!["sun".into()],
             fill: Some("#ff8800".into()),
             move_by: Some([5.0, -2.0]),
@@ -263,4 +255,268 @@ fn the_vocabulary_is_published_as_a_schema_and_typos_are_refused() {
         art.apply(invoke).is_err(),
         "`colour` is not a field of a shape mark"
     );
+}
+
+/// A group is addressed by its id: edits move, scale and rotate its
+/// members as one about the group's centre, and remove-marks takes them
+/// all. A clip names the mark whose shape cuts another.
+#[test]
+fn groups_transform_as_one_and_clips_name_a_mark() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let member = |id: &str, x: f64| NewMark {
+        group: Some("logo".into()),
+        ..rect(id, x, "#224466")
+    };
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![
+            member("left", 0.0),
+            member("right", 150.0),
+            NewMark {
+                clip: Some("left".into()),
+                ..rect("inside", 10.0, "#ff0000")
+            },
+        ],
+    )))
+    .unwrap();
+    let state = art.state().unwrap();
+    assert_eq!(state.groups(), vec!["logo"]);
+    assert_eq!(state.mark("inside").unwrap().clip, "left");
+
+    // Scaling the group doubles the distance between its members: they
+    // scale about the group's centre (100, 30), not each their own.
+    apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["logo".into()],
+            scale: Some(2.0),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let left = state.mark("left").unwrap().bounds();
+    let right = state.mark("right").unwrap().bounds();
+    assert!((left.x0 - -100.0).abs() < 1e-6, "{left:?}");
+    assert!((right.x1 - 300.0).abs() < 1e-6, "{right:?}");
+    assert!((left.width() - 100.0).abs() < 1e-6);
+
+    // Moving a transformed mark moves it in artwork units.
+    apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["logo".into()],
+            move_by: Some([10.0, 0.0]),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let moved = art.state().unwrap().mark("left").unwrap().bounds();
+    assert!((moved.x0 - -90.0).abs() < 1e-6, "{moved:?}");
+
+    let error = apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["logos".into()],
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("logo"),
+        "the refusal names the groups: {error}"
+    );
+    let error = apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["inside".into()],
+            clip: Some("nothing".into()),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap_err();
+    assert!(error.contains("not a mark"), "{error}");
+
+    art.apply(ArtworkResource::REMOVE_MARKS.with(vec!["logo".into()]))
+        .unwrap();
+    let left: Vec<String> = art
+        .state()
+        .unwrap()
+        .marks
+        .iter()
+        .map(|mark| mark.id.clone())
+        .collect();
+    assert_eq!(left, vec!["inside".to_owned()]);
+}
+
+/// Outlines take dashes, caps, joins, a blend and a shadow; a wrong name is
+/// refused with the valid ones listed.
+#[test]
+fn stroke_styling_blend_and_shadow_are_validated_by_name() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![NewMark {
+            stroke: Some("#000000".into()),
+            stroke_width: Some(4.0),
+            dash: Some(vec![8.0, 4.0]),
+            cap: Some("butt".into()),
+            join: Some("miter".into()),
+            blend: Some("multiply".into()),
+            shadow: Some(canvas::model::Shadow {
+                offset: [4.0, 6.0],
+                blur: 8.0,
+                colour: None,
+            }),
+            ..rect("frame", 0.0, "#ffeeaa")
+        }],
+    )))
+    .unwrap();
+    let state = art.state().unwrap();
+    let style = &state.mark("frame").unwrap().style;
+    assert_eq!(style.dash, vec![8.0, 4.0]);
+    assert_eq!(style.blend.as_deref(), Some("multiply"));
+    assert_eq!(style.shadow.as_ref().unwrap().blur, 8.0);
+
+    let error = apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["frame".into()],
+            blend: Some("burn".into()),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("color-burn") && error.contains("screen"),
+        "{error}"
+    );
+    apply(
+        &mut art,
+        CanvasAction::edit(EditMarks {
+            ids: vec!["frame".into()],
+            blend: Some("normal".into()),
+            dash: Some(Vec::new()),
+            shadow: Some(canvas::model::Shadow {
+                offset: [0.0, 0.0],
+                blur: 0.0,
+                colour: None,
+            }),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let style = &state.mark("frame").unwrap().style;
+    assert!(style.blend.is_none() && style.dash.is_empty() && style.shadow.is_none());
+}
+
+/// Text takes a family, weight, italic, alignment, line height and a wrap
+/// width; `\n` breaks lines, and the box an agent reads grows with them.
+#[test]
+fn text_takes_typography_and_lines() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let text = |align: &str, weight: u16| Shape::Text {
+        x: 600.0,
+        y: 100.0,
+        text: "VECTOR\nDESIGN".into(),
+        size: 40.0,
+        font: Some("serif".into()),
+        weight: Some(weight),
+        italic: false,
+        align: Some(align.into()),
+        line_height: Some(1.5),
+        width: None,
+    };
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![NewMark {
+            id: Some("title".into()),
+            ..NewMark::new(text("center", 700))
+        }],
+    )))
+    .unwrap();
+    let bounds = art.state().unwrap().mark("title").unwrap().bounds();
+    assert!(
+        (bounds.center().x - 600.0).abs() < 1e-6,
+        "centred on x: {bounds:?}"
+    );
+    assert!(bounds.height() > 90.0, "two lines: {bounds:?}");
+    let error = art
+        .apply(ArtworkResource::DRAW.with((None, vec![NewMark::new(text("middle", 400))])))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("start, center or end"), "{error}");
+}
+
+/// Align lines marks (or groups) up along an edge; distribute spaces them
+/// with equal gaps between the outermost.
+#[test]
+fn align_and_distribute_move_marks_and_groups() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![
+            rect("a", 0.0, "#111111"),
+            NewMark {
+                shape: Shape::Rect {
+                    x: 70.0,
+                    y: 200.0,
+                    width: 20.0,
+                    height: 20.0,
+                    radius: 0.0,
+                },
+                ..rect("b", 0.0, "#222222")
+            },
+            rect("c", 300.0, "#333333"),
+        ],
+    )))
+    .unwrap();
+    apply(
+        &mut art,
+        CanvasAction::Align(canvas::actions::Align {
+            ids: vec!["a".into(), "b".into(), "c".into()],
+            edge: Some("top".into()),
+            distribute: Some("horizontal".into()),
+            to: None,
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let bounds = |id: &str| state.mark(id).unwrap().bounds();
+    assert!(
+        ["a", "b", "c"]
+            .iter()
+            .all(|id| (bounds(id).y0 - 10.0).abs() < 1e-6)
+    );
+    let first_gap = bounds("b").x0 - bounds("a").x1;
+    let second_gap = bounds("c").x0 - bounds("b").x1;
+    assert!(
+        (first_gap - second_gap).abs() < 1e-6,
+        "{first_gap} {second_gap}"
+    );
+    assert!((bounds("a").x0).abs() < 1e-6 && (bounds("c").x1 - 350.0).abs() < 1e-6);
+
+    apply(
+        &mut art,
+        CanvasAction::Align(canvas::actions::Align {
+            ids: vec!["b".into()],
+            edge: Some("center".into()),
+            to: Some("artwork".into()),
+            ..canvas::actions::Align::default()
+        }),
+    )
+    .unwrap();
+    let centre = art.state().unwrap().mark("b").unwrap().bounds().center();
+    assert!((centre.x - 600.0).abs() < 1e-6, "{centre:?}");
+    let error = apply(
+        &mut art,
+        CanvasAction::Align(canvas::actions::Align {
+            ids: vec!["a".into()],
+            edge: Some("centre".into()),
+            ..canvas::actions::Align::default()
+        }),
+    )
+    .unwrap_err();
+    assert!(error.contains("left, center, right"), "{error}");
 }
