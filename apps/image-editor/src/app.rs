@@ -671,16 +671,17 @@ impl ImageEditorApp {
             return false;
         }
         self.checkpoint();
-        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
-        {
-            *source = path.to_string_lossy().into_owned();
-        }
-        self.project.name = path
+        let source = path.to_string_lossy().into_owned();
+        let name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled image")
-            .into();
-        ProjectDoc::write(state, &self.project);
+            .to_string();
+        self.dispatch_graph_action(
+            state,
+            crate::actions::SET_SOURCE_TYPE,
+            &crate::actions::SetSource { path: source, name },
+        );
         self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
         true
     }
@@ -698,16 +699,20 @@ impl ImageEditorApp {
         }
         crate::web_file::remember(name, bytes);
         self.checkpoint();
-        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
-        {
-            *source = format!("{}{name}", crate::engine::OPENED_SOURCE);
-        }
-        self.project.name = std::path::Path::new(name)
+        let source = format!("{}{name}", crate::engine::OPENED_SOURCE);
+        let title = std::path::Path::new(name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled image")
-            .into();
-        ProjectDoc::write(state, &self.project);
+            .to_string();
+        self.dispatch_graph_action(
+            state,
+            crate::actions::SET_SOURCE_TYPE,
+            &crate::actions::SetSource {
+                path: source,
+                name: title,
+            },
+        );
         // The kept bytes may be a new image under the same name.
         self.rendered_project = None;
         self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
