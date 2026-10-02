@@ -16,13 +16,46 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, ProgressBar, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{Button, ProgressBar, Row, Spacer, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 use zeroize::Zeroize;
 
-use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
+use crate::i18n::{t, t_args};
+use crate::widgets::{
+    El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
+};
+
+fn location_shown(location: EndpointLocation) -> String {
+    match location {
+        EndpointLocation::Hosted => t("agent-location-hosted"),
+        EndpointLocation::ThisDevice => t("agent-location-this-device"),
+        EndpointLocation::PrivateNetwork => t("agent-location-private"),
+    }
+}
+
+fn gib(n: impl Into<i64>) -> String {
+    t_args("agent-gib", &[("n", n.into().into())])
+}
+
+fn fit_tone(fit: HardwareFit) -> StatusTone {
+    match fit {
+        HardwareFit::Excellent | HardwareFit::Good => StatusTone::Success,
+        HardwareFit::Tight | HardwareFit::Unsupported => StatusTone::Warning,
+    }
+}
+
+fn phase_tone(phase: &LocalModelPhase) -> StatusTone {
+    match phase {
+        LocalModelPhase::Ready { running: true, .. } => StatusTone::Success,
+        LocalModelPhase::Ready { running: false, .. } => StatusTone::Neutral,
+        LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => {
+            StatusTone::Accent
+        }
+        LocalModelPhase::Error { .. } => StatusTone::Warning,
+    }
+}
 
 const SETUP_KEY: &str = "agent_models.local.setup";
 pub(crate) const CONFIRM_KEY: &str = "agent_models.local.confirm";
@@ -39,7 +72,12 @@ fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Outp
         MANAGER_OUTPUT_LIMIT,
         timeout,
     )
-    .map_err(|error| format!("model service is unavailable: {error}"))
+    .map_err(|error| {
+        t_args(
+            "agent-manager-unavailable",
+            &[("error", error.to_string().into())],
+        )
+    })
 }
 
 fn manager_diagnostic(bytes: &[u8]) -> String {
@@ -69,13 +107,13 @@ pub enum HardwareFit {
 }
 
 impl HardwareFit {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Excellent => "Excellent fit",
-            Self::Good => "Good fit",
-            Self::Tight => "Will run, with limits",
-            Self::Unsupported => "Not enough memory",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Self::Excellent => "agent-fit-excellent",
+            Self::Good => "agent-fit-good",
+            Self::Tight => "agent-fit-tight",
+            Self::Unsupported => "agent-fit-unsupported",
+        })
     }
 }
 
@@ -144,14 +182,14 @@ impl LocalModelPhase {
         matches!(self, Self::Downloading { .. } | Self::Installing { .. })
     }
 
-    fn status(&self) -> &'static str {
-        match self {
-            Self::Downloading { .. } => "Downloading",
-            Self::Installing { .. } => "Installing",
-            Self::Ready { running: true, .. } => "Running",
-            Self::Ready { running: false, .. } => "Ready",
-            Self::Error { .. } => "Needs attention",
-        }
+    fn status(&self) -> String {
+        t(match self {
+            Self::Downloading { .. } => "agent-status-downloading",
+            Self::Installing { .. } => "agent-status-installing",
+            Self::Ready { running: true, .. } => "agent-status-running",
+            Self::Ready { running: false, .. } => "agent-status-ready",
+            Self::Error { .. } => "agent-status-attention",
+        })
     }
 }
 
@@ -301,34 +339,22 @@ fn fallback_snapshot() -> LocalModelSnapshot {
         .and_then(|kib| u16::try_from(kib / 1024 / 1024).ok())
         .unwrap_or(8);
     let (fit, reason) = if memory_gib >= 32 {
-        (
-            HardwareFit::Excellent,
-            "Your memory can keep a larger local model responsive while other apps are open.",
-        )
+        (HardwareFit::Excellent, t("agent-reason-excellent"))
     } else if memory_gib >= 16 {
-        (
-            HardwareFit::Good,
-            "Balanced for everyday tool use and this device's available system memory.",
-        )
+        (HardwareFit::Good, t("agent-reason-good"))
     } else if memory_gib >= 8 {
-        (
-            HardwareFit::Tight,
-            "A compact model leaves room for the desktop and workspace apps.",
-        )
+        (HardwareFit::Tight, t("agent-reason-tight"))
     } else {
-        (
-            HardwareFit::Unsupported,
-            "This device does not report enough memory for reliable local inference.",
-        )
+        (HardwareFit::Unsupported, t("agent-reason-unsupported"))
     };
     LocalModelSnapshot {
         hardware: HardwareRecommendation {
             fit,
             memory_gib,
-            accelerator: "Checked by the model service at install".into(),
+            accelerator: t("agent-accel-checked"),
             accelerator_memory_gib: None,
             free_storage_gib: None,
-            reason: reason.into(),
+            reason,
         },
         recommendation: None,
         models: Vec::new(),
@@ -357,13 +383,13 @@ fn available_actions(phase: &LocalModelPhase) -> Vec<ModelAction> {
     }
 }
 
-fn action_label(action: ModelAction) -> &'static str {
-    match action {
-        ModelAction::Start => "Start",
-        ModelAction::Stop => "Stop",
-        ModelAction::Remove => "Remove…",
-        ModelAction::Retry => "Retry install",
-    }
+fn action_label(action: ModelAction) -> String {
+    t(match action {
+        ModelAction::Start => "agent-action-start",
+        ModelAction::Stop => "agent-action-stop",
+        ModelAction::Remove => "agent-action-remove",
+        ModelAction::Retry => "agent-action-retry",
+    })
 }
 
 fn action_slug(action: ModelAction) -> &'static str {
@@ -414,7 +440,7 @@ fn provider_action_button(
     profile_id: Option<&str>,
     action_id: &str,
 ) -> Button {
-    let button = Button::new(id, label, None);
+    let button = Button::new(id, label, None).content_sized();
     match crate::actions::agent_provider_binding(resources, profile_id, action_id) {
         Some(binding) => button.on_action(binding),
         None => button.with_enabled(false),
@@ -557,8 +583,9 @@ impl AgentModelsPane {
             Err(error) => (
                 fallback_snapshot(),
                 false,
-                Some(format!(
-                    "The local model service is unavailable ({error}). Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle."
+                Some(t_args(
+                    "agent-notice-service-down",
+                    &[("error", error.into())],
                 )),
             ),
         };
@@ -597,7 +624,10 @@ impl AgentModelsPane {
             }
             Err(error) => {
                 self.manager_available = false;
-                self.notice = Some(format!("Could not refresh local models: {error}"));
+                self.notice = Some(t_args(
+                    "agent-notice-refresh-err",
+                    &[("error", error.into())],
+                ));
             }
         }
         self.last_poll = ui::time::now();
@@ -650,214 +680,243 @@ impl AgentModelsPane {
 
     fn accelerator_card(&self) -> Option<El> {
         let setup = self.snapshot.accelerator_setup.as_ref()?;
-        let mut body = vec![value_row("Signed hardware match", &setup.boot_pack_id)];
-        let status = match &setup.status {
+        let match_label = t("agent-accel-match");
+        let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
+        let (status, tone) = match &setup.status {
             AcceleratorSetupState::Available => {
-                body.push(caption(
-                    "Tilo found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
-                ));
+                body.push(caption(&t("agent-accel-available")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-accelerator-setup",
-                            "Set up accelerator",
-                            Some(ACCELERATOR_SETUP_KEY),
-                        )))
+                        .push(Box::new(
+                            Button::new(
+                                "agent-models-accelerator-setup",
+                                &t("agent-accel-setup"),
+                                Some(ACCELERATOR_SETUP_KEY),
+                            )
+                            .content_sized(),
+                        ))
                         .push(Box::new(Spacer::new())),
                 ));
-                "Ready to set up"
+                (t("agent-accel-ready"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Queued => {
                 body.push(Box::new(
-                    ProgressBar::indeterminate().with_label("Preparing accelerator support"),
+                    ProgressBar::indeterminate().with_label(t("agent-accel-preparing")),
                 ));
-                body.push(caption(
-                    "The request is queued. You can leave Settings while Tilo verifies and stages the signed system image.",
-                ));
-                "Queued"
+                body.push(caption(&t("agent-accel-queued-caption")));
+                (t("agent-accel-queued"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Staging => {
                 body.push(Box::new(
-                    ProgressBar::indeterminate().with_label("Staging accelerator support"),
+                    ProgressBar::indeterminate().with_label(t("agent-accel-staging-label")),
                 ));
-                body.push(caption(
-                    "Tilo is building the next boot deployment. The current desktop keeps running normally.",
-                ));
-                "Staging"
+                body.push(caption(&t("agent-accel-staging-caption")));
+                (t("agent-accel-staging"), StatusTone::Warning)
             }
             AcceleratorSetupState::RestartRequired => {
-                body.push(caption(
-                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; Tilo will verify the booted deployment before calling it active.",
-                ));
-                "Restart required"
+                body.push(caption(&t("agent-accel-restart-caption")));
+                (t("agent-accel-restart"), StatusTone::Warning)
             }
             AcceleratorSetupState::Active => {
-                body.push(caption(
-                    "The signed accelerator stack is active and local model setup can use it.",
-                ));
-                "Active"
+                body.push(caption(&t("agent-accel-active-caption")));
+                (t("agent-accel-active"), StatusTone::Success)
             }
             AcceleratorSetupState::Error { message } => {
                 body.push(caption(message));
-                body.push(caption(
-                    "Nothing was installed into the running system. Retry rechecks this device against the signed hardware policy.",
-                ));
+                body.push(caption(&t("agent-accel-error-retry")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-accelerator-retry",
-                            "Retry accelerator setup",
-                            Some(ACCELERATOR_SETUP_KEY),
-                        )))
+                        .push(Box::new(
+                            Button::new(
+                                "agent-models-accelerator-retry",
+                                &t("agent-accel-retry"),
+                                Some(ACCELERATOR_SETUP_KEY),
+                            )
+                            .content_sized(),
+                        ))
                         .push(Box::new(Spacer::new())),
                 ));
-                "Needs attention"
+                (t("agent-status-attention"), StatusTone::Warning)
             }
         };
         Some(card_with_action(
-            "Accelerator support",
-            Box::new(Text::new(status).with_size(12.0)),
+            &t("agent-accel-title"),
+            semantic_status_pill(&status, tone),
             rows(body),
         ))
     }
 
+    fn push_recommendation_confirm(body: &mut Vec<El>, package: &LocalModelPackage) {
+        let download = t("agent-download");
+        let download_size = byte_size(package.download_bytes);
+        let after = t("agent-storage-after");
+        let after_size = byte_size(package.installed_bytes);
+        let source = t("agent-source");
+        let revision = t("agent-revision");
+        let license = t("agent-license");
+        let accept = t_args(
+            "agent-license-accept",
+            &[("url", package.license_url.as_str().into())],
+        );
+        let accept_btn = t("agent-accept-download");
+        let cancel = t("agent-cancel");
+        body.extend([
+            value_row(&download, &download_size),
+            value_row(&after, &after_size),
+            value_row(&source, &package.source),
+            value_row(&revision, &package.revision),
+            value_row(&license, &package.license),
+            caption(&accept),
+            Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Button::new(
+                            "agent-models-confirm-install",
+                            &accept_btn,
+                            Some(CONFIRM_KEY),
+                        )
+                        .content_sized(),
+                    ))
+                    .push(Box::new(
+                        Button::new("agent-models-cancel-install", &cancel, Some(CANCEL_KEY))
+                            .content_sized(),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ),
+        ]);
+    }
+
     fn recommendation_card(&self) -> El {
         let hardware = &self.snapshot.hardware;
+        let fit_label = hardware.fit.label();
+        let mem = gib(i64::from(hardware.memory_gib));
+        let hw_fit = t("agent-hw-fit");
+        let hw_mem = t("agent-hw-memory");
+        let hw_accel = t("agent-hw-accel");
         let mut body = vec![
-            value_row("Hardware fit", hardware.fit.label()),
-            value_row("System memory", &format!("{} GiB", hardware.memory_gib)),
-            value_row("Accelerator", &hardware.accelerator),
+            value_row(&hw_fit, &fit_label),
+            value_row(&hw_mem, &mem),
+            value_row(&hw_accel, &hardware.accelerator),
         ];
         if let Some(vram) = hardware.accelerator_memory_gib {
-            body.push(value_row("Accelerator memory", &format!("{vram} GiB")));
+            let label = t("agent-hw-accel-mem");
+            let value = gib(i64::from(vram));
+            body.push(value_row(&label, &value));
         }
         if let Some(storage) = hardware.free_storage_gib {
-            body.push(value_row("Storage available", &format!("{storage} GiB")));
+            let label = t("agent-hw-storage");
+            let value = gib(i64::from(storage));
+            body.push(value_row(&label, &value));
         }
         body.push(caption(&hardware.reason));
         let Some(package) = &self.snapshot.recommendation else {
-            body.push(value_row(
-                "Recommended model",
-                "Waiting for signed model catalog",
-            ));
-            body.push(caption(
-                "Setup stays disabled until the local model service reports a verified, immutable model release.",
-            ));
+            let rec_model = t("agent-rec-model");
+            let waiting = t("agent-rec-waiting");
+            body.push(value_row(&rec_model, &waiting));
+            body.push(caption(&t("agent-rec-waiting-caption")));
+            let unavailable = t("agent-setup-unavailable");
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("agent-models-setup-unavailable", "Set up unavailable", None)
+                        Button::new("agent-models-setup-unavailable", &unavailable, None)
+                            .content_sized()
                             .with_enabled(false),
                     ))
                     .push(Box::new(Spacer::new())),
             ));
             return card_with_action(
-                "Recommended for this device",
-                Box::new(Text::new("Service unavailable").with_size(12.0)),
+                &t("agent-rec-title"),
+                semantic_status_pill(&t("agent-service-unavailable"), StatusTone::Warning),
                 rows(body),
             );
         };
+        let rec_model = t("agent-rec-model");
         body.extend([
-            value_row("Recommended model", &package.name),
+            value_row(&rec_model, &package.name),
             caption(&package.description),
         ]);
         if self.confirmation.as_deref() == Some(&package.id) {
-            body.extend([
-                value_row("Download", &byte_size(package.download_bytes)),
-                value_row("Storage after install", &byte_size(package.installed_bytes)),
-                value_row("Source", &package.source),
-                value_row("Pinned revision", &package.revision),
-                value_row("License", &package.license),
-                caption(&format!(
-                    "By continuing, you accept the model license at {}. Tilo downloads the pinned snapshot once and keeps inference on this device.",
-                    package.license_url
-                )),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "agent-models-confirm-install",
-                            "Accept license & download",
-                            Some(CONFIRM_KEY),
-                        )))
-                        .push(Box::new(Button::new(
-                            "agent-models-cancel-install",
-                            "Cancel",
-                            Some(CANCEL_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ),
-            ]);
+            Self::push_recommendation_confirm(&mut body, package);
         } else {
+            let setup = t("agent-setup-device");
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new(
-                            "agent-models-setup-local",
-                            "Set up on this device",
-                            Some(SETUP_KEY),
-                        )
-                        .with_enabled(
-                            self.manager_available
-                                && hardware.fit != HardwareFit::Unsupported
-                                && self
-                                    .snapshot
-                                    .accelerator_setup
-                                    .as_ref()
-                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
-                        ),
+                        Button::new("agent-models-setup-local", &setup, Some(SETUP_KEY))
+                            .content_sized()
+                            .with_enabled(
+                                self.manager_available
+                                    && hardware.fit != HardwareFit::Unsupported
+                                    && self
+                                        .snapshot
+                                        .accelerator_setup
+                                        .as_ref()
+                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                            ),
                     ))
                     .push(Box::new(Spacer::new())),
             ));
         }
         card_with_action(
-            "Recommended for this device",
-            Box::new(Text::new(hardware.fit.label()).with_size(12.0)),
+            &t("agent-rec-title"),
+            semantic_status_pill(&fit_label, fit_tone(hardware.fit)),
             rows(body),
         )
     }
 
     fn model_card(&self, model: &InstalledLocalModel) -> El {
+        let status = model.phase.status();
+        let storage = byte_size(model.package.installed_bytes);
+        let status_label = t("agent-model-status");
+        let storage_label = t("agent-model-storage");
+        let license_label = t("agent-license");
         let mut body = vec![
-            value_row("Status", model.phase.status()),
-            value_row("Storage", &byte_size(model.package.installed_bytes)),
-            value_row("License", &model.package.license),
+            value_row(&status_label, &status),
+            value_row(&storage_label, &storage),
+            value_row(&license_label, &model.package.license),
         ];
         match &model.phase {
             LocalModelPhase::Downloading {
                 downloaded_bytes,
                 total_bytes,
             } => {
+                let progress = t_args(
+                    "agent-progress-downloading",
+                    &[("name", model.package.name.as_str().into())],
+                );
                 body.push(Box::new(
                     ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
-                        .with_label(format!("Downloading {}", model.package.name)),
+                        .with_label(progress),
                 ));
-                body.push(caption(&format!(
-                    "{} of {} downloaded · safe to leave this page",
-                    byte_size(*downloaded_bytes),
-                    byte_size(*total_bytes)
+                let done = byte_size(*downloaded_bytes);
+                let total = byte_size(*total_bytes);
+                body.push(caption(&t_args(
+                    "agent-download-progress",
+                    &[("done", done.as_str().into()), ("total", total.into())],
                 )));
             }
             LocalModelPhase::Installing { percent, message } => {
+                let progress = t_args(
+                    "agent-progress-installing",
+                    &[("name", model.package.name.as_str().into())],
+                );
                 body.push(Box::new(match percent {
                     Some(_) => ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
-                        .with_label(format!("Installing {}", model.package.name)),
-                    None => ProgressBar::indeterminate()
-                        .with_label(format!("Installing {}", model.package.name)),
+                        .with_label(progress),
+                    None => ProgressBar::indeterminate().with_label(progress),
                 }));
                 body.push(caption(message));
             }
             LocalModelPhase::Error { message } => {
                 body.push(caption(message));
-                body.push(caption(
-                    "Retry resumes verified files where possible. Remove clears this model's local snapshot.",
-                ));
+                body.push(caption(&t("agent-error-retry-caption")));
             }
-            LocalModelPhase::Ready { running: true, .. } => body.push(caption(
-                "Available to agents through the local Tilo gateway. Workspace permissions still apply to every task.",
-            )),
-            LocalModelPhase::Ready { running: false, .. } => body.push(caption(
-                "Installed and verified. Start it when you want agents to use it; stopped models consume no accelerator memory.",
-            )),
+            LocalModelPhase::Ready { running: true, .. } => {
+                body.push(caption(&t("agent-ready-running-caption")));
+            }
+            LocalModelPhase::Ready { running: false, .. } => {
+                body.push(caption(&t("agent-ready-stopped-caption")));
+            }
         }
         let actions = available_actions(&model.phase);
         if !actions.is_empty() {
@@ -866,25 +925,28 @@ impl AgentModelsPane {
                 let label = if action == ModelAction::Remove
                     && self.remove_confirmation.as_deref() == Some(&model.package.id)
                 {
-                    "Confirm remove"
+                    t("agent-action-confirm-remove")
                 } else {
                     action_label(action)
                 };
-                row = row.push(Box::new(Button::new(
-                    &format!(
-                        "agent-models-{}-{}",
-                        action_slug(action),
-                        model_key(&model.package.id, action)
-                    ),
-                    label,
-                    Some(&model_key(&model.package.id, action)),
-                )));
+                row = row.push(Box::new(
+                    Button::new(
+                        &format!(
+                            "agent-models-{}-{}",
+                            action_slug(action),
+                            model_key(&model.package.id, action)
+                        ),
+                        &label,
+                        Some(&model_key(&model.package.id, action)),
+                    )
+                    .content_sized(),
+                ));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
         card_with_action(
             &model.package.name,
-            Box::new(Text::new(model.phase.status()).with_size(12.0)),
+            semantic_status_pill(&status, phase_tone(&model.phase)),
             rows(body),
         )
     }
@@ -924,15 +986,13 @@ impl AgentModelsPane {
     fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
         let action_resources = crate::actions::agent_provider_action_resources();
-        let mut body: Vec<El> = vec![caption(
-            "Hosted and compatible endpoints are personal to this device. Credentials remain references in the system vault.",
-        )];
+        let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
         body.push(Box::new(
             Row::new()
                 .push(Box::new(provider_action_button(
                     &action_resources,
                     "agent-models-add-anthropic",
-                    "Add Anthropic",
+                    &t("agent-add-anthropic"),
                     None,
                     "add-anthropic",
                 )))
@@ -940,7 +1000,7 @@ impl AgentModelsPane {
                 .push(Box::new(provider_action_button(
                     &action_resources,
                     "agent-models-add-openai",
-                    "Add compatible API",
+                    &t("agent-add-compatible"),
                     None,
                     "add-openai-compatible",
                 )))
@@ -951,7 +1011,8 @@ impl AgentModelsPane {
             .iter()
             .filter(|profile| profile.location != EndpointLocation::ThisDevice)
         {
-            body.push(value_row(profile.display_label(), profile.location.label()));
+            let location = location_shown(profile.location);
+            body.push(value_row(profile.display_label(), &location));
             let profile_id = profile.id.clone();
             let fields = self.field_buffers(profile);
             let label = fields
@@ -974,21 +1035,21 @@ impl AgentModelsPane {
                     .with_id(&format!("agent-models-label-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.label))
                     .with_initial_value(&label)
-                    .with_placeholder("Provider name"),
+                    .with_placeholder(&t("agent-placeholder-name")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-url-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.endpoint))
                     .with_initial_value(&endpoint)
-                    .with_placeholder("https://provider.example/v1"),
+                    .with_placeholder(&t("agent-placeholder-url")),
             ));
             body.push(Box::new(
                 TextInput::local()
                     .with_id(&format!("agent-models-model-{profile_id}"))
                     .with_external_buffer(Arc::clone(&fields.model))
                     .with_initial_value(&model)
-                    .with_placeholder("Model ID"),
+                    .with_placeholder(&t("agent-placeholder-model")),
             ));
             let save_id = profile_id.clone();
             let save_fields = fields.clone();
@@ -997,15 +1058,19 @@ impl AgentModelsPane {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
                 ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
             };
-            let alternate_protocol_label = format!("Use {}", alternate_protocol.label());
+            let alternate_protocol_label = t_args(
+                "agent-use-protocol",
+                &[("protocol", alternate_protocol.label().into())],
+            );
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-save-provider-{profile_id}"),
-                            "Save details",
+                            &t("agent-save-details"),
                             None,
                         )
+                        .content_sized()
                         .on_effect(move || {
                             let label = save_fields
                                 .label
@@ -1039,11 +1104,13 @@ impl AgentModelsPane {
                                 }
                                 config.save().map_err(|error| error.to_string())
                             } else {
-                                Err("Provider is no longer available.".into())
+                                Err(t("agent-provider-gone"))
                             };
                             save_notice.set(Some(match result {
-                                Ok(()) => "Provider details saved.".into(),
-                                Err(error) => format!("Provider details were not saved: {error}"),
+                                Ok(()) => t("agent-provider-saved"),
+                                Err(error) => {
+                                    t_args("agent-provider-save-err", &[("error", error.into())])
+                                }
                             }));
                         }),
                     ))
@@ -1059,7 +1126,11 @@ impl AgentModelsPane {
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-enabled-{profile_id}"),
-                        if profile.enabled { "Disable" } else { "Enable" },
+                        &if profile.enabled {
+                            t("agent-disable")
+                        } else {
+                            t("agent-enable")
+                        },
                         Some(&profile_id),
                         if profile.enabled { "disable" } else { "enable" },
                     )))
@@ -1067,13 +1138,14 @@ impl AgentModelsPane {
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-remove-provider-{profile_id}"),
-                        "Remove provider",
+                        &t("agent-remove-provider"),
                         Some(&profile_id),
                         "remove",
                     )))
                     .push(Box::new(Spacer::new())),
             ));
-            body.push(value_row("Protocol", profile.protocol.label()));
+            let protocol = t("agent-protocol");
+            body.push(value_row(&protocol, profile.protocol.label()));
             let buffer = self.key_buffer(&profile_id);
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
             let set_id = profile_id.clone();
@@ -1090,18 +1162,19 @@ impl AgentModelsPane {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder("API key (stored in Tilo vault)"),
+                            .with_placeholder(&t("agent-placeholder-key")),
                     ))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-set-api-key-{profile_id}"),
-                            if configured {
-                                "Replace key"
+                            &if configured {
+                                t("agent-replace-key")
                             } else {
-                                "Save key"
+                                t("agent-save-key")
                             },
                             None,
                         )
+                        .content_sized()
                         .on_effect(move || {
                             let mut key = set_buffer
                                 .lock()
@@ -1111,40 +1184,47 @@ impl AgentModelsPane {
                             key.zeroize();
                             drop(key);
                             set_notice.set(Some(match result {
-                                Ok(()) => "API key saved in the Tilo vault.".into(),
-                                Err(error) => format!("API key was not saved: {error}"),
+                                Ok(()) => t("agent-key-saved"),
+                                Err(error) => t_args(
+                                    "agent-key-save-err",
+                                    &[("error", error.to_string().into())],
+                                ),
                             }));
                         }),
                     ))
                     .push(Box::new(
                         Button::new(
                             &format!("agent-models-remove-api-key-{profile_id}"),
-                            "Remove key",
+                            &t("agent-remove-key"),
                             None,
                         )
+                        .content_sized()
                         .on_effect(move || {
                             let result = tilo_model_gateway::remove_api_key(&remove_id);
                             remove_notice.set(Some(match result {
-                                Ok(()) => "API key removed from the Tilo vault.".into(),
-                                Err(error) => format!("API key was not removed: {error}"),
+                                Ok(()) => t("agent-key-removed"),
+                                Err(error) => t_args(
+                                    "agent-key-remove-err",
+                                    &[("error", error.to_string().into())],
+                                ),
                             }));
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
             ));
-            body.push(caption(if configured {
-                "API key is stored in the Tilo vault."
+            body.push(caption(&if configured {
+                t("agent-key-stored")
             } else {
-                "No API key stored."
+                t("agent-key-none")
             }));
             if profile.default_model.is_some() {
                 body.push(Box::new(provider_action_button(
                     &action_resources,
                     &format!("agent-models-default-{profile_id}"),
-                    if config.default_profile.as_deref() == Some(&profile.id) {
-                        "Default for new tasks"
+                    &if config.default_profile.as_deref() == Some(&profile.id) {
+                        t("agent-default-current")
                     } else {
-                        "Use by default"
+                        t("agent-use-default")
                     },
                     Some(&profile_id),
                     "set-default",
@@ -1152,37 +1232,38 @@ impl AgentModelsPane {
             }
         }
         for issue in config.validation_errors() {
-            body.push(caption(&format!(
-                "Provider configuration: {}",
-                issue.message
+            body.push(caption(&t_args(
+                "agent-config-issue",
+                &[("message", issue.message.as_str().into())],
             )));
         }
-        card("Hosted and compatible providers", rows(body))
+        card(&t("agent-hosted-title"), rows(body))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        let private_title = t("agent-private-title");
+        let local_inf = t("agent-local-inference");
+        let local_gw = t("agent-local-gateway");
+        let downloads = t("agent-downloads");
+        let downloads_v = t("agent-downloads-value");
         let mut cards = vec![card(
-            "Private by design",
+            &private_title,
             rows(vec![
-                caption(
-                    "Models configured here supply inference only. They do not grant an agent access to a workspace, app, file, message, or device.",
-                ),
-                value_row("Local inference", "Loopback-only Tilo model gateway"),
-                value_row("Downloads", "Explicit, pinned, and visible here"),
+                caption(&t("agent-private-caption")),
+                value_row(&local_inf, &local_gw),
+                value_row(&downloads, &downloads_v),
             ]),
         )];
         if !self.manager_available {
             cards.push(card(
-                "Local model service unavailable",
-                caption(
-                    "Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
-                ),
+                &t("agent-service-down-title"),
+                caption(&t("agent-service-down-body")),
             ));
             cards.push(self.hosted_profiles());
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
-            cards.push(card("Local model service", caption(notice)));
+            cards.push(card(&t("agent-service-title"), caption(notice)));
         }
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
@@ -1190,10 +1271,8 @@ impl AgentModelsPane {
         cards.push(self.recommendation_card());
         if self.snapshot.models.is_empty() {
             cards.push(card(
-                "Models on this device",
-                caption(
-                    "No local models are installed. Setup shows the download, storage, source, revision, and license before anything changes.",
-                ),
+                &t("agent-models-empty-title"),
+                caption(&t("agent-models-empty")),
             ));
         } else {
             for model in &self.snapshot.models {
@@ -1244,10 +1323,12 @@ impl AgentModelsPane {
                     && !self.operation_is_running(&operation)
                 {
                     self.remove_confirmation = Some(model.package.id.clone());
-                    self.notice = Some(format!(
-                        "Remove {}? This deletes its {} local snapshot. Tasks and workspace data are unchanged.",
-                        model.package.name,
-                        byte_size(model.package.installed_bytes)
+                    self.notice = Some(t_args(
+                        "agent-notice-remove",
+                        &[
+                            ("name", model.package.name.as_str().into()),
+                            ("size", byte_size(model.package.installed_bytes).into()),
+                        ],
                     ));
                     self.structure_dirty = true;
                     return;
@@ -1257,19 +1338,23 @@ impl AgentModelsPane {
             }
         };
         if let Err(error) = result {
-            self.operation_finished(
-                &operation,
-                Err(format!("{} failed: {error}", action_label(action))),
+            let failed = t_args(
+                "agent-notice-action-failed",
+                &[
+                    ("action", action_label(action).into()),
+                    ("error", error.into()),
+                ],
             );
-            self.notice = Some(format!("{} failed: {error}", action_label(action)));
+            self.operation_finished(&operation, Err(failed.clone()));
+            self.notice = Some(failed);
             self.structure_dirty = true;
         } else {
             self.refresh();
             self.operation_finished(
                 &operation,
-                Ok(format!(
-                    "{} request accepted by the local model manager",
-                    action_label(action)
+                Ok(t_args(
+                    "agent-notice-action-ok",
+                    &[("action", action_label(action).into())],
                 )),
             );
         }
@@ -1281,17 +1366,18 @@ impl AgentModelsPane {
             match self.control.stage_accelerator() {
                 Ok(()) => {
                     self.refresh();
-                    self.operation_finished(
-                        &operation,
-                        Ok("Accelerator setup request accepted by the local model manager".into()),
-                    );
+                    self.operation_finished(&operation, Ok(t("agent-notice-accel-ok")));
                 }
                 Err(error) => {
                     self.operation_finished(
                         &operation,
-                        Err(format!("Accelerator setup could not start: {error}")),
+                        Err(t_args(
+                            "agent-notice-accel-err",
+                            &[("error", error.clone().into())],
+                        )),
                     );
-                    self.notice = Some(format!("Accelerator setup could not start: {error}"));
+                    self.notice =
+                        Some(t_args("agent-notice-accel-err", &[("error", error.into())]));
                     self.structure_dirty = true;
                 }
             }
@@ -1322,17 +1408,20 @@ impl AgentModelsPane {
             match self.control.install(&package) {
                 Ok(()) => {
                     self.refresh();
-                    self.operation_finished(
-                        &operation,
-                        Ok("Model installation request accepted by the local model manager".into()),
-                    );
+                    self.operation_finished(&operation, Ok(t("agent-notice-install-ok")));
                 }
                 Err(error) => {
                     self.operation_finished(
                         &operation,
-                        Err(format!("Installation could not start: {error}")),
+                        Err(t_args(
+                            "agent-notice-install-err",
+                            &[("error", error.clone().into())],
+                        )),
                     );
-                    self.notice = Some(format!("Installation could not start: {error}"));
+                    self.notice = Some(t_args(
+                        "agent-notice-install-err",
+                        &[("error", error.into())],
+                    ));
                     self.structure_dirty = true;
                 }
             }

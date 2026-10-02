@@ -166,6 +166,7 @@ name = "os-workflows"
 inputs = ["os/", ".forgejo/workflows/"]
 suites = [
   "os/containers/tilo-relay/test-contract.sh",
+  "os/containers/tilo-agent-host/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",

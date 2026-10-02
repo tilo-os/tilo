@@ -21,6 +21,11 @@
 # network-root transports. Omitting only clevis/network leaves their
 # dependencies unsatisfied. Local TPM unlock uses systemd-cryptsetup and
 # tpm2-tss; local NVMe does not require the nvmf network-root module.
+# The native GPU drivers whose firmware dominates the image (nouveau's GSP
+# firmware alone is ~100 MB) stay out of every profile's initramfs: the
+# built-in simpledrm draws plymouth and the passcode prompt, and the native
+# driver loads from the root after switch-root. This keeps the UKI small
+# enough to load and unpack quickly and to fit several generations on the ESP.
 set -euo pipefail
 kver="${1:?usage: build-initramfs.sh KVER}"
 
@@ -40,7 +45,7 @@ log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
-    --omit-drivers xfs \
+    --omit-drivers "amdgpu nouveau xe xfs" \
     --add-drivers ext4 \
     --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
@@ -55,7 +60,7 @@ test -s "/usr/lib/modules/$kver/initramfs.img"
 mkdir -p /usr/lib/tilo
 sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' "$log" \
   | sort -u > /usr/lib/tilo/initramfs-modules.txt
-printf '%s\n' xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt
+printf '%s\n' amdgpu nouveau xe xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt
 for m in $required_modules; do
   grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || {
     echo "dracut did not include the $m module; an encrypted root could not be opened" >&2
