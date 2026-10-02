@@ -198,6 +198,7 @@ pub fn configured_font_system() -> FontSystem {
     }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
+    crate::font_catalog::drop_duplicate_faces(database);
     database.set_sans_serif_family(UI_SANS_FAMILY);
     database.set_serif_family(UI_SERIF_FAMILY);
     database.set_monospace_family(UI_MONOSPACE_FAMILY);
