@@ -28,6 +28,10 @@ on:
         description: "Lower ptrace scope in the disposable dev guest and trace the greeter after a reboot."
         required: false
         default: "false"
+      check_desktop:
+        description: "Log in through the greeter and require the native desktop portal and a presented frame."
+        required: false
+        default: "false"
       verity_samples:
         description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
         required: false
@@ -50,6 +54,7 @@ jobs:
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
       CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
       CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
+      CHECK_DESKTOP: ${{ github.event.inputs.check_desktop }}
       VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -119,6 +124,7 @@ jobs:
             echo '::error::capture_fault_pc must be true or false'
             exit 1
           }
+          [[ $CHECK_DESKTOP == true || $CHECK_DESKTOP == false ]] || exit 2
           [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::upgrade_image must pin a tilo-vm dev image digest'
             exit 1
@@ -128,6 +134,10 @@ jobs:
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
           finish() {
             status=$?
+            # A session can exit before the portal appears. Preserve its flight
+            # recorder, rather than only the SSH chatter on the serial console.
+            ./os/dev/vm.sh ssh 'cat "$HOME/.local/state/tilo/session-logs/latest.log"' > "$TILO_RUN/desktop-session.log" 2>&1 || true
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' journalctl -b -u greetd --no-pager" > "$TILO_RUN/greetd.log" 2>&1 || true
             if (( status != 0 )); then
               ./os/dev/vm.sh cmd "screendump $TILO_RUN/boot-failure.ppm" >/dev/null 2>&1 || true
               bash ./os/dev/diagnose-boot-failure.sh || true
@@ -232,6 +242,30 @@ jobs:
             echo '::error::native KVM guest did not keep a graphical greeter'
             exit 1
           }
+          if [[ $CHECK_DESKTOP == true ]]; then
+            ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
+            desktop_ready=false
+            for attempt in $(seq 1 60); do
+              if ./os/dev/vm.sh ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1 && test "$(wc -l < "$HOME/.local/state/tilo/session-logs/frame-trace.csv")" -gt 1'; then
+                desktop_ready=true
+                break
+              fi
+              sleep 1
+            done
+            [[ $desktop_ready == true ]] || { echo '::error::native desktop did not present a frame and publish its portal'; exit 1; }
+            ./os/dev/vm.sh cmd "screendump $TILO_RUN/desktop.ppm" >/dev/null
+          fi
+
+      - name: Upload desktop evidence
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: dev-kvm-desktop-diagnostic
+          path: |
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop-session.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/greetd.log
+            /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/desktop.ppm
+          if-no-files-found: ignore
 
       - name: Upload failed framebuffer
         if: failure()
