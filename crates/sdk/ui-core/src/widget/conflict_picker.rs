@@ -587,7 +587,7 @@ impl Widget for ConflictPicker {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.glass,
+            theme.material_glass(),
             None,
             &body,
         );
