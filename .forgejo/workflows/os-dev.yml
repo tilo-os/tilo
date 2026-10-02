@@ -22,6 +22,14 @@ on:
         description: 'JSON architecture list for a targeted cached dev build, for example ["aarch64"].'
         required: false
         default: '["x86_64","aarch64"]'
+      fex_payload_candidate:
+        description: 'Optional immutable ARM FEX payload; provide together with windows_guest_candidate.'
+        required: false
+        default: ''
+      windows_guest_candidate:
+        description: 'Optional immutable x86 Windows guest; provide together with fex_payload_candidate.'
+        required: false
+        default: ''
   push:
     branches: [main]
   pull_request:
@@ -92,4 +100,6 @@ jobs:
     uses: ./.forgejo/workflows/build-image.yml
     with:
       arches: ${{ needs.arches.outputs.arches }}
+      fex_payload_candidate: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.fex_payload_candidate || '' }}
+      windows_guest_candidate: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.windows_guest_candidate || '' }}
     secrets: inherit

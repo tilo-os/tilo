@@ -120,13 +120,18 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
-    /// Publish one canonical live frame to the workspace's live members.
-    /// Lossy: nothing is queued or retained.
+    /// Publish one sealed live frame
+    /// ([`SealedLiveFrame`](crate::live::SealedLiveFrame)) to the
+    /// workspace's live members. Lossy: nothing is queued or retained.
     ///
     /// # Errors
     ///
-    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    /// Returns [`CoeditError::Unsealed`] for anything but a canonical sealed
+    /// frame, and [`CoeditError::Disconnected`] if the connection is gone.
     pub fn publish_live(&self, frame: Vec<u8>) -> Result<(), CoeditError> {
+        if crate::live::SealedLiveFrame::decode(&frame).is_err() {
+            return Err(CoeditError::Unsealed);
+        }
         self.client
             .send(Envelope::Live {
                 workspace_id: self.workspace_id,

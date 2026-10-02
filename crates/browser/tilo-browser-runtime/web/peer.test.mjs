@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {createLiveLayer, connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
+const SEALED = 0x53;
+const sealedFrame = value => Uint8Array.from([SEALED, ...new TextEncoder().encode(JSON.stringify(value))]);
+const openedFrame = bytes => JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 const ROOM_HEX = 'aa'.repeat(32);
 const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
@@ -102,6 +106,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
             calls.grantAgents.push(agent);
             return JSON.stringify({token: '0102', room: ROOM_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
           },
+          // Stand-in channel keys: a sealed frame carries the SEALED marker,
+          // and only a sealed frame opens.
+          sealLive: async (room, bytes) => (peer.sealing === false ? null : Uint8Array.from([SEALED, ...bytes])),
+          openLive: async (room, bytes) => (bytes[0] === SEALED ? bytes.slice(1) : null),
           roomRecords: () => JSON.stringify(peer.records),
           hasRecord: (app, record) => peer.records.some(row => row.app === app && row.record === record),
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
@@ -183,7 +191,12 @@ test('the live layer joins over the carrier with the session grant and interpola
   session.memberWatcher(OTHER, true);
   assert.deepEqual(peer.live.members(), [OTHER]);
   const frame = {seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null};
+  // An unsealed frame is never opened.
   session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify(frame)), performance.now());
+  await settle();
+  assert.deepEqual(presence, []);
+  session.presenceSubscribers.get(OTHER)(sealedFrame(frame), performance.now());
+  await until(() => presence.length, 'the sealed presence');
   assert.deepEqual(presence, [OTHER]);
   const [remote] = peer.live.remoteState(performance.now() + 50);
   assert.deepEqual(remote.pointer, [1, 2]);
@@ -192,7 +205,8 @@ test('the live layer joins over the carrier with the session grant and interpola
   peer.live.watchRecord(record);
   const track = runtime.liveRecordTrack(JSON.stringify(record));
   const preview = {kind: 'preview', record, seq: 1, ops: [{kind: 'insert', at: '01', text: 'x'}]};
-  session.opsSubscribers.get(`${OTHER}/${track}`)(new TextEncoder().encode(JSON.stringify(preview)));
+  session.opsSubscribers.get(`${OTHER}/${track}`)(sealedFrame(preview));
+  await until(() => Object.keys(peer.live.remoteState()[0].previews).length, 'the sealed preview');
   assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 1);
   runtime.peer.emit('ready', [{kind: 'durable', record}]);
   assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
@@ -200,11 +214,21 @@ test('the live layer joins over the carrier with the session grant and interpola
   peer.live.publishPresence({pointer: [5, 6]});
   // The publisher sends at most 120 frames/s: the pointer may wait out the
   // interval after the participant frame.
-  const lastSent = () => JSON.parse(new TextDecoder().decode(session.presence.at(-1)));
+  const lastSent = () => openedFrame(session.presence.at(-1));
   await until(() => lastSent().pointer !== null, 'the pointer frame');
   assert.deepEqual(lastSent().pointer, [5, 6]);
   assert.ok(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]));
+  await until(() => session.ops.length, 'the sealed preview frame');
   assert.equal(session.ops.at(-1).name, track);
+  assert.equal(session.ops.at(-1).bytes[0], SEALED, 'only a sealed frame leaves');
+  assert.ok(session.presence.every(bytes => bytes[0] === SEALED), 'only sealed presence leaves');
+
+  // Without the record's keys nothing leaves at all.
+  runtime.peer.sealing = false;
+  const sentBefore = session.ops.length;
+  peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'z'}]);
+  await settle();
+  assert.equal(session.ops.length, sentBefore);
   await peer.dispose();
   assert.equal(peer.live.state, 'closed');
 });
@@ -476,7 +500,8 @@ test('the live grant waits until the room admitted the device', async () => {
   assert.equal(runtime.calls.grants, 1);
   assert.equal(peer.live.state, 'live');
   assert.equal(peer.live.publisherId, SELF);
-  const sent = JSON.parse(new TextDecoder().decode(liveCarriers.connects[0].presence.at(-1) ?? new Uint8Array()) || 'null');
+  const last = liveCarriers.connects[0].presence.at(-1);
+  const sent = last ? openedFrame(last) : null;
   assert.equal(sent?.participant?.kind ?? 'person', 'person');
   await peer.dispose();
 });
@@ -502,7 +527,7 @@ test('an agent layer publishes under the agent grant, and agents are told apart 
   assert.ok(agentSession, 'the agent layer joins under its own namespace');
   assert.equal(agent.agent, 'Reading agent');
   agent.publishPresence({selection: {anchor: '03', head: '03'}});
-  const lastSent = () => JSON.parse(new TextDecoder().decode(agentSession.presence.at(-1)));
+  const lastSent = () => (agentSession.presence.length ? openedFrame(agentSession.presence.at(-1)) : {});
   await until(() => lastSent().selection, 'the agent caret');
   const sent = lastSent();
   assert.deepEqual(sent.participant, {kind: 'agent', activity: null, label: 'Reading agent', color: sent.participant.color});
@@ -513,13 +538,14 @@ test('an agent layer publishes under the agent grant, and agents are told apart 
   const members = [];
   peer.live.onAgentActivity(value => activity.push(value));
   peer.live.onMember(value => members.push(value));
-  const presence = (from, participant) => session.presenceSubscribers.get(from)(new TextEncoder().encode(JSON.stringify({
+  const presence = (from, participant) => session.presenceSubscribers.get(from)(sealedFrame({
     seq: 1, sentAtMs: Date.now(), focus: null, pointer: null, selection: null, drag: null, participant,
-  })), performance.now());
+  }), performance.now());
   session.memberWatcher(AGENT, true);
   session.memberWatcher(OTHER, true);
   presence(AGENT, {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: null});
   presence(OTHER, {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null});
+  await until(() => peer.live.people().length, 'the sealed presence of both');
   assert.deepEqual(peer.live.agents(), [{publisher: AGENT, agentId: 'Reading agent', name: 'Reading agent'}]);
   assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
   assert.equal(activity[0].name, 'Reading agent');
@@ -536,9 +562,10 @@ test('a member focusing a record subscribes its typing previews there', async ()
   const [session] = liveCarriers.connects;
   session.memberWatcher(OTHER, true);
   const record = {app: 'so.tilo.word-processor', record: 'main'};
-  session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify({
+  session.presenceSubscribers.get(OTHER)(sealedFrame({
     seq: 1, sentAtMs: Date.now(), focus: record, pointer: null, selection: null, drag: null,
-  })), performance.now());
+  }), performance.now());
+  await until(() => session.opsSubscribers.size, 'the focused record subscription');
   assert.ok(session.opsSubscribers.has(`${OTHER}/${runtime.liveRecordTrack(JSON.stringify(record))}`));
   await peer.dispose();
 });
@@ -560,7 +587,7 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   const agentMount = await peer.mountDesktop(target(), {app: 'so.tilo.word-processor', agent: 'Reading agent'});
   await tick();
   const [session] = liveCarriers.connects;
-  const selections = () => session.presence.map(bytes => JSON.parse(new TextDecoder().decode(bytes)).selection?.anchor ?? null);
+  const selections = () => session.presence.map(bytes => openedFrame(bytes).selection?.anchor ?? null);
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');
@@ -592,7 +619,7 @@ test('an action through a mount speaks for the person only if it moved that moun
   const chat = await peer.mountDesktop(undefined, {app: 'so.tilo.chat'});
   await tick();
   const [session] = liveCarriers.connects;
-  const selections = () => session.presence.map(bytes => JSON.parse(new TextDecoder().decode(bytes)).selection?.anchor ?? null);
+  const selections = () => session.presence.map(bytes => openedFrame(bytes).selection?.anchor ?? null);
   const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
   await sent('w1');

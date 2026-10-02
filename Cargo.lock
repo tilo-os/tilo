@@ -16006,6 +16006,7 @@ name = "tilo-relay-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "hex",
  "iroh-base",
@@ -19896,7 +19897,6 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-sys",
- "web-time",
  "winnow 0.7.14",
  "writeable",
  "x11rb",
