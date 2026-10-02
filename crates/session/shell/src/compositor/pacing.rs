@@ -233,6 +233,36 @@ impl FrameClock {
         self.next_deadline = next;
     }
 
+    /// Record a presenter retirement that may have blocked for longer than one frame.
+    ///
+    /// A vblank inside the interval after its deadline stays on the phase-locked
+    /// grid ([`Self::note_presented`]). A virtual scanout can return several
+    /// intervals later: the kernel waits up to 50 ms for a dumb-flush fence the
+    /// host does not signal, and phase-locking that late time adds one more
+    /// interval (~67 ms between paints at 60 Hz). When the retirement is already
+    /// more than one interval past the deadline it was admitted for, the frame
+    /// that was waiting is due at `at`.
+    pub fn note_blocked_retirement(&mut self, at: Instant) {
+        let overdue = self
+            .next_deadline
+            .checked_add(self.interval)
+            .is_some_and(|limit| at > limit);
+        if !overdue || self.adaptive {
+            self.note_presented(at);
+            return;
+        }
+        self.presented = self.presented.saturating_add(1);
+        let mut cursor = self.next_deadline;
+        while let Some(stepped) = cursor.checked_add(self.interval) {
+            if stepped >= at {
+                break;
+            }
+            cursor = stepped;
+            self.skipped = self.skipped.saturating_add(1);
+        }
+        self.next_deadline = at;
+    }
+
     /// The deadline currently being aimed at. Exposed for tests and diagnostics.
     pub fn next_deadline(&self) -> Instant {
         self.next_deadline
@@ -429,6 +459,32 @@ mod tests {
                 "having skipped the missed deadlines, the clock must not be \
                  immediately due again"
             );
+        }
+        // Phase `a_retirement_later_than_one_interval_is_due_at_once`.
+        {
+            // Virtual scanout acceptance can return ~50 ms after the frame
+            // was admitted (three 60 Hz intervals: the kernel's dumb-flush
+            // fence timeout). Phase-locking that late timestamp onto the
+            // next grid point inserts another interval, so paints land ~67 ms
+            // apart. The frame that was waiting is due at the retirement.
+            let t0 = Instant::now();
+            let interval = Duration::from_nanos(16_666_666);
+            let mut clock = FrameClock::new(interval, t0);
+            let retired = t0 + Duration::from_millis(50);
+            clock.note_blocked_retirement(retired);
+            assert_eq!(clock.next_deadline(), retired);
+            assert!(
+                clock.due(retired),
+                "a stall longer than one interval must paint on the retirement"
+            );
+            // Inside the following interval the grid stays put, same as a
+            // slightly late vblank.
+            let mut locked = FrameClock::new(interval, t0);
+            locked.note_blocked_retirement(t0);
+            let slightly_late = t0 + interval + Duration::from_millis(4);
+            locked.note_blocked_retirement(slightly_late);
+            assert_eq!(locked.next_deadline(), t0 + 2 * interval);
+            assert!(!locked.due(slightly_late));
         }
         // Phase `due_gates_presentation_between_deadlines`.
         {
