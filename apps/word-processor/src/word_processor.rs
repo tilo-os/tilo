@@ -804,7 +804,9 @@ impl WordProcessor {
             start.offset == 0
         };
         let adopt_first = was_empty
-            && blocks.first().is_some_and(|b| b.kind != "cell" && b.kind != "fidelity");
+            && blocks
+                .first()
+                .is_some_and(|b| b.kind != "cell" && b.kind != "fidelity");
         let action = crate::actions::paste_fragment_action(
             self.action_region(),
             crate::actions::SelectionTarget {
@@ -929,11 +931,7 @@ impl WordProcessor {
         clippy::needless_pass_by_value,
         reason = "callers construct owned RichTextAction values at the call site"
     )]
-    fn apply_rich(
-        &self,
-        state: &mut AutoCommit,
-        action: crate::actions::RichTextAction,
-    ) -> bool {
+    fn apply_rich(&self, state: &mut AutoCommit, action: crate::actions::RichTextAction) -> bool {
         if self.containers.is_none() || self.ids.is_none() {
             return false;
         }
