@@ -18,7 +18,86 @@
 #
 # Nothing is compiled here: the OS image is built by `$TILO_DISK_CARGO run -p tilo-vm --
 # image build`, the disk by os/dev/build-image.sh on the builder, and only the qcow2 is copied.
+# The copy is a delta when another tilo-dev-*.qcow2 already sits next to the destination:
+# that file is reflinked (or copied) into place first, and rsync --inplace updates it.
 set -euo pipefail
+
+# Virtual size in bytes, or no output when the header cannot be read.
+qcow_virtual_size() {
+  local path=$1 json
+  command -v qemu-img >/dev/null 2>&1 || return 0
+  json=$(qemu-img info -U --output=json -- "$path" 2>/dev/null) || return 0
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("virtual-size", ""))' <<<"$json" 2>/dev/null || true
+}
+
+# True when $1's directory holds some other tilo-dev-*.qcow2.
+qcow_seed_candidates() {
+  local dest=$1 dir base f
+  dir=$(dirname -- "$dest")
+  base=$(basename -- "$dest")
+  [ -d "$dir" ] || return 1
+  for f in "$dir"/tilo-dev-*.qcow2; do
+    [ -f "$f" ] || continue
+    [ "$(basename -- "$f")" = "$base" ] && continue
+    return 0
+  done
+  return 1
+}
+
+# Virtual size of a qcow2 on the builder. Empty when qemu-img is unavailable,
+# so the fetch still seeds from the newest local disk.
+remote_qcow_virtual_size() {
+  local path=$1 json
+  json=$(ssh "$TILO_DISK_BUILDER" "qemu-img info -U --output=json -- $(printf '%q' "$path")" 2>/dev/null) || return 0
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("virtual-size", ""))' <<<"$json" 2>/dev/null || true
+}
+
+# If $dest is absent, copy the newest other tilo-dev-*.qcow2 in its directory
+# onto it. $2 is the wanted virtual size in bytes: a same-size seed wins, and
+# a different size is still used when nothing matches. The copy is a new file
+# (reflink when the filesystem can) because rsync --inplace would mutate a
+# hard link and corrupt the disk it was linked from.
+seed_qcow_basis() {
+  local dest=$1 want=${2:-} dir base f t vsize
+  local best_any="" best_any_t=-1 best_match="" best_match_t=-1
+  [ -e "$dest" ] && return 0
+  dir=$(dirname -- "$dest")
+  base=$(basename -- "$dest")
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/tilo-dev-*.qcow2; do
+    [ -f "$f" ] || continue
+    [ "$(basename -- "$f")" = "$base" ] && continue
+    t=$(stat -c %Y -- "$f")
+    if [ "$t" -gt "$best_any_t" ]; then
+      best_any=$f
+      best_any_t=$t
+    fi
+    if [ -n "$want" ]; then
+      vsize=$(qcow_virtual_size "$f")
+      if [ "$vsize" = "$want" ] && [ "$t" -gt "$best_match_t" ]; then
+        best_match=$f
+        best_match_t=$t
+      fi
+    fi
+  done
+  if [ -n "$best_match" ]; then
+    f=$best_match
+  elif [ -n "$best_any" ]; then
+    f=$best_any
+  else
+    return 0
+  fi
+  echo "== seed $(basename -- "$dest") from $(basename -- "$f")"
+  cp --reflink=auto -- "$f" "$dest" || cp -- "$f" "$dest"
+  # rsync skips a file whose size and mtime already match. A seed can share
+  # the remote's size; stamp it so the delta check always runs.
+  touch -d @0 -- "$dest"
+}
+
+# `source build-disk.sh --seed-self-test` loads the helpers above and stops.
+if [ "${1:-}" = "--seed-self-test" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 [ $# -eq 2 ] || { sed -n '2,18p' "$0"; exit 2; }
 : "${TILO_DISK_BUILDER:?set TILO_DISK_BUILDER to the ssh destination of the builder}"
@@ -83,8 +162,15 @@ REMOTE
 
 remote=$(sed -n 's/^disk=//p' "$out.build.log" | tail -1)
 digest=$(sed -n 's/^oci_digest=//p' "$out.build.log" | tail -1)
+# A destination that does not exist yet has no basis, so rsync would send the
+# whole image. Seed one first. --inplace writes the delta into that file;
+# --sparse is omitted because, with --inplace, it does not punch holes unless
+# --whole-file is also set, and --whole-file turns the delta off.
+if [ ! -e "$out" ] && qcow_seed_candidates "$out"; then
+  seed_qcow_basis "$out" "$(remote_qcow_virtual_size "$remote")"
+fi
 echo "== fetch $remote"
-rsync --sparse --progress "$TILO_DISK_BUILDER:$remote" "$out"
+rsync --inplace --partial --no-whole-file --progress "$TILO_DISK_BUILDER:$remote" "$out"
 ssh "$TILO_DISK_BUILDER" rm -f "$remote"
 
 python3 - "$out" "$sha" "$digest" "$repo" <<'PY'
