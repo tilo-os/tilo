@@ -307,7 +307,7 @@ fn collaboration_and_history_survive_a_move_into_another_room() {
     let origin = tilo_app::record::identity(&source).expect("record identity");
     let from = tilo_app::record::room_scope(&source).expect("room scope");
     let target = RecordId::minted();
-    let arrived = tilo_app::record::transfer::rehome(
+    let mut arrived = tilo_app::record::transfer::rehome(
         &source,
         &Origin::Record(origin.clone()),
         &from,
