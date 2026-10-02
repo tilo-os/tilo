@@ -313,7 +313,7 @@ impl ActionSink {
             }
             None => {
                 self.local
-                    .dispatch_with_context(doc, FileExplorer::ACTION_TYPE, action, context)
+                    .dispatch_with_context(doc, FileExplorer::ACTION_TYPE, action, context);
             }
         }
     }

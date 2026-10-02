@@ -2043,6 +2043,11 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
 
 /// Stable workbook root for directory paging: the published door without nested
 /// sheets/cells (those stay on the retained search provider).
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "SheetsOperation encode is infallible for known variants"
+)]
 pub fn workbook_root(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Resource {
     let state = sheets_state_for_publish(ctx, doc);
     let mut root = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
@@ -2171,6 +2176,10 @@ pub(crate) fn live_presentation_resources(ctx: &SheetsResourceCtx) -> Vec<Resour
     vec![range]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "sheet document surface still lists every cell/view action inline"
+)]
 fn sheet_document_resource(idx: usize, sheet: &crate::resource::SheetInfo) -> Resource {
     let name = &sheet.name;
     let label = if name.trim().is_empty() {

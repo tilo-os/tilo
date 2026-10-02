@@ -539,6 +539,10 @@ fn browsing_data_controls(
 
 /// A labelled full-width text field: a caption above a [`TextInput`]
 /// bound to the CRDT `Text` object at `path`.
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
@@ -591,6 +595,10 @@ fn preference_toggle(
     })
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "hosted LocalState+builder pair is local to settings chrome"
+)]
 fn hosted_text(
     edits: Option<ui::LocalState<Vec<BrowserAction>>>,
     build: fn(String) -> BrowserAction,

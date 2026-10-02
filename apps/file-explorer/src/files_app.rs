@@ -8012,7 +8012,7 @@ impl FileExplorerWidget {
         resource
     }
 
-    /// Live extras beside ResourceRoot when framework-hosted: listing rows,
+    /// Live extras beside `ResourceRoot` when framework-hosted: listing rows,
     /// remote accounts, nearby transfers, and the error retry control. Not a
     /// second `files.folder` root and not places/templates (those ride publish).
     fn live_filesystem_extras(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {

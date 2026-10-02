@@ -1162,7 +1162,7 @@ impl ApiTesterApp {
                 .iter_mut()
                 .find(|collection| collection.id == id)
             {
-                collection.name = name.clone();
+                collection.name.clone_from(name);
             }
         }
         let mut renamed_env = false;
@@ -1174,11 +1174,10 @@ impl ApiTesterApp {
                 .environments
                 .iter_mut()
                 .find(|environment| environment.id == id)
+                && environment.name != *name
             {
-                if environment.name != *name {
-                    environment.name = name.clone();
-                    renamed_env = true;
-                }
+                environment.name.clone_from(name);
+                renamed_env = true;
             }
         }
         if renamed_env {

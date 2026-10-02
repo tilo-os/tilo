@@ -195,6 +195,11 @@ impl Resource for SheetsWorkbook {
 }
 
 /// Import/export Effects and workbook Views — no document delta.
+#[allow(
+    clippy::too_many_lines,
+    clippy::expect_used,
+    reason = "workbook view/effect ops stay in one table; encode is infallible"
+)]
 fn workbook_local_operations() -> Vec<ActionSpec> {
     use tilo_actions::{EncodedAction, ExecutionMode, ResultSpec};
 
