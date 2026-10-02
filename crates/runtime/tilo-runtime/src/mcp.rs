@@ -29,6 +29,10 @@ pub struct McpServer<H> {
     /// The app each of this session's invocations went to, so a later
     /// `tilo_status` reads produced content with that app's scope.
     produced_by: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, String>>,
+    /// The images this session has been shown, by content hash, with the
+    /// invocation that showed each: the same picture again is named, not
+    /// sent again.
+    shown: std::sync::Mutex<std::collections::HashMap<String, tilo_actions::InvocationId>>,
 }
 
 /// Where an answer carries the images it shows until [`tool_result`] moves
@@ -39,6 +43,8 @@ const IMAGES: &str = "\u{1}images";
 const MAX_IMAGES: usize = 4;
 /// Larger content is named, not shown.
 const MAX_IMAGE_BYTES: usize = 8 << 20;
+/// Pictures one session remembers having shown.
+const MAX_SHOWN: usize = 256;
 
 /// The MIME type of image bytes an MCP client can show.
 fn image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -289,6 +295,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             open_files: std::sync::Arc::default(),
             media: None,
             produced_by: std::sync::Mutex::default(),
+            shown: std::sync::Mutex::default(),
         }
     }
     /// Answer an action that produced image content with the image itself,
@@ -331,9 +338,52 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .find(|(id, _)| *id == peer)
             .and_then(|(_, app)| app.get("app_id")?.as_str().map(str::to_owned))
     }
+    fn shown(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, tilo_actions::InvocationId>>
+    {
+        self.shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// `hashes` split into those to send, now recorded as shown by
+    /// `invocation`, and the earlier invocations that showed the rest.
+    fn not_yet_shown(
+        &self,
+        hashes: Vec<String>,
+        invocation: tilo_actions::InvocationId,
+        again: bool,
+    ) -> (Vec<String>, Vec<tilo_actions::InvocationId>) {
+        let mut shown = self.shown();
+        let mut fresh = Vec::new();
+        let mut unchanged = Vec::new();
+        for hash in hashes {
+            match shown.get(&hash) {
+                Some(earlier) if !again && *earlier != invocation => unchanged.push(*earlier),
+                _ => {
+                    if shown.len() >= MAX_SHOWN {
+                        shown.clear();
+                    }
+                    shown.insert(hash.clone(), invocation);
+                    fresh.push(hash);
+                }
+            }
+        }
+        drop(shown);
+        (fresh, unchanged)
+    }
     /// Carry the images a succeeded `invocation` produced in `value`, under
-    /// [`IMAGES`], for [`tool_result`] to show.
-    async fn attach_images(&self, invocation: tilo_actions::InvocationId, value: &mut Value) {
+    /// [`IMAGES`], for [`tool_result`] to show. With `again` false, a
+    /// picture this session was already shown is named in `unchanged`
+    /// instead: a model pays for every image it is sent, and a look at an
+    /// unchanged artwork is the same picture. `tilo_status` on the earlier
+    /// invocation shows it again.
+    async fn attach_images(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        value: &mut Value,
+        again: bool,
+    ) {
         let Some(media) = self.media.clone() else {
             return;
         };
@@ -353,6 +403,22 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
             return;
         };
+        if hashes.is_empty() {
+            return;
+        }
+        let (hashes, unchanged) = self.not_yet_shown(hashes, invocation, again);
+        if let Some(earlier) = unchanged.first()
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert(
+                "unchanged".into(),
+                format!(
+                    "the same picture invocation {} showed, so it is not sent again; tilo_status on that invocation shows it",
+                    earlier.0
+                )
+                .into(),
+            );
+        }
         if hashes.is_empty() {
             return;
         }
@@ -972,7 +1038,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 let a: StatusArgs = parse(args)?;
                 let invocation = invocation_id(&a.invocation_id)?;
                 let mut value = self.status(invocation)?;
-                self.attach_images(invocation, &mut value).await;
+                self.attach_images(invocation, &mut value, true).await;
                 Ok(value)
             }
             "tilo_cancel" => {
@@ -1124,7 +1190,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let mut value = self
             .run_with_handles(target, a.arguments, invocation, a.revision, wait)
             .await?;
-        self.attach_images(invocation, &mut value).await;
+        self.attach_images(invocation, &mut value, false).await;
         if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
             self.open_files.record(&path, peer);
         }
@@ -1990,7 +2056,7 @@ fn tool_definitions() -> Vec<Value> {
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
         ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
-        ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index). Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index): batch the steps you already know, e.g. several edits and then a look, into one call. Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included. An image this session was already shown is not sent again: unchanged names the invocation that showed it",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
         ("tilo_cancel","Stop an invocation",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
     ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect();
