@@ -1,0 +1,47 @@
+# This is deliberately Dockerfile-specific: other repository images have
+# different staged inputs. BuildKit prefers <Dockerfile>.dockerignore beside
+# the selected Dockerfile.
+
+# Checkout metadata can contain the Actions credential. It is never a build
+# input, even though checkout also removes the credential after fetching.
+.git
+.gitignore
+.forgejo
+.containerignore
+
+# Local and image build products. BuildKit supplies its own cache mounts.
+target
+**/target
+os/output
+os/output*
+os/external-assets/cache
+os/rootfs
+
+# Host image definitions and obsolete host-built payloads are not relay inputs.
+os/Containerfile
+os/Containerfile.*
+os/shell
+os/fs
+os/terminal
+os/file-explorer
+os/tilo-greeter
+os/tilo-installer
+os/browser
+
+# Agent/editor state and developer scratch output.
+.claude
+.codex
+experiments
+*.log
+**/*.h264
+
+# Prose does not participate in either relay binary.
+docs
+AGENTS.md
+DEVELOPMENT.md
+
+# Operator documentation and fixtures are validated before the image build;
+# only the entrypoint is copied into the image.
+os/containers/tilo-agent-host/README.md
+os/containers/tilo-agent-host/compose.yaml
+os/containers/tilo-agent-host/test-contract.sh

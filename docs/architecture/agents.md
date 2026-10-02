@@ -76,6 +76,10 @@ operation, never a side effect of an agent request.
 
 ## Agent experience and MCP
 
+Foreign Linux agent boxes (no desktop) use the MCP-beside-local-relay path in
+[`agent-host.md`](agent-host.md) rather than embedding a cloud API or copying
+the user root secret.
+
 `crates/collab/actions` remains the single action schema. The gateway projects
 each permission-filtered `ActionDescriptor` to MCP with its existing JSON
 parameters, description, risk/confirmation contract and canonical address.
