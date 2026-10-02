@@ -1512,14 +1512,12 @@ pub(crate) fn publish_document_children(state: &crate::resource::ChatState) -> V
                 .channel_top_level
                 .iter()
                 .find(|(id, _)| id == &ch.id)
-                .map(|(_, count)| *count)
-                .unwrap_or(0);
+                .map_or(0, |(_, count)| *count);
             let messages = state
                 .channel_messages
                 .iter()
                 .find(|(id, _)| id == &ch.id)
-                .map(|(_, messages)| messages.as_slice())
-                .unwrap_or(&[]);
+                .map_or(&[], |(_, messages)| messages.as_slice());
             workspace = workspace.with_child(publish_channel_document(
                 &state.me,
                 &state.participants,
@@ -1604,6 +1602,10 @@ fn overlay_missing(base: &mut Resource, extra: Resource) {
 /// one `chat.channel:<id>` per channel, and — under the one open channel — a
 /// `chat.message:<id>` per message. Every operation is the same action the
 /// on-screen affordance dispatches.
+#[allow(
+    clippy::too_many_lines,
+    reason = "chat resource surface still overlays channel children for the standalone path"
+)]
 pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let state =
         <crate::resource::Chat as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();

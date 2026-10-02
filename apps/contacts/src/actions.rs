@@ -1918,20 +1918,9 @@ impl crate::app::ContactsApp {
             root.children.clear();
             return Some(root);
         }
-        fn find(resource: Resource, id: &str) -> Option<Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource);
-            }
-            for child in resource.children {
-                if let Some(found) = find(child, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
         if let Some(mut found) = provide_resources(&self.contacts_resource_ctx(), doc)
             .into_iter()
-            .find_map(|root| find(root, id))
+            .find_map(|root| find_resource(root, id))
         {
             if self.export_is_busy()
                 && let Some(action) = found
@@ -2756,4 +2745,16 @@ mod tests {
             ));
         }
     }
+}
+
+fn find_resource(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    for child in resource.children {
+        if let Some(found) = find_resource(child, id) {
+            return Some(found);
+        }
+    }
+    None
 }

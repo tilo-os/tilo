@@ -1736,7 +1736,8 @@ impl PhotosResources {
 }
 
 pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource {
-    let (w, h) = image.edited_size(edits);
+    let edits = *edits;
+    let (w, h) = image.edited_size(&edits);
     let id = resource_id(image);
     let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
     if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {

@@ -5968,6 +5968,7 @@ impl ui::resources::PublishesResources for BrowserWidget {
         reason = "Resource definitions stay together so their action contracts remain discoverable."
     )]
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        const MATERIALIZED_LIMIT: usize = 100;
         // Hosted: ResourceRoot already published bookmarks + window navigation
         // via tilo_resource::publish. Live extras (find-in-page session, load
         // progress) are not resource actions today, so there is nothing left
@@ -5975,7 +5976,6 @@ impl ui::resources::PublishesResources for BrowserWidget {
         if self.is_framework_hosted() {
             return Vec::new();
         }
-        const MATERIALIZED_LIMIT: usize = 100;
         let operation =
             |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
                 ActionSpec::operation(

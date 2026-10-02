@@ -1959,14 +1959,14 @@ impl ContactsApp {
         }
         let keep: std::collections::HashSet<_> =
             state.contacts.iter().map(|contact| contact.id).collect();
-        let stale: Vec<_> = self
+        let stale_ids: Vec<_> = self
             .store
             .contacts
             .iter()
             .map(|contact| contact.id)
             .filter(|id| !keep.contains(id))
             .collect();
-        for id in stale {
+        for id in stale_ids {
             self.store.delete(id);
         }
         for contact in &state.contacts {

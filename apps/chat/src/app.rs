@@ -3995,7 +3995,7 @@ impl ui::resources::PublishesResources for ChatApp {
     /// The tree a delivered invocation resolves against for an agent task
     /// participant: the same resources, authored as that participant (its
     /// posts carry it as author and its display name). When hosted, Document
-    /// ops stay on ResourceRoot's publish — do not republish a second chat root.
+    /// ops stay on `ResourceRoot`'s publish — do not republish a second chat root.
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
