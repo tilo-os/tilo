@@ -701,6 +701,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
             computer.clone(),
             viewer,
         );
+        endpoint.serve_media(session.media());
         let bound = crate::mcp_http::spawn(&config, endpoint)?;
         tracing::info!(%bound, "MCP HTTP endpoint listening");
     }
@@ -719,6 +720,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         computer,
         joiner: session.joiner(),
         search,
+        media: session.media(),
     };
     endpoint.accept(&listener)
 }
@@ -733,6 +735,8 @@ struct Endpoint<H> {
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
+    /// Where answers read the content actions produced.
+    media: Option<Arc<dyn crate::MediaReader>>,
 }
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
@@ -752,6 +756,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
+            let media = self.media.clone();
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -761,7 +766,9 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     let _slot = slot;
                     if let Err(error) = serve_connection(
                         stream,
-                        McpServer::new(host, room, actor).with_computer(computer),
+                        McpServer::new(host, room, actor)
+                            .with_computer(computer)
+                            .with_media(media),
                         &status,
                         joiner.as_ref(),
                         &search,
