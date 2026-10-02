@@ -424,7 +424,7 @@ impl MailApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
+    pub(crate) fn mark_hosted_for_test(&self) {
         self.shared.borrow_mut().actions.mark_hosted_for_test();
     }
 

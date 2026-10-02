@@ -442,7 +442,7 @@ mod host_undo_tests {
     use ui::tilo_resource::Invoke;
 
     /// Creating a remote-calendar event, then undoing through the host, must
-    /// queue a CalDAV delete via the inverse document action — not Automerge
+    /// queue a `CalDAV` delete via the inverse document action — not Automerge
     /// patches alone.
     #[test]
     fn undo_of_remote_event_create_queues_del_outbox_through_host() {

@@ -36,7 +36,7 @@ impl Resource for GitClient {
     }
 
     fn bound_actions(state: &GitClientState) -> Vec<ActionSpec> {
-        document_bound_actions(&state.settings)
+        document_bound_actions(state.settings)
     }
 
     fn children(state: &GitClientState) -> Vec<PublishedResource> {
@@ -183,6 +183,10 @@ mod tests {
     use crate::settings::Settings;
     use ui::widget::Widget;
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one publish/hosted extras check covers repo door, remotes, and live overlay"
+    )]
     #[test]
     fn resource_publish_owns_repo_door_and_hosted_keeps_only_live_extras() {
         let (model, _) = crate::sample::model();
@@ -245,7 +249,7 @@ mod tests {
             "fetch Effect must ride the remote child"
         );
 
-        let mut app = GitClientApp::from_model(model.clone(), Default::default());
+        let mut app = GitClientApp::from_model(model.clone(), std::collections::HashMap::default());
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
         assert!(!app.is_hosted(), "standalone stays on the local host");

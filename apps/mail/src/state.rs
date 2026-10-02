@@ -954,7 +954,7 @@ mod tests {
             .messages_in(Folder::Inbox)
             .into_iter()
             .next()
-            .map(Message::clone)
+            .cloned()
             .expect("sample inbox");
         let mut doc = automerge::AutoCommit::new();
         assert!(!st.actions.is_hosted());
