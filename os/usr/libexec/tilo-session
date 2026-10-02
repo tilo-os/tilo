@@ -21,6 +21,21 @@ readonly DATE=/usr/bin/date
 readonly FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
 readonly SESSION_TARGET=tilo-graphical-session.target
 
+# The desktop uses Mesa too. The greeter's separate cage process cannot pass
+# its LLVM CPU workaround through greetd into this authenticated session.
+# Restrict baseline JIT codegen to ARM guests with the 2D PCI virtio GPU;
+# physical GPUs retain their normal CPU selection.
+if [[ $(uname -m) == aarch64 ]]; then
+  for card in /sys/class/drm/card[0-9]*; do
+    if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
+      cpu_shim=/usr/lib/tilo/virtio-gallivm-cpu.so
+      [[ -s $cpu_shim ]] || { echo 'missing ARM virtual graphics CPU shim' >&2; exit 1; }
+      export LD_PRELOAD="$cpu_shim${LD_PRELOAD:+:$LD_PRELOAD}"
+      break
+    fi
+  done
+fi
+
 target_started=0
 environment_imported=0
 shell_pid=""

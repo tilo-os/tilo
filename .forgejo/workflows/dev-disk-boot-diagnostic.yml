@@ -32,6 +32,10 @@ on:
         description: "Log in through the greeter and require the native desktop portal and a presented frame."
         required: false
         default: "false"
+      override_session_wrapper:
+        description: "Bind the checked-out session wrapper into the disposable dev guest for a small-script regression test."
+        required: false
+        default: "false"
       verity_samples:
         description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
         required: false
@@ -55,6 +59,7 @@ jobs:
       CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
       CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
       CHECK_DESKTOP: ${{ github.event.inputs.check_desktop }}
+      OVERRIDE_SESSION_WRAPPER: ${{ github.event.inputs.override_session_wrapper }}
       VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -125,6 +130,7 @@ jobs:
             exit 1
           }
           [[ $CHECK_DESKTOP == true || $CHECK_DESKTOP == false ]] || exit 2
+          [[ $OVERRIDE_SESSION_WRAPPER == true || $OVERRIDE_SESSION_WRAPPER == false ]] || exit 2
           [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::upgrade_image must pin a tilo-vm dev image digest'
             exit 1
@@ -243,6 +249,13 @@ jobs:
             exit 1
           }
           if [[ $CHECK_DESKTOP == true ]]; then
+            if [[ $OVERRIDE_SESSION_WRAPPER == true ]]; then
+              sshpass -p "$TILO_PASS" scp -q -P 2222 \
+                -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+                os/usr/libexec/tilo-session "$TILO_USER@127.0.0.1:/tmp/tilo-session-override"
+              ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c 'install -m 0755 /tmp/tilo-session-override /run/tilo-session-override && mount --bind /run/tilo-session-override /usr/libexec/tilo-session'"
+            fi
             ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
             desktop_ready=false
             for attempt in $(seq 1 60); do
