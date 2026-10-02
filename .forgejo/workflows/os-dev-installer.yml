@@ -67,6 +67,11 @@ jobs:
             echo '::error::native ARM64 runner must provide apt-get or dnf'; exit 1
           fi
           command -v debugfs losetup mattrib mkfs.vfat podman qemu-img skopeo zstd >/dev/null
+      - name: Use the native overlay disk-builder store
+        run: |
+          set -euo pipefail
+          bash os/dev/ci-prepare-disk-devices.sh --kata-job
+          bash os/dev/ci-native-podman-store.sh
       - name: Pull the published dev image and build its installer overlay
         run: |
           set -euo pipefail
@@ -95,6 +100,8 @@ jobs:
             ')"
             if [ "$layout" = unsealed ]; then
               ./os/dev/install-cached-cosign.sh
+              # GITHUB_PATH applies to later steps, not this current shell.
+              export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
               RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
               adapted="localhost/tilo-dev-installer-base:$GITHUB_RUN_ID"
               adapter_context="$TILO_OUTPUT/boot-adapter"
