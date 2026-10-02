@@ -301,116 +301,6 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
-    /// Reports the actual current enrolled subscription, without allocating or
-    /// recovering any process/task authority.
-    pub fn enrolled_recipient_ready(&self, channel: &str) -> bool {
-        self.state
-            .while_live(|state| Ok(state.enrolled_recipient_ready(channel)))
-            .unwrap_or(false)
-    }
-
-    /// Installs one admitted managed connection for `caller`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the connection is not admissible.
-    pub fn install_enrolled_connection(
-        &self,
-        connection: launcher::managed::channel::AdmittedManagedConnection,
-        caller: tilo_user_identity::DeviceCert,
-    ) -> Result<String, String> {
-        self.state
-            .while_live(|state| state.install_enrolled_connection(connection, caller))
-    }
-    /// Dispatches one enrolled task envelope for `caller`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the task cannot be dispatched.
-    pub fn dispatch_enrolled_task(
-        &self,
-        invocation: uuid::Uuid,
-        caller: &tilo_user_identity::DeviceCert,
-        envelope: runtime_collab::EnrolledTaskEnvelope,
-    ) -> Result<crate::enrolled_dispatch::EnrolledDispatchResult, String> {
-        self.state
-            .while_live(|state| state.dispatch_enrolled_task(invocation, caller, envelope))
-    }
-    /// See [`crate::collab_broker_capnp::CapnpBrokerState::install_fixture_enrolled_connection`].
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the fixture connection is refused.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn install_fixture_enrolled_connection(
-        &self,
-        process: crate::enrolled_dispatch::EnrolledProcess,
-        stream: std::os::unix::net::UnixStream,
-        caller: tilo_user_identity::DeviceCert,
-    ) -> Result<String, String> {
-        self.state
-            .while_live(|state| state.install_fixture_enrolled_connection(process, stream, caller))
-    }
-    /// Binds one child invocation of an accepted enrolled dispatch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the child action is not bindable.
-    pub fn enrolled_child_binding(
-        &self,
-        dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
-        peer: u64,
-        resource: &str,
-        action: &str,
-    ) -> Result<(runtime_collab::PublishedInvocationBinding, String), String> {
-        self.state
-            .while_live(|state| state.enrolled_child_binding(dispatch, peer, resource, action))
-    }
-    /// Invokes one bound child action of an accepted enrolled dispatch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the child invocation is refused.
-    pub fn invoke_enrolled_child(
-        &self,
-        dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
-        request: &crate::collab_broker_capnp::EnrolledChildRequest,
-    ) -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
-        self.state
-            .while_live(|state| state.invoke_enrolled_child(dispatch, request))
-    }
-    /// Observes the retained result of one child invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or the owner may not observe it.
-    pub fn observe_enrolled_child(
-        &self,
-        owner: &crate::collab_broker_capnp::EnrolledChildOwner,
-        host: [u8; 16],
-        invocation: [u8; 16],
-    ) -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
-        self.state
-            .while_live(|state| state.observe_enrolled_child(owner, host, invocation))
-    }
-    /// Owner revocation: close every enrolled connection of `agent`.
-    pub fn close_enrolled_agent(&self, agent: &str) -> usize {
-        self.state.close_enrolled_agent(agent)
-    }
-    /// The live dispatch witness of an accepted enrolled task on `channel`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or no such accepted task is live.
-    pub fn enrolled_task_dispatch(
-        &self,
-        channel: &str,
-        invocation: uuid::Uuid,
-    ) -> Result<crate::enrolled_dispatch::VerifiedEnrolledDispatch, String> {
-        self.state
-            .while_live(|state| state.enrolled_task_dispatch(channel, invocation))
-    }
-
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.
@@ -951,8 +841,9 @@ impl BrokerHandle {
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
-        self.fanout.request_shutdown();
+        // Quit first so a wake from request_stop sees the flag and exits.
         self.capnp_quit.store(true, Ordering::Relaxed);
+        self.fanout.request_shutdown();
         if let Some(thread) = self.capnp_thread.take() {
             join_owned_thread(thread, self.capnp_identity);
         }

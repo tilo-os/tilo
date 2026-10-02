@@ -315,7 +315,7 @@ impl MemberRecordWire {
 impl MemberRecord {
     pub(crate) fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
         let sealed = self.seal(key)?;
-        atomic_file::write_private(path, &sealed).map_err(Error::Io)
+        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
     }
 
     pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
@@ -405,5 +405,5 @@ fn write_sealed(path: &Path, key: &VaultKey, record: &[u8], plaintext: &[u8]) ->
         plaintext,
     )
     .map_err(|_| Error::StateCrypto("state encryption failed"))?;
-    atomic_file::write_private(path, &sealed).map_err(Error::Io)
+    tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
 }

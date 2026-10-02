@@ -431,7 +431,7 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
-            brightness_available: true,
+            brightness_available: false,
             displays: Vec::new(),
             volume: 0.4,
             volume_available: true,
@@ -598,6 +598,10 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Bumped when an appearance action writes the store so the live frame
+    /// applies theme and locale on the next paint without waiting for the
+    /// settings-file poll.
+    pub appearance_generation: u64,
     /// Last non-UI tree mutation observed by the compositor tick.
     observed_external_tree_revision: u64,
     /// Passive, private history awareness for the top bar. Never serialized
@@ -662,8 +666,16 @@ pub struct ChromeState {
     session_action_requests: Vec<os_actions::SessionAction>,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
-    /// frame via [`Self::set_fullscreen_group`].
+    /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
+    /// per-output overlay, so the native loop writes `None` here every
+    /// tick; do not park Super+F in this slot (W07).
     fullscreen_group: Option<u64>,
+    /// Super+F (and the action door) park the focused group here. Kept
+    /// separate from [`Self::fullscreen_group`], which the compositor
+    /// rewrites every frame — a value parked there is wiped before
+    /// state-dump can observe it. Unlike [`Self::maximized_group`], this
+    /// covers the output, including the wheel.
+    user_fullscreen_group: Option<u64>,
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there by Expand would be
@@ -674,6 +686,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// Whether the active strip alone fills the work area, the others
+    /// collapsed: while agents drive this compositor, so the strip an agent
+    /// works in is the whole screen it sees and clicks. NOT persisted.
+    single_strip: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -713,6 +729,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Compositor-only remaining paints after overview / workspace switch
+    /// (W16). The host's crossfade demand still clears when the curve
+    /// settles — this count is not `needs_animation_frame`.
+    transition_paints_remaining: u32,
     /// Window-management operations an action asked for. The overlay host
     /// drains them on its next update and runs each exactly as its chord
     /// would, since the focused group's widgets live there.
@@ -816,6 +836,7 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
+            appearance_generation: 0,
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
@@ -839,8 +860,10 @@ impl ChromeState {
             session_lock_requested: false,
             session_action_requests: Vec::new(),
             fullscreen_group: None,
+            user_fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -856,6 +879,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            transition_paints_remaining: 0,
             shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
@@ -1031,6 +1055,21 @@ impl ChromeState {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
+    /// Ask the compositor to paint at least `n` frames. Does not bump:
+    /// host animation demand stays the crossfade, not this count.
+    pub fn request_transition_paints(&mut self, n: u32) {
+        self.transition_paints_remaining = self.transition_paints_remaining.max(n);
+    }
+
+    #[must_use]
+    pub fn transition_paints_remaining(&self) -> u32 {
+        self.transition_paints_remaining
+    }
+
+    pub fn consume_transition_paint(&mut self) {
+        self.transition_paints_remaining = self.transition_paints_remaining.saturating_sub(1);
+    }
+
     /// Run `action` as if its chord had been pressed once, on the overlay
     /// host's next update.
     pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
@@ -1054,7 +1093,7 @@ impl ChromeState {
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
-        self.fullscreen_group
+        self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
     /// Either a client-requested fullscreen or a group the user
@@ -1072,6 +1111,31 @@ impl ChromeState {
         self.maximized_group
     }
 
+    #[must_use]
+    pub fn single_strip(&self) -> bool {
+        self.single_strip
+    }
+
+    pub fn set_single_strip(&mut self, single: bool) {
+        if self.single_strip != single {
+            self.single_strip = single;
+            self.bump();
+        }
+    }
+
+    /// The active workspace's focused strip, or its first.
+    #[must_use]
+    pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        tree.desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))
+    }
+
     /// Idempotent, so cheap to call every frame from the compositor's
     /// fullscreen reconcile.
     pub fn set_maximized_group(&mut self, group: Option<u64>) {
@@ -1084,6 +1148,13 @@ impl ChromeState {
     pub fn set_fullscreen_group(&mut self, group: Option<u64>) {
         if self.fullscreen_group != group {
             self.fullscreen_group = group;
+            self.bump();
+        }
+    }
+
+    pub fn set_user_fullscreen_group(&mut self, group: Option<u64>) {
+        if self.user_fullscreen_group != group {
+            self.user_fullscreen_group = group;
             self.bump();
         }
     }
@@ -1301,6 +1372,14 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Persist-side appearance change: chrome rebuilds, and the live frame
+    /// applies the configured theme and locale on the next paint instead of
+    /// waiting for the settings-file poll.
+    pub fn note_appearance_change(&mut self) {
+        self.appearance_generation = self.appearance_generation.wrapping_add(1);
+        self.bump();
     }
 
     /// Fold non-chrome mutations of the shared tree into retained chrome's

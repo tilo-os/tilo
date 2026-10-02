@@ -326,14 +326,14 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-grep -Fq 'cron: "0 2 * * *"' "$os" \
+! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
   && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
   && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
   && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
   && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
-  && ok 'nightly main runs publish through the protected main path and skip an already published revision' \
+  && ok 'publications are manual (tags and dispatch) and skip an already published revision' \
   || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
@@ -356,7 +356,7 @@ grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
 
 if ! grep -q '^  pull_request:' "$os" \
   && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
-  && grep -Fq '  schedule:' "$os" \
+  && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
@@ -364,7 +364,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Text.GetText -- 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
   && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \

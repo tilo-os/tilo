@@ -26,7 +26,7 @@ use tilo_actions::{
 };
 use tilo_relay_protocol::agents::{
     AGENT_KIND, AgentDelegation, AgentGrant, AgentInfo, AgentMessage, AgentProposal, AgentScope,
-    AgentStatus, AgentStep, AgentTask, AgentsStatus, GrantRequest, GrantState,
+    AgentStatus, AgentStep, AgentTask, AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState,
     MAX_AGENT_TEXT_BYTES, MAX_DELEGATED_APPS, MAX_DELEGATED_ROOMS, MESSAGE_ACTION, MessageRole,
     PAUSE_ACTION, REQUEST_GRANT_ACTION, RESUME_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION,
     STOP_ACTION, SUPERVISOR_KIND, SUPERVISOR_RESOURCE, TaskState, agent_resource, color_hex,
@@ -73,6 +73,10 @@ pub enum ControlError {
     Unknown,
     /// The delegation already runs an agent.
     InUse,
+    /// The agent has no task with that id.
+    UnknownTask,
+    /// The task already completed or failed.
+    Finished,
 }
 
 impl std::fmt::Display for ControlError {
@@ -81,6 +85,8 @@ impl std::fmt::Display for ControlError {
             Self::Stopped => "the agent was stopped",
             Self::Unknown => "no such agent",
             Self::InUse => "an agent already runs under this delegation",
+            Self::UnknownTask => "the agent has no such task",
+            Self::Finished => "the task already ended",
         })
     }
 }
@@ -92,7 +98,6 @@ struct ControlState {
     conversation: Vec<AgentMessage>,
     activity: Option<String>,
     room: Option<String>,
-    next_task: u64,
 }
 
 /// One agent's steering state, shared by its participant and the
@@ -115,7 +120,6 @@ impl AgentControl {
                 conversation: Vec::new(),
                 activity: None,
                 room: None,
-                next_task: 1,
             }),
         })
     }
@@ -133,12 +137,6 @@ impl AgentControl {
                 task.error = Some("the host restarted while this task ran".into());
             }
         }
-        let next_task = tasks
-            .iter()
-            .filter_map(|task| task.id.strip_prefix('t')?.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
         let (status, paused) = match info.status {
             AgentStatus::Stopped | AgentStatus::Failed => (info.status, false),
             AgentStatus::Paused => (AgentStatus::Paused, true),
@@ -153,7 +151,6 @@ impl AgentControl {
                 conversation: info.conversation.clone(),
                 activity: None,
                 room: info.room.clone(),
-                next_task,
             }),
         })
     }
@@ -220,8 +217,9 @@ impl AgentControl {
         if matches!(state.status, AgentStatus::Stopped | AgentStatus::Failed) {
             return Err(ControlError::Stopped);
         }
-        let id = format!("t{}", state.next_task);
-        state.next_task = state.next_task.saturating_add(1);
+        // A grant may spawn a replacement participant. Task addresses must
+        // never refer to a new task when a delayed cancellation arrives.
+        let id = InvocationId::new().0.to_string();
         push_bounded(
             &mut state.conversation,
             AgentMessage {
@@ -300,6 +298,40 @@ impl AgentControl {
         state.status = AgentStatus::Stopped;
         state.paused = false;
         state.activity = None;
+    }
+
+    /// Cancel task `id` while it is queued or running; the agent goes on
+    /// with the next queued one. Cancelling a cancelled task changes
+    /// nothing. Running tasks stop at the participant's next task-state
+    /// check. A step already past that check may complete and publish;
+    /// planning and accepted app operations are not interrupted. This
+    /// acknowledges cancellation state, not execution quiescence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlError::UnknownTask`] for a task the agent does not
+    /// have and [`ControlError::Finished`] for one that already ended.
+    pub fn cancel_task(&self, id: &str) -> Result<(), ControlError> {
+        let mut state = self.state();
+        let task = state
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id)
+            .ok_or(ControlError::UnknownTask)?;
+        let was = task.state;
+        match was {
+            TaskState::Queued | TaskState::Running => task.state = TaskState::Cancelled,
+            TaskState::Cancelled => {}
+            TaskState::Completed | TaskState::Failed => return Err(ControlError::Finished),
+        }
+        if was == TaskState::Running {
+            state.activity = None;
+            if state.status == AgentStatus::Running {
+                state.status = AgentStatus::Waiting;
+            }
+        }
+        drop(state);
+        Ok(())
     }
 
     /// Where the agent stands.
@@ -902,6 +934,7 @@ impl AgentSupervisor {
         let state = self.state();
         AgentsStatus {
             version: 1,
+            cancel_task: true,
             agents: state.agents.values().map(|agent| agent.info()).collect(),
             grants: state
                 .grants
@@ -1126,6 +1159,15 @@ impl AgentSupervisor {
                     control.stop();
                     serde_json::json!({})
                 }
+                CANCEL_TASK_ACTION => {
+                    let InvokeArgument::Text(task) = &request.argument else {
+                        return Err(invalid("cancel-task takes the task id"));
+                    };
+                    control
+                        .cancel_task(task)
+                        .map_err(|error| refused(error.to_string()))?;
+                    serde_json::json!({})
+                }
                 _ => return Err(ActionHostError::UnknownAction),
             }
         };
@@ -1211,6 +1253,15 @@ impl AgentSupervisor {
             rows.push(effect(PAUSE_ACTION, "Pause", InputSpec::None));
             rows.push(effect(RESUME_ACTION, "Resume", InputSpec::None));
             rows.push(effect(STOP_ACTION, "Stop", InputSpec::None));
+            rows.push(effect(
+                CANCEL_TASK_ACTION,
+                "Cancel task",
+                InputSpec::Text {
+                    prompt: "Task".into(),
+                    placeholder: "Task id".into(),
+                    collects: Collects::Words,
+                },
+            ));
         }
         rows
     }
@@ -1326,5 +1377,256 @@ impl ActionHost for SupervisorHost {
         Err(ActionHostError::NotCancellable {
             reason: "agent control completes at once".into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_actions::remote::{PendingPoll, ReceiptStatus, RemoteActionTarget};
+
+    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+    fn identity(root: &SigningKey) -> AgentIdentity {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let device = key.verifying_key().to_bytes();
+        let delegation = AgentDelegation::sign(
+            root,
+            device,
+            "writer",
+            "Writer helper",
+            [0x7c, 0x3a, 0xed],
+            AgentScope {
+                rooms: vec![ROOM.into()],
+                apps: Vec::new(),
+                may_confirm: false,
+            },
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+        let cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device,
+            device_label: "Agent: Writer helper".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        AgentIdentity {
+            key,
+            cert,
+            delegation,
+        }
+    }
+
+    /// A supervisor with one approved grant, `writer`, whose spawns count.
+    fn supervisor() -> (SupervisorHost, Caller, Arc<AtomicUsize>) {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&spawned);
+        let supervisor = AgentSupervisor::new(
+            root.verifying_key().to_bytes(),
+            Arc::new(move |_, _| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        supervisor.add_grant(identity(&root));
+        let caller = Caller::authenticated(root.verifying_key().to_bytes(), [2; 32]);
+        (SupervisorHost(supervisor), caller, spawned)
+    }
+
+    fn request(
+        invocation: InvocationId,
+        resource: &str,
+        action: &str,
+        argument: InvokeArgument,
+    ) -> InvokeRequest {
+        InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),
+                address: ActionAddress::new(resource, action),
+            },
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+        }
+    }
+
+    fn invoke(
+        host: &SupervisorHost,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<serde_json::Value, ActionHostError> {
+        let receipt = match host.invoke(caller, request).poll_ready() {
+            PendingPoll::Ready(receipt) => Some(receipt),
+            _ => None,
+        }
+        .expect("agent control answers at once")?;
+        let output = match receipt.status {
+            ReceiptStatus::Completed { output } => Some(output.value.unwrap_or_default()),
+            _ => None,
+        }
+        .expect("agent control returns a completed receipt");
+        Ok(output)
+    }
+
+    fn spawn_argument(task: &str) -> InvokeArgument {
+        InvokeArgument::Json(serde_json::Map::from_iter([
+            ("grant".into(), serde_json::Value::String("writer".into())),
+            ("task".into(), serde_json::Value::String(task.into())),
+        ]))
+    }
+
+    #[test]
+    fn one_task_is_cancelled_and_the_agent_goes_on_with_the_next() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let control = AgentControl::new(identity(&root).delegation);
+        control.set_status(AgentStatus::Waiting);
+        let first = control.message("tidy the notes").unwrap();
+        let second = control.message("sum the sheet").unwrap();
+        let third = control.message("draft a reply").unwrap();
+        assert_eq!(control.begin_next().unwrap().0, first);
+        control.set_activity(Some("Tidying".into()));
+
+        control.cancel_task(&second).unwrap();
+        assert!(
+            control.is_running(&first),
+            "a queued task leaves the running one"
+        );
+        control.cancel_task(&first).unwrap();
+        assert!(!control.is_running(&first));
+        assert_eq!(control.status(), AgentStatus::Waiting);
+        assert_eq!(control.activity(), None);
+        assert_eq!(
+            control.cancel_task(&first),
+            Ok(()),
+            "cancelling again changes nothing"
+        );
+        assert_eq!(
+            control.begin_next().unwrap().0,
+            third,
+            "the cancelled one is skipped"
+        );
+        assert!(control.may_act(), "the agent is not stopped");
+
+        control.finish(&third, Ok("Done.".into()));
+        assert_eq!(control.cancel_task(&third), Err(ControlError::Finished));
+        assert_eq!(control.cancel_task("t99"), Err(ControlError::UnknownTask));
+        let states: Vec<TaskState> = control.info().tasks.iter().map(|t| t.state).collect();
+        assert_eq!(
+            states,
+            [
+                TaskState::Cancelled,
+                TaskState::Cancelled,
+                TaskState::Completed
+            ]
+        );
+    }
+
+    #[test]
+    fn a_delayed_cancel_cannot_address_a_replacement_participant() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let previous = AgentControl::new(identity(&root).delegation);
+        let old_task = previous.message("old task").unwrap();
+        previous.stop();
+        let replacement = AgentControl::new(identity(&root).delegation);
+        let new_task = replacement.message("new task").unwrap();
+        assert_ne!(old_task, new_task);
+        assert_eq!(
+            replacement.cancel_task(&old_task),
+            Err(ControlError::UnknownTask)
+        );
+        assert_eq!(replacement.info().tasks[0].state, TaskState::Queued);
+        let restored = AgentControl::restore(identity(&root).delegation, &replacement.info());
+        let next_task = restored.message("after restore").unwrap();
+        assert_ne!(next_task, new_task);
+        assert_ne!(next_task, old_task);
+    }
+
+    #[test]
+    fn a_resent_spawn_or_message_is_answered_once() {
+        let (host, caller, spawned) = supervisor();
+        let spawn_id = InvocationId::new();
+        let spawn = || {
+            request(
+                spawn_id,
+                SUPERVISOR_RESOURCE,
+                SPAWN_ACTION,
+                spawn_argument("tidy the notes"),
+            )
+        };
+        let first = invoke(&host, &caller, spawn()).unwrap();
+        assert_eq!(first["agentId"], "writer");
+        assert!(!first["taskId"].as_str().unwrap().is_empty());
+        assert_eq!(invoke(&host, &caller, spawn()).unwrap(), first);
+        assert_eq!(spawned.load(Ordering::SeqCst), 1, "one agent");
+
+        let agent = agent_resource("writer");
+        let message_id = InvocationId::new();
+        let message = |text: &str| {
+            request(
+                message_id,
+                &agent,
+                MESSAGE_ACTION,
+                InvokeArgument::Text(text.into()),
+            )
+        };
+        let task = invoke(&host, &caller, message("sum the sheet")).unwrap();
+        let task_id = task["taskId"].as_str().unwrap();
+        assert_ne!(task_id, first["taskId"].as_str().unwrap());
+        assert_eq!(
+            invoke(&host, &caller, message("sum the sheet")).unwrap(),
+            task
+        );
+        assert_eq!(
+            invoke(&host, &caller, message("something else")),
+            Err(ActionHostError::InvocationConflict),
+            "an id names one request"
+        );
+        let other = Caller::authenticated(
+            SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
+            [3; 32],
+        );
+        assert_eq!(
+            invoke(&host, &other, message("sum the sheet")),
+            Err(ActionHostError::InvocationConflict),
+            "and one caller"
+        );
+        let control = host.0.control("writer").unwrap();
+        assert_eq!(control.info().tasks.len(), 2, "one task per message");
+
+        invoke(
+            &host,
+            &caller,
+            request(
+                InvocationId::new(),
+                &agent,
+                CANCEL_TASK_ACTION,
+                InvokeArgument::Text(task_id.into()),
+            ),
+        )
+        .unwrap();
+        assert_eq!(control.info().tasks[1].state, TaskState::Cancelled);
+        assert_ne!(control.status(), AgentStatus::Stopped);
+        let refused = invoke(
+            &host,
+            &caller,
+            request(
+                InvocationId::new(),
+                &agent,
+                CANCEL_TASK_ACTION,
+                InvokeArgument::Text("t9".into()),
+            ),
+        );
+        assert!(
+            matches!(refused, Err(ActionHostError::Refused { ref reason }) if reason == "the agent has no such task"),
+            "{refused:?}"
+        );
     }
 }

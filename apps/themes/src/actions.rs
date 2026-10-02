@@ -82,6 +82,18 @@ pub enum ThemesAction {
         id: String,
         font: String,
     },
+    SetCustomThemeMotion {
+        id: String,
+        motion_scale: f32,
+    },
+    SetCustomThemeMaterial {
+        id: String,
+        material_scale: f32,
+    },
+    SetCustomThemeIcon {
+        id: String,
+        icon_scale: f32,
+    },
     /// Reset deliberately writes the independent token/shape/font fields, not
     /// a replacement record, so unrelated concurrent edits remain mergeable.
     ResetCustomTheme {
@@ -125,6 +137,15 @@ impl Action for ThemesAction {
             ThemesAction::SetCustomThemeFont { id, font } => {
                 let _ = doc::set_font(doc, &ROOT, id, font);
             }
+            ThemesAction::SetCustomThemeMotion { id, motion_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "motion_scale", *motion_scale);
+            }
+            ThemesAction::SetCustomThemeMaterial { id, material_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "material_scale", *material_scale);
+            }
+            ThemesAction::SetCustomThemeIcon { id, icon_scale } => {
+                let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", *icon_scale);
+            }
             ThemesAction::ResetCustomTheme { id } => {
                 if let Some(current) = doc::load_catalog(doc, &ROOT)
                     .and_then(|c| c.into_iter().find(|s| s.id == *id && !s.builtin))
@@ -145,6 +166,9 @@ impl Action for ThemesAction {
                     let _ = doc::set_radius(doc, &ROOT, id, base.radius_norm);
                     let _ = doc::set_spacing(doc, &ROOT, id, base.spacing_norm);
                     let _ = doc::set_font(doc, &ROOT, id, &base.font);
+                    let _ = doc::set_scale(doc, &ROOT, id, "motion_scale", base.motion_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "material_scale", base.material_scale);
+                    let _ = doc::set_scale(doc, &ROOT, id, "icon_scale", base.icon_scale);
                 }
             }
             ThemesAction::DeleteCustomTheme { id } => {
@@ -230,6 +254,27 @@ pub fn set_custom_theme_spacing_action(id: impl Into<String>, spacing_norm: f32)
     ThemesAction::SetCustomThemeSpacing {
         id: id.into(),
         spacing_norm,
+    }
+}
+pub fn set_custom_theme_motion_action(id: impl Into<String>, motion_scale: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeMotion {
+        id: id.into(),
+        motion_scale,
+    }
+}
+pub fn set_custom_theme_material_action(
+    id: impl Into<String>,
+    material_scale: f32,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeMaterial {
+        id: id.into(),
+        material_scale,
+    }
+}
+pub fn set_custom_theme_icon_action(id: impl Into<String>, icon_scale: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeIcon {
+        id: id.into(),
+        icon_scale,
     }
 }
 pub fn set_custom_theme_font_action(

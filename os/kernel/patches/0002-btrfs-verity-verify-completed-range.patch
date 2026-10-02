@@ -1,0 +1,32 @@
+From: Tilo maintainers
+Subject: [PATCH] btrfs: only verify the completed range of a large folio
+
+end_folio_read() runs once per completed range of a folio, but
+btrfs_verify_folio() handed the whole folio to fs-verity. With large
+data folios, a folio can be filled by several bios, or by a bio plus
+hole or inline handling. The first completion then hashes blocks that
+are still under I/O (zeroed on allocation) and reports them as
+corrupted, clears its own range's uptodate bit and makes the reader
+retry the folio.
+
+Verify only the range that completed. Merkle tree blocks are never
+larger than the filesystem block size, and end_folio_read() ranges are
+block aligned, so the range is always valid for fsverity_verify_blocks().
+
+--- a/fs/btrfs/extent_io.c
++++ b/fs/btrfs/extent_io.c
+@@ -504,7 +504,13 @@
+ 
+ 	if (!vi || btrfs_folio_test_uptodate(fs_info, folio, start, len))
+ 		return true;
+-	return fsverity_verify_folio(vi, folio);
++	/*
++	 * Only [start, start + len) has finished reading.  The rest of a large
++	 * folio may still be under I/O from another bio, so verify just this
++	 * range.
++	 */
++	return fsverity_verify_blocks(vi, folio, len,
++				      offset_in_folio(folio, start));
+ }
+ 
+ static void end_folio_read(struct fsverity_info *vi, struct folio *folio,

@@ -3855,7 +3855,7 @@ impl ContactsApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                Color::BLACK.with_alpha_factor(0.72),
+                c.surfaces.scrim.with_alpha_factor(0.72),
                 None,
                 &self.rect,
             );

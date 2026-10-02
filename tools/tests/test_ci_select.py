@@ -45,6 +45,32 @@ class SelectorTests(unittest.TestCase):
             package("collab-types", "collab-types"),
         ]}
 
+    def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
+        with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
+            self.setUp()
+            full = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            delta = ci_select.make_plan(self.metadata, self.root, ["middle/src/lib.rs"], 2)
+            self.assertEqual(delta["reached"], ["leaf", "middle"])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], ["leaf", "middle"])
+            self.assertLess(set(narrowed["tested"]), set(full["tested"]))
+            self.assertTrue(set(narrowed["tested"]) <= {"leaf", "middle"})
+            self.assertIn("re-check", narrowed["reason"])
+        with self.subTest(phase="a base change reaching nothing the pull request checks leaves nothing to run"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["docs/notes.md"], 2)
+            self.assertEqual(delta["reached"], [])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], [])
+            self.assertFalse(narrowed["rust_required"])
+        with self.subTest(phase="a repository-wide base change reaches everything"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
+            self.assertTrue(delta["full"])
+            self.assertEqual(delta["reached"], delta["selected"])
+
     def test_path_suites_and_declared_readers_select_what_their_inputs_reach(self):
         with self.subTest(phase='hermetic suites follow changed paths and run all when asked'):
             self.setUp()
@@ -362,26 +388,6 @@ class SelectorTests(unittest.TestCase):
                 self.assertTrue(plan["rust_required"])
 
     def test_shards_and_matrices_cover_every_package_once_per_architecture(self):
-        with self.subTest(phase='tilo ui test link uses large x86 runner'):
-            self.setUp()
-            self.metadata["packages"].append({
-                "name": "tilo-ui",
-                "manifest_path": str(self.root / "tilo-ui" / "Cargo.toml"),
-                "targets": [{"name": "tilo-ui"}],
-                "dependencies": [],
-            })
-            plan = ci_select.make_plan(
-                self.metadata, self.root, ["tilo-ui/src/lib.rs"], 2
-            )
-            self.assertEqual(plan["matrix"]["include"][0]["runner"], "runner-large")
-            # Only the test links need the large runner; check and Clippy do not.
-            self.assertEqual(plan["matrix"]["include"][0]["check_runner"], "runner")
-
-            ordinary = ci_select.make_plan(
-                self.metadata, self.root, ["leaf/src/lib.rs"], 2
-            )
-            self.assertEqual(ordinary["matrix"]["include"][0]["runner"], "runner")
-            self.assertEqual(ordinary["matrix"]["include"][0]["check_runner"], "runner")
         with self.subTest(phase='global inputs balance large workspaces without losing coverage'):
             self.setUp()
             # Enough genuine package targets/dependencies to exceed the budget,
@@ -451,15 +457,15 @@ class SelectorTests(unittest.TestCase):
                              sum(ci_select.package_cost(pkg) for pkg in packages.values()))
         with self.subTest(phase='fsync-heavy suites keep to separate test shards'):
             self.setUp()
-            names = ("tilo-fs", "tilo-cloud-host", "tilo-action-broker", "light")
+            names = ("tilo-fs", "tilo-relay", "tilo-action-broker", "light")
             packages = {name: {"name": name, "targets": [], "dependencies": []} for name in names}
-            # By time alone tilo-fs and the Cloud host would share the lighter
+            # By time alone tilo-fs and the relay would share the lighter
             # shard. Placement breaks equal weights by name, so theirs differ.
-            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-cloud-host": 99, "light": 1}
+            seconds = {"tilo-action-broker": 900, "tilo-fs": 100, "tilo-relay": 99, "light": 1}
             shards = ci_select.balance(set(packages), packages, 2, seconds,
                                        ci_select.TEST_SHARD_APART)
             placed = [set(shard["packages"].split()[1::2]) for shard in shards]
-            self.assertIn({"tilo-cloud-host", "tilo-action-broker"}, placed)
+            self.assertIn({"tilo-relay", "tilo-action-broker"}, placed)
             self.assertTrue(any("tilo-fs" in names for names in placed))
             # One shard still takes everything.
             (only,) = ci_select.balance(set(packages), packages, 1, seconds,
@@ -597,7 +603,8 @@ class SelectorTests(unittest.TestCase):
             rows = plan["matrix"]["include"]
             self.assertEqual({row["arch"] for row in rows}, set(ci_select.NATIVE_RUNNERS))
             for row in rows:
-                self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["check_runner"], row["runner"])
             clippy = plan["clippy_matrix"]["include"]
             self.assertEqual({row["arch"] for row in clippy}, {"x86_64"})
             self.assertEqual(" ".join(row["packages"] for row in clippy).split()[1::2],
@@ -606,7 +613,8 @@ class SelectorTests(unittest.TestCase):
             check = plan["check_matrix"]["include"]
             self.assertEqual({row["arch"] for row in check}, set(ci_select.NATIVE_RUNNERS) - {"x86_64"})
             for row in clippy + check:
-                self.assertEqual(row["check_runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["runner"], ci_select.NATIVE_RUNNERS[row["arch"]])
+                self.assertEqual(row["check_runner"], row["runner"])
             self.assertEqual(sorted(row["packages"] for row in check),
                              sorted(row["packages"] for row in clippy))
             output = self.root / "github-output"

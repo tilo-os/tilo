@@ -61,6 +61,10 @@ const STABLE_UPTIME: Duration = Duration::from_secs(30);
 /// stopped. Long enough that an app restarting itself (installers, launchers
 /// that re-exec) finds the server still up.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Wine (and similar X11 runtimes) keep the X socket after the last
+/// window is gone. Two seconds is enough for a legitimate re-map and
+/// short enough that the leftover process does not sit around.
+const WINDOWLESS_TIMEOUT: Duration = Duration::from_secs(2);
 const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 /// The frame loop polls far more often than an idle stop needs; reading the
 /// kernel's socket table once a second keeps idle detection off the frame
@@ -171,6 +175,8 @@ pub(crate) struct WorkspaceDisplay {
     /// When the running bridge was first observed with no connected client.
     idle_since: Option<Instant>,
     idle_checked: Option<Instant>,
+    /// Satellite has mapped at least one toplevel in this run.
+    saw_toplevel: bool,
     /// The composer process group already asked to serve the running
     /// server, so each server and composer pair is asked once.
     composer_asked: Option<libc::pid_t>,
@@ -272,7 +278,12 @@ impl Displays {
     /// that just became unavailable.
     #[cfg(test)]
     fn poll(&mut self, now: Instant, spawn: &mut Spawn<'_>) -> Vec<String> {
-        self.poll_with(now, spawn, &mut ComposerClients::for_group(None))
+        self.poll_with(
+            now,
+            spawn,
+            &mut ComposerClients::for_group(None),
+            &HashSet::new(),
+        )
     }
 
     /// [`Self::poll`] with the composing input method's view: its
@@ -283,10 +294,11 @@ impl Displays {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> Vec<String> {
         let mut exhausted = Vec::new();
         for (workspace, display) in &mut self.workspaces {
-            if display.poll(now, spawn, composer) {
+            if display.poll(now, spawn, composer, mapped_satellites) {
                 exhausted.push(workspace.clone());
             }
         }
@@ -362,6 +374,7 @@ impl WorkspaceDisplay {
                 rapid_exits: 0,
                 idle_since: None,
                 idle_checked: None,
+                saw_toplevel: false,
                 composer_asked: None,
             });
         }
@@ -387,6 +400,7 @@ impl WorkspaceDisplay {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> bool {
         let session = self.session();
         if let Some(bridge) = self.bridge.as_mut() {
@@ -451,18 +465,11 @@ impl WorkspaceDisplay {
                 return false;
             }
             self.idle_checked = Some(now);
-            match composer.connected_clients(&self.socket) {
-                Some(0) => {
-                    let idle_since = *self.idle_since.get_or_insert(now);
-                    if now.saturating_duration_since(idle_since) >= IDLE_TIMEOUT {
-                        tracing::info!(display = self.number, "stopping idle Xwayland bridge");
-                        self.stop_bridge();
-                    }
-                }
-                // An unreadable socket table must never stop a server that
-                // may still have clients.
-                Some(_) | None => self.idle_since = None,
-            }
+            self.reap_if_idle(
+                now,
+                composer.connected_clients(&self.socket),
+                mapped_satellites,
+            );
             return false;
         }
         if !has_pending_connection(&self.listener) {
@@ -493,9 +500,35 @@ impl WorkspaceDisplay {
         }
     }
 
+    fn reap_if_idle(
+        &mut self,
+        now: Instant,
+        connected: Option<usize>,
+        mapped_satellites: &HashSet<u32>,
+    ) {
+        let mapped = self
+            .bridge
+            .as_ref()
+            .is_some_and(|bridge| mapped_satellites.contains(&bridge.child.id()));
+        if mapped {
+            self.saw_toplevel = true;
+        }
+        match idle_deadline(connected, mapped, self.saw_toplevel) {
+            Some(limit) => {
+                let idle_since = *self.idle_since.get_or_insert(now);
+                if now.saturating_duration_since(idle_since) >= limit {
+                    tracing::info!(display = self.number, "stopping idle Xwayland bridge");
+                    self.stop_bridge();
+                }
+            }
+            None => self.idle_since = None,
+        }
+    }
+
     fn stop_bridge(&mut self) {
         self.idle_since = None;
         self.idle_checked = None;
+        self.saw_toplevel = false;
         self.composer_asked = None;
         let Some(mut bridge) = self.bridge.take() else {
             return;
@@ -700,18 +733,31 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
 
     /// Poll from the compositor's frame loop, before launch actions run, so
     /// a launch in this tick sees the current set of displays.
-    pub(crate) fn poll(&mut self, chrome: &crate::shell::chrome_state::Chrome) {
+    pub(crate) fn poll(
+        &mut self,
+        chrome: &crate::shell::chrome_state::Chrome,
+        mapped_satellites: &HashSet<u32>,
+    ) {
         let mut registry = registry();
         let Some(displays) = registry.displays.as_mut() else {
             return;
         };
+        let live = live_workspaces(chrome);
+        // D-Bus-activated X11 apps inherit the session environment. Bind
+        // the active workspace's socket (satellite still starts on first
+        // connect) so DISPLAY exists before anyone clicks a host app.
+        if let Some(active) = active_workspace_room(chrome)
+            && live.contains(&active)
+            && let Ok((session, _)) = displays.session_for(&active)
+        {
+            crate::compositor::session_env::export_x11(&session.display, &session.authority);
+        }
         if displays.workspaces.is_empty()
             && displays.unavailable.is_empty()
             && self.watched.is_empty()
         {
             return;
         }
-        let live = live_workspaces(chrome);
         let wayland_socket = self.wayland_socket.clone();
         let satellite = displays.satellite.clone();
         let mut spawn = |display: &WorkspaceDisplay| match satellite.as_ref() {
@@ -727,7 +773,14 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
             Err(reason) => Err(reason.clone()),
         };
         let mut composer = ComposerClients::current();
-        let exhausted = self.sync(displays, &live, Instant::now(), &mut spawn, &mut composer);
+        let exhausted = self.sync(
+            displays,
+            &live,
+            Instant::now(),
+            &mut spawn,
+            &mut composer,
+            mapped_satellites,
+        );
         if !composer.requests.is_empty() {
             let authorities: Vec<PathBuf> = displays
                 .workspaces
@@ -761,9 +814,10 @@ impl<W: ListenerWatch> XwaylandSupervisor<W> {
         now: Instant,
         spawn: &mut Spawn<'_>,
         composer: &mut ComposerClients,
+        mapped_satellites: &HashSet<u32>,
     ) -> Vec<String> {
         displays.retain_workspaces(live);
-        let exhausted = displays.poll_with(now, spawn, composer);
+        let exhausted = displays.poll_with(now, spawn, composer, mapped_satellites);
         let gone: Vec<String> = self
             .watched
             .keys()
@@ -809,6 +863,14 @@ impl<W: ListenerWatch> Drop for XwaylandSupervisor<W> {
     }
 }
 
+fn idle_deadline(connected: Option<usize>, mapped: bool, saw_toplevel: bool) -> Option<Duration> {
+    match connected {
+        Some(0) => Some(IDLE_TIMEOUT),
+        Some(_) if saw_toplevel && !mapped => Some(WINDOWLESS_TIMEOUT),
+        _ => None,
+    }
+}
+
 fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<String> {
     let state = chrome.borrow();
     let tree = state.tree();
@@ -817,6 +879,15 @@ fn live_workspaces(chrome: &crate::shell::chrome_state::Chrome) -> HashSet<Strin
         .iter()
         .map(|workspace| workspace.room.to_string())
         .collect()
+}
+
+fn active_workspace_room(chrome: &crate::shell::chrome_state::Chrome) -> Option<String> {
+    chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room.to_string())
 }
 
 fn announce_unavailable(chrome: &crate::shell::chrome_state::Chrome) {
@@ -1145,6 +1216,11 @@ fn publish_font_dpi(stream: UnixStream, cookie: [u8; 16]) -> Result<u32, String>
         "Xft.dpi",
         &dpi.to_string(),
     );
+    let merged = with_resource(
+        &merged,
+        "Xcursor.size",
+        &cursor_size_for_dpi(dpi).to_string(),
+    );
     conn.change_property8(
         PropMode::REPLACE,
         root,
@@ -1206,6 +1282,10 @@ fn xsettings_integer(data: &[u8], name: &str) -> Option<i32> {
         offset = offset.checked_add(value_length)?;
     }
     None
+}
+
+fn cursor_size_for_dpi(dpi: u32) -> u32 {
+    dpi.saturating_mul(24).saturating_div(96).max(24)
 }
 
 /// `resources` with `key` set to `value`, every other line kept.
@@ -1432,6 +1512,27 @@ mod tests {
     }
 
     #[test]
+    fn wine_without_a_window_stops_the_bridge() {
+        assert_eq!(idle_deadline(Some(0), false, false), Some(IDLE_TIMEOUT));
+        assert_eq!(
+            idle_deadline(Some(1), false, true),
+            Some(WINDOWLESS_TIMEOUT),
+            "an X client with no toplevel is Wine after close, not a live app"
+        );
+        assert_eq!(
+            idle_deadline(Some(1), true, true),
+            None,
+            "a mapped satellite is not idle"
+        );
+        assert_eq!(
+            idle_deadline(Some(1), false, false),
+            None,
+            "a server that has not mapped yet is still starting"
+        );
+        assert_eq!(idle_deadline(None, false, true), None);
+    }
+
+    #[test]
     fn an_idle_bridge_stops_and_the_next_client_restarts_it() {
         let mut fixture = fixture();
         let (session, _) = fixture.displays.session_for("room-a").unwrap();
@@ -1523,6 +1624,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(supervisor.watched["room-a"].1);
 
@@ -1533,6 +1635,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(
             !supervisor.watched["room-a"].1,
@@ -1545,6 +1648,7 @@ mod tests {
             now,
             &mut |_| sleeper(),
             &mut ComposerClients::for_group(None),
+            &HashSet::new(),
         );
         assert!(supervisor.watched.is_empty());
         drop(supervisor);
@@ -1566,14 +1670,14 @@ mod tests {
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(start, &mut |_| sleeper(), &mut composer);
+            .poll_with(start, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert!(composer.requests.is_empty());
 
         let client = connect(&session, &fixture.displays);
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(start, &mut |_| sleeper(), &mut composer);
+            .poll_with(start, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert!(
             composer.requests.is_empty(),
             "a server that just started is given time to accept"
@@ -1583,13 +1687,14 @@ mod tests {
         let mut composer = ComposerClients::for_group(composer_group);
         fixture
             .displays
-            .poll_with(later, &mut |_| sleeper(), &mut composer);
+            .poll_with(later, &mut |_| sleeper(), &mut composer, &HashSet::new());
         assert_eq!(composer.requests, std::slice::from_ref(&session.display));
         let mut composer = ComposerClients::for_group(composer_group);
         fixture.displays.poll_with(
             later + IDLE_CHECK_INTERVAL,
             &mut |_| sleeper(),
             &mut composer,
+            &HashSet::new(),
         );
         assert!(composer.requests.is_empty(), "asked once per server");
 
@@ -1598,6 +1703,7 @@ mod tests {
             later + IDLE_CHECK_INTERVAL * 2,
             &mut |_| sleeper(),
             &mut restarted,
+            &HashSet::new(),
         );
         assert_eq!(
             restarted.requests,
@@ -1676,6 +1782,8 @@ mod tests {
 
     #[test]
     fn publishing_dpi_replaces_only_that_resource() {
+        assert_eq!(cursor_size_for_dpi(96), 24);
+        assert_eq!(cursor_size_for_dpi(192), 48);
         assert_eq!(with_resource("", "Xft.dpi", "192"), "Xft.dpi:\t192\n");
         assert_eq!(
             with_resource(
@@ -1714,14 +1822,20 @@ mod tests {
         let client = connect(&session, &fixture.displays);
         let start = Instant::now();
         let group = Some(4242);
-        fixture
-            .displays
-            .poll_with(start, &mut spawn, &mut ComposerClients::for_group(group));
+        fixture.displays.poll_with(
+            start,
+            &mut spawn,
+            &mut ComposerClients::for_group(group),
+            &HashSet::new(),
+        );
 
         let mut composer = ComposerClients::for_group(group);
-        fixture
-            .displays
-            .poll_with(start + COMPOSER_CONNECT_DELAY, &mut spawn, &mut composer);
+        fixture.displays.poll_with(
+            start + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
         assert!(
             composer.requests.is_empty(),
             "the composer would read 96 DPI"
@@ -1734,9 +1848,12 @@ mod tests {
             std::thread::yield_now();
         }
         let mut composer = ComposerClients::for_group(group);
-        fixture
-            .displays
-            .poll_with(start + COMPOSER_CONNECT_DELAY, &mut spawn, &mut composer);
+        fixture.displays.poll_with(
+            start + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
         assert_eq!(composer.requests, std::slice::from_ref(&session.display));
 
         // A server whose publisher never finishes still gets its composer.
@@ -1749,18 +1866,27 @@ mod tests {
         let (_stalled, stalled) = std::sync::mpsc::channel::<()>();
         *released.lock().unwrap() = Some(stalled);
         let restart = start + STABLE_UPTIME;
-        fixture
-            .displays
-            .poll_with(restart, &mut spawn, &mut ComposerClients::for_group(group));
+        fixture.displays.poll_with(
+            restart,
+            &mut spawn,
+            &mut ComposerClients::for_group(group),
+            &HashSet::new(),
+        );
         let mut composer = ComposerClients::for_group(group);
-        fixture
-            .displays
-            .poll_with(restart + COMPOSER_CONNECT_DELAY, &mut spawn, &mut composer);
+        fixture.displays.poll_with(
+            restart + COMPOSER_CONNECT_DELAY,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
         assert!(composer.requests.is_empty());
         let mut composer = ComposerClients::for_group(group);
-        fixture
-            .displays
-            .poll_with(restart + RESOURCES_TIMEOUT, &mut spawn, &mut composer);
+        fixture.displays.poll_with(
+            restart + RESOURCES_TIMEOUT,
+            &mut spawn,
+            &mut composer,
+            &HashSet::new(),
+        );
         assert_eq!(composer.requests, std::slice::from_ref(&session.display));
         let mut byte = [0_u8; 1];
         assert_eq!(

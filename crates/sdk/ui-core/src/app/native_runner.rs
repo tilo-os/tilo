@@ -7,6 +7,7 @@
 //! its responsibility-specific implementation units.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "linux")]
 mod linux_header;
@@ -98,6 +99,12 @@ struct AppHandler {
     decorations: linux_header::Decorations,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
+    /// Settings.json changed while this process was idle. The next
+    /// `about_to_wait` skips the 750ms poll debounce and re-reads Theme.
+    settings_store_changed: Arc<AtomicBool>,
+    /// Lives for the event loop so an idle app still hears Theme Studio
+    /// and compositor appearance writes.
+    _settings_watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1921,102 +1928,113 @@ impl AppHandler {
                 );
             }
         }
-        let req = RenderRequest::Frame {
-            cpu_frame_id: app
-                .profiler
-                .as_ref()
-                .and_then(|profiler| profiler.history().back())
-                .map(|sample| sample.frame),
-            scene,
-            width,
-            height,
-            base_color: app.theme.bg_app,
-            damage_regions,
-            full_redraw: full_redraw_required,
-            on_present: self.dev_reload_timing.take().map(|timing| {
-                let submitted = crate::time::wall();
-                Box::new(move |presented| timing.record(submitted, presented))
-                    as crate::render_thread::PresentHook
-            }),
-        };
-        record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
-        if let Some((origin, entered)) = native_redraw_entry {
-            // All three values use the input timeline's monotonic origin.
-            // This is a CPU submit attempt, not GPU/display completion.
-            crate::native_scenario::log::emit_json(
-                "tilo-native-redraw",
-                serde_json::json!({
-                    "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                    "redraw_enter_us": entered.duration_since(origin).as_micros(),
-                    "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
-                    "submit_attempt_us": origin.elapsed().as_micros(),
+        if crate::render_thread::retry::submit_redraw_frame(
+            full_redraw_required,
+            !damage_regions.is_empty(),
+        ) {
+            let req = RenderRequest::Frame {
+                cpu_frame_id: app
+                    .profiler
+                    .as_ref()
+                    .and_then(|profiler| profiler.history().back())
+                    .map(|sample| sample.frame),
+                scene,
+                width,
+                height,
+                base_color: app.theme.bg_app,
+                damage_regions,
+                full_redraw: full_redraw_required,
+                on_present: self.dev_reload_timing.take().map(|timing| {
+                    let submitted = crate::time::wall();
+                    Box::new(move |presented| timing.record(submitted, presented))
+                        as crate::render_thread::PresentHook
                 }),
-            );
-        }
-        record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
-        let send_cpu_frame_id = match &req {
-            RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
-            RenderRequest::Shutdown { .. } => None,
-        };
-        let (send_result, send_bounds) = crate::render_thread::timing::around(
-            self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
-            || render.render_tx.send(req),
-        );
-        if let Some(bounds) = send_bounds {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-send",
-                serde_json::json!({
-                    "cpu_frame_id": send_cpu_frame_id,
-                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
-                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
-                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
-                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
-                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-                    "send_ok": send_result.is_ok(),
-                }),
-            );
-        }
-        if let Some(stages) = native_main_stages {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-main-stages",
-                stages.row(send_cpu_frame_id),
-            );
-        }
-        if send_result.is_err() {
-            tracing::error!("ui-render thread receiver closed; exiting");
-            event_loop.exit();
-            return;
-        }
-        mark_first_frame("first-frame-submitted");
-        self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
-        let submitted = self.primary_frames_sent;
-        for required in self.floating_source_clear_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
+            };
+            record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
+            if let Some((origin, entered)) = native_redraw_entry {
+                // All three values use the input timeline's monotonic origin.
+                // This is a CPU submit attempt, not GPU/display completion.
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-redraw",
+                    serde_json::json!({
+                        "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                        "redraw_enter_us": entered.duration_since(origin).as_micros(),
+                        "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
+                        "submit_attempt_us": origin.elapsed().as_micros(),
+                    }),
+                );
             }
-        }
-        for required in self.floating_destination_present_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
+            record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
+            let send_cpu_frame_id = match &req {
+                RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
+                RenderRequest::Shutdown { .. } => None,
+            };
+            let (send_result, send_bounds) = crate::render_thread::timing::around(
+                self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
+                || render.render_tx.send(req),
+            );
+            if let Some(bounds) = send_bounds {
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-send",
+                    serde_json::json!({
+                        "cpu_frame_id": send_cpu_frame_id,
+                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                        "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                        "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                        "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                        "send_ok": send_result.is_ok(),
+                    }),
+                );
             }
-        }
+            if let Some(stages) = native_main_stages {
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-main-stages",
+                    stages.row(send_cpu_frame_id),
+                );
+            }
+            if send_result.is_err() {
+                tracing::error!("ui-render thread receiver closed; exiting");
+                event_loop.exit();
+                return;
+            }
+            mark_first_frame("first-frame-submitted");
+            self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
+            let submitted = self.primary_frames_sent;
+            for required in self.floating_source_clear_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
+            for required in self.floating_destination_present_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
 
-        let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
-        if let Some(_start) = t_frame_start {
-            // On a static frame this reads `shape=0us hit=N miss=0`.
-            let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
-            crate::diag!(
-                "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
-                t_send_us,
-                if t_relayout_branch { "Y" } else { "n" },
-                t_compute_us,
-                t_apply_us,
-                t_draw_us,
-                shape_ns.checked_div(1000).unwrap_or(0),
-                shape_hits,
-                shape_misses,
-                t_send_us,
-            );
+            let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
+            if let Some(_start) = t_frame_start {
+                // On a static frame this reads `shape=0us hit=N miss=0`.
+                let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
+                crate::diag!(
+                    "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
+                    t_send_us,
+                    if t_relayout_branch { "Y" } else { "n" },
+                    t_compute_us,
+                    t_apply_us,
+                    t_draw_us,
+                    shape_ns.checked_div(1000).unwrap_or(0),
+                    shape_hits,
+                    shape_misses,
+                    t_send_us,
+                );
+            }
+        } else {
+            // The callback that woke this redraw changed no pixels. Presenting
+            // would commit a new buffer and a new frame callback, and the
+            // shell would paint that echo while the desktop sat still.
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
         }
 
         if needs_followup_redraw {
@@ -3322,7 +3340,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // event loop; this is short-lived only while GPU setup runs.
             audience.window.request_redraw();
         }
+        let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
         let app = &mut self.app;
+        if force_theme {
+            if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
+            {
+                app.last_theme_store_check = due;
+            }
+        }
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
@@ -3425,9 +3450,37 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let scheduled_due =
             scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
         if scheduled_due {
-            app.needs_sync = true;
-            request_primary_redraw();
+            // A due deadline means "run sync" (poll a directory, settle
+            // spellcheck), not "commit a buffer". Files' 750ms metadata
+            // poll found nothing and still presented at ~2 Hz because
+            // `needs_sync` forced a full redraw.
+            let updated = app.update_model();
+            let _ = app.sync_model(true);
+            let structure = app.root_widget.take_structure_dirty();
+            if structure {
+                app.layout.structure_dirty = true;
+            }
+            if present_after_deadline_sync(
+                updated || structure || app.layout.layout_dirty,
+                app.root_widget.needs_animation_frame(),
+            ) {
+                request_primary_redraw();
+            }
         }
+
+        // The poll above already ran. Re-read what it published so a deadline
+        // that is still in the past does not schedule a frame-rate follow-up.
+        let scheduled_deadline = crate::close_admission::wake_deadline(
+            app.root_widget
+                .next_wake_deadline()
+                .into_iter()
+                .chain(self.touch_pointer.long_press_deadline())
+                .min(),
+            app.close_admission.save_waiting,
+            crate::time::now(),
+        );
+        let widget_still_due = !scheduled_due
+            && scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
 
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
@@ -3491,7 +3544,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
-            widget_due: scheduled_due,
+            widget_due: widget_still_due,
             animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
@@ -3814,6 +3867,21 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
+        let settings_store_changed = Arc::new(AtomicBool::new(false));
+        let settings_watch = {
+            let _entry = self.enter_wake_scope();
+            self.watch_system_settings
+                .then(|| {
+                    let pending = Arc::clone(&settings_store_changed);
+                    let wake = crate::wake::WakeHandle::new();
+                    settings_store::watch::watch_settings(move || {
+                        pending.store(true, Ordering::Release);
+                        wake.wake();
+                    })
+                    .ok()
+                })
+                .flatten()
+        };
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
@@ -3865,6 +3933,8 @@ impl App {
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
             host_appearance,
+            settings_store_changed,
+            _settings_watch: settings_watch,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3918,4 +3988,31 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = (app, window);
+}
+
+/// A due `next_wake_deadline` runs sync. Present only when that sync
+/// changed the model, the tree, or an in-flight animation. `needs_redraw`
+/// is not a reason: Files stays `needs_redraw` after `mark_drawn` (closed
+/// menus and other default leaves), so treating it as dirty recommits
+/// every 750ms metadata poll.
+fn present_after_deadline_sync(model_or_layout_dirty: bool, needs_animation: bool) -> bool {
+    model_or_layout_dirty || needs_animation
+}
+
+#[cfg(test)]
+mod deadline_present_tests {
+    use super::present_after_deadline_sync;
+
+    #[test]
+    fn idle_scheduled_sync_does_not_request_frames() {
+        assert!(
+            !present_after_deadline_sync(false, false),
+            "an idle scheduled poll must not keep requesting frames"
+        );
+        // Sticky `needs_redraw` after mark_drawn is not an argument: the
+        // helper no longer takes that bit. Model/structure/layout OR into
+        // the first flag at the call site (keeps clippy's bool limit).
+        assert!(present_after_deadline_sync(false, true));
+        assert!(present_after_deadline_sync(true, false));
+    }
 }

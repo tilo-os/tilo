@@ -534,6 +534,21 @@ pub fn listener(
     chain: Vec<CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<quinn::Endpoint, String> {
+    let socket = std::net::UdpSocket::bind(address).map_err(|error| error.to_string())?;
+    listener_on(socket, chain, key)
+}
+
+/// [`listener`] on an already bound UDP socket.
+///
+/// # Errors
+///
+/// Returns a message when the TLS identity is unusable or the socket cannot
+/// be used.
+pub fn listener_on(
+    socket: std::net::UdpSocket,
+    chain: Vec<CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<quinn::Endpoint, String> {
     let mut tls = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -556,15 +571,26 @@ pub fn listener(
         ))
         .keep_alive_interval(Some(KEEP_ALIVE));
     config.transport_config(std::sync::Arc::new(transport));
-    quinn::Endpoint::server(config, address).map_err(|error| error.to_string())
+    let runtime = quinn::default_runtime().ok_or("no async runtime for the QUIC listener")?;
+    quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(config),
+        socket,
+        runtime,
+    )
+    .map_err(|error| error.to_string())
 }
 
-/// Accept WebTransport sessions for exactly `path` on `endpoint` and hand each
-/// to `serve`. At most [`MAX_PENDING_HANDSHAKES`] handshakes run at once, each
-/// bounded by [`HANDSHAKE_BUDGET`]. Dropping the future aborts every task.
-pub(crate) async fn serve_endpoint<F, Fut>(endpoint: quinn::Endpoint, path: &'static str, serve: F)
-where
-    F: Fn(web_transport_quinn::Session) -> Fut + Clone + Send + 'static,
+/// Accept WebTransport sessions for exactly one of `paths` on `endpoint` and
+/// hand each to `serve` with the path it asked for. At most
+/// [`MAX_PENDING_HANDSHAKES`] handshakes run at once, each bounded by
+/// [`HANDSHAKE_BUDGET`]. Dropping the future aborts every task.
+pub(crate) async fn serve_endpoint<F, Fut>(
+    endpoint: quinn::Endpoint,
+    paths: &'static [&'static str],
+    serve: F,
+) where
+    F: Fn(&'static str, web_transport_quinn::Session) -> Fut + Clone + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let pending = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_HANDSHAKES));
@@ -588,22 +614,23 @@ where
                     .flatten();
                     let Some(request) = request else { return };
                     // Routing only: an exact path, no query, and our protocol.
-                    if request.url.path() != path
-                        || request.url.query().is_some()
-                        || !request.protocols.iter().any(|protocol| protocol == PROTOCOL)
-                    {
+                    let path = paths.iter().copied().find(|path| request.url.path() == *path);
+                    let Some(path) = path.filter(|_| {
+                        request.url.query().is_none()
+                            && request.protocols.iter().any(|protocol| protocol == PROTOCOL)
+                    }) else {
                         let _ = tokio::time::timeout(
                             Duration::from_millis(100),
                             request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND),
                         )
                         .await;
                         return;
-                    }
+                    };
                     let response = web_transport_quinn::proto::ConnectResponse::OK.with_protocol(PROTOCOL);
                     let session = tokio::time::timeout(HANDSHAKE_BUDGET, request.respond(response)).await;
                     drop(permit);
                     if let Ok(Ok(session)) = session {
-                        serve(session).await;
+                        serve(path, session).await;
                     }
                 });
             }

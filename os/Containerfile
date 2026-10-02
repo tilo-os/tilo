@@ -687,6 +687,30 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
+    # The thin-app profile compiles each crate as one codegen unit, for tapp
+    # size. Built in the image without LTO (a dev build) the runtime and its
+    # dependencies take 16: one unit made fs alone compile for ten minutes.
+    # The wrapper still builds each app binary as one unit.
+    && build_thin_apps() { \
+         EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+         APP_FEATURES="${APP_FEATURES}" \
+         CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
+         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
+         EXTRA_CARGO_ARGS="$1" \
+           /build/os/scripts/build-thin-apps.sh; \
+       } \
+    # A build without LTO (the dev lanes) compiles the thin apps alongside the
+    # release binaries: Cargo locks each profile's directory on its own, and
+    # the release graph mostly waits on a few long units (tilo-ui, shell)
+    # while the apps compile wide. With thin LTO the two would not fit in the
+    # builder's memory, so a release builds them one after the other.
+    && thin_pid="" \
+    && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ "$TILO_RUST_LTO" = off ]; then \
+         { ( thin_started=$(date +%s); build_thin_apps "" \
+             && printf 'TILO_BUILD_TIMING phase=rust-thin-apps-parallel elapsed_seconds=%s exit_code=0\n' "$(( $(date +%s) - thin_started ))" \
+           ) > /tmp/tilo-thin-apps.log 2>&1 & } \
+         && thin_pid=$!; \
+       fi \
     && build_phase rust-release \
     # Without LTO nothing merges the units again, so a dev build splits the
     # large crates (shell's library alone ran 180 s at eight) further.
@@ -775,10 +799,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Files stays a standalone /usr/bin binary for recovery; its package is the
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
-    # The thin-app profile compiles each crate as one codegen unit, for tapp
-    # size. Built in the image without LTO (a dev build) the runtime and its
-    # dependencies take 16: one unit made fs alone compile for ten minutes.
-    # The wrapper still builds each app binary as one unit.
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
          && cp /build/os/app-artifacts/*.tapp /out/prebuilt-apps/ \
@@ -788,13 +808,14 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && [ -n "$RUNTIME_DYLIB" ] \
          && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so; \
        else \
-         EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-         APP_FEATURES="${APP_FEATURES}" \
-         CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
-         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
-         EXTRA_CARGO_ARGS="${TILO_CARGO_TIMINGS:+--timings}" \
-           /build/os/scripts/build-thin-apps.sh \
-         && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
+         if [ -n "$thin_pid" ]; then \
+           thin_status=0; wait "$thin_pid" || thin_status=$?; \
+           cat /tmp/tilo-thin-apps.log; \
+           [ "$thin_status" = 0 ]; \
+         else \
+           build_thin_apps "${TILO_CARGO_TIMINGS:+--timings}" \
+           && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; }; \
+         fi \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
               b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -2046,6 +2067,7 @@ COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
+COPY --chmod=0755 os/usr/libexec/tilo-cage-session /usr/libexec/tilo-cage-session
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth, and starts /
@@ -2243,11 +2265,10 @@ COPY \
     os/usr/lib/tilo/web-engine-entitled.conf \
     /usr/lib/tilo/
 
-# hidepid on /proc + the boot self-check that ASSERTS what's actually active.
+# The boot self-check that ASSERTS what's actually active.
 COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
-    os/usr/lib/systemd/system/tilo-hidepid.service \
     /usr/lib/systemd/system/
 
 # ---------------------------------------------------------------------------
@@ -2378,13 +2399,21 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
 # pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
 # socket-activated rather than always-on. Time sync, firewall, Bluetooth,
-# modem, power, homed, hardening, boot assessment, automatic bootc updates and
+# homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers. joycond is not enabled here:
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
     restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
+    # Fedora's presets start these at boot, ordered before multi-user.target or
+    # graphical.target. They start on demand instead: ModemManager and
+    # power-profiles-daemon when a client calls their D-Bus names, virtqemud
+    # from its sockets. Removing only the target wants keeps the D-Bus aliases
+    # and sockets that activate them.
+    rm /etc/systemd/system/multi-user.target.wants/ModemManager.service \
+       /etc/systemd/system/graphical.target.wants/power-profiles-daemon.service \
+       /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
@@ -2400,7 +2429,6 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-fs-cloud.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
-    systemctl enable tilo-hidepid.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \

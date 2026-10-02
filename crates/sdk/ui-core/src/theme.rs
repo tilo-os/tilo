@@ -1,12 +1,31 @@
+pub use crate::theme_layers::{
+    AccessibilityLayer, BrandAccentRejection, ContentSurface, DISTRIBUTION_DEFAULTS_KEY,
+    DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, PIN_ACCENT, PIN_PALETTE,
+    ThemeLayerStack, WorkspaceTint, resolve_theme_layers,
+};
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
+pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{PaletteSpec, Tokens};
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
-pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 1;
+/// Schema this build writes. Readers still open schema 1 (colours, radius,
+/// spacing, font). Schema 2 adds motion, material, and icon scale.
+pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 2;
 
-/// Stable, app-independent representation of a user-authored OS theme.
-/// Theme Studio edits it; the shell and every UI app consume it.
+/// Oldest custom-theme schema this build still opens.
+pub const CUSTOM_THEME_SCHEMA_MIN: u32 = 1;
+
+fn authored_scale_one() -> f32 {
+    1.0
+}
+
+/// Stable, app-independent representation of an authored OS theme.
+///
+/// Built-in defaults, distribution defaults, and the user theme are this
+/// same document. Theme Studio edits it; the shell and every UI app consume
+/// it. A layer that does not mention a field leaves that role at the scale
+/// below it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CustomThemeSpec {
     pub schema_version: u32,
@@ -27,6 +46,17 @@ pub struct CustomThemeSpec {
     pub radius_px: f32,
     pub spacing_px: f32,
     pub font: String,
+    /// Multiplier on the duration scale (`fast` / `base` / `slow`). `1.0`
+    /// is the stock timing. Springs stay the shared vocabulary.
+    #[serde(default = "authored_scale_one")]
+    pub motion_scale: f32,
+    /// Multiplier on elevation blur/offset and glass blur. `1.0` is the
+    /// stock material. `0.0` is flat.
+    #[serde(default = "authored_scale_one")]
+    pub material_scale: f32,
+    /// Multiplier on icon sizes. Pointer targets stay put.
+    #[serde(default = "authored_scale_one")]
+    pub icon_scale: f32,
 }
 
 impl CustomThemeSpec {
@@ -38,6 +68,19 @@ impl CustomThemeSpec {
     /// clamps to this band instead. Same range as the Themes app's spacing
     /// control.
     pub const SPACING_PX_MIN: f32 = 6.0;
+    /// Usable band for [`Self::motion_scale`]. Wider values still open and
+    /// are clamped here when the theme is built.
+    pub const MOTION_SCALE_MIN: f32 = 0.5;
+    /// See [`Self::MOTION_SCALE_MIN`].
+    pub const MOTION_SCALE_MAX: f32 = 2.0;
+    /// Flat materials.
+    pub const MATERIAL_SCALE_MIN: f32 = 0.0;
+    /// See [`Self::MATERIAL_SCALE_MIN`].
+    pub const MATERIAL_SCALE_MAX: f32 = 2.0;
+    /// Usable band for [`Self::icon_scale`].
+    pub const ICON_SCALE_MIN: f32 = 0.75;
+    /// See [`Self::ICON_SCALE_MIN`].
+    pub const ICON_SCALE_MAX: f32 = 1.75;
     /// See [`Self::SPACING_PX_MIN`].
     pub const SPACING_PX_MAX: f32 = 22.0;
 
@@ -47,7 +90,7 @@ impl CustomThemeSpec {
     /// unsupported schema version, an empty/oversize/control-char id, name or
     /// font, or a radius/spacing outside its accepted range.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != CUSTOM_THEME_SCHEMA_VERSION {
+        if !(CUSTOM_THEME_SCHEMA_MIN..=CUSTOM_THEME_SCHEMA_VERSION).contains(&self.schema_version) {
             return Err("unsupported custom theme schema");
         }
         if self.id.trim().is_empty() || self.id.len() > 128 || self.id.chars().any(char::is_control)
@@ -72,8 +115,127 @@ impl CustomThemeSpec {
         if !self.spacing_px.is_finite() || !(2.0..=64.0).contains(&self.spacing_px) {
             return Err("invalid custom theme spacing");
         }
+        if !self.motion_scale.is_finite() || !(0.25..=4.0).contains(&self.motion_scale) {
+            return Err("invalid custom theme motion scale");
+        }
+        if !self.material_scale.is_finite() || !(0.0..=4.0).contains(&self.material_scale) {
+            return Err("invalid custom theme material scale");
+        }
+        if !self.icon_scale.is_finite() || !(0.5..=3.0).contains(&self.icon_scale) {
+            return Err("invalid custom theme icon scale");
+        }
         Ok(())
     }
+
+    /// The legibility half of validation: every contrast floor in
+    /// [`crate::tokens::contrast::FLOORS`] this theme misses as authored.
+    /// [`Self::validate`] stays the structural contract, so a file written
+    /// by an older build still opens; Theme Studio refuses to save a theme
+    /// with findings, and [`Theme::from_custom_spec`] repairs one that
+    /// arrives anyway.
+    #[must_use]
+    pub fn contrast_findings(&self) -> Vec<ContrastFinding> {
+        crate::tokens::contrast::audit(&self.palette())
+    }
+
+    fn palette(&self) -> PaletteSpec {
+        let popover = if self.dark_base {
+            mix_rgb(self.surface_base, [0, 0, 0], 0.40)
+        } else {
+            [255, 255, 255]
+        };
+        // Quieter than `text_dim` by mixing toward the ground, but only as
+        // far as the tier's own 3:1 floor allows: a fixed 40 % lands at
+        // 2.5:1 on a light ground even when `text_dim` is comfortably legible.
+        let text_tertiary = [0.40_f32, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10, 0.05]
+            .into_iter()
+            .map(|t| mix_rgb(self.text_dim, self.surface_base, t))
+            .find(|c| {
+                crate::color::contrast_ratio(rgb(*c), rgb(self.surface_base))
+                    >= crate::tokens::NON_TEXT_MIN_CONTRAST
+            })
+            .unwrap_or(self.text_dim);
+        PaletteSpec {
+            dark: self.dark_base,
+            base: rgb(self.surface_base),
+            raised: rgb(self.surface_raised),
+            popover: rgb(popover),
+            text: rgb(self.text_primary),
+            text_dim: rgb(self.text_dim),
+            text_tertiary: rgb(text_tertiary),
+            border: rgb(self.border),
+            focus: rgb(self.accent),
+            accent: rgb(self.accent),
+            accent_hover: rgb(self.accent_hover),
+            success: rgb(self.success),
+            warning: rgb(self.warning),
+            danger: rgb(self.danger),
+            info: rgb(self.info),
+            window_card: None,
+        }
+    }
+}
+
+fn apply_authored_scales(tokens: &mut crate::tokens::Tokens, spec: &CustomThemeSpec) {
+    let motion = spec.motion_scale.clamp(
+        CustomThemeSpec::MOTION_SCALE_MIN,
+        CustomThemeSpec::MOTION_SCALE_MAX,
+    );
+    let material = spec.material_scale.clamp(
+        CustomThemeSpec::MATERIAL_SCALE_MIN,
+        CustomThemeSpec::MATERIAL_SCALE_MAX,
+    );
+    let icons = spec.icon_scale.clamp(
+        CustomThemeSpec::ICON_SCALE_MIN,
+        CustomThemeSpec::ICON_SCALE_MAX,
+    );
+    scale_durations(&mut tokens.motion, motion);
+    scale_materials(tokens, material);
+    scale_icons(&mut tokens.metrics, icons);
+}
+
+fn scale_u32(value: u32, factor: f32) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "duration milliseconds fit in f32 exactly at this magnitude, and the rounded product is clamped before the cast back to u32"
+    )]
+    let scaled = ((value as f32) * factor).round().clamp(1.0, 4_000.0) as u32;
+    scaled
+}
+
+fn scale_durations(motion: &mut crate::tokens::Motion, factor: f32) {
+    motion.durations.fast_ms = scale_u32(motion.durations.fast_ms, factor);
+    motion.durations.base_ms = scale_u32(motion.durations.base_ms, factor);
+    motion.durations.slow_ms = scale_u32(motion.durations.slow_ms, factor);
+    motion.gesture.fling_projection_ms = scale_u32(motion.gesture.fling_projection_ms, factor);
+}
+
+fn scale_shadow(shadow: &mut crate::tokens::Shadow, factor: f32) {
+    shadow.blur *= factor;
+    shadow.offset_y *= factor;
+}
+
+fn scale_materials(tokens: &mut crate::tokens::Tokens, factor: f32) {
+    let elevation = &mut tokens.elevation;
+    scale_shadow(&mut elevation.e0, factor);
+    scale_shadow(&mut elevation.e1, factor);
+    scale_shadow(&mut elevation.e2, factor);
+    scale_shadow(&mut elevation.e3, factor);
+    scale_shadow(&mut elevation.e4, factor);
+    scale_shadow(&mut elevation.glass_inner, factor);
+    scale_shadow(&mut elevation.glass_outer, factor);
+    elevation.shadow_scale *= factor;
+    tokens.colors.surfaces.glass_blur_px *= factor;
+}
+
+fn scale_icons(metrics: &mut crate::tokens::Metrics, factor: f32) {
+    let base = crate::tokens::Metrics::BASE;
+    metrics.icon_sm = base.icon_sm * factor;
+    metrics.icon_md = base.icon_md * factor;
+    metrics.icon_lg = base.icon_lg * factor;
+    metrics.icon_label_gap = base.icon_label_gap * factor;
 }
 
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -140,6 +302,11 @@ pub struct Theme {
     /// folds in the accessibility preference once, keeping file I/O out of
     /// widget draw paths.
     pub caret_width: f64,
+    /// High contrast or forced colours is the active track. Content surfaces
+    /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
+    pub forced_colors: bool,
+    /// Whether an app may supply a brand accent. The person turns this off.
+    pub allow_app_accents: bool,
 }
 
 impl Default for Theme {
@@ -243,6 +410,8 @@ impl Theme {
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
+            forced_colors: false,
+            allow_app_accents: true,
             tokens,
         }
     }
@@ -303,35 +472,16 @@ impl Theme {
         Self::from_tokens(name, t)
     }
 
+    /// `None` only for a structurally invalid spec. A spec that misses a
+    /// contrast floor ([`CustomThemeSpec::contrast_findings`]) is repaired
+    /// rather than rejected — its failing foregrounds step out just far
+    /// enough to clear — so a legacy file still opens, and a theme that
+    /// materializes always renders apps legibly.
     pub fn from_custom_spec(spec: &CustomThemeSpec) -> Option<Self> {
         spec.validate().ok()?;
-        let popover = if spec.dark_base {
-            mix_rgb(spec.surface_base, [0, 0, 0], 0.40)
-        } else {
-            [255, 255, 255]
-        };
-        let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
-        let mut theme = Self::from_palette(
-            &spec.name,
-            &PaletteSpec {
-                dark: spec.dark_base,
-                base: rgb(spec.surface_base),
-                raised: rgb(spec.surface_raised),
-                popover: rgb(popover),
-                text: rgb(spec.text_primary),
-                text_dim: rgb(spec.text_dim),
-                text_tertiary: rgb(text_tertiary),
-                border: rgb(spec.border),
-                focus: rgb(spec.accent),
-                accent: rgb(spec.accent),
-                accent_hover: rgb(spec.accent_hover),
-                success: rgb(spec.success),
-                warning: rgb(spec.warning),
-                danger: rgb(spec.danger),
-                info: rgb(spec.info),
-                window_card: None,
-            },
-        );
+        let mut palette = spec.palette();
+        crate::tokens::contrast::repair(&mut palette);
+        let mut theme = Self::from_palette(&spec.name, &palette);
         // `radius_px` is the `md` step and `spacing_px` the `s3` step; the
         // rest of each scale follows in the stock proportions (radii
         // 1:2:3:6, spacing 1:2:3:4:6:8:12:16) so a custom theme at the
@@ -356,6 +506,7 @@ impl Theme {
         theme.tokens.spacing =
             crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
         theme.tokens.typography.sans_family.clone_from(&spec.font);
+        apply_authored_scales(&mut theme.tokens, spec);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
         Some(Self::from_tokens(&spec.name, theme.tokens))
@@ -460,10 +611,13 @@ impl Theme {
                 text_tertiary: Color::from_rgb8(0x7C, 0x6F, 0x64), // fg4
                 border: Color::from_rgb8(0xD5, 0xC4, 0xA1), // bg2
                 focus: Color::from_rgb8(0xAF, 0x3A, 0x03), // orange (dark)
-                accent: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
-                accent_hover: Color::from_rgb8(0xB5, 0x76, 0x14),
-                success: Color::from_rgb8(0x98, 0x97, 0x1A), // green (dark)
-                warning: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
+                // Gruvbox's faded yellow and green: the neutral yellow and
+                // green measure 2.2:1 and 2.7:1 on bg0, under the 3:1 an
+                // active toggle or a status dot needs.
+                accent: Color::from_rgb8(0xB5, 0x76, 0x14), // yellow (faded)
+                accent_hover: Color::from_rgb8(0x9D, 0x64, 0x10),
+                success: Color::from_rgb8(0x79, 0x74, 0x0E), // green (faded)
+                warning: Color::from_rgb8(0xB5, 0x76, 0x14), // yellow (faded)
                 danger: Color::from_rgb8(0xCC, 0x24, 0x1D),  // red (dark)
                 info: Color::from_rgb8(0x45, 0x85, 0x88),    // blue (dark)
                 window_card: None,
@@ -510,16 +664,18 @@ impl Theme {
                 raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 text: Color::from_rgb8(0x4C, 0x4F, 0x69), // text
-                text_dim: Color::from_rgb8(0x6C, 0x6F, 0x85), // subtext0
-                text_tertiary: Color::from_rgb8(0x8C, 0x8F, 0xA1), // overlay1
+                text_dim: Color::from_rgb8(0x5C, 0x5F, 0x77), // subtext1 (subtext0 is 4.4:1)
+                text_tertiary: Color::from_rgb8(0x7C, 0x7F, 0x93), // overlay2
                 border: Color::from_rgb8(0xCC, 0xD0, 0xDA), // surface0
                 focus: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
                 accent: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
                 accent_hover: Color::from_rgb8(0x15, 0x52, 0xCC),
-                success: Color::from_rgb8(0x40, 0xA0, 0x2B), // green
-                warning: Color::from_rgb8(0xDF, 0x8E, 0x1D), // yellow
+                // Latte's green, yellow and sky, deepened just enough to
+                // clear 3:1 on its base (they measure 2.96, 2.31 and 2.47).
+                success: Color::from_rgb8(0x3F, 0x9E, 0x2B), // green
+                warning: Color::from_rgb8(0xC0, 0x7A, 0x19), // yellow
                 danger: Color::from_rgb8(0xD2, 0x0F, 0x39),  // red
-                info: Color::from_rgb8(0x04, 0xA5, 0xE5),    // sky
+                info: Color::from_rgb8(0x04, 0x94, 0xCE),    // sky
                 window_card: None,
             },
         )
@@ -534,8 +690,10 @@ impl Theme {
                 raised: Color::from_rgb8(0x07, 0x36, 0x42), // base02
                 popover: Color::from_rgb8(0x00, 0x21, 0x2B),
                 text: Color::from_rgb8(0x93, 0xA1, 0xA1), // base1
-                text_dim: Color::from_rgb8(0x83, 0x94, 0x96), // base0
-                text_tertiary: Color::from_rgb8(0x58, 0x6E, 0x75), // base01
+                // base0 lifted a step toward base1: base0 itself is 4.1:1 on
+                // base02, where secondary text lands on a raised card.
+                text_dim: Color::from_rgb8(0x8C, 0x9C, 0x9E),
+                text_tertiary: Color::from_rgb8(0x65, 0x7B, 0x83), // base00 (base01 is 2.8:1)
                 border: Color::from_rgb8(0x0F, 0x4A, 0x59),
                 focus: Color::from_rgb8(0x26, 0x8B, 0xD2), // blue
                 accent: Color::from_rgb8(0x2A, 0xA1, 0x98), // cyan
@@ -591,13 +749,13 @@ impl Theme {
                 popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
                 text: Color::from_rgb8(0x33, 0x30, 0x2A), // warm near-black
                 text_dim: Color::from_rgb8(0x6B, 0x65, 0x5A),
-                text_tertiary: Color::from_rgb8(0x97, 0x90, 0x7F),
+                text_tertiary: Color::from_rgb8(0x8A, 0x83, 0x71),
                 border: Color::from_rgb8(0xDD, 0xD3, 0xC2),
                 focus: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
                 accent: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
                 accent_hover: Color::from_rgb8(0xA1, 0x5A, 0x2E),
                 success: Color::from_rgb8(0x5B, 0x8C, 0x4E), // olive
-                warning: Color::from_rgb8(0xC0, 0x8A, 0x2E),
+                warning: Color::from_rgb8(0xA8, 0x78, 0x22),
                 danger: Color::from_rgb8(0xB4, 0x46, 0x2F), // brick
                 info: Color::from_rgb8(0x3E, 0x7C, 0xA8),
                 window_card: None,
@@ -655,31 +813,27 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let document = serde_json::from_str::<serde_json::Value>(text).ok();
-        // The accessibility switch is separate from the theme choice and wins
-        // over it, as it does for apps reading the appearance portal.
-        let high_contrast = document
-            .as_ref()
-            .and_then(|v| v.get("appearance")?.get("high_contrast")?.as_bool())
-            .unwrap_or(false);
-        let mut theme = if high_contrast {
-            Self::high_contrast()
-        } else {
-            Self::from_settings_json(text).unwrap_or_else(Self::dark)
+        let mut stack =
+            crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
+        // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
+        // Baking the file's factors here would apply them twice. Reduced motion
+        // follows the host override: the compositor is itself a UI host, so an
+        // explicitly reduced-motion session must not keep full-desktop
+        // transitions running even when settings.json has not been written yet.
+        // A file schema this build rejects does not contribute contrast or
+        // caret. The host override is its own admitted layer.
+        let file = stack.accessibility;
+        let admitted = file.validate().is_ok();
+        stack.accessibility = crate::theme_layers::AccessibilityLayer {
+            high_contrast: admitted && file.high_contrast,
+            forced_colors: admitted && file.forced_colors,
+            thick_caret: admitted && file.thick_caret,
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            reduce_motion: reduce_motion_override,
+            ..crate::theme_layers::AccessibilityLayer::default()
         };
-        let thick = document
-            .as_ref()
-            .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
-            .unwrap_or(false);
-        theme.caret_width = if thick { 4.0 } else { 2.0 };
-        // Match standalone apps' accessibility override.  The compositor is
-        // itself a UI host, so an explicitly reduced-motion session must not
-        // keep full-desktop transitions running even when settings.json has
-        // not been written yet (notably the disposable software-rendered VM).
-        if reduce_motion_override {
-            theme.reduce_motion = true;
-        }
-        theme
+        resolve_theme_layers(&stack)
     }
 
     /// Parser shared by runtime loading and hermetic tests. An "Automatic"
@@ -777,7 +931,9 @@ impl Theme {
         c.semantic.danger = Color::from_rgb8(255, 82, 82);
         c.semantic.info = Color::from_rgb8(64, 196, 255);
 
-        Self::from_tokens("High Contrast", t)
+        let mut theme = Self::from_tokens("High Contrast", t);
+        theme.forced_colors = true;
+        theme
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
@@ -968,6 +1124,7 @@ impl Theme {
         text_scale: f32,
         ui_scale: f32,
     ) -> Self {
+        let allow_app_accents = self.allow_app_accents;
         let base = if settings.high_contrast {
             Self::high_contrast()
         } else {
@@ -976,6 +1133,15 @@ impl Theme {
         base.with_ui_scale(ui_scale)
             .with_text_scale(text_scale)
             .with_reduce_motion(settings.reduce_motion)
+            .with_app_accents(allow_app_accents)
+    }
+
+    /// Restores the app-accent switch after a track replacement
+    /// ([`Theme::with_a11y`] swaps in [`Theme::high_contrast`]).
+    #[must_use]
+    pub fn with_app_accents(mut self, allow: bool) -> Self {
+        self.allow_app_accents = allow;
+        self
     }
 }
 
@@ -1047,7 +1213,7 @@ mod tests {
                 (
                     Theme::gruvbox_light(),
                     [0xFB, 0xF1, 0xC7],
-                    [0xD7, 0x99, 0x21],
+                    [0xB5, 0x76, 0x14], // faded yellow; see the preset
                 ),
                 (
                     Theme::catppuccin_mocha(),
@@ -1193,10 +1359,9 @@ mod tests {
                 let rd = contrast_ratio(on.ink_dim, card);
                 assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
                 // How quiet the tertiary tier is is a property of the palette's
-                // authorship, not this derivation — Solarized runs at 2.8:1 on
-                // its own ground on purpose, against a large-text-AA target of
-                // 3:1. So the bar is: clear 3:1, or be no worse than the
-                // palette already manages on its own ground.
+                // authorship, not this derivation (the contrast floors hold it
+                // to 3:1 on the palette's own ground). So the bar is: clear
+                // 3:1, or be no worse than the palette manages on its ground.
                 let rt = contrast_ratio(on.ink_tertiary, card);
                 let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
                 assert!(
@@ -1596,6 +1761,9 @@ mod tests {
                 radius_px: 13.0,
                 spacing_px: 17.0,
                 font: "Inter".into(),
+                motion_scale: 1.0,
+                material_scale: 1.0,
+                icon_scale: 1.0,
             };
             let json = serde_json::json!({
                 "appearance": {
@@ -1722,6 +1890,163 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_theme_that_materializes_keeps_the_contrast_floors() {
+        use crate::tokens::contrast::audit;
+
+        // Case `every_shipped_preset_keeps_every_floor`: by constructor and by
+        // the name the settings file stores, so neither list can drift.
+        {
+            let by_name = Theme::ALL
+                .iter()
+                .map(|n| Theme::named(n).unwrap_or_else(|| panic!("{n} resolves")));
+            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()).chain(by_name) {
+                let findings = audit(&t.tokens.colors);
+                assert!(
+                    findings.is_empty(),
+                    "{} misses {} contrast floor(s):\n  {}",
+                    t.name,
+                    findings.len(),
+                    findings
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n  "),
+                );
+            }
+        }
+
+        // Case `a_legible_custom_theme_has_no_findings_and_is_not_touched`.
+        {
+            let spec = quiet_ocean(8.0, 12.0);
+            assert_eq!(spec.contrast_findings(), Vec::new());
+            let theme = Theme::from_custom_spec(&spec).unwrap();
+            assert_eq!(rgb(theme.text_primary), spec.text_primary);
+            assert_eq!(rgb(theme.text_dim), spec.text_dim);
+            assert_eq!(rgb(theme.accent_primary), spec.accent);
+            assert_eq!(rgb(theme.tokens.colors.semantic.danger), spec.danger);
+        }
+
+        // Case `an_illegible_legacy_file_still_opens_and_renders_legibly`:
+        // grey on grey, as an older build (which checked only ranges) would
+        // have saved it. Dropping it would silently swap the person's theme
+        // for the default; it is repaired instead.
+        {
+            let mut murky = quiet_ocean(8.0, 12.0);
+            murky.surface_base = [0x30, 0x30, 0x30];
+            murky.surface_raised = [0x3A, 0x3A, 0x3A];
+            murky.text_primary = [0x70, 0x70, 0x70];
+            murky.text_dim = [0x55, 0x55, 0x55];
+            murky.accent = [0x40, 0x48, 0x58];
+            murky.warning = [0x55, 0x4A, 0x20];
+            assert!(murky.validate().is_ok(), "structurally it is a theme");
+            let findings = murky.contrast_findings();
+            for role in [
+                ContrastRole::TextPrimary,
+                ContrastRole::TextDim,
+                ContrastRole::Accent,
+                ContrastRole::Warning,
+            ] {
+                assert!(
+                    findings.iter().any(|f| f.foreground == role),
+                    "{} should be reported: {findings:?}",
+                    role.name()
+                );
+            }
+            let json = serde_json::json!({
+                "appearance": { "theme": "custom:quiet-ocean", "custom_theme": murky }
+            });
+            let theme = Theme::from_settings_json(&json.to_string())
+                .expect("a legacy file with poor contrast still opens");
+            assert_eq!(theme.name, "Quiet Ocean");
+            assert_eq!(audit(&theme.tokens.colors), Vec::new());
+            assert_eq!(
+                rgb(theme.bg_app),
+                murky.surface_base,
+                "repair moves foregrounds, never the ground"
+            );
+            assert_eq!(rgb(theme.bg_primary), murky.surface_raised);
+            assert_eq!(
+                rgb(theme.tokens.colors.semantic.danger),
+                murky.danger,
+                "a role that already passed is left as authored"
+            );
+        }
+
+        // Case `a_pale_accent_on_a_light_ground_is_deepened_not_inverted`:
+        // the repaired accent stays in the authored hue family.
+        {
+            let mut pale = quiet_ocean(8.0, 12.0);
+            pale.dark_base = false;
+            pale.surface_base = [0xF6, 0xF6, 0xF4];
+            pale.surface_raised = [0xFF, 0xFF, 0xFF];
+            pale.text_primary = [0x1B, 0x1C, 0x1E];
+            pale.text_dim = [0x55, 0x57, 0x5D];
+            pale.accent = [0xFF, 0xD0, 0x40];
+            pale.success = [0x20, 0x80, 0x40];
+            pale.warning = [0x90, 0x60, 0x00];
+            pale.danger = [0xC0, 0x30, 0x30];
+            pale.info = [0x20, 0x60, 0xB0];
+            assert_eq!(
+                pale.contrast_findings()
+                    .iter()
+                    .map(|f| f.foreground)
+                    .collect::<Vec<_>>(),
+                vec![
+                    ContrastRole::Accent,
+                    ContrastRole::Accent,
+                    ContrastRole::Focus,
+                ],
+                "only the pale accent misses: on base, on raised, and as the \
+                 focus ring a custom theme draws in its accent. The derived \
+                 tertiary tier stops short of its floor rather than mixing a \
+                 fixed 40 % toward the light ground (2.7:1)"
+            );
+            let theme = Theme::from_custom_spec(&pale).unwrap();
+            assert_eq!(audit(&theme.tokens.colors), Vec::new());
+            let [r, g, b] = rgb(theme.accent_primary);
+            assert!(
+                r > g && g > b,
+                "still a yellow-orange after deepening: {:?}",
+                [r, g, b]
+            );
+        }
+    }
+
+    #[test]
+    fn schema_one_opens_and_authored_scales_change_motion_material_and_icons() {
+        let json = r#"{"schema_version":1,"id":"legacy","name":"Legacy","dark_base":true,"accent":[80,160,255],"accent_hover":[60,130,220],"surface_base":[16,18,24],"surface_raised":[28,32,40],"text_primary":[236,238,244],"text_dim":[170,176,188],"border":[60,66,78],"success":[40,160,90],"warning":[180,140,40],"danger":[190,60,60],"info":[60,140,200],"radius_px":8.0,"spacing_px":12.0,"font":"Inter"}"#;
+        let legacy: CustomThemeSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(legacy.motion_scale, 1.0);
+        assert_eq!(legacy.material_scale, 1.0);
+        assert_eq!(legacy.icon_scale, 1.0);
+        let theme = Theme::from_custom_spec(&legacy).unwrap();
+        assert_eq!(
+            theme.tokens.motion.durations.base_ms,
+            crate::tokens::Durations::default().base_ms
+        );
+
+        let mut scaled = legacy.clone();
+        scaled.schema_version = CUSTOM_THEME_SCHEMA_VERSION;
+        scaled.motion_scale = 0.5;
+        scaled.material_scale = 2.0;
+        scaled.icon_scale = 1.5;
+        let theme = Theme::from_custom_spec(&scaled).unwrap();
+        assert_eq!(
+            theme.tokens.motion.durations.base_ms,
+            crate::tokens::Durations::default().base_ms / 2
+        );
+        assert!((theme.tokens.colors.surfaces.glass_blur_px - 48.0).abs() < 0.01);
+        assert!(
+            (theme.tokens.metrics.icon_md - crate::tokens::Metrics::BASE.icon_md * 1.5).abs()
+                < 0.01
+        );
+        assert_eq!(
+            theme.tokens.metrics.min_pointer_target,
+            crate::tokens::Metrics::BASE.min_pointer_target
+        );
+    }
+
     fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
         CustomThemeSpec {
             schema_version: CUSTOM_THEME_SCHEMA_VERSION,
@@ -1742,6 +2067,9 @@ mod tests {
             radius_px,
             spacing_px,
             font: "Inter".into(),
+            motion_scale: 1.0,
+            material_scale: 1.0,
+            icon_scale: 1.0,
         }
     }
 

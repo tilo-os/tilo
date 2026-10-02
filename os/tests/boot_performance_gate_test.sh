@@ -218,6 +218,9 @@ grep -Fqx 'Requires=firewalld.service' "$network_manager_firewall"
 grep -Fqx 'After=firewalld.service' "$network_manager_firewall"
 grep -Fq 'OnUnitInactiveSec=1h' \
   "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'OnBootSec=2min' "$repo/os/usr/lib/systemd/system/tilo-security-audit.timer"
+grep -Fqx 'CPUSchedulingPolicy=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
+grep -Fqx 'IOSchedulingClass=idle' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"
 if grep -Fq 'RemainAfterExit=yes' \
     "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   echo 'security audit oneshot remains active and cannot recur from its timer' >&2
@@ -362,7 +365,12 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/crates/system/fs/src/main.rs"
+# Activation may omit a pathname; an explicit path must still be this socket.
+recipient_src="$repo/crates/system/fs/src/main.rs"
+if ! grep -A3 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$recipient_src"   | grep -Fq 'actual == socket'; then
+  echo 'recipient-service no longer requires the activation listener to be the expected socket' >&2
+  exit 1
+fi
 app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
 app_host_serve_line="$(grep -n 'transport::serve(listener, store' "$app_host_source" | cut -d: -f1)"
 if [ -z "$app_host_gc_line" ] || [ -z "$app_host_serve_line" ] \
@@ -411,6 +419,15 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   echo 'composefs VM still exercises blocking boot-entry maintenance' >&2
   exit 1
 fi
+
+for preset_wants in multi-user.target.wants/ModemManager.service \
+    graphical.target.wants/power-profiles-daemon.service \
+    multi-user.target.wants/virtqemud.service; do
+  grep -Fq "/etc/systemd/system/$preset_wants" "$repo/os/Containerfile" || {
+    echo "the preset still starts $preset_wants before login" >&2
+    exit 1
+  }
+done
 
 for demand_activated in bluetooth ModemManager fwupd power-profiles-daemon systemd-homed; do
   if grep -Fq "systemctl enable $demand_activated.service" "$repo/os/Containerfile"; then

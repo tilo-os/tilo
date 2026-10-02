@@ -8,6 +8,9 @@
 //! Maya is out today {#b2}
 //! 1 removed
 //! ```
+//!
+//! A block longer than [`MAX_BLOCK_CHARS`] is cut there and ends in `…`: the
+//! caller wrote it, so its start is enough to recognise it.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -18,6 +21,9 @@ use super::{Segment, Shape};
 
 /// The most changed blocks one answer lists; `read-text` reads the rest.
 pub const MAX_LISTED: usize = 32;
+
+/// The most characters of one block an answer shows.
+pub const MAX_BLOCK_CHARS: usize = 160;
 
 /// The blocks `changes`, an edit's patches over `doc`, touched.
 pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
@@ -52,12 +58,28 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
         .blocks
         .into_iter()
         .filter(|block| touched.contains(&block.id))
-        .map(|block| Segment {
-            shape: Shape::of_attrs(&block.attrs),
-            block: block.id,
-            kind: block.kind,
-            text: block.text,
-            complete: true,
+        .map(|block| {
+            let complete = block.text.chars().count() <= MAX_BLOCK_CHARS;
+            Segment {
+                shape: Shape::of_attrs(&block.attrs),
+                marks: block
+                    .marks
+                    .into_iter()
+                    .filter(|mark| mark.start < MAX_BLOCK_CHARS)
+                    .map(|mark| qdoc::document::MarkSpan {
+                        end: mark.end.min(MAX_BLOCK_CHARS),
+                        ..mark
+                    })
+                    .collect(),
+                block: block.id,
+                kind: block.kind,
+                text: if complete {
+                    block.text
+                } else {
+                    block.text.chars().take(MAX_BLOCK_CHARS).collect()
+                },
+                complete,
+            }
         })
         .collect();
     let removed = touched.len().saturating_sub(blocks.len());
@@ -80,4 +102,50 @@ pub fn summary(doc: &AutoCommit, changes: &[automerge::Patch]) -> String {
         let _ = writeln!(out, "{removed} removed");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_BLOCK_CHARS, summary};
+    use automerge::AutoCommit;
+    use tilo_automerge::ApplyIncoming as _;
+
+    #[test]
+    fn a_bolded_block_answers_bold() {
+        let mut source = qdoc::Document::new();
+        let line = source.insert_block(None, "paragraph");
+        source.splice_text(&line, 0, 0, "Deadline: October 15");
+        let mut doc = AutoCommit::load(&source.save()).unwrap();
+        let before = doc.get_heads();
+        let mut edited = qdoc::Document::load(&doc.save()).unwrap();
+        edited.add_mark(&line, 0, 20, "strong", true);
+        doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
+            .unwrap();
+        let after = doc.get_heads();
+        let changes = doc.diff(&before, &after);
+        assert_eq!(
+            summary(&doc, &changes),
+            format!("1 changed:\n**Deadline: October 15** {{#{line}}}\n")
+        );
+    }
+
+    #[test]
+    fn a_long_block_answers_with_its_start() {
+        let mut source = qdoc::Document::new();
+        let short = source.insert_block(None, "paragraph");
+        source.splice_text(&short, 0, 0, "short");
+        let mut doc = AutoCommit::load(&source.save()).unwrap();
+        let before = doc.get_heads();
+        let mut edited = qdoc::Document::load(&doc.save()).unwrap();
+        let long = edited.insert_block(Some(&short), "paragraph");
+        edited.splice_text(&long, 0, 0, &"a".repeat(MAX_BLOCK_CHARS + 40));
+        doc.merge_incoming(&mut AutoCommit::load(&edited.save()).unwrap())
+            .unwrap();
+        let after = doc.get_heads();
+        let changes = doc.diff(&before, &after);
+        assert_eq!(
+            summary(&doc, &changes),
+            format!("1 changed:\n{}… {{#{long}}}\n", "a".repeat(MAX_BLOCK_CHARS))
+        );
+    }
 }

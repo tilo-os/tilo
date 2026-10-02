@@ -4,9 +4,13 @@
 //! `tilo-launcher` invocation, asserting on the command actually executed.
 //!
 //! Two process-wide env vars make this assertable without a session:
-//! `HOME` points at a temp tree the Files provider indexes, and
-//! `TILO_LAUNCHER_BIN` (the launcher's documented seam) points at a script
-//! that records its argv.
+//! `HOME` (with a matching XDG tree under it) is the session home the
+//! Files provider indexes, and `TILO_LAUNCHER_BIN` (the launcher's
+//! documented seam) points at a script that records its argv.
+//!
+//! The cargo runner already points XDG at a scratch profile. This test
+//! must keep that layout under its own `HOME`; otherwise `indexable_home`
+//! walks the runner profile and the document planted here is invisible.
 
 #![allow(
     clippy::unwrap_used,
@@ -269,11 +273,17 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
         let log = install_recording_launcher(&runtime);
 
         // Read on this thread and by the launch thread it spawns.
+        // XDG must live under this HOME so FilesProvider walks it, not the
+        // runner's scratch profile or a TILO_TEST_CONTROL cache home.
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", &home)
+            .set("XDG_CONFIG_HOME", home.join(".config"))
+            .set("XDG_CACHE_HOME", home.join(".cache"))
             .set("TILO_APPS_DATA_DIR", &apps)
             .set("XDG_RUNTIME_DIR", &runtime)
             .set("TILO_LAUNCHER_BIN", runtime.join("tilo-launcher"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
         launcher::invalidate_app_cache();
         launcher::clear_pending_placements();
         shell::shell::doc_open::clear_open_documents();
@@ -300,8 +310,10 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
         // last character until the walk commits — exercising the production
         // per-keystroke refresh rather than reaching into the index.
         session.type_str(&mut host, &layout, "quarterly-repor");
+        // The walk must happen; bound it by the hang limit, not a speed guess.
         let mut rows = Vec::new();
-        for _ in 0..200 {
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
             session.type_str(&mut host, &layout, "t");
             session.press(
                 &mut host,

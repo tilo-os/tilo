@@ -108,13 +108,20 @@ struct ServerFixture {
     remote: DavSource,
     account_root: DavSource,
     folder: ItemId,
+    /// The Nextcloud trash bin of the account, when the root is one.
+    trash: Option<DavSource>,
 }
 
 impl ServerFixture {
     /// From `<prefix>_URL`, `<prefix>_USER`, `<prefix>_PASSWORD`; `None`
-    /// (skip) when unset.
+    /// (skip) when unset. An empty value is unset: a workflow passes a
+    /// secret that is not configured as an empty string.
     fn from_env(prefix: &str, nextcloud: bool) -> Option<Self> {
-        let var = |name: &str| std::env::var(format!("{prefix}_{name}")).ok();
+        let var = |name: &str| {
+            std::env::var(format!("{prefix}_{name}"))
+                .ok()
+                .filter(|value| !value.is_empty())
+        };
         let Some(url) = var("URL") else {
             assert!(
                 std::env::var("TILO_REQUIRE_CLOUD_SERVERS").as_deref() != Ok("1")
@@ -131,6 +138,25 @@ impl ServerFixture {
         } else {
             DavConfig::generic(url)
         };
+        // A Nextcloud files root (either suite may point at one) keeps every
+        // deleted run folder in that account's trash bin.
+        let trash = base
+            .root
+            .path()
+            .strip_prefix("/remote.php/dav/files/")
+            .and_then(|rest| rest.strip_suffix('/'))
+            .filter(|account| !account.contains('/'))
+            .map(|account| {
+                let root = base
+                    .root
+                    .join(&format!("/remote.php/dav/trashbin/{account}/trash/"))
+                    .expect("trash url");
+                DavSource::new(
+                    DavConfig::generic(root),
+                    Arc::new(StaticCredential(basic(&user, &password))),
+                )
+                .unwrap()
+            });
         let fixed = || Arc::new(StaticCredential(basic(&user, &password)));
         let account_root = DavSource::new(base.clone(), fixed()).unwrap();
         let folder_name = format!("conformance-{}", uuid::Uuid::new_v4().simple());
@@ -152,6 +178,7 @@ impl ServerFixture {
             remote,
             account_root,
             folder,
+            trash,
         })
     }
 }
@@ -159,6 +186,15 @@ impl ServerFixture {
 impl Drop for ServerFixture {
     fn drop(&mut self) {
         let _ = self.account_root.delete(&self.folder, None);
+        // Nextcloud keeps everything the suite deletes in the account's
+        // trash bin; the account is the suite's own, so empty it.
+        if let Some(trash) = &self.trash
+            && let Ok(items) = trash.list(&trash.root())
+        {
+            for item in items {
+                let _ = trash.delete(&item.id, None);
+            }
+        }
     }
 }
 

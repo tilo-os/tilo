@@ -229,7 +229,13 @@ impl Vm<'_> {
     }
 
     fn memory(&self) -> u32 {
-        self.entry.memory_mb.unwrap_or(8192)
+        self.entry.memory_mb.unwrap_or_else(|| {
+            if self.entry.hypervisor == "whpx" {
+                3072
+            } else {
+                8192
+            }
+        })
     }
 
     fn cpus(&self) -> u32 {
@@ -1025,7 +1031,10 @@ impl Hypervisor for Whpx {
             .collect::<Vec<_>>()
             .join(" ");
         let pid = ps_quote(&Self::pid(vm));
-        let stderr = ps_quote(&whpx_file(disk, "stderr.log"));
+        let serial = ps_quote(&whpx_file(disk, "ttyS0.log"));
+        // Keep Start-Process detached. Redirecting even one QEMU stream made
+        // Command::output wait for the VM to exit on Windows ARM, although the
+        // guest was already serving SSH. QEMU's serial devices log boot output.
         let script = format!(
             "$ErrorActionPreference='Stop'; \
              $free=([IO.DriveInfo]::new([IO.Path]::GetPathRoot({}))).AvailableFreeSpace; \
@@ -1033,9 +1042,9 @@ impl Hypervisor for Whpx {
              if (Test-Path -LiteralPath {pid}) {{ $old=[int](Get-Content -LiteralPath {pid}); \
              $oldProcess=Get-Process -Id $old -ErrorAction SilentlyContinue; \
              if ($oldProcess -and $oldProcess.ProcessName -eq 'qemu-system-aarch64') {{ throw 'WHPX VM is already running' }} }}; \
-             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden -RedirectStandardError {stderr}; \
+             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden; \
              Set-Content -LiteralPath {pid} -Value $p.Id; Start-Sleep -Seconds 1; \
-             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode+'; see '+{stderr}) }}",
+             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode+'; see '+{serial}) }}",
             ps_quote(disk),
             ps_quote(qemu),
             ps_quote(&args)
@@ -1254,6 +1263,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn whpx_defaults_to_fast_memory_without_changing_explicit_or_other_vms() {
+        let memory = |entry: &VmEntry| Vm { name: "dev", entry }.memory();
+        let mut entry = entry();
+        entry.hypervisor = "whpx".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 3072);
+
+        entry.memory_mb = Some(8192);
+        assert_eq!(memory(&entry), 8192);
+
+        entry.hypervisor = "libvirt".into();
+        entry.memory_mb = None;
+        assert_eq!(memory(&entry), 8192);
+    }
+
     /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an
     /// explicit ESP binding.
     #[test]
@@ -1304,7 +1329,8 @@ mod tests {
                     .contains("io.systemd.credential.binary")
             );
             assert!(start[0].args.last().unwrap().contains("15GB"));
-            assert!(start[0].args.last().unwrap().contains("stderr.log"));
+            assert!(!start[0].args.last().unwrap().contains("-RedirectStandard"));
+            assert!(start[0].args.last().unwrap().contains("ttyS0.log"));
             assert!(
                 Whpx.stop(&vm)[0]
                     .args

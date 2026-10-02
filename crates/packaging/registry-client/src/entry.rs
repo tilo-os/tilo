@@ -226,6 +226,7 @@ pub fn build_entry(
         versions.push(version);
     }
     versions.sort_by(compare_registry_versions);
+    keep_newest_versions(&mut versions);
     let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
     let mut entry = registry_types::RegistryEntry {
         package_id: package.id.clone(),
@@ -415,6 +416,44 @@ fn candidate_is_older_than_published(
     })
 }
 
+/// Bound `versions` (sorted newest first) to the registry's limit by dropping
+/// the oldest superseded ones. The newest version of every target stays, so
+/// no target loses its current release.
+fn keep_newest_versions(versions: &mut Vec<registry_types::RegistryVersion>) {
+    let excess = versions
+        .len()
+        .saturating_sub(registry_types::entry::MAX_ENTRY_VERSIONS);
+    if excess == 0 {
+        return;
+    }
+    let mut dropped = 0;
+    for index in (0..versions.len()).rev() {
+        if dropped == excess {
+            break;
+        }
+        let Some(candidate) = versions.get(index) else {
+            continue;
+        };
+        let superseded = versions
+            .get(..index)
+            .unwrap_or_default()
+            .iter()
+            .any(|newer| same_target(newer, candidate));
+        if superseded {
+            versions.remove(index);
+            dropped = dropped.saturating_add(1);
+        }
+    }
+}
+
+fn same_target(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.target.platform == right.target.platform
+        && left.target.architecture == right.target.architecture
+}
+
 fn compare_registry_versions(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
@@ -596,6 +635,27 @@ module = "{module}"
                 None
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn versions_beyond_the_limit_drop_the_oldest_superseded_ones() {
+        let limit = registry_types::entry::MAX_ENTRY_VERSIONS;
+        let mut arm = version("1.0.0");
+        arm.target.architecture = "aarch64".into();
+        let mut versions: Vec<_> = (1..=limit)
+            .map(|n| version(&format!("1.0.{n}")))
+            .chain(std::iter::once(arm))
+            .collect();
+        versions.sort_by(compare_registry_versions);
+        keep_newest_versions(&mut versions);
+        assert_eq!(versions.len(), limit);
+        // The x86_64 release 1.0.1 left; aarch64's only release stayed.
+        assert!(versions.iter().all(|v| v.version != "1.0.1"));
+        assert!(versions.iter().any(|v| v.target.architecture == "aarch64"));
+        assert_eq!(
+            versions.first().map(|v| v.version.as_str()),
+            Some(&*format!("1.0.{limit}"))
         );
     }
 }
