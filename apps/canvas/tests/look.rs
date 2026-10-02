@@ -43,7 +43,7 @@ fn a_look_shows_the_painting_whole_and_up_close() {
         region: Some([700.0, 100.0, 320.0, 240.0]),
         size: Some(640),
         grid: Some(true),
-        layers: None,
+        ..Look::default()
     };
     let (detail, info) = view_ops::look(&mut renderer, &mut text, &art, &close).unwrap();
     assert_eq!((detail.width, detail.height), (640, 480));
