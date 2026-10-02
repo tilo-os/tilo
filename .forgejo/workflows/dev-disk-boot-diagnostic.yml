@@ -12,6 +12,10 @@ on:
       source_revision:
         description: "Exact 40-character source revision the candidate must name."
         required: true
+      upgrade_image:
+        description: "Optional immutable tilo-vm dev image to stage and boot in the disposable overlay."
+        required: false
+        default: ""
       renderer_variant:
         description: "Greeter render probe: gpu (default), vello-cpu, gl-softpipe, lp-zero, or lp-no-rast."
         required: false
@@ -42,6 +46,7 @@ jobs:
       TILO_RUN: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}
       CANDIDATE_MANIFEST: ${{ github.event.inputs.candidate_manifest }}
       SOURCE_REVISION: ${{ github.event.inputs.source_revision }}
+      UPGRADE_IMAGE: ${{ github.event.inputs.upgrade_image }}
       RENDERER_VARIANT: ${{ github.event.inputs.renderer_variant }}
       CPU_VARIANT: ${{ github.event.inputs.cpu_variant }}
       CAPTURE_FAULT_PC: ${{ github.event.inputs.capture_fault_pc }}
@@ -110,6 +115,10 @@ jobs:
             echo '::error::capture_fault_pc must be true or false'
             exit 1
           }
+          [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::upgrade_image must pin a tilo-vm dev image digest'
+            exit 1
+          }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
           overlay="$TILO_RUN/smoke.qcow2"
           qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK" "$overlay" >/dev/null
@@ -131,6 +140,26 @@ jobs:
             sleep 1
           done
           [[ $ready == true ]] || { echo '::error::candidate boot did not accept SSH'; exit 1; }
+          if [[ -n $UPGRADE_IMAGE ]]; then
+            # Reuse the candidate's installed disk. bootc fetches changed layers;
+            # the original disk remains immutable underneath this overlay.
+            old_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id')
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' sh -c 'mount -o remount,rw /boot && bootc switch $UPGRADE_IMAGE'"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
+            ready=false
+            for attempt in $(seq 1 120); do
+              new_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) || new_boot=
+              if [[ -n $new_boot && $new_boot != "$old_boot" ]]; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::dev image upgrade did not reboot'; exit 1; }
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bootc status --json" > "$TILO_RUN/bootc-status.json"
+            jq -e --arg image "$UPGRADE_IMAGE" '.status.booted.image.image.image == $image' "$TILO_RUN/bootc-status.json" >/dev/null || {
+              echo '::error::guest did not boot the requested dev image'
+              exit 1
+            }
+            cat "$TILO_RUN/bootc-status.json"
+          fi
           read -r -a samples <<< "$VERITY_SAMPLES"
           for sample in "${samples[@]}"; do
             [[ $sample =~ ^[0-9a-f]{2}/[0-9a-f]{126}$ ]] || {
