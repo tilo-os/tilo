@@ -9,10 +9,23 @@ use crate::tokens::{PaletteSpec, Tokens};
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
-pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 1;
+/// Schema this build writes. Readers still open schema 1 (colours, radius,
+/// spacing, font). Schema 2 adds motion, material, and icon scale.
+pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 2;
 
-/// Stable, app-independent representation of a user-authored OS theme.
-/// Theme Studio edits it; the shell and every UI app consume it.
+/// Oldest custom-theme schema this build still opens.
+pub const CUSTOM_THEME_SCHEMA_MIN: u32 = 1;
+
+fn authored_scale_one() -> f32 {
+    1.0
+}
+
+/// Stable, app-independent representation of an authored OS theme.
+///
+/// Built-in defaults, distribution defaults, and the user theme are this
+/// same document. Theme Studio edits it; the shell and every UI app consume
+/// it. A layer that does not mention a field leaves that role at the scale
+/// below it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CustomThemeSpec {
     pub schema_version: u32,
@@ -33,6 +46,17 @@ pub struct CustomThemeSpec {
     pub radius_px: f32,
     pub spacing_px: f32,
     pub font: String,
+    /// Multiplier on the duration scale (`fast` / `base` / `slow`). `1.0`
+    /// is the stock timing. Springs stay the shared vocabulary.
+    #[serde(default = "authored_scale_one")]
+    pub motion_scale: f32,
+    /// Multiplier on elevation blur/offset and glass blur. `1.0` is the
+    /// stock material. `0.0` is flat.
+    #[serde(default = "authored_scale_one")]
+    pub material_scale: f32,
+    /// Multiplier on icon sizes. Pointer targets stay put.
+    #[serde(default = "authored_scale_one")]
+    pub icon_scale: f32,
 }
 
 impl CustomThemeSpec {
@@ -44,6 +68,19 @@ impl CustomThemeSpec {
     /// clamps to this band instead. Same range as the Themes app's spacing
     /// control.
     pub const SPACING_PX_MIN: f32 = 6.0;
+    /// Usable band for [`Self::motion_scale`]. Wider values still open and
+    /// are clamped here when the theme is built.
+    pub const MOTION_SCALE_MIN: f32 = 0.5;
+    /// See [`Self::MOTION_SCALE_MIN`].
+    pub const MOTION_SCALE_MAX: f32 = 2.0;
+    /// Flat materials.
+    pub const MATERIAL_SCALE_MIN: f32 = 0.0;
+    /// See [`Self::MATERIAL_SCALE_MIN`].
+    pub const MATERIAL_SCALE_MAX: f32 = 2.0;
+    /// Usable band for [`Self::icon_scale`].
+    pub const ICON_SCALE_MIN: f32 = 0.75;
+    /// See [`Self::ICON_SCALE_MIN`].
+    pub const ICON_SCALE_MAX: f32 = 1.75;
     /// See [`Self::SPACING_PX_MIN`].
     pub const SPACING_PX_MAX: f32 = 22.0;
 
@@ -53,7 +90,7 @@ impl CustomThemeSpec {
     /// unsupported schema version, an empty/oversize/control-char id, name or
     /// font, or a radius/spacing outside its accepted range.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != CUSTOM_THEME_SCHEMA_VERSION {
+        if !(CUSTOM_THEME_SCHEMA_MIN..=CUSTOM_THEME_SCHEMA_VERSION).contains(&self.schema_version) {
             return Err("unsupported custom theme schema");
         }
         if self.id.trim().is_empty() || self.id.len() > 128 || self.id.chars().any(char::is_control)
@@ -77,6 +114,15 @@ impl CustomThemeSpec {
         }
         if !self.spacing_px.is_finite() || !(2.0..=64.0).contains(&self.spacing_px) {
             return Err("invalid custom theme spacing");
+        }
+        if !self.motion_scale.is_finite() || !(0.25..=4.0).contains(&self.motion_scale) {
+            return Err("invalid custom theme motion scale");
+        }
+        if !self.material_scale.is_finite() || !(0.0..=4.0).contains(&self.material_scale) {
+            return Err("invalid custom theme material scale");
+        }
+        if !self.icon_scale.is_finite() || !(0.5..=3.0).contains(&self.icon_scale) {
+            return Err("invalid custom theme icon scale");
         }
         Ok(())
     }
@@ -128,6 +174,68 @@ impl CustomThemeSpec {
             window_card: None,
         }
     }
+}
+
+fn apply_authored_scales(tokens: &mut crate::tokens::Tokens, spec: &CustomThemeSpec) {
+    let motion = spec.motion_scale.clamp(
+        CustomThemeSpec::MOTION_SCALE_MIN,
+        CustomThemeSpec::MOTION_SCALE_MAX,
+    );
+    let material = spec.material_scale.clamp(
+        CustomThemeSpec::MATERIAL_SCALE_MIN,
+        CustomThemeSpec::MATERIAL_SCALE_MAX,
+    );
+    let icons = spec.icon_scale.clamp(
+        CustomThemeSpec::ICON_SCALE_MIN,
+        CustomThemeSpec::ICON_SCALE_MAX,
+    );
+    scale_durations(&mut tokens.motion, motion);
+    scale_materials(tokens, material);
+    scale_icons(&mut tokens.metrics, icons);
+}
+
+fn scale_u32(value: u32, factor: f32) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "duration milliseconds fit in f32 exactly at this magnitude, and the rounded product is clamped before the cast back to u32"
+    )]
+    let scaled = ((value as f32) * factor).round().clamp(1.0, 4_000.0) as u32;
+    scaled
+}
+
+fn scale_durations(motion: &mut crate::tokens::Motion, factor: f32) {
+    motion.durations.fast_ms = scale_u32(motion.durations.fast_ms, factor);
+    motion.durations.base_ms = scale_u32(motion.durations.base_ms, factor);
+    motion.durations.slow_ms = scale_u32(motion.durations.slow_ms, factor);
+    motion.gesture.fling_projection_ms = scale_u32(motion.gesture.fling_projection_ms, factor);
+}
+
+fn scale_shadow(shadow: &mut crate::tokens::Shadow, factor: f32) {
+    shadow.blur *= factor;
+    shadow.offset_y *= factor;
+}
+
+fn scale_materials(tokens: &mut crate::tokens::Tokens, factor: f32) {
+    let elevation = &mut tokens.elevation;
+    scale_shadow(&mut elevation.e0, factor);
+    scale_shadow(&mut elevation.e1, factor);
+    scale_shadow(&mut elevation.e2, factor);
+    scale_shadow(&mut elevation.e3, factor);
+    scale_shadow(&mut elevation.e4, factor);
+    scale_shadow(&mut elevation.glass_inner, factor);
+    scale_shadow(&mut elevation.glass_outer, factor);
+    elevation.shadow_scale *= factor;
+    tokens.colors.surfaces.glass_blur_px *= factor;
+}
+
+fn scale_icons(metrics: &mut crate::tokens::Metrics, factor: f32) {
+    let base = crate::tokens::Metrics::BASE;
+    metrics.icon_sm = base.icon_sm * factor;
+    metrics.icon_md = base.icon_md * factor;
+    metrics.icon_lg = base.icon_lg * factor;
+    metrics.icon_label_gap = base.icon_label_gap * factor;
 }
 
 fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -398,6 +506,7 @@ impl Theme {
         theme.tokens.spacing =
             crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
         theme.tokens.typography.sans_family.clone_from(&spec.font);
+        apply_authored_scales(&mut theme.tokens, spec);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
         Some(Self::from_tokens(&spec.name, theme.tokens))
@@ -1652,6 +1761,9 @@ mod tests {
                 radius_px: 13.0,
                 spacing_px: 17.0,
                 font: "Inter".into(),
+                motion_scale: 1.0,
+                material_scale: 1.0,
+                icon_scale: 1.0,
             };
             let json = serde_json::json!({
                 "appearance": {
@@ -1901,6 +2013,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn schema_one_opens_and_authored_scales_change_motion_material_and_icons() {
+        let json = r#"{"schema_version":1,"id":"legacy","name":"Legacy","dark_base":true,"accent":[80,160,255],"accent_hover":[60,130,220],"surface_base":[16,18,24],"surface_raised":[28,32,40],"text_primary":[236,238,244],"text_dim":[170,176,188],"border":[60,66,78],"success":[40,160,90],"warning":[180,140,40],"danger":[190,60,60],"info":[60,140,200],"radius_px":8.0,"spacing_px":12.0,"font":"Inter"}"#;
+        let legacy: CustomThemeSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(legacy.motion_scale, 1.0);
+        assert_eq!(legacy.material_scale, 1.0);
+        assert_eq!(legacy.icon_scale, 1.0);
+        let theme = Theme::from_custom_spec(&legacy).unwrap();
+        assert_eq!(
+            theme.tokens.motion.durations.base_ms,
+            crate::tokens::Durations::default().base_ms
+        );
+
+        let mut scaled = legacy.clone();
+        scaled.schema_version = CUSTOM_THEME_SCHEMA_VERSION;
+        scaled.motion_scale = 0.5;
+        scaled.material_scale = 2.0;
+        scaled.icon_scale = 1.5;
+        let theme = Theme::from_custom_spec(&scaled).unwrap();
+        assert_eq!(
+            theme.tokens.motion.durations.base_ms,
+            crate::tokens::Durations::default().base_ms / 2
+        );
+        assert!((theme.tokens.colors.surfaces.glass_blur_px - 48.0).abs() < 0.01);
+        assert!(
+            (theme.tokens.metrics.icon_md - crate::tokens::Metrics::BASE.icon_md * 1.5).abs()
+                < 0.01
+        );
+        assert_eq!(
+            theme.tokens.metrics.min_pointer_target,
+            crate::tokens::Metrics::BASE.min_pointer_target
+        );
+    }
+
     fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
         CustomThemeSpec {
             schema_version: CUSTOM_THEME_SCHEMA_VERSION,
@@ -1921,6 +2067,9 @@ mod tests {
             radius_px,
             spacing_px,
             font: "Inter".into(),
+            motion_scale: 1.0,
+            material_scale: 1.0,
+            icon_scale: 1.0,
         }
     }
 
