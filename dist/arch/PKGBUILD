@@ -38,7 +38,8 @@ package_tilo-session() {
   depends=(
     'glibc' 'pam' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon' 'wayland'
     'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
-    'fontconfig' 'freetype2' 'harfbuzz' 'bubblewrap' 'systemd'
+    'fontconfig' 'freetype2' 'harfbuzz' 'gstreamer' 'gst-plugins-base-libs'
+    'bubblewrap' 'systemd'
     'xwayland-satellite' 'xdg-desktop-portal' 'xdg-dbus-proxy'
     'python'  # tilo-flight-recorder
   )
