@@ -756,6 +756,9 @@ mod tests {
                     motion_scale: 1.0,
                     material_scale: 1.0,
                     icon_scale: 1.0,
+                    chrome_weight: 1.0,
+                    motion_character: 1.0,
+                    material_tint: 0.0,
                 })
                 .unwrap(),
             ] {

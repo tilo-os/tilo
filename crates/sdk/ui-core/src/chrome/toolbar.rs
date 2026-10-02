@@ -289,13 +289,16 @@ pub fn paint_bar(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect
         None,
         &rect,
     );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::chrome_hairline(theme),
-        None,
-        &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
-    );
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(rect.x0, rect.y1 - rule, rect.x1, rect.y1),
+        );
+    }
 }
 
 /// The inset of a bar's controls from its edges: siblings' step across,
