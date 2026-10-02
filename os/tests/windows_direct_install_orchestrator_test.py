@@ -127,6 +127,7 @@ class OrchestratorContract(unittest.TestCase):
         self.assertEqual(generic[generic.index("--target-disk") + 1],
                          str(self.work / "generic" / "generic-source.raw"))
         self.assertNotIn("--skip-target-boot", generic)
+        self.assertEqual(generic[generic.index("--filesystem") + 1], "ext4")
         self.assertIn("--credentials-stdin", generic)
         self.assertEqual(board[board.index("--target-disk") + 1], str(data["source_raw"]))
         self.assertIn("--skip-target-boot", board)
