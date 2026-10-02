@@ -3223,6 +3223,10 @@ mod tests {
         assert!(!osk.take_structure_dirty(), "flag is rising-edge");
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one a11y sweep covers painted keys, configuration doors, and host extras"
+    )]
     #[test]
     fn resources_and_accessibility_expose_configuration_not_keystrokes() {
         eprintln!("phase accessibility_exposes_and_operates_each_painted_key");

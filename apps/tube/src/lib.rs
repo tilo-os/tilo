@@ -112,6 +112,8 @@ pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
 }
 
+pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,4 +169,3 @@ mod tests {
         }
     }
 }
-pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};

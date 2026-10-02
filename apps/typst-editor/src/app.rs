@@ -505,10 +505,10 @@ impl TypstApp {
     pub(crate) fn stage_live_extras_for_test(
         &mut self,
         diags: Vec<crate::compile::Diagnostic>,
-        pages: Vec<crate::compile::PageImage>,
+        pages: &[crate::compile::PageImage],
     ) {
         self.diagnostics.set_diagnostics(diags);
-        self.preview.set_pages(&pages);
+        self.preview.set_pages(pages);
     }
 
     /// Test-only: drop staged diagnostics and pages so hosted extras go empty.
@@ -2946,6 +2946,18 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
     tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
+fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+    for resource in resources {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        if let Some(found) = find_resource(&resource.children, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -3838,16 +3850,4 @@ mod tests {
             assert!(matches!(app.compact_view, CompactPane::Preview));
         }
     }
-}
-
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }
