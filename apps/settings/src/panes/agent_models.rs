@@ -1108,10 +1108,9 @@ impl AgentModelsPane {
                             };
                             save_notice.set(Some(match result {
                                 Ok(()) => t("agent-provider-saved"),
-                                Err(error) => t_args(
-                                    "agent-provider-save-err",
-                                    &[("error", error.into())],
-                                ),
+                                Err(error) => {
+                                    t_args("agent-provider-save-err", &[("error", error.into())])
+                                }
                             }));
                         }),
                     ))
@@ -1377,10 +1376,8 @@ impl AgentModelsPane {
                             &[("error", error.clone().into())],
                         )),
                     );
-                    self.notice = Some(t_args(
-                        "agent-notice-accel-err",
-                        &[("error", error.into())],
-                    ));
+                    self.notice =
+                        Some(t_args("agent-notice-accel-err", &[("error", error.into())]));
                     self.structure_dirty = true;
                 }
             }
