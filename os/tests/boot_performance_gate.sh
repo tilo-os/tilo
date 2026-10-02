@@ -95,11 +95,26 @@ if [ "$greetd_us" -gt "$entered_us" ]; then entered_us="$greetd_us"; fi
 budget_us=$((budget_seconds * 1000000))
 seconds=$((entered_us / 1000000))
 milliseconds=$(((entered_us % 1000000) / 1000))
+# Where the time went: the manager's own initrd and userspace start points
+# split the total into kernel, initrd and userspace.
+boot_phases() {
+  local initrd_us userspace_us
+  initrd_us="$(systemctl show --property=InitRDTimestampMonotonic --value 2>/dev/null || true)"
+  userspace_us="$(systemctl show --property=UserspaceTimestampMonotonic --value 2>/dev/null || true)"
+  case "$initrd_us$userspace_us" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$initrd_us" -gt 0 ] && [ "$userspace_us" -gt "$initrd_us" ] || return 0
+  awk -v i="$initrd_us" -v u="$userspace_us" -v e="$entered_us" 'BEGIN {
+    printf "phases: kernel %.3fs, initrd %.3fs, userspace to greeter %.3fs\n",
+      i / 1e6, (u - i) / 1e6, (e - u) / 1e6 }'
+}
 if [ "$entered_us" -gt "$budget_us" ]; then
   printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
     "$seconds" "$milliseconds" "$budget_seconds" >&2
+  boot_phases >&2
   systemd-analyze critical-chain graphical.target >&2 || true
+  systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true
   exit 1
 fi
+boot_phases
 printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
   "$seconds" "$milliseconds" "$budget_seconds"
