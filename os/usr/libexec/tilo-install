@@ -1033,8 +1033,8 @@ use_encrypted_copy_scratch() {
     || die "/var/tmp is not the reviewed encrypted scratch directory"
 }
 copy_booted_image() {
-  if [ "$OFFLINE_TARGET" -eq 1 ]; then
-    step "Importing the independently signed offline Tilo target"
+  if [ "$OFFLINE_TARGET" -ne 0 ]; then
+    step "Importing the selected offline Tilo target"
     LOCAL_IMG="$(python3 /usr/libexec/tilo-installer-offline-target.py import)" \
       || die "offline target import or embedded update origin failed"
     [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
@@ -1089,6 +1089,9 @@ if [ -e /var/lib/tilo-installer/target-oci ] \
   # against target SLSA and the target image's embedded hardware profile.
   TILO_TARGET_IMGREF="$offline_origin"
   OFFLINE_TARGET=1
+  if python3 -c 'import json,sys; sys.exit(json.load(open("/run/tilo-installer/offline-target.json"))["schema"] != "tilo.installer-dev-target.v1")'; then
+    OFFLINE_TARGET=2
+  fi
 fi
 
 # Recheck the selected disk before preparing the encrypted target. The source
@@ -1677,13 +1680,13 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   log "  applied the setup handoff"
   SSH_REQUEST="$HANDOFF_SRC/etc/tilo/bringup-ssh.pub"
   if [ -e "$SSH_REQUEST" ] || [ -L "$SSH_REQUEST" ]; then
-    # Only the dev image we actually self-install may opt in. A development
-    # live medium must never enable SSH on a distinct production target.
-    [ "$OFFLINE_TARGET" -eq 0 ] \
+    # A separately selected dev target was checked before disk mutation and
+    # again during import. A production target never admits this handoff.
+    { [ "$OFFLINE_TARGET" -eq 0 ] || [ "$OFFLINE_TARGET" -eq 2 ]; } \
       && [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null || true)" = dev ] \
       && [ -x /usr/sbin/sshd ] \
       && [ -f /usr/lib/systemd/system/sshd.service ] \
-      || die "bring-up SSH requires a self-installed development image with OpenSSH"
+      || die "bring-up SSH requires a verified development target with OpenSSH"
     python3 /usr/libexec/tilo-install-dev-ssh.py --etc "$DEPLOY_ETC" \
       --username "$USERNAME" --key "$SSH_REQUEST" \
       || die "could not configure owner-key bring-up SSH"
@@ -1716,7 +1719,9 @@ if [ -n "$VM_INSTALL_PROOF" ]; then
   # target was closed. The dedicated virtio port carries no installer logs
   # or secrets. The host must compare the image identity to its signed CI pin.
   proof_version=V1
-  if [ "$OFFLINE_TARGET" -ne 0 ]; then
+  if [ "$OFFLINE_TARGET" -eq 2 ]; then
+    proof_version=V4
+  elif [ "$OFFLINE_TARGET" -ne 0 ]; then
     proof_version=V2
   elif python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1]))["schema"] != "tilo.vm-install-image-proof.v3")' "$VM_INSTALL_PROOF"; then
     proof_version=V3

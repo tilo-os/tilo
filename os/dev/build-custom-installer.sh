@@ -72,9 +72,19 @@ esac
   || die "--compact-ext4 requires disk creation; remove --image-only"
 
 OFFLINE_TARGET_DIR="${TILO_INSTALLER_OFFLINE_TARGET_DIR:-}"
+OFFLINE_TARGET_FLAGS=()
+case "${TILO_INSTALLER_DEV_TARGET:-0}" in
+  0) ;;
+  1) OFFLINE_TARGET_FLAGS=(--development) ;;
+  *) die "TILO_INSTALLER_DEV_TARGET must be 0 or 1" ;;
+esac
+if [ "${TILO_INSTALLER_DEV_TARGET:-0}" = 1 ]; then
+  [ -n "$OFFLINE_TARGET_DIR" ] && [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ] \
+    || die "development target requires an explicit offline transport and disposable VM installer"
+fi
 if [ -n "$OFFLINE_TARGET_DIR" ]; then
   [ "$COMPACT_EXT4" = 0 ] || die "--compact-ext4 cannot hold an offline target image"
-  python3 "$TILO_OS_DIR/dev/installer-offline-target.py" verify "$OFFLINE_TARGET_DIR" >/dev/null \
+  python3 "$TILO_OS_DIR/dev/installer-offline-target.py" verify "$OFFLINE_TARGET_DIR" "${OFFLINE_TARGET_FLAGS[@]}" >/dev/null \
     || die "TILO_INSTALLER_OFFLINE_TARGET_DIR is not a verified OCI transport"
 fi
 
@@ -159,8 +169,9 @@ fi
 )
 chmod 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
 if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
-  [ -z "$OFFLINE_TARGET_DIR" ] && [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 0 ] \
-    || die "unverified VM install is only for a disposable self-install medium"
+  { [ -z "$OFFLINE_TARGET_DIR" ] || [ "${TILO_INSTALLER_DEV_TARGET:-0}" = 1 ]; } \
+    && [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 0 ] \
+    || die "unverified VM install requires self-copy or an explicit development target"
   install -Dm0444 /dev/null \
     "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/unverified-vm-install"
 fi
@@ -177,7 +188,7 @@ install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.toml" \
   "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"
 install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.installer.toml" \
   "$INSTALLER_CONTEXT/rootfs/etc/greetd/config.toml"
-if [ -n "$OFFLINE_TARGET_DIR" ]; then
+if [ -n "$OFFLINE_TARGET_DIR" ] && [ "${TILO_INSTALLER_DEV_TARGET:-0}" = 0 ]; then
   # The guest verifies the signed target without network access. This is the
   # architecture-pinned Cosign binary already authenticated by the CI asset
   # manifest, copied into the sealed installer layer (never from host PATH).

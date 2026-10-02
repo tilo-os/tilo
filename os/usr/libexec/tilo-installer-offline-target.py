@@ -9,6 +9,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,23 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
 BUILDER = "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"
 SOURCE = re.compile(r"git\+ssh://code\.tilo\.so/tilo/tilo@([0-9a-f]{40})\Z")
+DEV_VM_MARKER = Path("/usr/share/tilo/unverified-vm-install")
+DEV_FLAVOUR = Path("/usr/lib/tilo/image-flavour")
+VM_PROOF_PORT = Path("/dev/virtio-ports/org.tilo.vm-install-proof")
+
+
+def development_target(root):
+    require(DEV_VM_MARKER.is_file() and not DEV_VM_MARKER.is_symlink()
+            and DEV_FLAVOUR.is_file() and not DEV_FLAVOUR.is_symlink()
+            and DEV_FLAVOUR.read_bytes() == b"dev\n"
+            and VM_PROOF_PORT.is_char_device(),
+            "unsigned development target requires the development VM installer")
+    run("systemd-detect-virt", "--vm", "--quiet")
+    module = Path(__file__).with_name("tilo-installer-target-transport.py")
+    spec = importlib.util.spec_from_file_location("tilo_target_transport", module)
+    transport = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(transport)
+    return transport.verify(root, development=True)
 
 
 def require(ok, message):
@@ -58,6 +76,8 @@ def read_target(root=ROOT):
     root = root.resolve(strict=True)
     require(root.is_dir(), "offline target directory is unsafe")
     metadata = json.loads(checked_file(root / "target.json", limit=8192))
+    if type(metadata) is dict and metadata.get("schema") == "tilo.installer-dev-target.v1":
+        return development_target(root), root / "oci"
     require(type(metadata) is dict and set(metadata) == {
         "schema", "target_ref", "target_digest", "architecture",
         "hardware_profile", "update_origin"}, "offline target metadata has invalid fields")
@@ -207,6 +227,14 @@ def checked_provenance(output, metadata):
 
 def verify(root=ROOT):
     metadata, layout = read_target(root)
+    if metadata["schema"] == "tilo.installer-dev-target.v1":
+        result = dict(metadata, verifier_key_sha256=None, provenance={
+            "source_revision": metadata["source_revision"],
+            "invocation_id": metadata["ci_run_id"],
+        })
+        save_receipt(result)
+        import_image(root)
+        return result
     require(KEY.is_file() and COSIGN.is_file() and os.access(COSIGN, os.X_OK),
             "immutable Cosign verifier or public key is missing")
     signature = wrappers(run(str(COSIGN), "verify", "--offline", "--key", str(KEY),
@@ -222,12 +250,16 @@ def verify(root=ROOT):
                                         "--local-image", str(layout), timeout=300), metadata)
     result = dict(metadata, provenance=provenance,
                   verifier_key_sha256=hashlib.sha256(KEY.read_bytes()).hexdigest())
+    save_receipt(result)
+    return result
+
+
+def save_receipt(result):
     RECEIPT.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = RECEIPT.with_suffix(".tmp")
     temporary.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
     temporary.chmod(0o600)
     temporary.replace(RECEIPT)
-    return result
 
 
 def import_image(root=ROOT):
@@ -263,13 +295,19 @@ def import_image(root=ROOT):
             "imported image manifest differs from the signed target")
     require(re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id),
             "offline Podman import returned no immutable image ID")
+    if metadata["schema"] == "tilo.installer-dev-target.v1":
+        run("podman", "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
+            "--entrypoint", "/bin/sh", image_id, "-ec",
+            'test "$(cat /usr/lib/tilo/image-flavour)" = dev; '
+            'test -x /usr/sbin/sshd; test -f /usr/lib/systemd/system/sshd.service; '
+            'test -f /boot/tilo-target/tilo-target.efi', timeout=120)
     run("podman", "run", "--rm", "--pull=never", "--network=none", "--cap-drop=ALL",
         "--entrypoint", "/usr/bin/python3", image_id,
         "/usr/lib/tilo/hardware_profile.py", "--install-update-origin",
         metadata["update_origin"], timeout=120)
     # Bootc consumes this immutable ID; the guest proof checks its resulting
     # deployment's manifest digest and origin against the signed receipt.
-    print(image_id)
+    return image_id
 
 
 def main():
@@ -280,7 +318,7 @@ def main():
         if args.command == "verify":
             print(json.dumps(verify(), sort_keys=True))
         else:
-            import_image()
+            print(import_image())
     except (ValueError, OSError, KeyError, json.JSONDecodeError) as exc:
         parser.exit(1, f"offline installer target: {exc}\n")
 

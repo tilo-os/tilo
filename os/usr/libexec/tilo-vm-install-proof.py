@@ -99,15 +99,26 @@ def build_proof(args):
                 and receipt_path.stat().st_size <= 8192,
                 "offline target verification receipt is unsafe")
         selected = json.loads(receipt_path.read_text(encoding="utf-8"))
-        require(selected.get("schema") == "tilo.installer-offline-target.v1"
+        development = selected.get("schema") == "tilo.installer-dev-target.v1"
+        require(selected.get("schema") in ("tilo.installer-offline-target.v1", "tilo.installer-dev-target.v1")
                 and selected.get("target_digest") == installed_digest
-                and selected.get("target_ref") == {
+                and selected.get("target_ref") == ("registry.tilo.so/tilo/tilo-vm" if development else {
                     "generic": "registry.tilo.so/tilo/tilo",
                     # Board images stay on the forge's private registry.
                     "lenovo-83ed": "code.tilo.so/tilo/tilo",
-                }.get(selected.get("hardware_profile"), "") + "@" + installed_digest
+                }.get(selected.get("hardware_profile"), "")) + "@" + installed_digest
                 and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
                 "installed deployment differs from the independently signed offline target")
+        if development:
+            require(DEV_VM_MARKER.is_file() and not DEV_VM_MARKER.is_symlink()
+                    and VM_PROOF_PORT.is_char_device() and selected.get("verifier_key_sha256") is None,
+                    "development target proof requires the VM-only development installer")
+            command("systemd-detect-virt", "--vm", "--quiet")
+            require(selected.get("provenance", {}).get("source_revision") == selected.get("source_revision")
+                    and selected.get("provenance", {}).get("invocation_id") == selected.get("ci_run_id"),
+                    "development target source differs from its transport receipt")
+            selected = {key: value for key, value in selected.items()
+                        if key not in ("source_revision", "ci_run_id")}
     else:
         require(booted_composefs == composefs,
                 "installed deployment does not match the booted CI image")
@@ -134,7 +145,8 @@ def build_proof(args):
     require(len(set(identities.values())) == 3,
             "installed target partition identities overlap")
     dev_copy = not selected and booted_digest != installed_digest
-    result = {"schema": "tilo.vm-install-image-proof.v2" if selected else
+    result = {"schema": "tilo.vm-install-image-proof.v4" if selected and development else
+            "tilo.vm-install-image-proof.v2" if selected else
             "tilo.vm-install-image-proof.v3" if dev_copy else
             "tilo.vm-install-image-proof.v1",
             "architecture": architecture,
