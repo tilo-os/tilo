@@ -1239,10 +1239,7 @@ impl State {
             metadata,
             author,
             None,
-            CommittedSpanInverse {
-                undo_via,
-                redo_via,
-            },
+            CommittedSpanInverse { undo_via, redo_via },
         )
     }
 

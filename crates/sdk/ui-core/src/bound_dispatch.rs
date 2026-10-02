@@ -2359,10 +2359,7 @@ pub(crate) fn report_typed_action(
         None,
         Some(binding.author.clone()),
         Some(binding.instance_id),
-        crate::state::CommittedSpanInverse {
-            undo_via,
-            redo_via,
-        },
+        crate::state::CommittedSpanInverse { undo_via, redo_via },
     );
     frame.reset_operation_baseline(&binding, after);
     frame.state.generation = frame
