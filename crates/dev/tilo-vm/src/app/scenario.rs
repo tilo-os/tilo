@@ -317,7 +317,7 @@ struct VmSelectedTarget {
     hardware_profile: String,
     update_origin: String,
     provenance: VmSelectedProvenance,
-    verifier_key_sha256: String,
+    verifier_key_sha256: Option<String>,
 }
 
 #[cfg(windows)]
@@ -350,7 +350,9 @@ fn canonical_uuid(value: &str) -> bool {
 #[cfg(windows)]
 fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
-    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V3=") {
+    let (version, rest) = if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V4=") {
+        (4, rest)
+    } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V3=") {
         (3, rest)
     } else if let Some(rest) = line.strip_prefix("TILO_VM_INSTALL_PROOF_V2=") {
         (2, rest)
@@ -414,6 +416,64 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             || proof.selected_target.is_some()
         {
             return Err("VM v3 development copy proof has inconsistent identities".into());
+        }
+    } else if version == 4 {
+        let selected = proof
+            .selected_target
+            .as_ref()
+            .ok_or("VM development target proof has no selected target")?;
+        let source = &selected.provenance.source_revision;
+        let tag = selected
+            .update_origin
+            .strip_prefix("registry.tilo.so/tilo/tilo-vm:");
+        if proof.schema != "tilo.vm-install-image-proof.v4"
+            || selected.schema != "tilo.installer-dev-target.v1"
+            || selected.target_ref
+                != format!("registry.tilo.so/tilo/tilo-vm@{}", selected.target_digest)
+            || selected.target_digest != proof.installed_image_digest
+            || selected.architecture != "aarch64"
+            || !matches!(
+                selected.hardware_profile.as_str(),
+                "generic" | "lenovo-83ed"
+            )
+            || selected.verifier_key_sha256.is_some()
+            || !lowercase_hex(source, 40)
+            || selected.provenance.invocation_id.is_empty()
+            || !selected
+                .provenance
+                .invocation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+            || !tag.is_some_and(|value| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                    && value
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            })
+            || selected.provenance.firmware_candidate.is_some()
+            || selected.provenance.firmware_manifest_sha256.is_some()
+            || selected.provenance.generation.is_some()
+            || proof.installed_composefs_digest.as_deref() != Some(proof.composefs_digest.as_str())
+            || !proof
+                .booted_composefs_digest
+                .as_deref()
+                .is_some_and(|value| lowercase_hex(value, 128))
+            || proof.copied_manifest_digest.is_some()
+            || proof.installed_update_origin.as_deref()
+                != Some(
+                    format!(
+                        "ostree-unverified-image:docker://{}",
+                        selected.update_origin
+                    )
+                    .as_str(),
+                )
+        {
+            return Err("VM development target proof has inconsistent image identities".into());
         }
     } else {
         let selected = proof
@@ -495,7 +555,10 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                 .invocation_id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit())
-            || !lowercase_hex(&selected.verifier_key_sha256, 64)
+            || !selected
+                .verifier_key_sha256
+                .as_deref()
+                .is_some_and(|value| lowercase_hex(value, 64))
             || update_origin
                 != format!(
                     "ostree-unverified-image:docker://{}",
@@ -541,7 +604,9 @@ fn check_install_proof(
         );
     }
     Ok(json!({
-        "schema": if proof.schema == "tilo.vm-install-image-proof.v2" {
+        "schema": if proof.schema == "tilo.vm-install-image-proof.v4" {
+            "tilo.windows-vm-install-proof-check.v4"
+        } else if proof.schema == "tilo.vm-install-image-proof.v2" {
             "tilo.windows-vm-install-proof-check.v2"
         } else if proof.schema == "tilo.vm-install-image-proof.v3" {
             "tilo.windows-vm-install-proof-check.v3"
@@ -1171,12 +1236,16 @@ impl App {
                     plan,
                 )
             })?;
-            if checked.get("schema").and_then(Value::as_str)
-                != Some("tilo.windows-vm-install-proof-check.v2")
-            {
+            if !matches!(
+                checked.get("schema").and_then(Value::as_str),
+                Some(
+                    "tilo.windows-vm-install-proof-check.v2"
+                        | "tilo.windows-vm-install-proof-check.v4"
+                )
+            ) {
                 return Err(failed(
                     "verify-install-proof",
-                    "board install requires backend-derived signed target proof v2",
+                    "board install requires backend-derived signed target proof v2 or explicit dev target proof v4",
                     plan,
                 ));
             }
@@ -1647,6 +1716,40 @@ mod tests {
                     format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
                 )
                 .is_ok()
+            );
+            // Explicit development targets remain a separate proof protocol.
+            let dev_origin = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci";
+            payload["schema"] = json!("tilo.vm-install-image-proof.v4");
+            payload["selected_target"]["schema"] = json!("tilo.installer-dev-target.v1");
+            payload["selected_target"]["target_ref"] =
+                json!(format!("registry.tilo.so/tilo/tilo-vm@{target}"));
+            payload["selected_target"]["hardware_profile"] = json!("lenovo-83ed");
+            payload["selected_target"]["update_origin"] = json!(dev_origin);
+            payload["selected_target"]["verifier_key_sha256"] = Value::Null;
+            payload["selected_target"]["provenance"]["generation"] = Value::Null;
+            payload["installed_update_origin"] =
+                json!(format!("ostree-unverified-image:docker://{dev_origin}"));
+            let dev_proof = super::parse_install_proof(
+                format!("TILO_VM_INSTALL_PROOF_V4={payload}\n").as_bytes(),
+            )
+            .expect("explicit development target");
+            assert_eq!(
+                super::check_install_proof(&dev_proof, &source, Some(&"f".repeat(128)))
+                    .expect("development target readback binding")["schema"],
+                "tilo.windows-vm-install-proof-check.v4"
+            );
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes()
+                )
+                .is_err()
+            );
+            payload["selected_target"]["verifier_key_sha256"] = json!("e".repeat(64));
+            assert!(
+                super::parse_install_proof(
+                    format!("TILO_VM_INSTALL_PROOF_V4={payload}\n").as_bytes()
+                )
+                .is_err()
             );
         }
     }
