@@ -1218,6 +1218,59 @@ impl WasmPeer {
         .map_err(js_error)
     }
 
+    /// Seal one encoded live frame of `room` (from [`encode_live_presence`]
+    /// and friends) with the channel keys of the record it names, for the
+    /// page's live plane. Resolves to `null` when the frame names no record
+    /// or this device holds none of its keys: such a frame is never sent.
+    ///
+    /// # Errors
+    ///
+    /// Rejects for a malformed room or a closed session.
+    #[wasm_bindgen(js_name = sealLive)]
+    pub async fn seal_live(
+        &self,
+        room: String,
+        frame: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .seal_live_then(
+                workspace(&room)?,
+                frame,
+                Box::new(move |sealed| {
+                    let _ = reply.send(sealed);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt.await.map_err(|_| js_error("peer session closed"))
+    }
+
+    /// Open one sealed live frame of `room` the live plane delivered.
+    /// Resolves to the encoded frame for [`decode_live_frame`], or `null`
+    /// when it does not open with keys this device holds.
+    ///
+    /// # Errors
+    ///
+    /// Rejects for a malformed room or a closed session.
+    #[wasm_bindgen(js_name = openLive)]
+    pub async fn open_live(
+        &self,
+        room: String,
+        frame: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .open_live_then(
+                workspace(&room)?,
+                frame,
+                Box::new(move |opened| {
+                    let _ = reply.send(opened);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt.await.map_err(|_| js_error("peer session closed"))
+    }
+
     /// Ask the host for `room`'s calls; the answer is a `calls` event of
     /// [`Self::take_voice_events`].
     ///
