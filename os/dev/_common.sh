@@ -271,6 +271,9 @@ qemu_accel_args() {
       if inenv "$probe"; then
         echo "-enable-kvm -cpu $kvm_cpu"
       else
+        # Emulated CPU: boot and frame timings from this VM say nothing about
+        # a KVM guest (the release gate) or hardware. Do not compare them.
+        warn "no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware"
         echo "-accel tcg,thread=multi -cpu max"
       fi
       ;;

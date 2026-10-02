@@ -220,6 +220,8 @@ jobs:
               echo '::error::LLVM CPU override did not load in the guest'
               exit 1
             }
+          fi
+          if [[ $RENDERER_VARIANT == gpu || $RENDERER_VARIANT == gpu-generic-cpu ]]; then
             ./os/dev/vm.sh ssh 'grep -lq first-frame-presented /tmp/tilo-greeter-metrics-*.json' || {
               echo '::error::guest did not present its first frame'
               exit 1

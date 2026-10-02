@@ -453,7 +453,11 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
         let document = resource(&reply["directory"], "word_processor.document");
         assert_eq!(reply["opened"]["resource"], document["resource"]);
         let actions = &document["actions"];
-        assert!(actions["set-paragraph-style"].is_string(), "{reply}");
+        let style = actions["set-paragraph-style"].as_str().unwrap();
+        assert!(
+            !style.contains('—'),
+            "an open directory leaves descriptions to tilo_query: {style}"
+        );
         assert_eq!(
             actions["read-text"], "read text (pageSize:integer 1..64, cursor?)",
             "a bound the app enforces is shown before a call trips over it"
@@ -894,9 +898,10 @@ fn a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it() {
         .unwrap();
         assert_eq!(page["partial_match"], true, "{page}");
         let document = resource(&page, "word_processor.document");
+        let style = document["actions"]["set-paragraph-style"].as_str().unwrap();
         assert!(
-            document["actions"]["set-paragraph-style"].is_string(),
-            "{page}"
+            style.contains('—'),
+            "a query keeps the description an open directory leaves out: {style}"
         );
         let whole = call(
             &mut server,
@@ -1030,4 +1035,185 @@ fn a_number_beyond_its_bound_is_clamped_and_the_answer_says_so() {
         .map(|call| &call.3["pageSize"])
         .collect();
     assert_eq!(sizes, [&json!(200), &json!(64)]);
+}
+
+/// Edits and the save that follows are one `tilo_invoke`. A failure stops
+/// the batch, and the single-call form is unchanged.
+#[test]
+fn calls_run_in_order_and_stop_at_the_first_failure() {
+    let host = Writer::new(Some("open")).reading("# Memo {#b0}\n");
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let open = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/memo.docx"}}),
+    ))
+    .unwrap();
+    assert!(
+        open.get("results").is_none(),
+        "one action stays one reply: {open}"
+    );
+    assert_eq!(open["content"]["action"], "read-text");
+    let doc = resource(&open["directory"], "word_processor.document")["resource"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let saved = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": 1, "calls": [
+            {"resource": doc, "action": "paste", "arguments": {"markdown": "# Done {#b0}\n"}},
+            {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
+        ]}),
+    ))
+    .unwrap();
+    assert_eq!(saved["results"].as_array().unwrap().len(), 2, "{saved}");
+    assert!(saved.get("stopped").is_none(), "{saved}");
+    assert!(
+        saved["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|step| step["update"]["state"] == "succeeded")
+    );
+
+    let before = host.invoked().len();
+    let stopped = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": 1, "calls": [
+            {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}},
+            {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/should-not.docx"}}
+        ]}),
+    ))
+    .unwrap();
+    assert_eq!(stopped["stopped"], 0, "{stopped}");
+    assert_eq!(stopped["results"].as_array().unwrap().len(), 1, "{stopped}");
+    assert_eq!(stopped["results"][0]["update"]["state"], "failed");
+    assert!(
+        host.invoked()
+            .iter()
+            .skip(before)
+            .all(|call| call.2 != "save-as"),
+        "the save after a failure does not run: {:?}",
+        host.invoked()
+    );
+
+    let both = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": 1, "resource": doc, "action": "paste", "calls": [{"resource": doc, "action": "paste"}]}),
+    ));
+    assert!(both.unwrap_err().contains("not both"));
+    let neither = run(call(&mut server, "tilo_invoke", json!({"peer_id": 1})));
+    assert!(neither.unwrap_err().contains("or calls"));
+}
+
+/// The computer suite's shape, scripted: open, then edits and save-as in
+/// one call. `get_computer` and `finish` are the proxy's and the harness's.
+#[test]
+fn scripted_replays_of_computer_suite_tasks() {
+    // doc-create-memo: open empty, paste the memo, save-as.
+    replay(
+        "doc-create-memo",
+        None,
+        &json!([
+            {"action": "paste", "arguments": {"markdown": "# Memo {#b0}\nShip Friday. {#b1}\n"}},
+            {"action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
+        ]),
+    );
+    // doc-fix-typos: open the file (its text comes back), fix, save-as.
+    replay(
+        "doc-fix-typos",
+        Some("/data/in/notes.docx"),
+        &json!([
+            {"action": "apply-spelling-suggestion", "arguments": {"block": "b1", "start": 4, "end": 12, "replacement": "committee"}},
+            {"action": "save-as", "arguments": {"path": "/data/out/notes.docx"}}
+        ]),
+    );
+    // cross-standup: open the notes, replace them, save-as.
+    replay(
+        "cross-standup",
+        Some("/data/in/notes.md"),
+        &json!([
+            {"action": "select-all", "arguments": {}},
+            {"action": "paste", "arguments": {"markdown": "# Standup {#b0}\n"}},
+            {"action": "save-as", "arguments": {"path": "/data/out/standup.docx"}}
+        ]),
+    );
+}
+
+fn replay(task: &str, path: Option<&str>, calls: &Value) {
+    let host = Writer::new(Some("open")).reading("# Notes {#b0}\nThe comittee met. {#b1}\n");
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let mut open_args =
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"});
+    if let Some(path) = path {
+        open_args["arguments"] = json!({"path": path});
+    }
+    let open = run(call(&mut server, "tilo_invoke", open_args)).unwrap();
+    let doc = resource(&open["directory"], "word_processor.document")["resource"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    if path.is_some() {
+        assert!(
+            open["content"]["value"]["content"]["markdown"]
+                .as_str()
+                .unwrap()
+                .contains("comittee"),
+            "{task}"
+        );
+    } else {
+        assert!(open.get("content").is_none(), "{task}");
+    }
+    let mut batch = Vec::new();
+    for call in calls.as_array().unwrap() {
+        batch.push(json!({
+            "resource": doc,
+            "action": call["action"],
+            "arguments": call["arguments"],
+        }));
+    }
+    let saved = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": open["peer_id"], "calls": batch}),
+    ))
+    .unwrap();
+    assert!(saved.get("stopped").is_none(), "{task}: {saved}");
+    assert_eq!(
+        saved["results"].as_array().unwrap().len(),
+        calls.as_array().unwrap().len(),
+        "{task}"
+    );
+    let actions = host
+        .invoked()
+        .into_iter()
+        .map(|call| call.2)
+        .collect::<Vec<_>>();
+    eprintln!(
+        "{task}: get_computer; tilo_invoke open -> peer {} content {}; tilo_invoke calls {:?}; finish",
+        open["peer_id"],
+        open.get("content").is_some(),
+        actions
+            .iter()
+            .skip(if path.is_some() { 3 } else { 1 })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_batch_invocation_id_is_stable_per_step() {
+    let id = "6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
+    assert_eq!(batch_invocation(Some(id), 0).unwrap().as_deref(), Some(id));
+    let second = batch_invocation(Some(id), 1).unwrap().unwrap();
+    assert_ne!(second, id);
+    assert_eq!(
+        batch_invocation(Some(id), 1).unwrap().as_deref(),
+        Some(second.as_str())
+    );
+    assert!(batch_invocation(None, 2).unwrap().is_none());
+    assert!(batch_invocation(Some("not-a-uuid"), 0).is_err());
 }
