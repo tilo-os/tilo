@@ -33,6 +33,10 @@ kernel_dir=$(cat "$work/kernel-dir")
 cp /usr/lib/os-release "$work/osrel"
 uname -r | tr -d '\n' > "$work/uname"
 mount -o remount,rw /boot
+# Give this disposable VM its own boot entropy. In systemd 259, bootctl status
+# retains access(random-seed)'s -1 return when the seed is absent, even after
+# reporting a valid current UKI; initialize it before using status as evidence.
+bootctl random-seed
 image_base=$(cat "$work/image-base")
 initrd_vma=$(( (0x2000000 + $(stat -c %s "$kernel_dir/vmlinuz") + 0xfffff) & ~0xfffff ))
 objcopy \
