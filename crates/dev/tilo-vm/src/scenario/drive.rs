@@ -274,6 +274,14 @@ pub fn install(
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "options" => {
+                if let Some(filesystem) = &choices.filesystem {
+                    invoke(
+                        console,
+                        "installer.options",
+                        "set-filesystem",
+                        json!({ "filesystem": filesystem }),
+                    )?;
+                }
                 invoke(
                     console,
                     "installer.options",
@@ -354,14 +362,6 @@ fn disk_step(
         .unwrap_or(0);
     if choices.layout == Layout::GuidedAlongside && regions > 1 {
         invoke(console, "installer.region:0", "select", json!({}))?;
-    }
-    if let Some(filesystem) = &choices.filesystem {
-        invoke(
-            console,
-            "installer.storage",
-            "set-filesystem",
-            json!({ "filesystem": filesystem }),
-        )?;
     }
     invoke(console, INSTALLER, "next", json!({}))?;
     // A prepared alongside target runs a read-only preflight before the
@@ -554,7 +554,7 @@ mod tests {
                 ("disk", "set-method@installer.storage") => {
                     self.method = args["method"].as_str().unwrap().into();
                 }
-                ("disk", "set-filesystem@installer.storage") => {
+                ("options", "set-filesystem@installer.options") => {
                     assert_eq!(args["filesystem"], "ext4");
                 }
                 ("disk", "select@installer.disk:/dev/vdb") => {
@@ -688,6 +688,10 @@ mod tests {
                 &mut |line| lines.push(line.to_owned()),
             )
             .unwrap();
+            assert!(
+                fake.calls
+                    .contains(&"set-filesystem@installer.options".to_string())
+            );
             assert_eq!(
                 fake.passphrase.as_deref(),
                 Some("account-password-for-testing")
