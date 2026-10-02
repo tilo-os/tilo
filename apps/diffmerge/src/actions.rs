@@ -654,7 +654,7 @@ fn hunk_resource_id(h: &MergeHunk, occurrence: usize) -> String {
 /// shape from the shared projection in the document.
 pub fn provide_resources(ctx: &MergeResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut state = MergeState::from_doc(doc);
-    state.title = ctx.title.clone();
+    state.title.clone_from(&ctx.title);
     state.model = ctx.model.clone();
     crate::doc::apply_resolutions(&mut state.model, doc);
     vec![ui::tilo_resource::publish::<crate::resource::Diffmerge>(
