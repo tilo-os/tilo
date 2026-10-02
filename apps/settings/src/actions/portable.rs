@@ -148,13 +148,13 @@ fn theme_default(d: &SystemPrefs) -> String {
     d.appearance.theme.clone()
 }
 fn text_size_default(d: &SystemPrefs) -> String {
-    panes::appearance::text_size_label(d.appearance.text_scale).into()
+    panes::appearance::text_size_label(d.appearance.text_scale)
 }
 fn ui_scale_default(_: &SystemPrefs) -> String {
     "100%".into()
 }
 fn schedule_default(d: &SystemPrefs) -> String {
-    panes::appearance::schedule_label(&d.appearance.schedule).into()
+    panes::appearance::schedule_label(&d.appearance.schedule)
 }
 fn sunrise_default(d: &SystemPrefs) -> String {
     d.appearance.sunrise.clone()
@@ -163,10 +163,10 @@ fn sunset_default(d: &SystemPrefs) -> String {
     d.appearance.sunset.clone()
 }
 fn wallpaper_scope_default(d: &SystemPrefs) -> String {
-    panes::appearance::scope_label(&d.appearance.wallpaper_scope).into()
+    panes::appearance::scope_label(&d.appearance.wallpaper_scope)
 }
 fn a11y_text_size_default(d: &SystemPrefs) -> String {
-    panes::appearance::text_size_label(d.appearance.text_scale).into()
+    panes::appearance::text_size_label(d.appearance.text_scale)
 }
 fn cursor_size_default(d: &SystemPrefs) -> String {
     AccessibilityPrefs::cursor_size_label(d.accessibility.cursor_size).into()

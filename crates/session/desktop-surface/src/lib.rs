@@ -15,11 +15,20 @@
         clippy::expect_used,
         clippy::indexing_slicing,
         clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard; layout tests pin exact computed positions"
     )
 )]
 
+pub mod activity;
+pub mod drill_in;
+pub mod history_log;
+pub mod i18n;
 pub mod navigation;
+pub mod notifications;
 pub mod surface;
 
-pub use surface::{DesktopHandle, DesktopSurface, TileSource, published_selection, seed_tree};
+pub use surface::{
+    AppInbox, AppNotifier, DesktopHandle, DesktopNotifications, DesktopSurface, HistorySource,
+    NotificationOutcome, TileSource, published_selection, seed_tree,
+};

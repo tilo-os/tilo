@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod workspace_activity {
     use super::*;
+    use crate::activity::ActivitySnapshot;
     use automerge::{
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},
     };
-    use tilo_desktop::activity::ActivitySnapshot;
     use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
 
     fn causal_room() -> ActivitySnapshot {

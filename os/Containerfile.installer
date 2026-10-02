@@ -39,6 +39,8 @@ COPY rootfs/ /
 # The installed target is copied from this image. Refuse a release whose
 # manual postboot enlist command or firmware utility was omitted.
 RUN test -x /usr/bin/tilo-installer \
+    && test -x /usr/libexec/tilo-session-select \
+    && test -x /usr/libexec/tilo-cage-session \
     && test -x /usr/libexec/tilo-boot-order \
     && command -v efibootmgr >/dev/null \
     && printf 'kargs = ["tilo.install"]\n' \
