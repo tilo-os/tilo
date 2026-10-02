@@ -49,21 +49,27 @@ lscpu | grep -E 'Architecture:|Model name:|Features:|Flags:' || true
 systemctl status greetd.service --no-pager -l 2>&1 || true
 echo '::endgroup::'
 
-python3 - "$config" "$original" "$log" <<'PY'
+python3 - "$config" "$original" "$log" "$variant" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 text = Path(sys.argv[2]).read_text()
 log = sys.argv[3]
+variant = sys.argv[4]
 commands = (
     'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"',
     'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"',
 )
+launcher = (
+    'WLR_LOG=debug /usr/libexec/tilo-cage-session'
+    if variant == 'gpu'
+    else 'WLR_NO_HARDWARE_CURSORS=1 WLR_RENDERER=pixman '
+         'WLR_DRM_NO_ATOMIC=1 WLR_LOG=debug cage -s --'
+)
 instrumented = (
     'command = "/usr/bin/bash -c '
-    "'WLR_NO_HARDWARE_CURSORS=1 WLR_RENDERER=pixman "
-    'WLR_DRM_NO_ATOMIC=1 WLR_LOG=debug cage -s -- '
+    "'" + launcher + ' '
     '/tmp/tilo-child-status.sh >>' + log + ' 2>&1\'"'
 )
 if sum(text.count(command) for command in commands) != 1:
@@ -73,12 +79,13 @@ for command in commands:
 path.write_text(text)
 PY
 
-rm -f -- "$log"
+rm -f -- "$log" /tmp/tilo-greeter-metrics-*.json
 systemctl reset-failed greetd.service
 systemctl restart greetd.service
-if [[ $variant == gpu-generic-cpu ]]; then
+if [[ $variant == gpu || $variant == gpu-generic-cpu ]]; then
   # Keep this disposable overlay's instrumented greeter alive for the caller's
-  # process and framebuffer checks. Baseline LLVM codegen can take longer.
+  # process and framebuffer checks. The production launcher includes the
+  # hardware-specific CPU shim; baseline LLVM codegen can take longer.
   trap - EXIT
   for attempt in $(seq 1 40); do
     if grep -lq 'render-worker-first-present-done' /tmp/tilo-greeter-metrics-*.json 2>/dev/null; then
