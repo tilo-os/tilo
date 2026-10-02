@@ -178,8 +178,18 @@ mod workspace_activity {
             }
         }
         let mut tree = causal_room();
+        // Layout/setup commits are omitted from the feed; rename so there is
+        // a Change row to select and attempt restore against.
+        tree.workspaces[0].name = "Design studio".into();
+        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree);
+        tilo_resource::history::commit_stamped(&mut tree.doc);
         let mut pane = RoomActivityPane::new();
         pane.refresh(&mut tree);
+        assert!(
+            !pane.entries().is_empty(),
+            "expected a feed-visible rename, got {:?}",
+            pane.entries().iter().map(|e| e.summary.as_str()).collect::<Vec<_>>()
+        );
         pane.timeline.set_selection(Some((0, 0)));
         assert!(!pane.timeline.begin_naming_selection());
         let heads = tree.doc.get_heads();

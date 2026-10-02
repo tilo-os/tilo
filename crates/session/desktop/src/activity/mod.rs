@@ -290,7 +290,9 @@ mod admitted_history_tests {
         let mut pane = RoomActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
-        assert_eq!(pane.entries().len(), 3);
+        // Setup/layout commits are omitted from the explorer feed; the
+        // title change is the one Change row people should see.
+        assert_eq!(pane.entries().len(), 1);
         let labels = pane
             .replay_frames
             .iter()

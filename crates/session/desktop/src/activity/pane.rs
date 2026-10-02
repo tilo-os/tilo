@@ -3282,8 +3282,7 @@ impl RoomActivityPane {
             }
             let enabled = match action {
                 DetailAction::Open => !detail.resources.is_empty(),
-                DetailAction::Compare => detail.can_compare,
-                DetailAction::Restore => detail.can_compare,
+                DetailAction::Compare | DetailAction::Restore => detail.can_compare,
                 DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
                 DetailAction::UndoTask => self.can_undo_agent_run(),
                 DetailAction::Split => self.split_candidate().is_some(),
@@ -8330,7 +8329,7 @@ impl PatchCounts {
         if self.owner_set || self.room_set {
             return RoomEventKind::Setup;
         }
-        if self.names.first().is_some() {
+        if !self.names.is_empty() {
             return RoomEventKind::Change;
         }
         if self.tabs_added > 0 {
