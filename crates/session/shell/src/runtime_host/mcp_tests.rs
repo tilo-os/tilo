@@ -281,7 +281,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let call=denied.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
-    }).await;
+    })).await;
     // Phase `root_identity_pagination_and_disconnect_are_exact`.
     {
         use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
@@ -621,5 +621,5 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
         let mut other=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"foreign".into());
         assert_eq!(other.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
-    }).await;
+    })).await;
 }
