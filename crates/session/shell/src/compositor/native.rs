@@ -2473,6 +2473,26 @@ fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
     })
 }
 
+/// How long a screenshot waits for the client frame an input asked for.
+/// A render-on-demand client draws nothing until its frame callback
+/// fires, and that commit arrives after the input that requested the shot.
+const CLIENT_SNAPSHOT_SETTLE: Duration = Duration::from_millis(400);
+
+/// A screenshot whose file is written once the client commits, or once
+/// [`CLIENT_SNAPSHOT_SETTLE`] runs out with no commit.
+struct PendingClientSnapshot {
+    path: std::path::PathBuf,
+    crop: Option<vello::kurbo::Rect>,
+    /// [`foreign::client_pump_epoch`] at the input. A later commit moves it.
+    epoch: u64,
+    started: Instant,
+}
+
+/// Still waiting on the client frame that input at `input_epoch` asked for.
+fn client_snapshot_still_due(input_epoch: u64, now_epoch: u64, waited: Duration) -> bool {
+    now_epoch == input_epoch && waited < CLIENT_SNAPSHOT_SETTLE
+}
+
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
 struct TestControlCtx {
@@ -2499,6 +2519,12 @@ struct TestControlCtx {
     /// While an agent's command runs, the screen region its snapshots show:
     /// its strip's viewport.
     snapshot_crop: Option<vello::kurbo::Rect>,
+    /// Pump epoch at the last injected input that reached a client. The
+    /// next snapshot waits until a commit moves it.
+    client_frame_due: Option<u64>,
+    /// Screenshot not written yet: the client has not committed the frame
+    /// the preceding input asked for.
+    pending_snapshot: Option<PendingClientSnapshot>,
 }
 
 impl TestControlCtx {
@@ -2515,6 +2541,8 @@ impl TestControlCtx {
             watch_request: None,
             agents: crate::compositor::agent_seats::AgentSeats::new(),
             snapshot_crop: None,
+            client_frame_due: None,
+            pending_snapshot: None,
         }
     }
 
@@ -2866,6 +2894,7 @@ fn dispatch_synth_event(
     state: &mut Option<&mut State>,
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
+        ctx.client_frame_due = Some(foreign::client_pump_epoch());
         return;
     }
     if let Some(st) = state.as_deref_mut() {
@@ -3267,19 +3296,10 @@ fn execute_planned_action(
             // returned `Ok`, and crashing on a stray bad path defeats the point of a
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
-            let drag = state.as_ref().and_then(|s| {
-                (s.selection.dnd_active
-                    || s.selection.chrome_drag.is_some()
-                    || file_explorer::external_drag::unclaimed().is_some())
-                .then(|| {
-                    let (cx, cy) = s.client_input.cursor();
-                    (
-                        vello::kurbo::Point::new(cx, cy),
-                        s.selection.dnd_label.snapshot(),
-                    )
-                })
-            });
-            write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
+            if !defer_client_snapshot(ctx, path, state.as_deref_mut()) {
+                let drag = snapshot_drag(state.as_deref());
+                write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
+            }
         }
         PlannedAction::InvokeAction {
             provider,
@@ -3372,6 +3392,79 @@ static SNAPSHOT_RENDERER: std::sync::OnceLock<
 /// abort a per-thread cache causes can't be observed from inside the binary it kills.
 static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// The drag ornament a snapshot has to draw on top of the scene, if a
+/// drag is in flight. Absent, the PNG is the scene alone.
+fn snapshot_drag(
+    state: Option<&State>,
+) -> Option<(
+    vello::kurbo::Point,
+    crate::compositor::drag_feedback::DragVisual,
+)> {
+    state.and_then(|s| {
+        (s.selection.dnd_active
+            || s.selection.chrome_drag.is_some()
+            || file_explorer::external_drag::unclaimed().is_some())
+        .then(|| {
+            let (cx, cy) = s.client_input.cursor();
+            (
+                vello::kurbo::Point::new(cx, cy),
+                s.selection.dnd_label.snapshot(),
+            )
+        })
+    })
+}
+
+/// Hold `path` until the client commits the frame the last input asked
+/// for. Returns whether the write was deferred. A chrome-only action, or
+/// a commit that already landed, writes immediately at the call site.
+fn defer_client_snapshot(
+    ctx: &mut TestControlCtx,
+    path: &std::path::Path,
+    state: Option<&mut State>,
+) -> bool {
+    let Some(epoch) = ctx.client_frame_due else {
+        return false;
+    };
+    if !client_snapshot_still_due(epoch, foreign::client_pump_epoch(), Duration::ZERO) {
+        ctx.client_frame_due = None;
+        return false;
+    }
+    // The client is waiting on its frame callback. Releasing it here is
+    // what lets the commit this screenshot is waiting for happen at all
+    // on a headless seat that did not paint.
+    if let Some(st) = state {
+        foreign::release_frame_throttle(st);
+    }
+    ctx.pending_snapshot = Some(PendingClientSnapshot {
+        path: path.to_path_buf(),
+        crop: ctx.snapshot_crop,
+        epoch,
+        started: Instant::now(),
+    });
+    true
+}
+
+/// Write a deferred screenshot once its client commit has landed, or the
+/// wait has run out. A shot that is still due stays pending.
+fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, state: &State) {
+    let still_due = ctx.pending_snapshot.as_ref().is_some_and(|pending| {
+        client_snapshot_still_due(
+            pending.epoch,
+            foreign::client_pump_epoch(),
+            pending.started.elapsed(),
+        )
+    });
+    if still_due {
+        return;
+    }
+    let Some(pending) = ctx.pending_snapshot.take() else {
+        return;
+    };
+    ctx.client_frame_due = None;
+    let drag = snapshot_drag(Some(state));
+    write_snapshot_png(fb, &pending.path, drag, pending.crop);
+}
 
 /// Re-paint the current scene into a cached `OffscreenRenderer` and encode
 /// it as a PNG at `path`. Best-effort: bad viewport / missing adapter / I/O
@@ -10532,6 +10625,10 @@ pub fn run() {
             injected_redraw_pending = true;
         }
         let client_changed = foreign::client_pump_epoch() != pump_epoch;
+        // An agent's screenshot is taken before this dispatch. If the
+        // input reached a client, the PNG waits for the commit just
+        // imported — or for the settle deadline below.
+        publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &state);
         // A frame callback that arrived without a new buffer, title, or
         // configure is not a present and not another pump. Release it here,
         // on the tick that saw the commit, so the client is not left waiting
@@ -10624,6 +10721,15 @@ pub fn run() {
                 (
                     "client-followup",
                     client_followup_deadline(client_pump_needed, park_now),
+                ),
+                (
+                    "snapshot-settle",
+                    test_control_ctx.pending_snapshot.as_ref().map(|pending| {
+                        pending
+                            .started
+                            .checked_add(CLIENT_SNAPSHOT_SETTLE)
+                            .unwrap_or(pending.started)
+                    }),
                 ),
             ],
         );
@@ -10882,6 +10988,17 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn a_client_snapshot_waits_for_its_commit_then_gives_up() {
+        assert!(client_snapshot_still_due(3, 3, Duration::ZERO));
+        assert!(client_snapshot_still_due(3, 3, Duration::from_millis(399)));
+        assert!(
+            !client_snapshot_still_due(3, 4, Duration::ZERO),
+            "a commit after the input is the frame the shot should show"
+        );
+        assert!(!client_snapshot_still_due(3, 3, CLIENT_SNAPSHOT_SETTLE));
+    }
 
     #[test]
     fn dispatched_client_requests_get_a_follow_up_tick() {
