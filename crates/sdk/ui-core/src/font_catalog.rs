@@ -43,11 +43,6 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
     })
 }
 
-/// A font system over an already verified database, with Tilo's fallback.
-#[cfg_attr(
-    test,
-    allow(dead_code, reason = "unit tests build the fixture font system instead")
-)]
 /// Keep one face per family, style, weight and stretch. A system can install
 /// the same face twice (Fedora ships Noto Sans both static and variable), and
 /// a query takes whichever was discovered first, which is directory order.
@@ -85,6 +80,11 @@ pub(crate) fn drop_duplicate_faces(db: &mut fontdb::Database) {
     }
 }
 
+/// A font system over an already verified database, with Tilo's fallback.
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
 pub(crate) fn system_over(locale: String, db: fontdb::Database) -> FontSystem {
     FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback::TiloFallback)
 }
