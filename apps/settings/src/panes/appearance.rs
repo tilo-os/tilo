@@ -513,7 +513,7 @@ impl AppearancePane {
                 ui::portal::OpenFileOutcome::Failed(error) => {
                     self.set_wallpaper_status(Some(t_args(
                         "settings-appearance-open-failed",
-                        &[("error", error.to_string().into())],
+                        &[("error", error.into())],
                     )));
                 }
             }
@@ -526,7 +526,7 @@ impl AppearancePane {
                 Ok(()) => t("settings-appearance-updated"),
                 Err(error) => t_args(
                     "settings-appearance-unchanged",
-                    &[("error", error.to_string().into())],
+                    &[("error", error.into())],
                 ),
             }));
         }

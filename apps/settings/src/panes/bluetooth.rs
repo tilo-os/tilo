@@ -570,15 +570,15 @@ impl BluetoothPane {
             let result = match result {
                 Ok(PairOutcome::PairedAndConnected) => Ok(t_args(
                     "settings-bluetooth-paired-connected",
-                    &[("name", name.clone().into())],
+                    &[("name", name.into())],
                 )),
                 Ok(PairOutcome::PairedNotConnected { reason }) => Ok(t_args(
                     "settings-bluetooth-paired-not-connected",
-                    &[("name", name.clone().into()), ("reason", reason.into())],
+                    &[("name", name.into()), ("reason", reason.into())],
                 )),
                 Err(error) => Err(t_args(
                     "settings-bluetooth-pair-failed",
-                    &[("name", name.clone().into()), ("error", error.into())],
+                    &[("name", name.into()), ("error", error.into())],
                 )),
             };
             self.notice = Some(result.clone().unwrap_or_else(|error| error));
@@ -764,13 +764,13 @@ impl BluetoothPane {
                         self.notice = Some(t_args(
                             "settings-bluetooth-cancelled",
                             &[("name", d.name.clone().into())],
-                        ))
+                        ));
                     }
                     Err(e) => {
                         self.notice = Some(t_args(
                             "settings-bluetooth-cancel-failed",
                             &[("error", e.into())],
-                        ))
+                        ));
                     }
                 }
             }
@@ -818,13 +818,13 @@ impl BluetoothPane {
                         self.notice = Some(t_args(
                             "settings-bluetooth-renamed",
                             &[("alias", alias.trim().to_string().into())],
-                        ))
+                        ));
                     }
                     Err(e) => {
                         self.notice = Some(t_args(
                             "settings-bluetooth-rename-failed",
                             &[("name", d.name.clone().into()), ("error", e.into())],
-                        ))
+                        ));
                     }
                 }
                 self.refresh();

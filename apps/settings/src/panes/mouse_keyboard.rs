@@ -140,11 +140,34 @@ fn compose_english(stored: Option<&str>) -> &'static str {
         .map_or("Disabled", |(label, _)| label)
 }
 
-pub(crate) fn compose_from_label(label: &str) -> Option<Option<&'static str>> {
+/// A matched keyboard-choice label: clear (stored `None`) or a concrete key id.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StoredKeyChoice {
+    Clear,
+    Key(&'static str),
+}
+
+impl StoredKeyChoice {
+    pub(crate) fn as_stored(self) -> Option<&'static str> {
+        match self {
+            Self::Clear => None,
+            Self::Key(key) => Some(key),
+        }
+    }
+
+    fn from_stored(stored: Option<&'static str>) -> Self {
+        match stored {
+            None => Self::Clear,
+            Some(key) => Self::Key(key),
+        }
+    }
+}
+
+pub(crate) fn compose_from_label(label: &str) -> Option<StoredKeyChoice> {
     COMPOSE_KEY_CHOICES
         .iter()
         .find(|(english, _)| *english == label || compose_shown(english) == label)
-        .map(|(_, stored)| *stored)
+        .map(|(_, stored)| StoredKeyChoice::from_stored(*stored))
 }
 
 fn compose_options() -> Vec<String> {
@@ -167,11 +190,11 @@ fn caps_lock_shown(english: &str) -> String {
     t(caps_lock_ftl(english))
 }
 
-pub(crate) fn caps_lock_from_label(label: &str) -> Option<Option<&'static str>> {
+pub(crate) fn caps_lock_from_label(label: &str) -> Option<StoredKeyChoice> {
     CAPS_LOCK_CHOICES
         .iter()
         .find(|(english, _)| *english == label || caps_lock_shown(english) == label)
-        .map(|(_, stored)| *stored)
+        .map(|(_, stored)| StoredKeyChoice::from_stored(*stored))
 }
 
 fn caps_lock_options() -> Vec<String> {
@@ -1758,17 +1781,17 @@ impl MouseKeyboardPane {
         }
         if let Some(label) = read_str_or_text(state, root, COMPOSE_KEY)
             && let Some(compose) = compose_from_label(&label)
-            && compose != self.last.compose_key.as_deref()
+            && compose.as_stored() != self.last.compose_key.as_deref()
         {
-            self.last.compose_key = compose.map(str::to_string);
+            self.last.compose_key = compose.as_stored().map(str::to_string);
             let owned = self.last.compose_key.clone();
             Self::persist_input(|i| i.compose_key = owned);
         }
         if let Some(label) = read_str_or_text(state, root, CAPS_LOCK_KEY)
             && let Some(stored) = caps_lock_from_label(&label)
-            && stored != self.last.caps_lock.as_deref()
+            && stored.as_stored() != self.last.caps_lock.as_deref()
         {
-            self.last.caps_lock = stored.map(str::to_string);
+            self.last.caps_lock = stored.as_stored().map(str::to_string);
             let owned = self.last.caps_lock.clone();
             Self::persist_input(|i| i.caps_lock = owned);
         }
