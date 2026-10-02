@@ -529,7 +529,7 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("word-processor.document", "open"),
+            &tilo_actions::ActionAddress::new("tilo.rich-text", "open"),
             &arguments,
             true,
             None,

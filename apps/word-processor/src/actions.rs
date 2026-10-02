@@ -700,6 +700,9 @@ pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit)
     add_caret_actions(&mut caret, ctx);
     add_body_append_actions(&mut caret, ctx, doc, None);
     view_ops::add_operations(&mut caret, ctx);
+    // Hosted edits answer with the blocks they changed, same as the
+    // standalone document root (see returning_changes).
+    caret = returning_changes(caret);
     if !caret.actions.is_empty() {
         extras.push(caret);
     }

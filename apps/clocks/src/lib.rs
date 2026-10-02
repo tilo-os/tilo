@@ -536,6 +536,8 @@ fn next_alarm_in_timezone<Tz: TimeZone>(
     None
 }
 
+pub use resource::{Clocks, ClocksShell};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,4 +1135,3 @@ mod tests {
         }
     }
 }
-pub use resource::{Clocks, ClocksShell};
