@@ -142,7 +142,7 @@ cmd_boot() {
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
   display="$(display_qemu_args "$mode")"
   msg "boot ($mode, $TILO_VM_ARCH, ${TILO_XRES}x${TILO_YRES}) disk=$disk"
 
@@ -151,6 +151,7 @@ cmd_boot() {
     -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
+    $(console_qemu_args) \
     -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
@@ -381,10 +382,68 @@ cmd_click() {
   hmp "mouse_button 0" >/dev/null
 }
 
+# greetd being active does not mean tilo-greeter is on screen: keystrokes sent
+# before its window is shown are lost. The greeter answers its console once
+# its event loop runs, but its first frame can follow many seconds later on a
+# software-rendered VM, so also wait until the screen is no longer blank.
+greeter_console() {
+  python3 "$(dirname "${BASH_SOURCE[0]}")/installer-console.py" --socket "$TILO_CONSOLE" "$@"
+}
+
+screen_shows_content() {
+  local ppm="$TILO_RUN/.login-check.ppm"
+  rm -f "$ppm"
+  hmp "screendump $ppm" >/dev/null 2>&1 || return 1
+  sleep 0.4
+  inenv "test -s '$ppm'" || return 1
+  # A binary PPM: count sampled pixels brighter than near-black.
+  python3 - "$ppm" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+fields, pos = [], 0
+while len(fields) < 4:
+    while data[pos:pos + 1].isspace():
+        pos += 1
+    end = pos
+    while not data[end:end + 1].isspace():
+        end += 1
+    fields.append(data[pos:end])
+    pos = end
+pixels = data[pos + 1:]
+lit = sum(1 for i in range(0, len(pixels) - 2, 3 * 997) if sum(pixels[i:i + 3]) > 60)
+sys.exit(0 if lit > 50 else 1)
+PY
+}
+
+wait_greeter_input() {
+  greeter_console wait greeter --timeout 180 \
+    || die "tilo-greeter never answered on its console ($TILO_CONSOLE)"
+  local i
+  for i in $(seq 1 120); do
+    screen_shows_content && return 0
+    sleep 1
+  done
+  die "tilo-greeter answered its console but the screen stayed blank for 120 s"
+}
+
+# After Enter the greeter either leaves sign-in or exits into the session.
+check_login_submitted() {
+  local i phase
+  for i in $(seq 1 30); do
+    phase="$(greeter_console state 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("phase", ""))' 2>/dev/null)" \
+      || phase=""
+    [ "$phase" = sign-in ] || return 0
+    sleep 1
+  done
+  die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
+}
+
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
   local u="${1:-$TILO_USER}" p="${2:-$TILO_PASS}"
+  wait_greeter_input
   if [ "$passcode_only" -eq 1 ]; then
     p="${1:-$TILO_PASS}"
     msg "logging in with the installed user's passcode"
@@ -393,6 +452,7 @@ cmd_login() {
     cmd_type "$p"
     cmd_keys ret
     msg "passcode sent"
+    check_login_submitted
     return
   fi
   msg "logging in as $u"
@@ -408,6 +468,7 @@ cmd_login() {
   cmd_type "$p"
   cmd_keys ret
   msg "credentials sent"
+  check_login_submitted
 }
 
 cmd_serial() {
