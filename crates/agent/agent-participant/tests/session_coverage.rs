@@ -44,7 +44,7 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, Control, HostedApp, ModelPlanner,
     ParticipantConfig, Seed, StepAction, record_provider,
 };
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent};
+use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
 use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
@@ -163,6 +163,20 @@ fn page(
     let text = body(&app);
     app.close();
     text
+}
+
+/// Open a sealed live frame with `peer`'s channel keys.
+async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.open_live_then(
+        workspace(),
+        frame,
+        Box::new(move |opened| {
+            let _ = tx.send(opened);
+        }),
+    )
+    .ok()?;
+    LiveFrame::decode(&rx.await.ok()??).ok()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -354,7 +368,8 @@ async fn every_web_app_over_the_session() {
             };
             if let Ok(Ok(Some(datagram))) =
                 tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
-                && let LiveFrame::Presence(presence) = LiveFrame::decode(&datagram.payload).unwrap()
+                && let Some(LiveFrame::Presence(presence)) =
+                    open_live(&browser, datagram.payload.to_vec()).await
                 && presence
                     .focus
                     .as_ref()

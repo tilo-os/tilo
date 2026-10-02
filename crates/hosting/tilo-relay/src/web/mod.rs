@@ -46,7 +46,7 @@ use tilo_moq::live::fallback::{
 };
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::legacy_window::InputRequest;
-use tilo_relay_protocol::live::LiveFrame;
+use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
@@ -272,12 +272,13 @@ impl crate::peer::BrowserBridge for Bridge {
     fn live(&self, workspace_id: u64, from: [u8; 32], frame: &[u8]) {
         let room = live_room(workspace_id);
         let publisher = hex::encode(from);
-        match LiveFrame::decode(frame) {
-            Ok(LiveFrame::Presence(_)) => {
+        // Only a sealed frame crosses, by its clear kind and record.
+        match SealedLiveFrame::decode(frame) {
+            Ok(sealed) if sealed.kind == LiveKind::Presence => {
                 self.live.inject_presence(&room, &publisher, frame);
             }
-            Ok(LiveFrame::Ops(ops)) => {
-                let record = hex::encode(ops.record().digest());
+            Ok(sealed) => {
+                let record = hex::encode(sealed.record);
                 self.live.inject_ops(&room, &publisher, &record, frame);
             }
             Err(_) => {}

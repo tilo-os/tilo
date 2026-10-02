@@ -247,7 +247,7 @@ impl Channels {
         })
     }
 
-    fn channel(route: &DocumentRoute) -> ChannelId {
+    pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
     }
 

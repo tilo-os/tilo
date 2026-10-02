@@ -226,7 +226,8 @@ pub enum PeerEvent {
         /// Host order.
         seq: u64,
     },
-    /// A live frame another member published.
+    /// A live frame another member published, opened with its record's
+    /// channel keys.
     Live {
         /// The room's workspace.
         workspace_id: u64,
@@ -287,6 +288,8 @@ enum Command {
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
+    SealLive(u64, Vec<u8>, LiveCompletion),
+    OpenLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
@@ -311,6 +314,10 @@ pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live grant, see [`PeerHandle::live_grant_then`].
 pub type GrantCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::LiveGrant, String>) + Send>;
+/// Called once with a live frame sealed or opened with its record's channel
+/// keys, or `None` when this device holds none; see
+/// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
+pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
 /// Called once with whether the host took a legacy window's input, see
 /// [`PeerHandle::legacy_input_then`].
 pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
@@ -562,14 +569,48 @@ impl PeerHandle {
         self.send(Command::LiveJoin(workspace_id))
     }
 
-    /// Publish one encoded live frame. Dropped while disconnected: live
-    /// state is never queued.
+    /// Publish one canonical live frame, sealed with the channel keys of the
+    /// record it names. Dropped while disconnected (live state is never
+    /// queued), and dropped when it names no record or this device holds
+    /// none of that record's keys: a live frame never leaves in the clear.
     ///
     /// # Errors
     ///
     /// Returns an error once the session is closed.
     pub fn publish_live(&self, workspace_id: u64, frame: Vec<u8>) -> Result<(), String> {
         self.send(Command::Live(workspace_id, frame))
+    }
+
+    /// Seal one canonical live frame of `workspace_id` with the channel keys
+    /// of the record it names, for a carrier other than this session (the
+    /// page's live plane); `done` receives the sealed frame, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn seal_live_then(
+        &self,
+        workspace_id: u64,
+        frame: Vec<u8>,
+        done: LiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::SealLive(workspace_id, frame, done))
+    }
+
+    /// Open one sealed live frame of `workspace_id` that another carrier
+    /// delivered; `done` receives the canonical frame, or `None` when it
+    /// does not open with keys this device holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn open_live_then(
+        &self,
+        workspace_id: u64,
+        frame: Vec<u8>,
+        done: LiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::OpenLive(workspace_id, frame, done))
     }
 
     /// Send one remote-action frame to device `to` of the room (the host's
@@ -1443,14 +1484,8 @@ impl Task {
                 self.live.insert(workspace_id);
                 client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
             }
-            Command::Live(workspace_id, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::Live {
-                        workspace_id,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        frame,
-                    });
-                }
+            command @ (Command::Live(..) | Command::SealLive(..) | Command::OpenLive(..)) => {
+                self.apply_live(command, client);
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
@@ -1663,6 +1698,69 @@ impl Task {
         }
     }
 
+    /// Send, seal or open one live frame. Live state is lossy: nothing here
+    /// is queued, and nothing leaves unsealed.
+    fn apply_live(&mut self, command: Command, client: Option<&Link>) {
+        match command {
+            Command::Live(workspace_id, frame) => {
+                if let Some(client) = client
+                    && let Some(frame) = self.seal_live(workspace_id, &frame)
+                {
+                    let _ = client.send(Envelope::Live {
+                        workspace_id,
+                        from_device_public_key: self.config.cert.device_public_key,
+                        frame,
+                    });
+                }
+            }
+            Command::SealLive(workspace_id, frame, done) => {
+                done(self.seal_live(workspace_id, &frame));
+            }
+            Command::OpenLive(workspace_id, frame, done) => {
+                done(self.open_live(workspace_id, &frame));
+            }
+            _ => {}
+        }
+    }
+
+    /// Seal canonical live `frame` of `workspace_id` with the content cipher
+    /// of the record it names, or `None`: a frame naming no record, or one
+    /// whose record this device holds no keys for, is never sent.
+    fn seal_live(&mut self, workspace_id: u64, frame: &[u8]) -> Option<Vec<u8>> {
+        let frame = tilo_relay_protocol::live::LiveFrame::decode(frame).ok()?;
+        let (_, _, record) = frame.seal_tags()?;
+        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+            let names = tilo_relay_protocol::live::LiveRecord {
+                app: route.app_id.clone(),
+                record: route.record.clone(),
+            };
+            (names == *record && route.workspace_id().ok() == Some(workspace_id)).then_some(cipher)
+        })?;
+        tilo_relay_protocol::live::SealedLiveFrame::seal(
+            &frame,
+            |artifact, retention, cleartext| cipher.seal(artifact, retention, cleartext),
+        )
+        .ok()
+    }
+
+    /// Open sealed live `frame` of `workspace_id` with the content cipher of
+    /// its channel, returning the canonical frame, or `None` when it does not
+    /// open with keys this device holds.
+    fn open_live(&mut self, workspace_id: u64, frame: &[u8]) -> Option<Vec<u8>> {
+        let sealed = tilo_relay_protocol::live::SealedLiveFrame::decode(frame).ok()?;
+        let channel = sealed.channel_id();
+        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+            (crate::channels::Channels::channel(route) == channel
+                && route.workspace_id().ok() == Some(workspace_id))
+            .then_some(cipher)
+        })?;
+        sealed
+            .open(|artifact, metadata, payload| cipher.open(artifact, metadata, payload))
+            .ok()?
+            .encode()
+            .ok()
+    }
+
     async fn publish(
         &mut self,
         route: DocumentRoute,
@@ -1806,11 +1904,15 @@ impl Task {
                 workspace_id,
                 from_device_public_key,
                 frame,
-            } => self.emit(&PeerEvent::Live {
-                workspace_id,
-                from: from_device_public_key,
-                frame,
-            }),
+            } => {
+                if let Some(frame) = self.open_live(workspace_id, &frame) {
+                    self.emit(&PeerEvent::Live {
+                        workspace_id,
+                        from: from_device_public_key,
+                        frame,
+                    });
+                }
+            }
             Envelope::RemoteAction {
                 workspace_id,
                 from_device_public_key,

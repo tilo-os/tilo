@@ -38,6 +38,7 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
 const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
+const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -199,6 +200,26 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, record_id: &str) -
         workspace_id,
         record_id,
     ))
+}
+
+/// Artifact a sealed live frame is bound to: its record's channel content
+/// key seals it for this kind, sequence and record only, so a frame cannot
+/// be replayed under another sequence, record or kind.
+#[must_use]
+pub fn live_artifact_id(record_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
+    let mut hash = Sha256::new();
+    hash.update(LIVE_ARTIFACT_DOMAIN);
+    hash.update(record_digest);
+    hash.update([kind]);
+    hash.update(seq.to_le_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0_u8; 16];
+    for (target, source) in bytes.iter_mut().zip(digest.iter()) {
+        *target = *source;
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    ArtifactId(uuid::Uuid::from_bytes(bytes))
 }
 
 /// Deterministic attestation slot used by certified workspace admission.

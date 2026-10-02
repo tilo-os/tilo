@@ -28,7 +28,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::{Host, LiveState, PeerEvent, PeerSnapshot, TransportPhase, certify};
-use tilo_relay_protocol::live::{LiveFrame, LiveRecord};
+use tilo_relay_protocol::live::{LiveFrame, LiveRecord, SealedLiveFrame};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_revocation_entry,
 };
@@ -36,6 +36,34 @@ use tilo_user_identity::{
 use support::{
     approve_one, enrol, next_document, ready, route, start_host, start_peer, wait_for, workspace,
 };
+
+/// Seal canonical live `frame` with `peer`'s keys for the record it names.
+async fn sealed(peer: &tilo_browser_peer::PeerHandle, frame: Vec<u8>) -> Vec<u8> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.seal_live_then(
+        workspace(),
+        frame,
+        Box::new(move |sealed| {
+            let _ = tx.send(sealed);
+        }),
+    )
+    .unwrap();
+    rx.await.unwrap().expect("the page holds the record's keys")
+}
+
+/// Open sealed live `frame` with `peer`'s keys.
+async fn opened(peer: &tilo_browser_peer::PeerHandle, frame: Vec<u8>) -> LiveFrame {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    peer.open_live_then(
+        workspace(),
+        frame,
+        Box::new(move |opened| {
+            let _ = tx.send(opened);
+        }),
+    )
+    .unwrap();
+    LiveFrame::decode(&rx.await.unwrap().expect("the frame opens")).unwrap()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
@@ -156,9 +184,18 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
             presence.pointer = Some([12.0, 34.0]);
         })
         .unwrap();
+    // A live frame leaves only sealed with its record's channel keys.
+    let cleartext = frame.clone();
+    let frame = sealed(&browser, frame).await;
+    assert!(
+        !frame
+            .windows(cleartext.len())
+            .any(|window| window == cleartext),
+        "nothing of the frame is in the clear"
+    );
     assert!(
         live.publish_presence(&frame),
-        "valid presence is accepted locally"
+        "sealed presence is accepted locally"
     );
 
     // A second browser device (a tablet, also over HTTPS) receives it over
@@ -202,7 +239,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
                 .publish_presence(seq, |presence| presence.pointer = Some([12.0, 34.0]))
                 .unwrap();
             seq += 1;
-            live.publish_presence(&frame);
+            live.publish_presence(&sealed(&browser, frame).await);
             if let Ok(Ok(Some(datagram))) =
                 tokio::time::timeout(Duration::from_millis(50), track.recv_datagram()).await
             {
@@ -212,9 +249,13 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     })
     .await
     .expect("browser presence reaches the tablet over WebTransport");
+    // The host relays the sealed frame; only a holder of the record's keys
+    // reads it.
+    assert!(SealedLiveFrame::decode(&from_browser).is_ok());
+    assert!(LiveFrame::decode(&from_browser).is_err());
     assert!(matches!(
-        LiveFrame::decode(&from_browser),
-        Ok(LiveFrame::Presence(presence)) if presence.pointer == Some([12.0, 34.0])
+        opened(&browser, from_browser).await,
+        LiveFrame::Presence(presence) if presence.pointer == Some([12.0, 34.0])
     ));
     drop(tablet_live);
     tablet_peer.close();
@@ -230,7 +271,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
                 .publish_presence(seq, |presence| presence.pointer = Some([21.0, 43.0]))
                 .unwrap();
             seq += 1;
-            live.publish_presence(&frame);
+            live.publish_presence(&sealed(&browser, frame).await);
             tokio::time::sleep(Duration::from_millis(50)).await;
             for event in laptop_events.drain() {
                 if let PeerEvent::Live { from, frame, .. } = event
@@ -252,10 +293,17 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(laptop.cert.device_public_key))
             .unwrap();
     let mut laptop_state = LiveState::starting_now();
+    let focus = |presence: &mut tilo_relay_protocol::live::PresenceFrame, pointer| {
+        presence.focus = Some(LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "note-1".into(),
+        });
+        presence.pointer = Some(pointer);
+    };
     let received = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let frame = laptop_state
-                .publish_presence(2, |presence| presence.pointer = Some([5.0, 6.0]))
+                .publish_presence(2, |presence| focus(presence, [5.0, 6.0]))
                 .unwrap();
             laptop_peer.publish_live(workspace(), frame).unwrap();
             let Ok(Some(broadcast)) =
@@ -274,7 +322,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
             };
             for _ in 0..20 {
                 let frame = laptop_state
-                    .publish_presence(3, |presence| presence.pointer = Some([7.0, 8.0]))
+                    .publish_presence(3, |presence| focus(presence, [7.0, 8.0]))
                     .unwrap();
                 laptop_peer.publish_live(workspace(), frame).unwrap();
                 if let Ok(Ok(Some(datagram))) =
@@ -287,9 +335,10 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     })
     .await
     .expect("a laptop frame reaches the browser's live session");
+    assert!(LiveFrame::decode(&received).is_err(), "relayed sealed");
     assert!(matches!(
-        LiveFrame::decode(&received),
-        Ok(LiveFrame::Presence(presence))
+        opened(&browser, received).await,
+        LiveFrame::Presence(presence)
             if presence.pointer == Some([5.0, 6.0]) || presence.pointer == Some([7.0, 8.0])
     ));
     drop(live);
