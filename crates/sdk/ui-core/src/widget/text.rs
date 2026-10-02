@@ -133,6 +133,8 @@ pub struct Text {
     /// across frames via `Scene::append` so an unchanged Text
     /// widget contributes ~zero shape / emit work per frame.
     cached: Scene,
+    /// The ink `cached` was drawn in, so a theme change redraws it.
+    drawn_color: Option<vello::peniko::Color>,
     /// Whether the cache content needs to be re-emitted, flipped on when
     /// the *size* of `self.rect` changes — pure translation (e.g.
     /// `Scrollable` offsetting child rects) keeps the cache, absorbed by
@@ -173,6 +175,7 @@ impl Text {
             presence_path: Vec::new(),
             permission_scope: None,
             cached: Scene::new(),
+            drawn_color: None,
             dirty: true,
             layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
@@ -883,6 +886,17 @@ impl Widget for Text {
         self.observe_i18n_revision();
         self.observe_engine_revision();
         self.observe_renderer_text_scale(text_renderer);
+        let color = self.color.unwrap_or({
+            if self.dimmed {
+                theme.text_dim
+            } else {
+                theme.tokens.colors.text_primary
+            }
+        });
+        if self.drawn_color != Some(color) {
+            self.drawn_color = Some(color);
+            self.dirty = true;
+        }
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
@@ -891,13 +905,6 @@ impl Widget for Text {
                 reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
             )]
             let max_width = self.rect.width() as f32;
-            let color = self.color.unwrap_or({
-                if self.dimmed {
-                    theme.text_dim
-                } else {
-                    theme.tokens.colors.text_primary
-                }
-            });
             let origin = Affine::translate((self.rect.x0, self.rect.y0));
             let constraints = TextLayoutConstraints {
                 max_width: Some(max_width + 1.0),

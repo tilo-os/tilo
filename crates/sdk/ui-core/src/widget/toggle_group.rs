@@ -80,6 +80,9 @@ pub struct ToggleGroup {
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
+    /// The theme colours `cached` was painted in, so a theme change
+    /// repaints it.
+    drawn_palette: Option<[vello::peniko::Color; 4]>,
     /// Fill the parent's available width, allowing compact app navigation on
     /// phone-sized windows while retaining equal hit targets.
     flexible_width: bool,
@@ -113,6 +116,7 @@ impl ToggleGroup {
             last_selected: usize::MAX,
             is_focused: false,
             last_focused: false,
+            drawn_palette: None,
             flexible_width: false,
             style: SegmentedStyle::Solid,
             active_touch: None,
@@ -823,6 +827,16 @@ impl Widget for ToggleGroup {
         if self.is_focused != self.last_focused {
             self.cache_dirty = true;
             self.last_focused = self.is_focused;
+        }
+        let palette = [
+            theme.accent_primary,
+            theme.bg_hover,
+            theme.tokens.colors.text_primary,
+            theme.tokens.colors.surfaces.base,
+        ];
+        if self.drawn_palette != Some(palette) {
+            self.drawn_palette = Some(palette);
+            self.cache_dirty = true;
         }
         let needs_emit = self.cache_dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {

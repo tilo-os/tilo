@@ -205,6 +205,27 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
+    /// Run a view or effect operation (`look`, `export`) through the host
+    /// door, as an agent or script does, and answer with what it produced;
+    /// `None` while it is still running.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn operate(
+        &mut self,
+        invoke: Invoke<A::Resource>,
+    ) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+        };
+        let harness = self.harness();
+        let started = harness.invoke_bound_action(&address, &arguments)?;
+        harness.relayout();
+        Ok(started.completed())
+    }
+
     fn invoke_as(
         &mut self,
         invoke: Invoke<A::Resource>,
