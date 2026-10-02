@@ -32,7 +32,7 @@ class FeedbackScopeTests(unittest.TestCase):
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
             workflow = (ROOT / '.forgejo/workflows/ci-nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
-            self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
+            self.assertEqual(pairs, [('x86_64', 'runner-disk-100g'), ('aarch64', 'runner-disk-100g-arm64')])
             self.assertIn('runs-on: ${{ matrix.runner }}', workflow)
             self.assertIn("./os/dev/assert-native-arch.sh '${{ matrix.arch }}'", workflow)
             self.assertIn('lvp_icd.${{ matrix.arch }}.json', workflow)
