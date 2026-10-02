@@ -66,6 +66,24 @@ The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
 
+
+
+## Agent host (MCP beside local relay)
+
+A Cursor/Grok-style box on an existing Linux OS should not install the Tilo
+desktop or OS image. Keep three roles distinct: the **relay** (store-and-forward),
+the **home peer** (always-on replica — same OCI as the relay Compose), and the
+**agent host** (MCP client → local `tilo-runtime` enrolled under the user).
+
+Preferred layout: run `tilo-relay` as a home peer, run `tilo-runtime` beside it
+with MCP on loopback (`TILO_RUNTIME_MCP_HTTP=127.0.0.1:7391` plus
+`TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`), enroll the runtime as a personal device
+(`tilo-enroll pair-device --headless`), and point the assistant at that MCP.
+Never copy `user-identity/privkey.bin` into the container.
+
+Operator Compose and image: [`os/containers/tilo-agent-host/`](../os/containers/tilo-agent-host/).
+Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
+
 ## HTTP endpoint
 
 A hosted machine (for example a provider's per-user VM) exposes the same tools

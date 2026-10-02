@@ -171,7 +171,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "collaborators.open"
         | "room.activity.open"
         | "room.activity.explore"
-        | "room.activity.replay" => {
+        | "room.activity.replay"
+        | "history.compare"
+        | "history.undo"
+        | "history.restore" => {
             contract = ActionContract::view();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -261,6 +264,9 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "room.activity.open"
         | "room.activity.explore"
         | "room.activity.replay"
+        | "history.compare"
+        | "history.undo"
+        | "history.restore"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
         "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
@@ -2624,6 +2630,55 @@ impl SearchProvider for ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        for (id, label_key, subtitle_key, keywords_key) in [
+            (
+                tilo_desktop::activity::HISTORY_COMPARE,
+                "search-action-history-compare",
+                "search-action-history-compare-subtitle",
+                "search-action-history-compare-keywords",
+            ),
+            (
+                tilo_desktop::activity::HISTORY_UNDO,
+                "search-action-history-undo",
+                "search-action-history-undo-subtitle",
+                "search-action-history-undo-keywords",
+            ),
+            (
+                tilo_desktop::activity::HISTORY_RESTORE,
+                "search-action-history-restore",
+                "search-action-history-restore-subtitle",
+                "search-action-history-restore-keywords",
+            ),
+        ] {
+            let label = t(label_key);
+            let subtitle = t(subtitle_key);
+            let keywords = t(keywords_key);
+            candidates.record(
+                &label.to_lowercase(),
+                &format!("{subtitle} {keywords}").to_lowercase(),
+                id,
+            );
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::View,
+                provider_id: self.id().into(),
+                id: id.to_string(),
+                title: label,
+                subtitle: Some(subtitle),
+                badge: None,
+                score: 0,
+                params: vec![],
+                contract: Some(tilo_actions::ActionContract::view()),
+                on_open: Rc::new(move |_, _, chrome, _| {
+                    chrome
+                        .borrow_mut()
+                        .request_history_selection_action(id)
+                        .map_err(ActionError::Refused)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
+        }
         for &(id, label_key, subtitle_key) in QUICK_SETTINGS_ACTIONS {
             let label = t(label_key);
             let subtitle = t(subtitle_key);
@@ -3588,6 +3643,33 @@ mod tests {
                 out.iter().any(|action| action.id == id
                     && action.operation_kind == tilo_actions::OperationKind::View),
                 "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_and_restore_name_the_selected_row_actions() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let query = |needle| {
+            provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        for (needle, id) in [
+            ("undo", tilo_desktop::activity::HISTORY_UNDO),
+            ("restore", tilo_desktop::activity::HISTORY_RESTORE),
+            ("compare", tilo_desktop::activity::HISTORY_COMPARE),
+        ] {
+            assert!(
+                query(needle).iter().any(|row| row.id == id),
+                "{needle} must surface {id}"
             );
         }
     }

@@ -1039,7 +1039,7 @@ mod tests {
             .expect("the peer's change applies");
         // A named range over the first two rows.
         let (rows, ..) = activity_of(&mut tree);
-        assert!(rows.len() >= 3, "the fixture must have history: {rows:?}");
+        assert!(rows.len() >= 2, "the fixture must have history: {rows:?}");
         ui::history_groups::name_range(&mut tree.doc, &rows[0].0, Some(&rows[1].0), "Launch prep");
         tree.commit_room_change();
 

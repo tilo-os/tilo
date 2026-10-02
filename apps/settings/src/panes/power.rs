@@ -47,8 +47,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::i18n::{t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use ui::i18n::ArgValue;
 
 pub const PROFILE_KEY: &str = "power.profile";
 pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
@@ -74,18 +76,47 @@ const SUSPEND_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn suspend_label(minutes: u32) -> &'static str {
-    SUSPEND_OPTIONS
-        .iter()
-        .find(|(_, m)| *m == minutes)
-        .map_or("15 minutes", |(l, _)| *l)
+fn duration_ftl(english: &str) -> &'static str {
+    match english {
+        "1 minute" => "power-1-minute",
+        "5 minutes" => "power-5-minutes",
+        "10 minutes" => "power-10-minutes",
+        "30 minutes" => "power-30-minutes",
+        "45 minutes" => "power-45-minutes",
+        "1 hour" => "power-1-hour",
+        "Never" => "power-never",
+        _ => "power-15-minutes",
+    }
 }
 
-fn suspend_from_label(label: &str) -> Option<u32> {
-    SUSPEND_OPTIONS
+fn duration_shown(english: &str) -> String {
+    t(duration_ftl(english))
+}
+
+fn duration_from_options(options: &[(&str, u32)], label: &str) -> Option<u32> {
+    options
         .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, m)| *m)
+        .find(|(english, _)| *english == label || duration_shown(english) == label)
+        .map(|(_, minutes)| *minutes)
+}
+
+fn duration_options(options: &[(&str, u32)]) -> Vec<String> {
+    options
+        .iter()
+        .map(|(english, _)| duration_shown(english))
+        .collect()
+}
+
+fn suspend_label(minutes: u32) -> String {
+    let english = SUSPEND_OPTIONS
+        .iter()
+        .find(|(_, m)| *m == minutes)
+        .map_or("15 minutes", |(l, _)| *l);
+    duration_shown(english)
+}
+
+pub(crate) fn suspend_from_label(label: &str) -> Option<u32> {
+    duration_from_options(SUSPEND_OPTIONS, label)
 }
 
 /// The action options offered for the lid / power-key / critical-battery
@@ -96,11 +127,27 @@ const ACTION_OPTIONS: &[PowerActionPref] = &[
     PowerActionPref::Ignore,
 ];
 
-fn action_options() -> Vec<String> {
+fn action_ftl(pref: PowerActionPref) -> &'static str {
+    match pref {
+        PowerActionPref::Suspend => "power-action-suspend",
+        PowerActionPref::Lock => "power-action-lock",
+        PowerActionPref::Ignore => "power-action-ignore",
+    }
+}
+
+fn action_shown(pref: PowerActionPref) -> String {
+    t(action_ftl(pref))
+}
+
+pub(crate) fn action_from_label(label: &str) -> Option<PowerActionPref> {
     ACTION_OPTIONS
         .iter()
-        .map(|a| a.display().to_string())
-        .collect()
+        .copied()
+        .find(|pref| pref.display() == label || action_shown(*pref) == label)
+}
+
+fn action_options() -> Vec<String> {
+    ACTION_OPTIONS.iter().copied().map(action_shown).collect()
 }
 
 /// The power-profile options, as `(display label, profile)`. The label is what
@@ -111,15 +158,31 @@ const PROFILES: &[(&str, PowerProfile)] = &[
     ("Performance", PowerProfile::Performance),
 ];
 
-fn profile_label(p: PowerProfile) -> &'static str {
-    PROFILES
-        .iter()
-        .find(|(_, pp)| *pp == p)
-        .map_or("Balanced", |(l, _)| *l)
+fn profile_ftl(english: &str) -> &'static str {
+    match english {
+        "Power Saver" => "power-profile-saver",
+        "Performance" => "power-profile-performance",
+        _ => "power-profile-balanced",
+    }
 }
 
-fn profile_from_label(label: &str) -> Option<PowerProfile> {
-    PROFILES.iter().find(|(l, _)| *l == label).map(|(_, p)| *p)
+fn profile_shown(english: &str) -> String {
+    t(profile_ftl(english))
+}
+
+fn profile_label(p: PowerProfile) -> String {
+    let english = PROFILES
+        .iter()
+        .find(|(_, pp)| *pp == p)
+        .map_or("Balanced", |(l, _)| *l);
+    profile_shown(english)
+}
+
+pub(crate) fn profile_from_label(label: &str) -> Option<PowerProfile> {
+    PROFILES
+        .iter()
+        .find(|(english, _)| *english == label || profile_shown(english) == label)
+        .map(|(_, p)| *p)
 }
 
 /// The screen-blank timeout options, as `(display label, minutes)`. `0`
@@ -133,18 +196,16 @@ const BLANK_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn blank_label(minutes: u32) -> &'static str {
-    BLANK_OPTIONS
+fn blank_label(minutes: u32) -> String {
+    let english = BLANK_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
-        .map_or("10 minutes", |(l, _)| *l)
+        .map_or("10 minutes", |(l, _)| *l);
+    duration_shown(english)
 }
 
-fn blank_from_label(label: &str) -> Option<u32> {
-    BLANK_OPTIONS
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, m)| *m)
+pub(crate) fn blank_from_label(label: &str) -> Option<u32> {
+    duration_from_options(BLANK_OPTIONS, label)
 }
 
 /// Idle-lock timeout options. `0` is the explicit "Never" value persisted
@@ -158,18 +219,36 @@ const LOCK_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn lock_label(minutes: u32) -> &'static str {
-    LOCK_OPTIONS
+fn lock_label(minutes: u32) -> String {
+    let english = LOCK_OPTIONS
         .iter()
         .find(|(_, value)| *value == minutes)
-        .map_or("5 minutes", |(label, _)| *label)
+        .map_or("5 minutes", |(label, _)| *label);
+    duration_shown(english)
 }
 
-fn lock_from_label(label: &str) -> Option<u32> {
-    LOCK_OPTIONS
-        .iter()
-        .find(|(candidate, _)| *candidate == label)
-        .map(|(_, value)| *value)
+pub(crate) fn lock_from_label(label: &str) -> Option<u32> {
+    duration_from_options(LOCK_OPTIONS, label)
+}
+
+fn battery_status_shown(battery: &BatteryInfo) -> String {
+    let capacity = ArgValue::from(i64::from(battery.capacity));
+    match battery.status.as_str() {
+        "Full" => t("power-status-full"),
+        "Charging" => t_args("power-status-charging", &[("capacity", capacity)]),
+        "Not charging" => t_args("power-status-plugged", &[("capacity", capacity)]),
+        _ => t_args("power-status-battery", &[("capacity", capacity)]),
+    }
+}
+
+fn health_explanation_shown(battery: &BatteryInfo) -> String {
+    match battery.health_percent() {
+        None => t("power-health-none"),
+        Some(90..=100) => t("power-health-good"),
+        Some(80..=89) => t("power-health-aged"),
+        Some(60..=79) => t("power-health-reduced"),
+        Some(_) => t("power-health-severe"),
+    }
 }
 
 /// Power pane widget.
@@ -256,7 +335,8 @@ impl PowerPane {
     }
 
     fn restore_authoritative_controls(&self, state: &mut AutoCommit, root: &ObjId) {
-        fn restore_text(state: &mut AutoCommit, root: &ObjId, key: &str, value: &str) {
+        fn restore_text(state: &mut AutoCommit, root: &ObjId, key: &str, value: impl AsRef<str>) {
+            let value = value.as_ref();
             if read_str_or_text(state, root, key).as_deref() != Some(value) {
                 let _ = state.put(root, key, value);
             }
@@ -302,26 +382,26 @@ impl PowerPane {
             state,
             root,
             LID_KEY,
-            self.last_prefs.lid_close_action.display(),
+            action_shown(self.last_prefs.lid_close_action),
         );
         restore_text(
             state,
             root,
             POWER_KEY_KEY,
-            self.last_prefs.power_key_action.display(),
+            action_shown(self.last_prefs.power_key_action),
         );
         restore_text(
             state,
             root,
             CRITICAL_KEY,
-            self.last_prefs.critical_action.display(),
+            action_shown(self.last_prefs.critical_action),
         );
         if let Some(capability) = &self.charge_cap {
             restore_text(
                 state,
                 root,
                 CHARGE_LIMIT_KEY,
-                &format!("{}%", capability.current),
+                format!("{}%", capability.current),
             );
         }
     }
@@ -397,9 +477,9 @@ impl PowerPane {
                 if let Some(error) = capability_error {
                     details.push(format!("capabilities: {error}"));
                 }
-                Some(format!(
-                    "Power-profile service is unavailable: {}.",
-                    details.join("; ")
+                Some(t_args(
+                    "power-profile-service-unavailable",
+                    &[("details", ArgValue::from(details.join("; ")))],
                 ))
             }
         };
@@ -499,29 +579,28 @@ impl PowerPane {
     fn battery_card(&self) -> El {
         if !self.battery.present {
             return card(
-                "Power source",
+                &t("power-source-title"),
                 rows(vec![
-                    value_row("Source", "AC power"),
-                    caption(
-                        "This device has no battery — it runs on mains power, so \
-                         charge and battery-saver settings don't apply.",
-                    ),
+                    value_row(&t("power-source"), &t("power-source-ac")),
+                    caption(&t("power-source-caption")),
                 ]),
             );
         }
+        let charge = format!("{}%", self.battery.capacity);
+        let status = battery_status_shown(&self.battery);
         let mut battery_rows: Vec<El> = vec![
             Box::new(ProgressBar::new(self.battery.capacity as f32 / 100.0)),
-            value_row("Charge", &format!("{}%", self.battery.capacity)),
-            value_row("Status", &self.battery.summary()),
+            value_row(&t("power-charge"), &charge),
+            value_row(&t("power-status"), &status),
         ];
         if let Some(cycles) = self.battery.cycle_count {
-            battery_rows.push(value_row("Charge cycles", &cycles.to_string()));
+            battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
         }
         if let Some(health) = self.battery.health_percent() {
-            battery_rows.push(value_row("Battery health", &format!("{health}%")));
-            battery_rows.push(caption(self.battery.health_explanation()));
+            battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
+            battery_rows.push(caption(&health_explanation_shown(&self.battery)));
         } else {
-            battery_rows.push(value_row("Battery health", "Not reported by this device"));
+            battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
         let trend: Vec<f32> = self
             .history
@@ -535,7 +614,7 @@ impl PowerPane {
                     .with_max(100.0)
                     .with_size(320.0, 56.0),
             ));
-            battery_rows.push(caption("Charge history · last 30 days · sampled at most every 15 minutes. Device names and serial numbers are never stored."));
+            battery_rows.push(caption(&t("power-history-caption")));
         }
         if let Some(capability) = &self.charge_cap {
             let choices: Vec<String> = capability
@@ -544,7 +623,7 @@ impl PowerPane {
                 .map(|limit| format!("{limit}%"))
                 .collect();
             battery_rows.push(choice_row(
-                "Charge cap",
+                &t("power-charge-cap"),
                 Box::new(
                     Dropdown::new(choices, CHARGE_LIMIT_KEY)
                         .with_id("power.charge_limit")
@@ -561,70 +640,74 @@ impl PowerPane {
                 ),
             ));
             let detail = match capability.backend {
-                ChargeCapBackend::ConservationMode => {
-                    "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
-                }
-                ChargeCapBackend::HuaweiWmi => {
-                    "The platform uses paired start/end thresholds; Tilo preserves a safe charging window."
-                }
+                ChargeCapBackend::ConservationMode => t("power-charge-cap-conservation"),
+                ChargeCapBackend::HuaweiWmi => t("power-charge-cap-huawei"),
                 ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                    "The kernel exposes start and stop thresholds; Tilo adjusts the start only when required by a lower cap."
+                    t("power-charge-cap-start-stop")
                 }
-                ChargeCapBackend::PowerSupply => {
-                    "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
-                }
+                ChargeCapBackend::PowerSupply => t("power-charge-cap-stop"),
             };
-            battery_rows.push(caption(detail));
+            battery_rows.push(caption(&detail));
         } else {
-            battery_rows.push(value_row("Charge cap", "Not supported by this hardware"));
+            battery_rows.push(value_row(
+                &t("power-charge-cap"),
+                &t("power-charge-cap-unsupported"),
+            ));
         }
         if let Some(notice) = &self.charge_notice {
             battery_rows.push(caption(notice));
         }
-        card("Battery", rows(battery_rows))
+        card(&t("power-battery-title"), rows(battery_rows))
     }
 
     fn profile_card(&self) -> El {
         let profile_opts: Vec<String> = self
             .available_profiles
             .iter()
-            .map(|profile| profile_label(*profile).to_string())
+            .map(|profile| profile_label(*profile))
             .collect();
+        let current = profile_label(self.profile);
         let mut profile_rows =
             if profile_opts.is_empty() {
-                vec![value_row("Profile", "Power-profile service unavailable")]
+                vec![value_row(
+                    &t("power-profile"),
+                    &t("power-profile-unavailable"),
+                )]
             } else {
                 vec![choice_row(
-                    "Profile",
+                    &t("power-profile"),
                     Box::new(
                         Dropdown::new(profile_opts, PROFILE_KEY)
                             .with_id("power.profile")
                             .on_action(crate::actions::power_text_binding("profile").expect(
                                 "power profile action is part of the static resource contract",
                             ))
-                            .with_placeholder(profile_label(self.profile)),
+                            .with_placeholder(&current),
                     ),
                 )]
             };
-        profile_rows.push(caption(
-            "Only modes supported by this device are shown. Balanced trades performance for battery life; Power Saver favours runtime; Performance favours speed.",
-        ));
+        profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.profile_notice {
             profile_rows.push(caption(notice));
         }
-        card("Power profile", rows(profile_rows))
+        card(&t("power-profile-title"), rows(profile_rows))
     }
 
     fn idle_card(&self) -> El {
-        let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let lock_opts: Vec<String> = LOCK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let suspend_opts: Vec<String> =
-            SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
+        let blank_opts = duration_options(BLANK_OPTIONS);
+        let lock_opts = duration_options(LOCK_OPTIONS);
+        let suspend_opts = duration_options(SUSPEND_OPTIONS);
+        let suspend_now = suspend_label(self.prefs.suspend_minutes);
+        let blank_now = blank_label(self.prefs.blank_minutes);
+        let lock_now = lock_label(self.prefs.lock_minutes);
+        let saver_now = suspend_label(self.prefs.saver_suspend_minutes);
+        let balanced_now = suspend_label(self.prefs.balanced_suspend_minutes);
+        let performance_now = suspend_label(self.prefs.performance_suspend_minutes);
         card(
-            "Automatic power saving",
+            &t("power-idle-title"),
             rows(vec![
                 setting_row(
-                    "Suspend when idle",
+                    &t("power-suspend-idle"),
                     Box::new(
                         Toggle::new("settings.power.auto_suspend", AUTO_SUSPEND_KEY)
                             .with_id("power.auto_suspend")
@@ -635,7 +718,7 @@ impl PowerPane {
                     ),
                 ),
                 choice_row(
-                    "Suspend after",
+                    &t("power-suspend-after"),
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), SUSPEND_KEY)
                             .with_id("power.suspend")
@@ -643,11 +726,11 @@ impl PowerPane {
                                 crate::actions::power_text_binding("suspend-after")
                                     .expect("suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(suspend_label(self.prefs.suspend_minutes)),
+                            .with_placeholder(&suspend_now),
                     ),
                 ),
                 choice_row(
-                    "Blank screen when idle",
+                    &t("power-blank"),
                     Box::new(
                         Dropdown::new(blank_opts, BLANK_KEY)
                             .with_id("power.blank")
@@ -655,11 +738,11 @@ impl PowerPane {
                                 crate::actions::power_text_binding("blank-after")
                                     .expect("blank action is part of the static resource contract"),
                             )
-                            .with_placeholder(blank_label(self.prefs.blank_minutes)),
+                            .with_placeholder(&blank_now),
                     ),
                 ),
                 choice_row(
-                    "Lock after",
+                    &t("power-lock-after"),
                     Box::new(
                         Dropdown::new(lock_opts, LOCK_KEY)
                             .with_id("power.lock")
@@ -667,56 +750,70 @@ impl PowerPane {
                                 crate::actions::power_text_binding("lock-after")
                                     .expect("lock action is part of the static resource contract"),
                             )
-                            .with_placeholder(lock_label(self.prefs.lock_minutes)),
+                            .with_placeholder(&lock_now),
                     ),
                 ),
-                caption("Idle timeouts are applied by the compositor's power layer."),
+                caption(&t("power-idle-caption")),
                 choice_row(
-                    "Power Saver suspend",
+                    &t("power-saver-suspend"),
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), SAVER_SUSPEND_KEY)
                             .on_action(
                                 crate::actions::power_text_binding("saver-suspend")
                                     .expect("saver suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(suspend_label(self.prefs.saver_suspend_minutes)),
+                            .with_placeholder(&saver_now),
                     ),
                 ),
                 choice_row(
-                    "Balanced suspend",
+                    &t("power-balanced-suspend"),
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), BALANCED_SUSPEND_KEY)
                             .on_action(
                                 crate::actions::power_text_binding("balanced-suspend")
                                     .expect("balanced suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(suspend_label(self.prefs.balanced_suspend_minutes)),
+                            .with_placeholder(&balanced_now),
                     ),
                 ),
                 choice_row(
-                    "Performance suspend",
+                    &t("power-performance-suspend"),
                     Box::new(
                         Dropdown::new(suspend_opts, PERFORMANCE_SUSPEND_KEY)
                             .on_action(
                                 crate::actions::power_text_binding("performance-suspend")
                                     .expect("performance suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(suspend_label(self.prefs.performance_suspend_minutes)),
+                            .with_placeholder(&performance_now),
                     ),
                 ),
-                caption(
-                    "The active power profile selects its own idle timeout in the compositor; changing profile never creates a second policy owner.",
-                ),
+                caption(&t("power-profile-idle-caption")),
             ]),
         )
     }
 
     fn actions_card(&self) -> El {
+        let lid = action_shown(self.prefs.lid_close_action);
+        let power_key = action_shown(self.prefs.power_key_action);
+        let critical = action_shown(self.prefs.critical_action);
+        let warn = t_args(
+            "power-warn-caption",
+            &[
+                (
+                    "warn",
+                    ArgValue::from(i64::from(self.prefs.low_battery_percent)),
+                ),
+                (
+                    "critical",
+                    ArgValue::from(i64::from(self.prefs.critical_battery_percent)),
+                ),
+            ],
+        );
         card(
-            "Power behaviour",
+            &t("power-behaviour-title"),
             rows(vec![
                 choice_row(
-                    "When the lid is closed",
+                    &t("power-lid"),
                     Box::new(
                         Dropdown::new(action_options(), LID_KEY)
                             .with_id("power.lid")
@@ -724,11 +821,11 @@ impl PowerPane {
                                 crate::actions::power_text_binding("lid")
                                     .expect("lid action is part of the static resource contract"),
                             )
-                            .with_placeholder(self.prefs.lid_close_action.display()),
+                            .with_placeholder(&lid),
                     ),
                 ),
                 choice_row(
-                    "When the power key is pressed",
+                    &t("power-power-key"),
                     Box::new(
                         Dropdown::new(action_options(), POWER_KEY_KEY)
                             .with_id("power.power_key")
@@ -737,11 +834,11 @@ impl PowerPane {
                                     "power-key action is part of the static resource contract",
                                 ),
                             )
-                            .with_placeholder(self.prefs.power_key_action.display()),
+                            .with_placeholder(&power_key),
                     ),
                 ),
                 choice_row(
-                    "When the battery is critically low",
+                    &t("power-critical"),
                     Box::new(
                         Dropdown::new(action_options(), CRITICAL_KEY)
                             .with_id("power.critical")
@@ -750,13 +847,10 @@ impl PowerPane {
                                     "critical action is part of the static resource contract",
                                 ),
                             )
-                            .with_placeholder(self.prefs.critical_action.display()),
+                            .with_placeholder(&critical),
                     ),
                 ),
-                caption(&format!(
-                    "You'll be warned at {}% and this action runs at {}%.",
-                    self.prefs.low_battery_percent, self.prefs.critical_battery_percent
-                )),
+                caption(&warn),
             ]),
         )
     }
@@ -767,16 +861,21 @@ impl PowerPane {
         }
         let mut entries = Vec::new();
         for d in &self.devices {
-            let kind = match d.kind {
-                os_actions::PowerSupplyKind::Battery => "Battery",
-                os_actions::PowerSupplyKind::Ups => "UPS",
-            };
-            entries.push(value_row(
-                d.model.as_deref().unwrap_or(&d.id),
-                &format!("{kind} · {}% · {}", d.capacity, d.status),
-            ));
+            let kind = t(match d.kind {
+                os_actions::PowerSupplyKind::Battery => "power-device-battery",
+                os_actions::PowerSupplyKind::Ups => "power-device-ups",
+            });
+            let line = t_args(
+                "power-device-line",
+                &[
+                    ("kind", ArgValue::from(kind.as_str())),
+                    ("capacity", ArgValue::from(i64::from(d.capacity))),
+                    ("status", ArgValue::from(d.status.as_str())),
+                ],
+            );
+            entries.push(value_row(d.model.as_deref().unwrap_or(&d.id), &line));
         }
-        Some(card("Power devices", rows(entries)))
+        Some(card(&t("power-devices-title"), rows(entries)))
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -784,7 +883,10 @@ impl PowerPane {
         p.power = self.prefs;
         p.save().map(|_| ()).map_err(|error| {
             warn!(target: "tilo::settings", op = "power_prefs_save", %error, "failed to persist power prefs");
-            format!("Power preference was not saved: {error}")
+            t_args(
+                "power-save-failed",
+                &[("error", ArgValue::from(error.to_string()))],
+            )
         })
     }
 
@@ -816,9 +918,13 @@ impl PowerPane {
             PERFORMANCE_SUSPEND_KEY,
             suspend_label(self.prefs.performance_suspend_minutes),
         );
-        let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
-        let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
-        let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
+        let _ = state.put(root, LID_KEY, action_shown(self.prefs.lid_close_action));
+        let _ = state.put(
+            root,
+            POWER_KEY_KEY,
+            action_shown(self.prefs.power_key_action),
+        );
+        let _ = state.put(root, CRITICAL_KEY, action_shown(self.prefs.critical_action));
         if let Some(capability) = &self.charge_cap {
             let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{}%", capability.current));
         }
@@ -1051,7 +1157,7 @@ impl PowerPane {
     /// change.
     fn handle_action_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(label) = read_str_or_text(state, root, LID_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
+            && let Some(a) = action_from_label(&label)
             && a != self.last_prefs.lid_close_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetLidAction {
                 action: label.clone(),
@@ -1067,7 +1173,7 @@ impl PowerPane {
         }
 
         if let Some(label) = read_str_or_text(state, root, POWER_KEY_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
+            && let Some(a) = action_from_label(&label)
             && a != self.last_prefs.power_key_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetPowerKeyAction {
                 action: label.clone(),
@@ -1083,7 +1189,7 @@ impl PowerPane {
         }
 
         if let Some(label) = read_str_or_text(state, root, CRITICAL_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
+            && let Some(a) = action_from_label(&label)
             && a != self.last_prefs.critical_action
             && self.operation_is_running(&crate::actions::PowerOperation::SetCriticalAction {
                 action: label.clone(),

@@ -1492,6 +1492,16 @@ search-action-quick-settings-unavailable = Quick Settings service is unavailable
 # Extra words a search for a workspace switch or Activity view matches; not shown.
 search-action-workspace-switch-keywords = switch workspace go
 search-action-activity-keywords = activity history changes timeline who
+
+search-action-history-compare = Compare this change
+search-action-history-compare-subtitle = Diff the selected activity row
+search-action-history-compare-keywords = compare diff history change
+search-action-history-undo = Undo this change
+search-action-history-undo-subtitle = Reverse the selected activity row
+search-action-history-undo-keywords = undo reverse rückgängig
+search-action-history-restore = Restore this version
+search-action-history-restore-subtitle = Put the document back to the selected point
+search-action-history-restore-keywords = restore version history wiederherstellen
 search-action-provider-enable = Enable { $source } search
 search-action-provider-enable-subtitle = Show { $source } results in search and agent discovery
 search-action-provider-disable = Disable { $source } search

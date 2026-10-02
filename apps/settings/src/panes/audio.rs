@@ -76,6 +76,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::i18n::{t, t_args};
 use crate::prefs::{AudioPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
 use media::event_sound::SoundTheme;
@@ -107,6 +108,27 @@ pub(crate) fn device_profile_key(id: u32) -> String {
 /// The picker entry meaning "no explicit device — follow the default". Choosing
 /// it clears the stream's `target.object` metadata.
 pub(crate) const FOLLOW_DEFAULT: &str = "Default";
+
+fn follow_shown() -> String {
+    t("sound-follow-default")
+}
+
+fn is_follow_default(choice: &str) -> bool {
+    choice == FOLLOW_DEFAULT || choice == follow_shown()
+}
+
+fn event_shown(event: SystemSoundEvent) -> String {
+    t(match event {
+        SystemSoundEvent::Notification => "sound-event-notification",
+        SystemSoundEvent::Message => "sound-event-message",
+        SystemSoundEvent::VolumeChange => "sound-event-volume",
+        SystemSoundEvent::Screenshot => "sound-event-screenshot",
+        SystemSoundEvent::DeviceConnected => "sound-event-connected",
+        SystemSoundEvent::DeviceDisconnected => "sound-event-disconnected",
+        SystemSoundEvent::LowBattery => "sound-event-battery",
+        SystemSoundEvent::Error => "sound-event-error",
+    })
+}
 
 pub const VOLUME_KEY: &str = "audio.volume";
 pub const MUTED_KEY: &str = "audio.muted";
@@ -936,18 +958,18 @@ impl AudioPane {
         //     mute. This is the per-application routing surface — the music app
         //     to the headphones while the browser stays on the speakers.
         let apps = self.streams_card(
-            "Applications",
+            &t("sound-apps"),
             &self.graph.playback_streams,
             &self.devices.sinks,
-            "No applications are playing audio.",
+            &t("sound-apps-empty"),
         );
         // --- Recording card: the capture streams (which app is using the mic),
         //     routed to a chosen source, with per-app level + mute.
         let recording = self.streams_card(
-            "Recording",
+            &t("sound-recording"),
             &self.graph.record_streams,
             &self.devices.sources,
-            "No applications are recording.",
+            &t("sound-recording-empty"),
         );
 
         let mut cards = vec![output, input];
@@ -965,7 +987,8 @@ impl AudioPane {
 
     /// The way into Speakers: several of your devices as one set.
     fn speakers_card() -> crate::widgets::El {
-        let open = ui::widget::Button::new("sound.speakers", "Set up speakers…", None);
+        let open_label = t("sound-speakers-open");
+        let open = ui::widget::Button::new("sound.speakers", &open_label, None).content_sized();
         let open = match tilo_actions::ActionBinding::unit_for(
             &crate::actions::pane_navigation_resource(crate::categories::Category::Speakers),
             crate::actions::OPEN_PANE_ACTION,
@@ -974,10 +997,10 @@ impl AudioPane {
             Err(_) => open.with_enabled(false),
         };
         crate::widgets::card(
-            "Speakers across your devices",
+            &t("sound-speakers-title"),
             crate::widgets::setting_row_described(
-                "Stereo pair or room speakers",
-                "Play through speakers on several of your devices at once",
+                &t("sound-speakers-row"),
+                &t("sound-speakers-desc"),
                 Box::new(open),
             ),
         )
@@ -1005,10 +1028,10 @@ impl AudioPane {
             if let Some(name) = self.devices.default_sink() {
                 dd = dd.with_placeholder(name);
             }
-            output_rows.push(setting_row("Output device", Box::new(dd)));
+            output_rows.push(setting_row(&t("sound-output-device"), Box::new(dd)));
         }
         output_rows.push(setting_row(
-            "Volume",
+            &t("sound-volume"),
             Box::new(
                 Slider::new("settings.audio.volume", VOLUME_KEY)
                     .with_id("audio.volume")
@@ -1019,7 +1042,7 @@ impl AudioPane {
             ),
         ));
         output_rows.push(setting_row(
-            "Mute",
+            &t("sound-mute"),
             Box::new(
                 Toggle::new("settings.audio.mute", MUTED_KEY)
                     .with_id("audio.mute")
@@ -1032,7 +1055,7 @@ impl AudioPane {
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
             output_rows.push(setting_row(
-                "Balance",
+                &t("sound-balance"),
                 Box::new(
                     Slider::new("settings.audio.balance", BALANCE_KEY)
                         .with_id("audio.balance")
@@ -1045,7 +1068,7 @@ impl AudioPane {
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
             output_rows.push(setting_row(
-                "Mono audio",
+                &t("sound-mono"),
                 Box::new(
                     Toggle::new("settings.audio.mono", MONO_KEY)
                         .with_id("audio.mono")
@@ -1055,7 +1078,7 @@ impl AudioPane {
                         ),
                 ),
             ));
-            output_rows.push(caption("Combines left and right across this desktop session. The session restores the physical output when you turn it off."));
+            output_rows.push(caption(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
             output_rows.push(Box::new(
@@ -1063,13 +1086,14 @@ impl AudioPane {
                     .push(Box::new(
                         Button::new(
                             "settings.audio.advanced",
-                            if self.advanced {
-                                "Hide speaker test"
+                            &if self.advanced {
+                                t("sound-test-hide")
                             } else {
-                                "Test speakers…"
+                                t("sound-test-show")
                             },
                             None,
                         )
+                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("diagnostics")
                                 .expect("audio diagnostics action is published"),
@@ -1081,26 +1105,30 @@ impl AudioPane {
                 output_rows.push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            Button::new("settings.audio.test.left", "Left", None).on_action(
-                                crate::actions::audio_unit_binding("test-left")
-                                    .expect("left speaker test action is published"),
-                            ),
+                            Button::new("settings.audio.test.left", &t("sound-test-left"), None)
+                                .content_sized()
+                                .on_action(
+                                    crate::actions::audio_unit_binding("test-left")
+                                        .expect("left speaker test action is published"),
+                                ),
                         ))
                         .push(Box::new(
-                            Button::new("settings.audio.test.right", "Right", None).on_action(
-                                crate::actions::audio_unit_binding("test-right")
-                                    .expect("right speaker test action is published"),
-                            ),
+                            Button::new("settings.audio.test.right", &t("sound-test-right"), None)
+                                .content_sized()
+                                .on_action(
+                                    crate::actions::audio_unit_binding("test-right")
+                                        .expect("right speaker test action is published"),
+                                ),
                         ))
                         .push(Box::new(Spacer::new())),
                 ));
-                output_rows.push(caption("Plays a short, quiet tone only on the selected channel. Tests stop automatically."));
+                output_rows.push(caption(&t("sound-test-caption")));
             }
         }
         if let Some(notice) = &self.runtime_notice {
             output_rows.push(caption(notice));
         }
-        card("Output", rows(output_rows))
+        card(&t("sound-output"), rows(output_rows))
     }
 
     /// The "Input" card: an optional source picker, then the mic level and
@@ -1129,10 +1157,10 @@ impl AudioPane {
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
             }
-            input_rows.push(setting_row("Input device", Box::new(dd)));
+            input_rows.push(setting_row(&t("sound-input-device"), Box::new(dd)));
         }
         input_rows.push(setting_row(
-            "Input level",
+            &t("sound-input-level"),
             Box::new(
                 Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
                     .with_id("audio.input_volume")
@@ -1145,12 +1173,15 @@ impl AudioPane {
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
             let activity = if running {
-                format!(
-                    "Input activity: {}%",
-                    (self.mic_level * 100.0).round() as u32
+                t_args(
+                    "sound-input-activity",
+                    &[(
+                        "percent",
+                        i64::from((self.mic_level * 100.0).round() as u32).into(),
+                    )],
                 )
             } else {
-                "Microphone test records no audio".to_string()
+                t("sound-mic-idle")
             };
             input_rows.push(Box::new(
                 Row::new()
@@ -1159,24 +1190,25 @@ impl AudioPane {
                     .push(Box::new(
                         Button::new(
                             "settings.audio.mic_test",
-                            if running {
-                                "Stop test"
+                            &if running {
+                                t("sound-mic-stop")
                             } else {
-                                "Test microphone"
+                                t("sound-mic-test")
                             },
                             None,
                         )
+                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("microphone-meter")
                                 .expect("microphone meter action is published"),
                         ),
                     )),
             ));
-            input_rows.push(caption("The test reads an eight-second level meter in memory. It never stores audio or routes the microphone to speakers."));
+            input_rows.push(caption(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
             input_rows.push(setting_row(
-                "Reduce echo in calls",
+                &t("sound-echo"),
                 Box::new(
                     Toggle::new("settings.audio.echo_cancellation", ECHO_CANCELLATION_KEY)
                         .with_id("audio.echo_cancellation")
@@ -1187,9 +1219,9 @@ impl AudioPane {
                         ),
                 ),
             ));
-            input_rows.push(caption("Calls hear your voice without the sound from your speakers. Recording apps keep the unprocessed microphone."));
+            input_rows.push(caption(&t("sound-echo-caption")));
         }
-        card("Input", rows(input_rows))
+        card(&t("sound-input"), rows(input_rows))
     }
 
     /// The "Device capabilities" card: per-hardware profile pickers (only for
@@ -1214,27 +1246,30 @@ impl AudioPane {
             let active = hw
                 .active_profile
                 .and_then(|i| hw.profiles.iter().find(|p| p.index == i))
-                .map_or("Choose a profile", |p| p.description.as_str());
+                .map_or_else(|| t("sound-choose-profile"), |p| p.description.clone());
             hardware_rows.push(choice_row_described(
                 &hw.description,
-                "PipeWire device profile",
+                &t("sound-profile"),
                 Box::new(
                     Dropdown::new(options, &device_profile_key(hw.id))
                         .with_id(&format!("audio.profile.{}", hw.id))
                         .on_action(profile_binding)
-                        .with_placeholder(active),
+                        .with_placeholder(&active),
                 ),
             ));
         }
         for sink in &self.graph.sinks {
             if let Some(codec) = &sink.codec {
                 hardware_rows.push(crate::widgets::value_row(
-                    &format!("{} codec", sink.description),
+                    &t_args(
+                        "sound-codec",
+                        &[("device", sink.description.as_str().into())],
+                    ),
                     codec,
                 ));
             }
         }
-        (!hardware_rows.is_empty()).then(|| card("Device capabilities", rows(hardware_rows)))
+        (!hardware_rows.is_empty()).then(|| card(&t("sound-hardware"), rows(hardware_rows)))
     }
 
     /// Build one streams card (Applications or Recording). Each stream becomes
@@ -1253,7 +1288,7 @@ impl AudioPane {
             return card(title, rows(vec![caption(empty_note)]));
         }
         // Picker options: every device label, plus a leading "follow default".
-        let mut options = vec![FOLLOW_DEFAULT.to_string()];
+        let mut options = vec![follow_shown()];
         options.extend(devices.iter().map(|d| d.name.clone()));
 
         let mut blocks: Vec<crate::widgets::El> = Vec::new();
@@ -1281,7 +1316,7 @@ impl AudioPane {
             let route_row =
                 choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
             let vol_row = setting_row(
-                "Volume",
+                &t("sound-volume"),
                 Box::new(
                     Slider::new("settings.audio.volume", &vol_key)
                         .with_id(&format!("{vol_key}.sl"))
@@ -1296,7 +1331,7 @@ impl AudioPane {
                 ),
             );
             let mute_row = setting_row(
-                "Mute",
+                &t("sound-mute"),
                 Box::new(
                     Toggle::new("settings.audio.mute", &mute_key)
                         .with_id(&format!("{mute_key}.tg"))
@@ -1324,9 +1359,9 @@ impl AudioPane {
             .target_id
             .and_then(|tid| devices.iter().find(|d| d.id == tid))
         {
-            Some(d) if d.is_default => FOLLOW_DEFAULT.to_string(),
+            Some(d) if d.is_default => follow_shown(),
             Some(d) => d.description.clone(),
-            None => FOLLOW_DEFAULT.to_string(),
+            None => follow_shown(),
         }
     }
 
@@ -1363,7 +1398,7 @@ impl AudioPane {
         if let Some(choice) = read_str_or_text(state, root, stream_sink_key(s.id).as_str())
             && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
         {
-            let target_id = if choice == FOLLOW_DEFAULT {
+            let target_id = if is_follow_default(&choice) {
                 None
             } else {
                 let devices = if s.playback {
@@ -1405,10 +1440,7 @@ impl AudioPane {
             match result {
                 Ok(()) => {
                     self.last_stream_sink.insert(s.id, choice);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio stream route changed.".into()),
-                    );
+                    self.finish_local_operation(operation, Ok(t("sound-notice-stream-route")));
                 }
                 Err(error) => {
                     if let Some(previous) = self.last_stream_sink.get(&s.id) {
@@ -1417,7 +1449,10 @@ impl AudioPane {
                     warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
                     self.finish_local_operation(
                         operation,
-                        Err(format!("Audio stream route could not be changed: {error}")),
+                        Err(t_args(
+                            "sound-notice-stream-route-err",
+                            &[("error", error.into())],
+                        )),
                     );
                 }
             }
@@ -1439,10 +1474,7 @@ impl AudioPane {
                 match self.gctl.set_node_volume(s.id, v.clamp(0.0, 1.0)) {
                     Ok(()) => {
                         self.last_stream_vol.insert(s.id, v);
-                        self.finish_local_operation(
-                            operation,
-                            Ok("Audio stream volume changed.".into()),
-                        );
+                        self.finish_local_operation(operation, Ok(t("sound-notice-stream-vol")));
                     }
                     Err(e) => {
                         if let Some(previous) = self.last_stream_vol.get(&s.id) {
@@ -1450,7 +1482,10 @@ impl AudioPane {
                         }
                         self.finish_local_operation(
                             operation,
-                            Err(format!("Audio stream volume could not be changed: {e}")),
+                            Err(t_args(
+                                "sound-notice-stream-vol-err",
+                                &[("error", e.clone().into())],
+                            )),
                         );
                         warn!(target: "tilo::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
                     }
@@ -1474,7 +1509,7 @@ impl AudioPane {
             match self.gctl.set_node_mute(s.id, b) {
                 Ok(()) => {
                     self.last_stream_mute.insert(s.id, b);
-                    self.finish_local_operation(operation, Ok("Audio stream mute changed.".into()));
+                    self.finish_local_operation(operation, Ok(t("sound-notice-stream-mute")));
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_stream_mute.get(&s.id) {
@@ -1482,7 +1517,10 @@ impl AudioPane {
                     }
                     self.finish_local_operation(
                         operation,
-                        Err(format!("Audio stream mute could not be changed: {e}")),
+                        Err(t_args(
+                            "sound-notice-stream-mute-err",
+                            &[("error", e.clone().into())],
+                        )),
                     );
                     warn!(target: "tilo::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
                 }
@@ -1541,7 +1579,7 @@ impl AudioPane {
         f(&mut p.audio);
         p.save().map(|_| ()).map_err(|e| {
             warn!(target: "tilo::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
-            format!("Audio preference could not be saved: {e}")
+            t_args("sound-notice-pref-err", &[("error", e.to_string().into())])
         })
     }
 
@@ -1554,7 +1592,7 @@ impl AudioPane {
             .is_some_and(|session| !session.running())
         {
             self.channel_test = None;
-            self.runtime_notice = Some("Speaker test finished.".into());
+            self.runtime_notice = Some(t("sound-notice-test-done"));
             self.structure_dirty = true;
         }
         if let Some(session) = &mut self.mic_session {
@@ -1565,7 +1603,7 @@ impl AudioPane {
             }
             if !session.running() {
                 self.mic_session = None;
-                self.runtime_notice = Some("Microphone test finished; no audio was saved.".into());
+                self.runtime_notice = Some(t("sound-notice-mic-done"));
                 self.structure_dirty = true;
             }
         }
@@ -1649,16 +1687,25 @@ impl AudioPane {
                             self.last_volume = new;
                             self.finish_local_operation(
                                 operation,
-                                Ok(format!("Output volume set to {}%.", (new * 100.0).round())),
+                                Ok(t_args(
+                                    "sound-notice-out-vol",
+                                    &[("percent", i64::from((new * 100.0).round() as u32).into())],
+                                )),
                             );
                         }
                         Err(e) => {
                             let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
-                            self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
+                            self.runtime_notice = Some(t_args(
+                                "sound-notice-vol-err",
+                                &[("error", e.clone().into())],
+                            ));
                             self.structure_dirty = true;
                             self.finish_local_operation(
                                 operation,
-                                Err(format!("Output volume could not be changed: {e}")),
+                                Err(t_args(
+                                    "sound-notice-out-vol-err",
+                                    &[("error", e.clone().into())],
+                                )),
                             );
                             warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
                         }
@@ -1680,17 +1727,25 @@ impl AudioPane {
                             self.last_input = new;
                             self.finish_local_operation(
                                 operation,
-                                Ok(format!("Input level set to {}%.", (new * 100.0).round())),
+                                Ok(t_args(
+                                    "sound-notice-in-vol",
+                                    &[("percent", i64::from((new * 100.0).round() as u32).into())],
+                                )),
                             );
                         }
                         Err(e) => {
                             let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
-                            self.runtime_notice =
-                                Some(format!("Input level could not be changed: {e}"));
+                            self.runtime_notice = Some(t_args(
+                                "sound-notice-in-vol-err",
+                                &[("error", e.clone().into())],
+                            ));
                             self.structure_dirty = true;
                             self.finish_local_operation(
                                 operation,
-                                Err(format!("Input level could not be changed: {e}")),
+                                Err(t_args(
+                                    "sound-notice-in-vol-err",
+                                    &[("error", e.clone().into())],
+                                )),
                             );
                             warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
                         }
@@ -1711,19 +1766,25 @@ impl AudioPane {
                         self.finish_local_operation(
                             operation,
                             Ok(if b {
-                                "Output muted.".into()
+                                t("sound-notice-muted")
                             } else {
-                                "Output unmuted.".into()
+                                t("sound-notice-unmuted")
                             }),
                         );
                     }
                     Err(e) => {
                         let _ = state.put(root, MUTED_KEY, self.last_muted);
-                        self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
+                        self.runtime_notice = Some(t_args(
+                            "sound-notice-mute-err",
+                            &[("error", e.clone().into())],
+                        ));
                         self.structure_dirty = true;
                         self.finish_local_operation(
                             operation,
-                            Err(format!("Output mute could not be changed: {e}")),
+                            Err(t_args(
+                                "sound-notice-mute-err",
+                                &[("error", e.clone().into())],
+                            )),
                         );
                         warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
                     }
@@ -1755,9 +1816,12 @@ impl AudioPane {
                         self.balance = requested;
                         self.finish_local_operation(
                             operation,
-                            Ok(format!(
-                                "Output balance set to {}%.",
-                                (requested * 100.0).round()
+                            Ok(t_args(
+                                "sound-notice-balance",
+                                &[(
+                                    "percent",
+                                    i64::from((requested * 100.0).round() as u32).into(),
+                                )],
                             )),
                         );
                     }
@@ -1790,16 +1854,15 @@ impl AudioPane {
             self.finish_local_operation(
                 operation,
                 Ok(if enabled {
-                    "Mono output enabled."
+                    t("sound-notice-mono-on")
                 } else {
-                    "Mono output disabled."
-                }
-                .into()),
+                    t("sound-notice-mono-off")
+                }),
             );
             self.runtime_notice = Some(if enabled {
-                "Mono output is active for this desktop session.".into()
+                t("sound-notice-mono-active")
             } else {
-                "Mono output is off; the physical output is restored.".into()
+                t("sound-notice-mono-restored")
             });
             self.structure_dirty = true;
         }
@@ -1831,14 +1894,12 @@ impl AudioPane {
     fn build_system_sounds_card(&self) -> crate::widgets::El {
         if !self.event_sounds_available {
             return card(
-                "System sounds",
-                rows(vec![caption(
-                    "This device cannot play system sounds. They need the PipeWire sound tools.",
-                )]),
+                &t("sound-system"),
+                rows(vec![caption(&t("sound-system-missing"))]),
             );
         }
         let mut sound_rows = vec![setting_row(
-            "System sounds",
+            &t("sound-system"),
             Box::new(
                 Toggle::new("settings.audio.system_sounds", SYSTEM_SOUNDS_KEY)
                     .with_id("audio.system_sounds")
@@ -1849,10 +1910,10 @@ impl AudioPane {
             ),
         )];
         if !self.system_sounds.enabled {
-            return card("System sounds", rows(sound_rows));
+            return card(&t("sound-system"), rows(sound_rows));
         }
         sound_rows.push(setting_row(
-            "Volume",
+            &t("sound-volume"),
             Box::new(
                 Slider::new(
                     "settings.audio.system_sound_volume",
@@ -1875,7 +1936,7 @@ impl AudioPane {
         {
             let names = themes.into_iter().map(|(name, _)| name).collect();
             sound_rows.push(setting_row(
-                "Sound theme",
+                &t("sound-theme"),
                 Box::new(
                     Dropdown::new(names, SOUND_THEME_KEY)
                         .with_id("audio.sound_theme")
@@ -1886,7 +1947,7 @@ impl AudioPane {
         for event in SystemSoundEvent::ALL {
             let action = crate::actions::event_sound_action_id(event);
             sound_rows.push(setting_row(
-                event.label(),
+                &event_shown(event),
                 Box::new(
                     Toggle::new(
                         &format!("settings.audio.event_sound.{}", event.key()),
@@ -1900,8 +1961,8 @@ impl AudioPane {
                 ),
             ));
         }
-        sound_rows.push(caption("Notification sounds also follow each app's choice in Notifications. Do Not Disturb and focus time hold back interruptions; volume feedback, the screenshot shutter and low battery still play."));
-        card("System sounds", rows(sound_rows))
+        sound_rows.push(caption(&t("sound-system-caption")));
+        card(&t("sound-system"), rows(sound_rows))
     }
 
     /// Persist "System sounds" changes. The compositor reads the saved
@@ -1976,7 +2037,7 @@ impl AudioPane {
                 let enabled_changed = next.enabled != self.system_sounds.enabled;
                 self.system_sounds = next;
                 for (operation, _) in operations {
-                    self.finish_local_operation(operation, Ok("System sounds updated.".into()));
+                    self.finish_local_operation(operation, Ok(t("sound-notice-sounds-ok")));
                 }
                 if enabled_changed {
                     self.structure_dirty = true;
@@ -2021,11 +2082,10 @@ impl AudioPane {
         self.finish_local_operation(
             operation,
             Ok(if enabled {
-                "Calls use the echo-cancelled microphone."
+                t("sound-notice-echo-on")
             } else {
-                "Calls use the microphone directly."
-            }
-            .into()),
+                t("sound-notice-echo-off")
+            }),
         );
     }
 
@@ -2046,17 +2106,13 @@ impl AudioPane {
             self.finish_local_operation(
                 operation,
                 Ok(if self.advanced {
-                    "Speaker diagnostics shown."
+                    t("sound-notice-diag-on")
                 } else {
-                    "Speaker diagnostics hidden."
-                }
-                .into()),
+                    t("sound-notice-diag-off")
+                }),
             );
         }
-        for (key, left, label) in [
-            (TEST_LEFT_KEY, true, "left"),
-            (TEST_RIGHT_KEY, false, "right"),
-        ] {
+        for (key, left) in [(TEST_LEFT_KEY, true), (TEST_RIGHT_KEY, false)] {
             if read_bool(state, root, key) != Some(true) {
                 continue;
             }
@@ -2070,24 +2126,43 @@ impl AudioPane {
                 .graph
                 .default_sink()
                 .filter(|sink| sink.channels == 2)
-                .ok_or_else(|| "Speaker test requires a stereo PipeWire sink".to_string())
+                .ok_or_else(|| t("sound-notice-test-need"))
                 .and_then(|sink| self.runtime.start_channel_test(&sink.name, left));
             match result {
                 Ok(session) => {
                     self.channel_test = Some(session);
-                    self.runtime_notice = Some(format!("Playing a short {label}-channel tone…"));
+                    let channel = if left {
+                        t("sound-test-left")
+                    } else {
+                        t("sound-test-right")
+                    };
+                    self.runtime_notice = Some(t_args(
+                        "sound-notice-playing",
+                        &[("channel", channel.as_str().into())],
+                    ));
                     self.finish_local_operation(
                         operation,
-                        Ok(format!("{label} speaker test started.")),
+                        Ok(t_args(
+                            "sound-notice-test-started",
+                            &[("channel", channel.into())],
+                        )),
                     );
                 }
                 Err(error) => {
-                    self.runtime_notice =
-                        Some(format!("Could not test the {label} speaker: {error}"));
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Could not test the {label} speaker: {error}")),
+                    let channel = if left {
+                        t("sound-test-left")
+                    } else {
+                        t("sound-test-right")
+                    };
+                    let notice = t_args(
+                        "sound-notice-test-err",
+                        &[
+                            ("channel", channel.as_str().into()),
+                            ("error", error.clone().into()),
+                        ],
                     );
+                    self.runtime_notice = Some(notice.clone());
+                    self.finish_local_operation(operation, Err(notice));
                 }
             }
             self.structure_dirty = true;
@@ -2100,16 +2175,13 @@ impl AudioPane {
             }
             if self.mic_session.is_some() {
                 self.mic_session = None;
-                self.runtime_notice = Some("Microphone test stopped; no audio was saved.".into());
-                self.finish_local_operation(
-                    operation,
-                    Ok("Microphone test stopped; no audio was saved.".into()),
-                );
+                self.runtime_notice = Some(t("sound-notice-mic-stopped"));
+                self.finish_local_operation(operation, Ok(t("sound-notice-mic-stopped")));
             } else {
                 let result = self
                     .graph
                     .default_source()
-                    .ok_or_else(|| "No PipeWire microphone is available".to_string())
+                    .ok_or_else(|| t("sound-notice-mic-none"))
                     .and_then(|source| {
                         self.runtime
                             .start_microphone_meter(&source.name, Duration::from_secs(8))
@@ -2118,19 +2190,17 @@ impl AudioPane {
                     Ok(session) => {
                         self.mic_session = Some(session);
                         self.mic_level = 0.0;
-                        self.runtime_notice =
-                            Some("Microphone level test started for eight seconds.".into());
-                        self.finish_local_operation(
-                            operation,
-                            Ok("Microphone level test started for eight seconds.".into()),
-                        );
+                        self.runtime_notice = Some(t("sound-notice-mic-started"));
+                        self.finish_local_operation(operation, Ok(t("sound-notice-mic-started")));
                     }
                     Err(error) => {
-                        self.runtime_notice =
-                            Some(format!("Could not test the microphone: {error}"));
+                        self.runtime_notice = Some(t_args(
+                            "sound-notice-mic-err",
+                            &[("error", error.clone().into())],
+                        ));
                         self.finish_local_operation(
                             operation,
-                            Err(format!("Could not test the microphone: {error}")),
+                            Err(t_args("sound-notice-mic-err", &[("error", error.into())])),
                         );
                     }
                 }
@@ -2162,20 +2232,23 @@ impl AudioPane {
                         let _ = Self::persist_audio(|a| a.output_device = Some(nm));
                     }
                     self.last_sink = Some(name);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio output device changed.".into()),
-                    );
+                    self.finish_local_operation(operation, Ok(t("sound-notice-out-device")));
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_sink.as_deref() {
                         let _ = state.put(root, OUTPUT_DEVICE_KEY, previous);
                     }
-                    self.runtime_notice = Some(format!("Output device could not be changed: {e}"));
+                    self.runtime_notice = Some(t_args(
+                        "sound-notice-device-err",
+                        &[("error", e.clone().into())],
+                    ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
-                        Err(format!("Output device could not be changed: {e}")),
+                        Err(t_args(
+                            "sound-notice-device-err",
+                            &[("error", e.clone().into())],
+                        )),
                     );
                     warn!(target: "tilo::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
                 }
@@ -2200,20 +2273,23 @@ impl AudioPane {
                         let _ = Self::persist_audio(|a| a.input_device = Some(nm));
                     }
                     self.last_source = Some(name);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio input device changed.".into()),
-                    );
+                    self.finish_local_operation(operation, Ok(t("sound-notice-in-device")));
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_source.as_deref() {
                         let _ = state.put(root, INPUT_DEVICE_KEY, previous);
                     }
-                    self.runtime_notice = Some(format!("Input device could not be changed: {e}"));
+                    self.runtime_notice = Some(t_args(
+                        "sound-notice-in-device-err",
+                        &[("error", e.clone().into())],
+                    ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
-                        Err(format!("Input device could not be changed: {e}")),
+                        Err(t_args(
+                            "sound-notice-in-device-err",
+                            &[("error", e.clone().into())],
+                        )),
                     );
                     warn!(target: "tilo::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
                 }
@@ -2267,20 +2343,23 @@ impl AudioPane {
             match self.gctl.set_device_profile(hw.id, profile.index) {
                 Ok(()) => {
                     self.last_device_profile.insert(hw.id, choice);
-                    self.finish_local_operation(
-                        operation,
-                        Ok("Audio device profile changed.".into()),
-                    );
+                    self.finish_local_operation(operation, Ok(t("sound-notice-profile")));
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_device_profile.get(&hw.id) {
                         let _ = state.put(root, device_profile_key(hw.id), previous.as_str());
                     }
-                    self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
+                    self.runtime_notice = Some(t_args(
+                        "sound-notice-profile-err",
+                        &[("error", e.clone().into())],
+                    ));
                     self.structure_dirty = true;
                     self.finish_local_operation(
                         operation,
-                        Err(format!("Audio device profile could not be changed: {e}")),
+                        Err(t_args(
+                            "sound-notice-profile-err",
+                            &[("error", e.clone().into())],
+                        )),
                     );
                     warn!(target: "tilo::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
                 }

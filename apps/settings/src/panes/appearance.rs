@@ -38,6 +38,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::i18n::{t, t_args};
 use crate::prefs::{AppearancePrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
 
@@ -77,30 +78,48 @@ pub const TIMES: [&str; 48] = [
     "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30",
 ];
 
-fn label_for<'a>(table: &[(&'a str, &str)], value: &str) -> &'a str {
+fn value_for_shown<'a>(
+    table: &[(&'a str, &'a str)],
+    label: &str,
+    shown: fn(&str) -> String,
+) -> Option<&'a str> {
     table
         .iter()
-        .find(|(_, v)| *v == value)
-        .or_else(|| table.first())
-        .map_or("", |(label, _)| *label)
-}
-
-fn value_for<'a>(table: &[(&str, &'a str)], label: &str) -> Option<&'a str> {
-    table.iter().find(|(l, _)| *l == label).map(|(_, v)| *v)
+        .find(|(english, value)| *english == label || shown(value) == label)
+        .map(|(_, value)| *value)
 }
 
 /// The label of a persisted schedule value.
-pub fn schedule_label(value: &str) -> &'static str {
-    label_for(&SCHEDULES, value)
+pub fn schedule_label(value: &str) -> String {
+    t(match value {
+        "custom" => "settings-appearance-schedule-custom",
+        _ => "settings-appearance-schedule-sun",
+    })
 }
 
 /// The label of a persisted wallpaper scope.
-pub fn scope_label(value: &str) -> &'static str {
-    label_for(&WALLPAPER_SCOPES, value)
+pub fn scope_label(value: &str) -> String {
+    t(match value {
+        "all" => "settings-appearance-scope-all",
+        _ => "settings-appearance-scope-workspace",
+    })
 }
 
-fn target_label(value: &str) -> &'static str {
-    label_for(&WALLPAPER_TARGETS, value)
+fn target_label(value: &str) -> String {
+    t(match value {
+        "lockscreen" => "settings-appearance-target-lock",
+        "both" => "settings-appearance-target-both",
+        _ => "settings-appearance-target-desktop",
+    })
+}
+
+fn text_size_ftl(english: &str) -> &'static str {
+    match english {
+        "Small" => "settings-appearance-text-small",
+        "Large" => "settings-appearance-text-large",
+        "Larger" => "settings-appearance-text-larger",
+        _ => "settings-appearance-text-default",
+    }
 }
 
 /// The offered global UI-scale steps as `(display label, factor)`. The factor is
@@ -144,23 +163,33 @@ pub const TEXT_SIZES: &[(&str, f64)] = &[
 /// Map a text-scale factor to the closest offered label (defaults to
 /// "Default"). Shared with the Accessibility pane, which offers the same
 /// text-size control over the same [`AppearancePrefs::text_scale`] field.
-pub fn text_size_label(scale: f64) -> &'static str {
+pub fn text_size_label(scale: f64) -> String {
     // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
-    // could hold a non-finite scale, and this must degrade to "Default"
+    // could hold a non-finite scale, and this must degrade to Default
     // rather than panic the pane.
-    TEXT_SIZES
+    let english = TEXT_SIZES
         .iter()
         .min_by(|(_, a), (_, b)| (a - scale).abs().total_cmp(&(b - scale).abs()))
-        .map_or("Default", |(label, _)| *label)
+        .map_or("Default", |(label, _)| *label);
+    t(text_size_ftl(english))
 }
 
 /// Map a text-size label back to its scale factor, if recognised. Shared with
-/// the Accessibility pane.
+/// the Accessibility pane. Accepts the English source label or the
+/// localised one so a test or a German dropdown both resolve.
 pub fn text_size_scale(label: &str) -> Option<f64> {
     TEXT_SIZES
         .iter()
-        .find(|(l, _)| *l == label)
+        .find(|(english, _)| *english == label || t(text_size_ftl(english)) == label)
         .map(|(_, s)| *s)
+}
+
+/// Localised labels for the shared text-size dropdown.
+pub fn text_size_options() -> Vec<String> {
+    TEXT_SIZES
+        .iter()
+        .map(|(english, _)| t(text_size_ftl(english)))
+        .collect()
 }
 
 pub struct AppearancePane {
@@ -225,11 +254,12 @@ impl AppearancePane {
             .with_id("appearance.theme")
             .with_placeholder(&self.prefs.resolve_theme().name);
 
-        let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
+        let size_opts = text_size_options();
         let size_path = Self::draft_key(TEXT_SIZE_KEY);
+        let size_current = text_size_label(self.prefs.text_scale);
         let size = Dropdown::new(size_opts, &size_path)
             .with_id("appearance.text_size")
-            .with_placeholder(text_size_label(self.prefs.text_scale));
+            .with_placeholder(&size_current);
 
         let ui_scale_opts: Vec<String> = UI_SCALES.iter().map(|(l, _)| l.to_string()).collect();
         let ui_scale_path = Self::draft_key(UI_SCALE_KEY);
@@ -238,20 +268,20 @@ impl AppearancePane {
             .with_placeholder(ui_scale_label(self.prefs.ui_scale));
 
         let theme_card = card(
-            "Theme",
+            &t("settings-appearance-theme-card"),
             rows(vec![
-                choice_row("Theme", Box::new(theme)),
-                choice_row("UI scale", Box::new(ui_scale)),
-                choice_row("Text size", Box::new(size)),
+                choice_row(&t("settings-appearance-theme"), Box::new(theme)),
+                choice_row(&t("settings-appearance-ui-scale"), Box::new(ui_scale)),
+                choice_row(&t("settings-appearance-text-size"), Box::new(size)),
             ]),
         );
 
         let access_card = card(
-            "Accessibility",
+            &t("settings-appearance-access-card"),
             rows(vec![
                 setting_row_described(
-                    "High contrast",
-                    "Maximise contrast for low-vision comfort",
+                    &t("settings-appearance-high-contrast"),
+                    &t("settings-appearance-high-contrast-desc"),
                     Box::new(
                         Toggle::new(
                             "settings.appearance.high_contrast",
@@ -261,8 +291,8 @@ impl AppearancePane {
                     ),
                 ),
                 setting_row_described(
-                    "Reduce motion",
-                    "Skip animations and transitions",
+                    &t("settings-appearance-reduce-motion"),
+                    &t("settings-appearance-reduce-motion-desc"),
                     Box::new(
                         Toggle::new(
                             "settings.appearance.reduce_motion",
@@ -277,34 +307,30 @@ impl AppearancePane {
         // A live summary of the theme these choices resolve to, so the effect
         // is legible before it is applied system-wide.
         let resolved = self.prefs.resolve_theme();
+        let motion = if resolved.reduce_motion {
+            t("settings-appearance-on")
+        } else {
+            t("settings-appearance-off")
+        };
         let preview = card(
-            "Applied theme",
+            &t("settings-appearance-applied-card"),
             rows(vec![
-                value_row("Active theme", &resolved.name),
+                value_row(&t("settings-appearance-active-theme"), &resolved.name),
                 value_row(
-                    "UI scale",
+                    &t("settings-appearance-ui-scale"),
                     &format!("{:.0}%", f64::from(resolved.ui_scale) * 100.0),
                 ),
                 value_row(
-                    "Text scale",
+                    &t("settings-appearance-text-scale"),
                     &format!("{:.0}%", f64::from(resolved.text_scale) * 100.0),
                 ),
-                value_row(
-                    "Reduced motion",
-                    if resolved.reduce_motion { "On" } else { "Off" },
-                ),
+                value_row(&t("settings-appearance-reduced-motion"), &motion),
             ]),
         );
 
         let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Your theme, contrast, motion, UI-scale, and text-size choices \
-                 are read by the compositor and every Tilo app, so the whole \
-                 system follows the look you pick here. UI scale grows the \
-                 entire interface and composes with each display's own \
-                 fractional scale; text size adjusts type on top.",
-            )]),
+            &t("settings-appearance-shared-card"),
+            rows(vec![caption(&t("settings-appearance-shared-body"))]),
         );
 
         crate::widgets::cards(vec![
@@ -327,50 +353,52 @@ impl AppearancePane {
                     .with_placeholder(current),
             ) as Box<dyn Widget>
         };
+        let scope_current = scope_label(&self.prefs.wallpaper_scope);
+        let target_current = target_label(&self.prefs.wallpaper_target);
         let mut body = vec![
-            caption(
-                "Pick a picture for the desktop. A workspace is who you work \
-                 with, so a picture of its own shows at a glance which shared \
-                 workspace you are in.",
-            ),
+            caption(&t("settings-appearance-wallpaper-body")),
             choice_row(
-                "Use for",
+                &t("settings-appearance-use-for"),
                 dropdown(
-                    WALLPAPER_SCOPE_LABELS
-                        .iter()
-                        .map(|l| (*l).to_string())
-                        .collect(),
+                    vec![
+                        t("settings-appearance-scope-workspace"),
+                        t("settings-appearance-scope-all"),
+                    ],
                     WALLPAPER_SCOPE_KEY,
                     "appearance.wallpaper_scope",
-                    scope_label(&self.prefs.wallpaper_scope),
+                    &scope_current,
                 ),
             ),
             choice_row(
-                "Show on",
+                &t("settings-appearance-show-on"),
                 dropdown(
-                    WALLPAPER_TARGETS
-                        .iter()
-                        .map(|(l, _)| (*l).to_string())
-                        .collect(),
+                    vec![
+                        t("settings-appearance-target-desktop"),
+                        t("settings-appearance-target-lock"),
+                        t("settings-appearance-target-both"),
+                    ],
                     WALLPAPER_TARGET_KEY,
                     "appearance.wallpaper_target",
-                    target_label(&self.prefs.wallpaper_target),
+                    &target_current,
                 ),
             ),
             Box::new(
                 Row::new()
-                    .push(Box::new(Button::new(
-                        "appearance.wallpaper.choose",
-                        "Choose picture…",
-                        Some(WALLPAPER_CHOOSE_KEY),
-                    )))
+                    .push(Box::new(
+                        Button::new(
+                            "appearance.wallpaper.choose",
+                            &t("settings-appearance-choose-picture"),
+                            Some(WALLPAPER_CHOOSE_KEY),
+                        )
+                        .content_sized(),
+                    ))
                     .push(Box::new(Spacer::new())),
             ),
         ];
         if let Some(status) = &self.wallpaper_status {
             body.push(caption(status));
         }
-        card("Wallpaper", rows(body))
+        card(&t("settings-appearance-wallpaper-card"), rows(body))
     }
 
     /// When the day ends, for the Automatic theme and a scheduled Night Light.
@@ -382,20 +410,29 @@ impl AppearancePane {
                     .with_placeholder(current),
             ) as Box<dyn Widget>
         };
-        let times = || TIMES.iter().map(|t| (*t).to_string()).collect::<Vec<_>>();
+        let times = || {
+            TIMES
+                .iter()
+                .map(|time| (*time).to_string())
+                .collect::<Vec<_>>()
+        };
+        let schedule_current = schedule_label(&self.prefs.schedule);
         let mut body = vec![choice_row(
-            "Schedule",
+            &t("settings-appearance-schedule"),
             dropdown(
-                SCHEDULE_LABELS.iter().map(|l| (*l).to_string()).collect(),
+                vec![
+                    t("settings-appearance-schedule-sun"),
+                    t("settings-appearance-schedule-custom"),
+                ],
                 SCHEDULE_KEY,
                 "appearance.schedule",
-                schedule_label(&self.prefs.schedule),
+                &schedule_current,
             ),
         )];
         let schedule = self.prefs.schedule();
         if !schedule.config.follow_sun {
             body.push(choice_row(
-                "Day starts",
+                &t("settings-appearance-day-starts"),
                 dropdown(
                     times(),
                     SUNRISE_KEY,
@@ -404,31 +441,35 @@ impl AppearancePane {
                 ),
             ));
             body.push(choice_row(
-                "Night starts",
+                &t("settings-appearance-night-starts"),
                 dropdown(times(), SUNSET_KEY, "appearance.sunset", &self.prefs.sunset),
             ));
         }
         let today = schedule
             .config
             .resolve(schedule.location, ui::theme::local_moment());
-        body.push(value_row(
-            "Today",
-            &format!(
-                "Day from {}, night from {}",
-                settings_store::day_schedule::format_hhmm(today.sunrise),
-                settings_store::day_schedule::format_hhmm(today.sunset)
-            ),
-        ));
-        body.push(caption(
+        let today_value = t_args(
+            "settings-appearance-today-value",
+            &[
+                (
+                    "day",
+                    settings_store::day_schedule::format_hhmm(today.sunrise).into(),
+                ),
+                (
+                    "night",
+                    settings_store::day_schedule::format_hhmm(today.sunset).into(),
+                ),
+            ],
+        );
+        body.push(value_row(&t("settings-appearance-today"), &today_value));
+        body.push(caption(&t(
             if schedule.config.follow_sun && schedule.location.is_none() {
-                "Your time zone gives no location, so day runs from the custom \
-             times. The Automatic theme and a scheduled Night Light follow \
-             this schedule."
+                "settings-appearance-schedule-no-location"
             } else {
-                "The Automatic theme and a scheduled Night Light follow this schedule."
+                "settings-appearance-schedule-follow"
             },
-        ));
-        card("Day and night", rows(body))
+        )));
+        card(&t("settings-appearance-day-night-card"), rows(body))
     }
 
     /// Open the chooser when the button asked for it, and carry a chosen
@@ -437,10 +478,13 @@ impl AppearancePane {
         if read_bool(state, root, WALLPAPER_CHOOSE_KEY).unwrap_or(false) {
             self.dispatch(state, &set_bool_action(WALLPAPER_CHOOSE_KEY, false));
             if self.wallpaper_pick.is_none() && self.wallpaper_apply.is_none() {
+                let chooser_title = t("settings-appearance-choose-wallpaper");
+                let chooser_ok = t("settings-appearance-choose");
+                let pictures = t("settings-appearance-pictures");
                 self.wallpaper_pick = Some(
-                    ui::portal::PickRequest::open("Choose a wallpaper", "Choose")
+                    ui::portal::PickRequest::open(&chooser_title, &chooser_ok)
                         .filter(
-                            ui::portal::FileFilter::new("Pictures")
+                            ui::portal::FileFilter::new(&pictures)
                                 .mimetype("image/png")
                                 .mimetype("image/jpeg")
                                 .mimetype("image/webp"),
@@ -463,11 +507,14 @@ impl AppearancePane {
                     };
                     self.wallpaper_apply =
                         Some(ui::portal::send_set_wallpaper(file.into_file(), target));
-                    self.set_wallpaper_status(Some("Confirm the preview to use it.".into()));
+                    self.set_wallpaper_status(Some(t("settings-appearance-confirm-preview")));
                 }
                 ui::portal::OpenFileOutcome::Cancelled => {}
                 ui::portal::OpenFileOutcome::Failed(error) => {
-                    self.set_wallpaper_status(Some(format!("Could not open the picture: {error}")));
+                    self.set_wallpaper_status(Some(t_args(
+                        "settings-appearance-open-failed",
+                        &[("error", error.into())],
+                    )));
                 }
             }
         }
@@ -476,8 +523,8 @@ impl AppearancePane {
         {
             self.wallpaper_apply = None;
             self.set_wallpaper_status(Some(match outcome {
-                Ok(()) => "Wallpaper updated.".into(),
-                Err(error) => format!("The wallpaper was not changed: {error}"),
+                Ok(()) => t("settings-appearance-updated"),
+                Err(error) => t_args("settings-appearance-unchanged", &[("error", error.into())]),
             }));
         }
     }
@@ -492,9 +539,9 @@ impl AppearancePane {
             self.prefs.sunset.clone(),
         );
         let current = schedule_label(&self.prefs.schedule);
-        let (label, schedule_changed) = self.reconcile_text(state, root, SCHEDULE_KEY, current);
+        let (label, schedule_changed) = self.reconcile_text(state, root, SCHEDULE_KEY, &current);
         changed |= schedule_changed;
-        if let Some(value) = value_for(&SCHEDULES, &label) {
+        if let Some(value) = value_for_shown(&SCHEDULES, &label, schedule_label) {
             self.prefs.schedule = value.to_string();
         }
         for (key, is_sunrise) in [(SUNRISE_KEY, true), (SUNSET_KEY, false)] {
@@ -524,16 +571,17 @@ impl AppearancePane {
             self.structure_dirty = true;
         }
         let current = scope_label(&self.prefs.wallpaper_scope);
-        let (label, scope_changed) = self.reconcile_text(state, root, WALLPAPER_SCOPE_KEY, current);
+        let (label, scope_changed) =
+            self.reconcile_text(state, root, WALLPAPER_SCOPE_KEY, &current);
         changed |= scope_changed;
-        if let Some(value) = value_for(&WALLPAPER_SCOPES, &label) {
+        if let Some(value) = value_for_shown(&WALLPAPER_SCOPES, &label, scope_label) {
             self.prefs.wallpaper_scope = value.to_string();
         }
         let current = target_label(&self.prefs.wallpaper_target);
         let (label, target_changed) =
-            self.reconcile_text(state, root, WALLPAPER_TARGET_KEY, current);
+            self.reconcile_text(state, root, WALLPAPER_TARGET_KEY, &current);
         changed |= target_changed;
-        if let Some(value) = value_for(&WALLPAPER_TARGETS, &label) {
+        if let Some(value) = value_for_shown(&WALLPAPER_TARGETS, &label, target_label) {
             self.prefs.wallpaper_target = value.to_string();
         }
 
@@ -690,7 +738,7 @@ impl Widget for AppearancePane {
         }
         let current_text_size = text_size_label(self.prefs.text_scale);
         let (text_size, text_changed) =
-            self.reconcile_text(state, root, TEXT_SIZE_KEY, current_text_size);
+            self.reconcile_text(state, root, TEXT_SIZE_KEY, &current_text_size);
         changed |= text_changed;
         if let Some(scale) = text_size_scale(&text_size)
             && (scale - self.prefs.text_scale).abs() > f64::EPSILON

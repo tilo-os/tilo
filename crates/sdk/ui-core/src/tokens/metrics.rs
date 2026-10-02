@@ -40,6 +40,11 @@ pub struct Metrics {
     pub icon_lg: f32,
     /// Between an icon and the label it belongs to (`Button`, `Tabs`).
     pub icon_label_gap: f32,
+    /// Thickness of the rule under a toolbar and along a status bar.
+    /// `1` is the hairline. `0` draws no rule. A heavier value is a
+    /// stronger chrome edge. `ui_scale` multiplies it; a theme's spacing
+    /// preference does not.
+    pub chrome_rule_px: f32,
     /// A genuine navigation sidebar (HIG §1a) when docked.
     pub sidebar_width: f32,
     /// An overlay drawer; equal to [`Metrics::panel_width_utility`] so a
@@ -68,6 +73,7 @@ impl Metrics {
         icon_md: 20.0,
         icon_lg: 24.0,
         icon_label_gap: 6.0,
+        chrome_rule_px: 1.0,
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
@@ -111,6 +117,7 @@ impl Metrics {
             icon_md: self.icon_md * factor,
             icon_lg: self.icon_lg * factor,
             icon_label_gap: self.icon_label_gap * factor,
+            chrome_rule_px: self.chrome_rule_px * factor,
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,

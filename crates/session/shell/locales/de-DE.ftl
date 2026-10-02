@@ -1495,6 +1495,16 @@ search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellun
 # Zusätzliche Suchbegriffe für Arbeitsbereichswechsel und Aktivitätsansichten; nicht angezeigt.
 search-action-workspace-switch-keywords = wechseln arbeitsbereich gehe switch workspace
 search-action-activity-keywords = aktivität verlauf änderungen zeitleiste wer activity history
+
+search-action-history-compare = Diese Änderung vergleichen
+search-action-history-compare-subtitle = Die gewählte Aktivitätszeile vergleichen
+search-action-history-compare-keywords = vergleichen diff verlauf änderung
+search-action-history-undo = Diese Änderung rückgängig machen
+search-action-history-undo-subtitle = Die gewählte Aktivitätszeile umkehren
+search-action-history-undo-keywords = rückgängig undo umkehren
+search-action-history-restore = Diese Version wiederherstellen
+search-action-history-restore-subtitle = Das Dokument auf den gewählten Stand zurücksetzen
+search-action-history-restore-keywords = wiederherstellen version verlauf restore
 search-action-provider-enable = Suche in { $source } aktivieren
 search-action-provider-enable-subtitle = Ergebnisse aus { $source } in Suche und Agentenerkennung anzeigen
 search-action-provider-disable = Suche in { $source } deaktivieren

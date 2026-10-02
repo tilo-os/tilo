@@ -26,6 +26,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::i18n::ArgValue;
+
+use crate::i18n::{t, t_args};
 use crate::widgets::{El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill};
 
 pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
@@ -253,7 +256,10 @@ impl PrintersPane {
         {
             self.refresh_rx = None;
             self.loading = false;
-            self.error = Some(format!("Could not start printer status worker: {error}"));
+            self.error = Some(t_args(
+                "settings-printers-worker-failed",
+                &[("error", ArgValue::Text(error.to_string()))],
+            ));
         }
     }
 
@@ -273,7 +279,10 @@ impl PrintersPane {
         {
             self.discover_rx = None;
             self.discovering = false;
-            self.error = Some(format!("Could not start printer discovery: {error}"));
+            self.error = Some(t_args(
+                "settings-printers-discover-failed",
+                &[("error", ArgValue::Text(error.to_string()))],
+            ));
         }
     }
 
@@ -285,15 +294,24 @@ impl PrintersPane {
             let mut errors = Vec::new();
             match result.printers {
                 Ok(value) => self.printers = value,
-                Err(error) => errors.push(format!("Printers: {error}")),
+                Err(error) => errors.push(t_args(
+                    "settings-printers-error-printers",
+                    &[("error", error.into())],
+                )),
             }
             match result.jobs {
                 Ok(value) => self.jobs = value,
-                Err(error) => errors.push(format!("Jobs: {error}")),
+                Err(error) => errors.push(t_args(
+                    "settings-printers-error-jobs",
+                    &[("error", error.into())],
+                )),
             }
             match result.scanners {
                 Ok(value) => self.scanners = value,
-                Err(error) => errors.push(format!("Scanners: {error}")),
+                Err(error) => errors.push(t_args(
+                    "settings-printers-error-scanners",
+                    &[("error", error.into())],
+                )),
             }
             self.error = (!errors.is_empty()).then(|| errors.join(" · "));
             self.structure_dirty = true;
@@ -319,7 +337,7 @@ impl PrintersPane {
             self.operation_status.set(match &result {
                 Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
                     token,
-                    message: "Printer operation completed.".into(),
+                    message: t("settings-printers-op-done"),
                 },
                 Err(error) => crate::actions::LocalOperationStatus::Failed {
                     token,
@@ -352,58 +370,68 @@ impl PrintersPane {
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut cards: Vec<El> = Vec::new();
         if let Some(error) = &self.error {
-            cards.push(card("Printer needs attention", rows(vec![caption(error)])));
+            cards.push(card(
+                &t("settings-printers-attention"),
+                rows(vec![caption(error)]),
+            ));
         }
 
-        let refresh = Box::new(Button::new(
-            "settings.printers.refresh",
-            if self.loading {
-                "Refreshing…"
-            } else {
-                "Refresh"
-            },
-            Some(REFRESH_KEY),
-        ));
+        let refresh_label = if self.loading {
+            t("settings-printers-refreshing")
+        } else {
+            t("settings-printers-refresh")
+        };
+        let refresh = Box::new(
+            Button::new(
+                "settings.printers.refresh",
+                &refresh_label,
+                Some(REFRESH_KEY),
+            )
+            .content_sized(),
+        );
         let printers = if self.printers.is_empty() {
-            rows(vec![caption(
-                "No configured printers. Use Find printers to discover secure driverless IPP devices on this network.",
-            )])
+            rows(vec![caption(&t("settings-printers-empty"))])
         } else {
             rows(self.printers.iter().map(|p| self.printer_row(p)).collect())
         };
-        cards.push(card_with_action("Printers", refresh, printers));
-
-        let find = Box::new(Button::new(
-            "settings.printers.discover",
-            if self.discovering {
-                "Searching…"
-            } else {
-                "Find printers"
-            },
-            Some(SCAN_KEY),
+        cards.push(card_with_action(
+            &t("settings-printers-card"),
+            refresh,
+            printers,
         ));
+
+        let find_label = if self.discovering {
+            t("settings-printers-searching")
+        } else {
+            t("settings-printers-find")
+        };
+        let find = Box::new(
+            Button::new("settings.printers.discover", &find_label, Some(SCAN_KEY)).content_sized(),
+        );
         let discovery = if self.discovered.is_empty() {
-            rows(vec![caption(if self.discovering {
-                "Looking for AirPrint/Mopria-compatible IPP printers…"
+            rows(vec![caption(&t(if self.discovering {
+                "settings-printers-discovering"
             } else {
-                "Only driverless IPP printers are offered automatically; legacy drivers are never downloaded silently."
-            })])
+                "settings-printers-discover-empty"
+            }))])
         } else {
             rows(self.discovered.iter().map(|p| discovered_row(p)).collect())
         };
-        cards.push(card_with_action("Nearby", find, discovery));
+        cards.push(card_with_action(
+            &t("settings-printers-nearby"),
+            find,
+            discovery,
+        ));
 
         let jobs = if self.jobs.is_empty() {
-            rows(vec![caption("No active print jobs.")])
+            rows(vec![caption(&t("settings-printers-no-jobs"))])
         } else {
             rows(self.jobs.iter().map(job_row).collect())
         };
-        cards.push(card("Current activity", jobs));
+        cards.push(card(&t("settings-printers-activity"), jobs));
 
         let scanners = if self.scanners.is_empty() {
-            rows(vec![caption(
-                "No SANE-compatible scanners found. Network eSCL/WSD scanners appear here through sane-airscan.",
-            )])
+            rows(vec![caption(&t("settings-printers-no-scanners"))])
         } else {
             rows(
                 self.scanners
@@ -420,7 +448,7 @@ impl PrintersPane {
                     .collect(),
             )
         };
-        cards.push(card("Scanners", scanners));
+        cards.push(card(&t("settings-printers-scanners"), scanners));
         crate::widgets::cards(cards)
     }
 
@@ -429,77 +457,82 @@ impl PrintersPane {
         let enabled_key = format!("settings.printers.enabled.{}", slug(&printer.name));
         let remove_key = format!("settings.printers.remove.{}", slug(&printer.name));
         let confirm_key = format!("settings.printers.confirm_remove.{}", slug(&printer.name));
+        let state = state_label(printer.state);
         let mut top = Row::new()
             .push(Box::new(Text::new(&printer.name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(
-                state_label(printer.state),
-                state_tone(printer.state),
-            ));
+            .push(semantic_status_pill(&state, state_tone(printer.state)));
         if !printer.default {
-            top = top.push(Box::new(Button::new(
-                &default_key,
-                "Make default",
-                Some(&default_key),
-            )));
+            let make_default = t("settings-printers-make-default");
+            top = top.push(Box::new(
+                Button::new(&default_key, &make_default, Some(&default_key)).content_sized(),
+            ));
         }
-        top = top.push(Box::new(Button::new(
-            &enabled_key,
-            if printer.state == QueueState::Paused {
-                "Resume"
-            } else {
-                "Pause"
-            },
-            Some(&enabled_key),
-        )));
-        top = if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
-            top.push(Box::new(Button::new(
-                &confirm_key,
-                "Remove printer",
-                Some(&confirm_key),
-            )))
+        let pause_label = t(if printer.state == QueueState::Paused {
+            "settings-printers-resume"
         } else {
-            top.push(Box::new(Button::new(
-                &remove_key,
-                "Remove…",
-                Some(&remove_key),
-            )))
+            "settings-printers-pause"
+        });
+        top = top.push(Box::new(
+            Button::new(&enabled_key, &pause_label, Some(&enabled_key)).content_sized(),
+        ));
+        let remove_label = t(
+            if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
+                "settings-printers-remove-confirm"
+            } else {
+                "settings-printers-remove"
+            },
+        );
+        let remove_action = if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
+            confirm_key
+        } else {
+            remove_key
         };
+        top = top.push(Box::new(
+            Button::new(&remove_action, &remove_label, Some(&remove_action)).content_sized(),
+        ));
+        let role = t(if printer.default {
+            "settings-printers-role-default"
+        } else {
+            "settings-printers-role-configured"
+        });
         let ipp_reason = printer.telemetry.state_reasons.first();
         let detail = if let Some(reason) = printer.reason.as_ref().or(ipp_reason) {
-            format!(
-                "{} · {}",
-                if printer.default {
-                    "Default"
-                } else {
-                    "Configured"
-                },
-                reason
+            t_args(
+                "settings-printers-detail-reason",
+                &[("role", role.into()), ("reason", reason.clone().into())],
             )
         } else if !printer.accepting_jobs {
-            "Not accepting new jobs".to_string()
+            t("settings-printers-not-accepting")
         } else if printer.default {
-            "Default · accepting jobs".to_string()
+            t("settings-printers-default-accepting")
         } else {
-            "Accepting jobs".to_string()
+            t("settings-printers-accepting")
         };
         let supplies = match &printer.telemetry.supplies {
-            Some(supplies) if supplies.is_empty() => "Supplies: none installed".to_string(),
-            Some(supplies) => format!(
-                "Supplies: {}",
-                supplies
+            Some(supplies) if supplies.is_empty() => t("settings-printers-supplies-none"),
+            Some(supplies) => {
+                let list = supplies
                     .iter()
                     .map(|supply| match supply.level_percent {
-                        Some(level) => format!("{} {level}%", supply.name),
-                        None => format!("{} — level not reported", supply.name),
+                        Some(level) => t_args(
+                            "settings-printers-supply-level",
+                            &[
+                                ("name", supply.name.clone().into()),
+                                ("level", ArgValue::Number(f64::from(level))),
+                            ],
+                        ),
+                        None => t_args(
+                            "settings-printers-supply-unknown",
+                            &[("name", supply.name.clone().into())],
+                        ),
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ")
-            ),
-            None if printer.telemetry.available => {
-                "Supply levels not reported by this printer".to_string()
+                    .join(" · ");
+                t_args("settings-printers-supplies-list", &[("list", list.into())])
             }
-            None => "Live IPP details unavailable".to_string(),
+            None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
+            None => t("settings-printers-ipp-unavailable"),
         };
         Box::new(
             Column::new()
@@ -516,13 +549,13 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(PrintersPane::new())
 }
 
-fn state_label(state: QueueState) -> &'static str {
-    match state {
-        QueueState::Ready => "Ready",
-        QueueState::Printing => "Printing",
-        QueueState::Paused => "Paused",
-        QueueState::Offline => "Offline",
-    }
+fn state_label(state: QueueState) -> String {
+    t(match state {
+        QueueState::Ready => "settings-printers-state-ready",
+        QueueState::Printing => "settings-printers-state-printing",
+        QueueState::Paused => "settings-printers-state-paused",
+        QueueState::Offline => "settings-printers-state-offline",
+    })
 }
 
 fn state_tone(state: QueueState) -> StatusTone {
@@ -546,6 +579,11 @@ fn slug(s: &str) -> String {
 
 fn discovered_row(p: &DiscoveredPrinter) -> El {
     let key = format!("settings.printers.add.{}", slug(&p.uri));
+    let add = t("settings-printers-add");
+    let location = p
+        .location
+        .clone()
+        .unwrap_or_else(|| t("settings-printers-driverless"));
     Box::new(
         Column::new()
             .with_no_padding()
@@ -554,13 +592,11 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
                 Row::new()
                     .push(Box::new(Text::new(&p.name).with_size(13.0)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(&key, "Add", Some(&key)))),
+                    .push(Box::new(
+                        Button::new(&key, &add, Some(&key)).content_sized(),
+                    )),
             ))
-            .push(Box::new(
-                Text::new(p.location.as_deref().unwrap_or("Driverless IPP"))
-                    .with_size(11.0)
-                    .dimmed(),
-            )),
+            .push(Box::new(Text::new(&location).with_size(11.0).dimmed())),
     )
 }
 
@@ -568,19 +604,33 @@ fn job_row(job: &PrintJob) -> El {
     let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
     let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
     let size = ui::format::bytes_si(job.size_bytes);
-    let state = job.state.map_or("State not reported", job_state_label);
+    let state = job
+        .state
+        .map_or_else(|| t("settings-printers-job-state-missing"), job_state_label);
     let progress = match (job.impressions_completed, job.impressions_total) {
-        (Some(done), Some(total)) if total > 0 => format!(
-            "{done} of {total} impressions · {}%",
-            job.progress_percent().unwrap_or(0)
+        (Some(done), Some(total)) if total > 0 => t_args(
+            "settings-printers-job-progress",
+            &[
+                ("done", ArgValue::Number(f64::from(done))),
+                ("total", ArgValue::Number(f64::from(total))),
+                (
+                    "percent",
+                    ArgValue::Number(f64::from(job.progress_percent().unwrap_or(0))),
+                ),
+            ],
         ),
-        (Some(done), _) => format!("{done} impressions completed"),
-        _ => "Page progress not reported".to_string(),
+        (Some(done), _) => t_args(
+            "settings-printers-job-done",
+            &[("done", ArgValue::Number(f64::from(done)))],
+        ),
+        _ => t("settings-printers-job-progress-unknown"),
     };
     let reason = job
         .state_reasons
         .first()
         .map_or(String::new(), |reason| format!(" · {reason}"));
+    let retry_label = t("settings-printers-retry");
+    let cancel_label = t("settings-printers-cancel");
     let mut action_row = Row::new()
         .push(Box::new(
             Text::new(&format!("{} → {}", job.id, job.destination)).with_size(13.0),
@@ -590,13 +640,17 @@ fn job_row(job: &PrintJob) -> El {
         job.state,
         Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
     ) {
-        action_row = action_row.push(Box::new(Button::new(&retry, "Retry", Some(&retry))));
+        action_row = action_row.push(Box::new(
+            Button::new(&retry, &retry_label, Some(&retry)).content_sized(),
+        ));
     }
     if matches!(
         job.state,
         None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
     ) {
-        action_row = action_row.push(Box::new(Button::new(&cancel, "Cancel", Some(&cancel))));
+        action_row = action_row.push(Box::new(
+            Button::new(&cancel, &cancel_label, Some(&cancel)).content_sized(),
+        ));
     }
     Box::new(
         Column::new()
@@ -616,17 +670,17 @@ fn job_row(job: &PrintJob) -> El {
     )
 }
 
-fn job_state_label(state: JobState) -> &'static str {
-    match state {
-        JobState::Pending => "Waiting",
-        JobState::Held => "Held",
-        JobState::Processing => "Printing",
-        JobState::Stopped => "Stopped",
-        JobState::Canceled => "Canceled",
-        JobState::Aborted => "Failed",
-        JobState::Completed => "Completed",
-        JobState::Unknown => "Unknown state",
-    }
+fn job_state_label(state: JobState) -> String {
+    t(match state {
+        JobState::Pending => "settings-printers-job-waiting",
+        JobState::Held => "settings-printers-job-held",
+        JobState::Processing => "settings-printers-job-printing",
+        JobState::Stopped => "settings-printers-job-stopped",
+        JobState::Canceled => "settings-printers-job-canceled",
+        JobState::Aborted => "settings-printers-job-failed",
+        JobState::Completed => "settings-printers-job-completed",
+        JobState::Unknown => "settings-printers-job-unknown",
+    })
 }
 
 fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
