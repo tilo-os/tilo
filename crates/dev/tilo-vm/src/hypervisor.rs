@@ -1084,6 +1084,7 @@ impl Hypervisor for Whpx {
         Capabilities {
             serial: true,
             credentials: Some("kernel command line (direct boot) or QEMU SMBIOS type 11"),
+            screenshot: true,
             direct_kernel: true,
             boot_esp: true,
             ..Capabilities::default()
@@ -1095,6 +1096,30 @@ impl Hypervisor for Whpx {
             "Get-Content -LiteralPath {} -Wait -Tail 100",
             ps_quote(&whpx_file(vm.entry.disk.as_deref()?, "ttyS0.log"))
         )))
+    }
+
+    fn screenshot(&self, vm: &Vm<'_>, out: &Path) -> Option<CommandLine> {
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $out=[IO.Path]::GetFullPath({}); \
+             $null=[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($out)); \
+             $c=[Net.Sockets.TcpClient]::new('127.0.0.1',{}); \
+             try {{ $c.ReceiveTimeout=5000; $c.SendTimeout=5000; $s=$c.GetStream(); \
+             $r=[IO.StreamReader]::new($s); $w=[IO.StreamWriter]::new($s); $w.AutoFlush=$true; \
+             $null=$r.ReadLine(); \
+             foreach ($request in @(@{{execute='qmp_capabilities'}}, \
+                 @{{execute='screendump';arguments=@{{filename=$out;format='png'}}}})) {{ \
+               $w.WriteLine(($request | ConvertTo-Json -Compress -Depth 4)); \
+               do {{ $line=$r.ReadLine(); if ($null -eq $line) {{ throw 'QMP connection closed' }}; \
+                 $response=$line | ConvertFrom-Json; \
+               }} while ($response.PSObject.Properties.Name -notcontains 'return' -and \
+                        $response.PSObject.Properties.Name -notcontains 'error'); \
+               if ($response.error) {{ throw ('QMP screenshot failed: '+$response.error.desc) }}; \
+             }} }} finally {{ $c.Dispose() }}",
+            ps_quote(&out.display().to_string()),
+            Self::qmp_port(vm)
+        );
+        Some(powershell(&script))
     }
 }
 
