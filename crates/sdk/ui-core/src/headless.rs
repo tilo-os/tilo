@@ -4406,6 +4406,10 @@ impl FrameHarness {
         };
         let has_semantics = inspection_has_semantics(&application);
         let semantic_effect_controls = effect_control_ids(&application);
+        // A disabled control cannot cause an effect, so it needs no binding;
+        // a binding on one is still not an orphan.
+        let enabled_effect_controls =
+            effect_control_ids_where(&application, &|node| !node.state.disabled);
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {
@@ -4444,7 +4448,7 @@ impl FrameHarness {
                 message: "application exposes neither accessibility semantics nor a control/action inventory".into(),
             });
         }
-        for control in semantic_effect_controls.difference(&inventoried_controls) {
+        for control in enabled_effect_controls.difference(&inventoried_controls) {
             issues.push(NativeAppIssue {
                 control: control.clone(),
                 code: "missing-action-binding".into(),
@@ -6971,17 +6975,25 @@ fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIs
 }
 
 fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
+    effect_control_ids_where(node, &|_| true)
+}
+
+fn effect_control_ids_where(
+    node: &InspectionNode,
+    include: &dyn Fn(&AccessNode) -> bool,
+) -> HashSet<String> {
     let mut controls = HashSet::new();
     if let Some(semantics) = &node.semantics {
         collect_effect_access_nodes(
             semantics,
             node.test_id.as_deref(),
             &node.path,
+            include,
             &mut controls,
         );
     }
     for child in &node.children {
-        controls.extend(effect_control_ids(child));
+        controls.extend(effect_control_ids_where(child, include));
     }
     controls
 }
@@ -6994,21 +7006,23 @@ fn collect_effect_access_nodes(
     node: &AccessNode,
     retained_id: Option<&str>,
     path: &str,
+    include: &dyn Fn(&AccessNode) -> bool,
     controls: &mut HashSet<String>,
 ) {
-    let effect = matches!(
-        node.role,
-        Role::Button
-            | Role::ToggleButton
-            | Role::Checkbox
-            | Role::RadioButton
-            | Role::Switch
-            | Role::ComboBox
-            | Role::Slider
-            | Role::SpinButton
-            | Role::TextInput
-            | Role::MultilineTextInput
-    );
+    let effect = include(node)
+        && matches!(
+            node.role,
+            Role::Button
+                | Role::ToggleButton
+                | Role::Checkbox
+                | Role::RadioButton
+                | Role::Switch
+                | Role::ComboBox
+                | Role::Slider
+                | Role::SpinButton
+                | Role::TextInput
+                | Role::MultilineTextInput
+        );
     if effect {
         let identity = node
             .action_target
@@ -7019,7 +7033,13 @@ fn collect_effect_access_nodes(
         controls.insert(identity);
     }
     for (index, child) in node.children.iter().enumerate() {
-        collect_effect_access_nodes(child, None, &format!("{path}/semantic[{index}]"), controls);
+        collect_effect_access_nodes(
+            child,
+            None,
+            &format!("{path}/semantic[{index}]"),
+            include,
+            controls,
+        );
     }
 }
 
@@ -9022,6 +9042,17 @@ mod tests {
                     .iter()
                     .any(|issue| issue.code == "missing-action-binding"),
                 "an interactive custom/control implementation cannot certify itself by omitting inventory"
+            );
+
+            let disabled = Driver::new(
+                State::new(),
+                Box::new(Button::new("unavailable", "Unavailable", None).with_enabled(false)),
+                (320, 160),
+            );
+            assert!(
+                disabled.native_app_audit().is_certified(),
+                "a disabled control causes no effect, so it needs no binding: {:?}",
+                disabled.native_app_audit().issues
             );
 
             let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
