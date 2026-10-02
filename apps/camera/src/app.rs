@@ -1316,7 +1316,7 @@ impl CameraApp {
         }
         self.facing = state.facing;
         self.settings = state.settings;
-        self.scans = state.scans.clone();
+        self.scans.clone_from(&state.scans);
         if matches!(self.storage, Storage::Disk(_)) {
             let next = state.recent.as_ref().map(|shared| Capture {
                 id: shared.id.clone(),

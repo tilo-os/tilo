@@ -3983,7 +3983,7 @@ impl BooksApp {
             self.settings = state.settings.clone();
             self.layout = None;
         }
-        self.library_prefs = state.prefs.clone();
+        self.library_prefs = state.prefs;
         if state.entries.is_empty() {
             return;
         }

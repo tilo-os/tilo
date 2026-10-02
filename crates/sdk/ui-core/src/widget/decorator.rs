@@ -315,6 +315,26 @@ pub trait Decorator {
         self.inner_mut().take_action_revert()
     }
 
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.inner_mut().take_committed_action()
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        self.inner().keeps_undo_step_open()
+    }
+
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+        self.inner_mut().set_undo_status(status)
+    }
+
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        self.inner_mut().take_undo_request()
+    }
+
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        self.inner_mut().handle_local_undo_request(request)
+    }
+
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         self.inner().cursor_shape(point)
     }
@@ -852,6 +872,26 @@ impl<T: Decorator> Widget for T {
         &mut self,
     ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
         Decorator::take_action_revert(self)
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        Decorator::take_committed_action(self)
+    }
+
+    fn keeps_undo_step_open(&self) -> bool {
+        Decorator::keeps_undo_step_open(self)
+    }
+
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
+        Decorator::set_undo_status(self, status)
+    }
+
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        Decorator::take_undo_request(self)
+    }
+
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        Decorator::handle_local_undo_request(self, request)
     }
 
     fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {

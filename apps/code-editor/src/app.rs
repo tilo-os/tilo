@@ -1392,7 +1392,7 @@ impl CodeApp {
         if let Some(id) = &state.project_id
             && self.project_id.is_empty()
         {
-            self.project_id = id.clone();
+            self.project_id.clone_from(id);
         }
         if !state.files.is_empty() {
             let mut files = state.files.clone();

@@ -620,6 +620,7 @@ mod tests {
         assert_eq!(restored.name, original.name);
     }
 
+    #[test]
     fn set_source_records_the_opened_image_without_replacing_adjustments() {
         let mut doc = AutoCommit::new();
         ProjectDoc::add_adjustment(

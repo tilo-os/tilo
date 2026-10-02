@@ -1922,13 +1922,12 @@ pub fn resolve_resource(
         // document to read.
         return provide_resources(ctx, doc).into_iter().next();
     }
-    if id.starts_with("code_editor.file:") || id.starts_with("code_editor.folder:") {
-        if let Some(found) = provide_resources(ctx, doc)
+    if (id.starts_with("code_editor.file:") || id.starts_with("code_editor.folder:"))
+        && let Some(found) = provide_resources(ctx, doc)
             .into_iter()
             .find_map(|root| find_nested(&root, id))
-        {
-            return Some(found);
-        }
+    {
+        return Some(found);
     }
     if let Some(file_id) = id.strip_prefix("code_editor.file:") {
         return ctx
