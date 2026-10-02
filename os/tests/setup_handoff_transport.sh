@@ -42,4 +42,39 @@ import sys
 data = open(sys.argv[1], "rb").read()
 assert data[:1000] == b"\xab" * 1000
 PY
+# Automatic discovery on a non-removable composefs installer must find the
+# parent of /sysroot's partition. Model lsblk's real tree-vs-raw behaviour;
+# no explicit profile device or removable-media fallback can hide a failure.
+mkdir "$work/bin"
+cat > "$work/bin/findmnt" <<'SH'
+#!/bin/sh
+printf '/dev/tilo-test-partition /sysroot\n'
+SH
+cat > "$work/bin/lsblk" <<'SH'
+#!/bin/sh
+case "$*" in
+  *NAME,TYPE,RM,TRAN*) exit 0 ;;
+esac
+case "$1" in
+  *r*) printf '%s disk\n' "$TILO_TEST_MEDIA" ;;
+  *) printf '└─%s disk\n' "$TILO_TEST_MEDIA" ;;
+esac
+SH
+# Only the synthetic mount source is treated as a block device. The actual
+# tail reader still consumes the real fixture and verifies its checksum.
+cat > "$work/bash-env" <<'SH'
+function [() {
+  if builtin [ "$#" -eq 3 ] && builtin [ "$1" = -b ] && builtin [ "$2" = /dev/tilo-test-partition ]; then
+    return 0
+  fi
+  builtin [ "$@"
+}
+SH
+chmod +x "$work/bin/findmnt" "$work/bin/lsblk"
+PATH="$work/bin:$PATH" BASH_ENV="$work/bash-env" TILO_TEST_MEDIA="$media" \
+TILO_INSTALLER_PROFILE_ALLOW_FILE=1 TILO_INSTALLER_PROFILE_OUT_DIR="$work/discovered" \
+  bash "$extractor"
+test "$(cat "$work/discovered/setup-handoff/etc/marker")" = wifi
+test "$(stat -c %a "$work/discovered/setup-handoff/etc/NetworkManager/system-connections/tilo-setup.nmconnection")" = 600
+
 echo "setup handoff transport ok"

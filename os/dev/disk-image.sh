@@ -222,10 +222,16 @@ if [ -n "$ETC_OVERLAY" ]; then
 fi
 
 if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  OFFLINE_TARGET_FLAGS=()
+  case "${TILO_INSTALLER_DEV_TARGET:-0}" in
+    0) ;;
+    1) OFFLINE_TARGET_FLAGS=(--development) ;;
+    *) die "TILO_INSTALLER_DEV_TARGET must be 0 or 1" ;;
+  esac
   [ -d "$OFFLINE_TARGET_DIR" ] && [ ! -L "$OFFLINE_TARGET_DIR" ] \
     || die "--offline-target-dir must name a regular directory"
   python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
-    verify "$OFFLINE_TARGET_DIR" \
+    verify "$OFFLINE_TARGET_DIR" "${OFFLINE_TARGET_FLAGS[@]}" \
     || die "offline target OCI layout failed validation"
 fi
 
@@ -921,7 +927,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   sudo -n mount -o remount,rw "$MNT"
   sudo -n install -d -m 0700 "$t_var/lib/tilo-installer"
   sudo -n python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
-    install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" \
+    install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" "${OFFLINE_TARGET_FLAGS[@]}" \
     || die "could not stage the verified offline target into the live medium"
   # The host runner may have no SELinux policy or restorecon at all. Use the
   # install image's own file_contexts through the same confined offline-label

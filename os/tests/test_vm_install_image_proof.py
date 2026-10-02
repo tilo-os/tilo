@@ -20,6 +20,49 @@ GUIDS = ["00000000-0000-4000-8000-00000000000" + str(i) for i in range(4)]
 
 
 class ProofTests(unittest.TestCase):
+    def test_selected_development_target_is_explicit_vm_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, status, origin, command = self.fixture(directory)
+            status["status"]["booted"]["image"]["imageDigest"] = "sha256:" + "c" * 64
+            status["status"]["booted"]["composefs"]["verity"] = "d" * 128
+            update_origin = "registry.tilo.so/tilo/tilo-vm:main-1234567-w42-lenovo-83ed"
+            origin.write_text("[image]\nmanifest_digest=" + DIGEST + "\n"
+                              "[origin]\ncontainer-image-reference=ostree-unverified-image:docker://" + update_origin + "\n")
+            metadata = {"schema": "tilo.installer-dev-target.v1",
+                        "target_ref": "registry.tilo.so/tilo/tilo-vm@" + DIGEST,
+                        "target_digest": DIGEST, "architecture": "aarch64",
+                        "hardware_profile": "lenovo-83ed", "update_origin": update_origin,
+                        "source_revision": "e" * 40, "ci_run_id": "42",
+                        "verifier_key_sha256": None,
+                        "provenance": {"source_revision": "e" * 40, "invocation_id": "42"}}
+            args.offline_target_receipt = Path(directory) / "receipt.json"
+            args.offline_target_receipt.write_text(json.dumps(metadata))
+            marker = Path(directory) / "vm-marker"
+            marker.touch()
+            def vm_command(*argv):
+                if argv == ("systemd-detect-virt", "--vm", "--quiet"):
+                    return ""
+                return command(*argv)
+            port = SimpleNamespace(is_char_device=lambda: True)
+            with patch.object(proof, "command", side_effect=vm_command), \
+                    patch.object(proof, "DEV_VM_MARKER", marker), \
+                    patch.object(proof, "VM_PROOF_PORT", port):
+                result = proof.build_proof(args)
+                self.assertEqual(result["schema"], "tilo.vm-install-image-proof.v4")
+                self.assertEqual(result["installed_image_digest"], DIGEST)
+                self.assertEqual(result["booted_composefs_digest"], "d" * 128)
+                self.assertIsNone(result["selected_target"]["verifier_key_sha256"])
+                self.assertNotIn("source_revision", result["selected_target"])
+                metadata["provenance"]["source_revision"] = "f" * 40
+                args.offline_target_receipt.write_text(json.dumps(metadata))
+                with self.assertRaisesRegex(ValueError, "source differs"):
+                    proof.build_proof(args)
+                metadata["provenance"]["source_revision"] = "e" * 40
+                metadata["verifier_key_sha256"] = "f" * 64
+                args.offline_target_receipt.write_text(json.dumps(metadata))
+                with self.assertRaisesRegex(ValueError, "VM-only"):
+                    proof.build_proof(args)
+
     def fixture(self, directory):
         root = Path(directory) / "root"
         deploy_etc = root / "state/deploy" / COMPOSEFS / "etc"

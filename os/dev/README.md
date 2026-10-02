@@ -367,6 +367,63 @@ The installed system's update origin defaults to
 `registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
 in that same signature-required repository; the backend rejects other origins.
 
+### Separate development target on Windows ARM64
+
+`os-dev-installer.yml` can reuse a generic ARM64 CI dev image for the live UI
+and install a separate Lenovo dev image. Set `os_image` to the generic digest,
+`target_image` to the board digest, `target_ci_run_id` to the internal Forgejo
+build run ID, `target_update_origin` to its published `tilo-vm` tag, and
+`target_profile` to `lenovo-83ed`. Both images must name the same source revision.
+The workflow exports the target with `skopeo --preserve-digests` and reuses the
+existing native installer components; it does not rebuild the target OS.
+
+For a local disposable medium, prepare that same transport with
+`python3 os/dev/prepare-dev-installer-target.py --help`, then set
+`TILO_INSTALLER_OFFLINE_TARGET_DIR`, `TILO_INSTALLER_DEV_TARGET=1`, and
+`TILO_UNVERIFIED_VM_INSTALL=1` when building the installer. Normal transports
+continue to require signed release targets. The unsigned path requires a dev
+live image, the explicit VM marker, a VM proof port, and detected virtualization;
+the target must contain the dev flavour, OpenSSH and an installed-target UKI.
+An unsealed generic dev image cannot be used as a separate encrypted target;
+use the workflow's adapted generic self-copy medium for that boot scenario.
+
+Run the downloaded medium through `tilo-vm scenario install` on Windows ARM64.
+The Windows backend requires WHPX and never falls back to TCG. A selected dev
+target emits proof v4: target manifest, source/run locators, deployment origin,
+composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature.
+Its declared run ID must be independently checked against Forgejo before any
+physical copy; the production Windows-direct receipt guard does not accept it.
+`windows-direct-dev-provenance.py` checks a pinned child manifest and its raw
+OCI config against the live `os-dev.yml` main run, successful ARM producer,
+published cohort tag/digest and Lenovo disk job. Fetch the config with
+`skopeo inspect --config --raw`: formatted JSON is not the descriptor's bytes.
+The command records explicit developer CI evidence and never authorizes a disk
+write. It is distinct from release Cosign/SLSA verification; the physical copy
+guard still requires source/VM evidence and its separate developer admission.
+The final-source `receipt` and final-copy `execute` commands accept explicit
+`--development` admission. Supply the board/generic child manifests and raw
+configs, their internal `os-dev.yml` run IDs, the board/generic installer run
+IDs, both tested profile media and `--dev-setup-handoff`. The gate rechecks live
+CI publication and media metadata, hashes both CI backing disks, verifies that
+the overlays change only the authorized Wi-Fi/SSH tail, and requires board
+proof v4 plus complete generic encrypted first-boot proof v3 from the same CI
+cohort and installer assembly. It records developer authority without a release
+key or SLSA claim. Normal admission continues to require signed release evidence.
+All physical identity, source extent, EFI file and full readback checks still
+apply. The final copy leaves C: untouched, so its pagefile can remain active;
+partition shrinking retains the pagefile restriction.
+`python3 os/dev/forgejo-dev-installer-metadata.py INTERNAL_RUN_ID` reads the
+source and disk checksums from the successful installer run's authenticated
+artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
+and binds the assembly source to the live run. This avoids a full disk download
+when rechecking provenance. The downloaded disk still needs its full SHA-256
+check; metadata verification alone does not prove its contents or bootability.
+For generic encrypted targets, `--resume` repeats the boot check against the
+completed install without copying the OS again. A Lenovo board install can use
+`--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
+the generic scenario must cover full encrypted boot and the board source still
+requires an independent boot-file/root audit before physical use.
+
 ## Configuration (env vars)
 
 `TILO_DISTROBOX` `TILO_IMAGE` `TILO_OUTPUT` `TILO_DISK` `TILO_RUN`
