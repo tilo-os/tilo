@@ -179,6 +179,7 @@ members = [
     "crates/media/ocr",
     "crates/media/thumbnail",
     "crates/media/vision",
+    "crates/media/wet-media",
 
     # Packaging
     "crates/packaging/app-cli",
@@ -635,6 +636,17 @@ opt-level = 3
 [profile.test.package.tilo-automerge-fork]
 opt-level = 3
 [profile.test.package.hexane]
+opt-level = 3
+
+# The wet-media simulations re-run on every edit of a painted layer; unoptimised
+# they take seconds per stroke, and the canvas app is unusable in a dev build.
+[profile.dev.package.tilo-wet-media]
+opt-level = 3
+[profile.test.package.tilo-wet-media]
+opt-level = 3
+[profile.dev.package.tiny-skia]
+opt-level = 3
+[profile.test.package.tiny-skia]
 opt-level = 3
 
 # Hashing, signature verification and font parsing run on every fixture in

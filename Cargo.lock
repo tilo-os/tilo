@@ -16660,6 +16660,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-wet-media"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "png",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tiny-skia",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-winit"
 version = "0.30.13"
 dependencies = [
