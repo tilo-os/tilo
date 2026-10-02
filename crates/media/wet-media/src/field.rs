@@ -22,22 +22,25 @@ pub struct ColourField {
     pub kind: FieldKind,
     pub from: (f32, f32),
     pub to: (f32, f32),
-    /// Offsets `0..=1` in ascending order, with linear colours.
-    pub stops: Vec<(f32, Rgb)>,
+    /// Offsets `0..=1` in ascending order, with linear colours and how
+    /// much paint is laid there, `0..=1`: a stop at zero fades the paint
+    /// out, so a glow or a bank of mist dies away into what is beneath.
+    pub stops: Vec<(f32, Rgb, f32)>,
 }
 
 impl ColourField {
-    /// A field through `stops`, in any order; `None` with fewer than two.
+    /// A field through `stops` (offset, colour, alpha), in any order;
+    /// `None` with fewer than two.
     pub fn new(
         kind: FieldKind,
         from: (f32, f32),
         to: (f32, f32),
-        stops: Vec<(f32, Rgb)>,
+        stops: Vec<(f32, Rgb, f32)>,
     ) -> Option<Self> {
-        let mut stops: Vec<(f32, Rgb)> = stops
+        let mut stops: Vec<(f32, Rgb, f32)> = stops
             .into_iter()
-            .filter(|(at, _)| at.is_finite())
-            .map(|(at, colour)| (at.clamp(0.0, 1.0), colour))
+            .filter(|(at, _, alpha)| at.is_finite() && alpha.is_finite())
+            .map(|(at, colour, alpha)| (at.clamp(0.0, 1.0), colour, alpha.clamp(0.0, 1.0)))
             .collect();
         if stops.len() < 2 || ![from.0, from.1, to.0, to.1].iter().all(|v| v.is_finite()) {
             return None;
@@ -64,6 +67,17 @@ impl ColourField {
     /// The colour at a position. Stops mix in sRGB, as a painter judges a
     /// gradation by eye, so a dark-to-light run has no muddy middle.
     pub fn at(&self, x: f32, y: f32) -> Rgb {
+        self.sample(x, y).0
+    }
+
+    /// How much paint is laid at a position, `0..=1`.
+    pub fn alpha(&self, x: f32, y: f32) -> f32 {
+        self.sample(x, y).1
+    }
+
+    /// The colour and alpha at a position. Toward a faded stop the colour
+    /// stays that of the paint still being laid.
+    pub fn sample(&self, x: f32, y: f32) -> (Rgb, f32) {
         let (dx, dy) = (self.to.0 - self.from.0, self.to.1 - self.from.1);
         let t = match self.kind {
             FieldKind::Linear => {
@@ -73,7 +87,11 @@ impl ColourField {
             FieldKind::Radial => (x - self.from.0).hypot(y - self.from.1) / dx.hypot(dy).max(1e-6),
         };
         let t = t.clamp(0.0, 1.0);
-        let mut below = self.stops.first().copied().unwrap_or((0.0, Rgb::BLACK));
+        let mut below = self
+            .stops
+            .first()
+            .copied()
+            .unwrap_or((0.0, Rgb::BLACK, 1.0));
         for &stop in &self.stops {
             if stop.0 >= t {
                 let span = stop.0 - below.0;
@@ -82,11 +100,20 @@ impl ColourField {
                 } else {
                     1.0
                 };
-                return mix_srgb(below.1, stop.1, share);
+                let (from_weight, to_weight) = (below.2 * (1.0 - share), stop.2 * share);
+                let alpha = from_weight + to_weight;
+                // Weigh each stop's colour by its paint, so fading toward
+                // a clear stop does not drift toward that stop's colour.
+                let colour_share = if alpha > 1e-6 {
+                    to_weight / alpha
+                } else {
+                    share
+                };
+                return (mix_srgb(below.1, stop.1, colour_share), alpha);
             }
             below = stop;
         }
-        below.1
+        (below.1, below.2)
     }
 }
 
@@ -110,7 +137,7 @@ mod tests {
             FieldKind::Linear,
             (0.0, 0.0),
             (0.0, 100.0),
-            vec![(1.0, light), (0.0, dark)],
+            vec![(1.0, light, 1.0), (0.0, dark, 1.0)],
         )
         .unwrap();
         assert_eq!(field.at(5.0, -20.0).to_hex(), dark.to_hex());
@@ -120,14 +147,36 @@ mod tests {
             FieldKind::Radial,
             (50.0, 50.0),
             (50.0, 60.0),
-            vec![(0.0, light), (1.0, dark)],
+            vec![(0.0, light, 1.0), (1.0, dark, 1.0)],
         )
         .unwrap();
         assert_eq!(radial.at(50.0, 50.0).to_hex(), light.to_hex());
         assert_eq!(radial.at(80.0, 50.0).to_hex(), dark.to_hex());
         assert!(
-            ColourField::new(FieldKind::Linear, (0.0, 0.0), (1.0, 0.0), vec![(0.0, dark)])
-                .is_none()
+            ColourField::new(
+                FieldKind::Linear,
+                (0.0, 0.0),
+                (1.0, 0.0),
+                vec![(0.0, dark, 1.0)]
+            )
+            .is_none()
         );
+    }
+
+    /// Toward a clear stop the paint thins out but keeps its own colour.
+    #[test]
+    fn a_field_fades_out_toward_a_clear_stop() {
+        let glow = Rgb::from_srgb8(250, 230, 190);
+        let field = ColourField::new(
+            FieldKind::Radial,
+            (0.0, 0.0),
+            (100.0, 0.0),
+            vec![(0.0, glow, 1.0), (1.0, Rgb::BLACK, 0.0)],
+        )
+        .unwrap();
+        assert!((field.alpha(0.0, 0.0) - 1.0).abs() < 1e-6);
+        assert!((field.alpha(50.0, 0.0) - 0.5).abs() < 1e-3);
+        assert!(field.alpha(120.0, 0.0) < 1e-6);
+        assert_eq!(field.at(75.0, 0.0).to_hex(), glow.to_hex());
     }
 }

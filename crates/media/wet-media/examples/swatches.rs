@@ -85,10 +85,10 @@ fn techniques(preset: &Preset) -> Vec<Mark> {
             (0.0, 0.0),
             (0.0, 250.0),
             vec![
-                (0.0, hex("#4f5e7c")),
-                (0.55, hex("#a9a3a6")),
-                (0.85, hex("#e2c79d")),
-                (1.0, hex("#efd7a8")),
+                (0.0, hex("#4f5e7c"), 1.0),
+                (0.55, hex("#a9a3a6"), 1.0),
+                (0.85, hex("#e2c79d"), 1.0),
+                (1.0, hex("#efd7a8"), 1.0),
             ],
         );
     }
@@ -110,7 +110,7 @@ fn techniques(preset: &Preset) -> Vec<Mark> {
             FieldKind::Radial,
             (480.0, 250.0),
             (480.0, 130.0),
-            vec![(0.0, hex("#f6dfb0")), (1.0, hex("#c9bba7"))],
+            vec![(0.0, hex("#f6dfb0"), 1.0), (1.0, hex("#c9bba7"), 1.0)],
         );
     }
     let blender = |angle: f32, strength: f32| {

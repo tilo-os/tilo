@@ -98,7 +98,8 @@ pub struct Gradient {
     pub kind: String,
     pub from: [f64; 2],
     pub to: [f64; 2],
-    /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`.
+    /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`; a stop's alpha
+    /// (`#ffd27a00`) fades the paint out, for a glow or mist.
     pub stops: Vec<(f64, String)>,
 }
 
