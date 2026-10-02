@@ -14,6 +14,10 @@
 //! - inbound, a frame becomes the pointer and caret/selection updates the
 //!   broker fans out to local apps, and its participant names the sender.
 //!
+//! A frame leaves only sealed with the content keys of the channel of the
+//! record it names, and only a frame that opens with this device's keys is
+//! read: [`seal`] and [`open`].
+//!
 //! Selection anchors use the browser peer's encoding: the editor key and a
 //! character offset, `[ANCHOR_TAG_SCOPED, uvarint(start), postcard(key)]`
 //! and `[ANCHOR_TAG_SAME_SCOPE, uvarint(end)]`.
@@ -21,11 +25,52 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use collab_types::{PeerPresence, PeerPresencePayload};
+use channel_crypto::ChannelContentKeys;
+use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
     ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame, LiveParticipant, LiveRecord,
-    MAX_OBJECT_ID_BYTES, ParticipantKind, PresenceFrame,
+    MAX_OBJECT_ID_BYTES, ParticipantKind, PresenceFrame, SealedLiveFrame,
 };
+
+/// Seal canonical live `frame` of room `cluster_id` with the content keys of
+/// the channel of the record it names; `keys` gives a channel's keys when
+/// this device is admitted to it. `None` for a frame naming no record or
+/// whose channel this device holds no keys for: it is never sent.
+pub fn seal(
+    cluster_id: &str,
+    frame: &[u8],
+    keys: impl FnOnce(ChannelId) -> Option<ChannelContentKeys>,
+) -> Option<Vec<u8>> {
+    let frame = LiveFrame::decode(frame).ok()?;
+    let (_, _, record) = frame.seal_tags()?;
+    let keys = keys(collab_types::document_channel_id(
+        &record.app,
+        cluster_id,
+        &record.record,
+    ))?;
+    SealedLiveFrame::seal(&frame, |artifact, retention, cleartext| {
+        keys.seal_content(artifact, retention, cleartext)
+    })
+    .ok()
+}
+
+/// Open sealed live `frame` with its channel's keys, returning the canonical
+/// frame, or `None` when this device holds no keys that open it.
+pub fn open(
+    frame: &[u8],
+    keys: impl FnOnce(ChannelId) -> Option<ChannelContentKeys>,
+) -> Option<Vec<u8>> {
+    let sealed = SealedLiveFrame::decode(frame).ok()?;
+    let keys = keys(sealed.channel_id())?;
+    sealed
+        .open(|artifact, metadata, payload| {
+            keys.open_content(artifact, metadata, payload)
+                .map(|cleartext| cleartext.to_vec())
+        })
+        .ok()?
+        .encode()
+        .ok()
+}
 
 /// A quiet cursor is repeated this often so other devices keep drawing it
 /// (browsers mark a peer stale after 10 s without a frame).
@@ -255,6 +300,62 @@ mod tests {
             path: vec![ui::presence::PathSegment::Field("editor".into())],
         })
         .unwrap()
+    }
+
+    /// A live frame leaves only sealed with the keys of its record's channel,
+    /// opens only with them, and is never sealed without them.
+    #[test]
+    fn live_frames_leave_only_sealed_with_their_records_channel_keys() {
+        let room = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+        let focus = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "note-1".into(),
+        };
+        let channel = collab_types::document_channel_id(&focus.app, room, &focus.record);
+        let dir = tempfile::tempdir().unwrap();
+        let keys = channel_crypto::ChannelSteward::open_or_create(
+            dir.path(),
+            channel,
+            ed25519_dalek::SigningKey::from_bytes(&[4; 32]),
+            &channel_crypto::VaultKey::new([9; 32]),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let mut live = Outbound::default();
+        let frame = live
+            .update(
+                1,
+                focus,
+                participant("Ada".into(), &[1; 32]),
+                &PeerPresence {
+                    key: caret_key(),
+                    payload: PeerPresencePayload::Caret { pos: 3 },
+                },
+                Instant::now(),
+            )
+            .unwrap();
+        let held = |wanted| (wanted == channel).then(|| keys.clone());
+
+        let sealed = seal(room, &frame, held).unwrap();
+        assert!(LiveFrame::decode(&sealed).is_err());
+        assert!(
+            !sealed.windows(frame.len()).any(|window| window == frame),
+            "nothing of the frame is in the clear"
+        );
+        assert_eq!(open(&sealed, held).unwrap(), frame);
+
+        assert!(seal(room, &frame, |_| None).is_none(), "no keys: not sent");
+        assert!(open(&sealed, |_| None).is_none());
+        assert!(
+            open(&frame, held).is_none(),
+            "a frame in the clear is not read"
+        );
+        let other_room = "0d6a7e0c-3b0a-4a64-9a39-6e9b6f1f2a10";
+        assert!(
+            seal(other_room, &frame, held).is_none(),
+            "another room's channel has other keys"
+        );
     }
 
     /// A native caret published as a live frame reads back, name included,

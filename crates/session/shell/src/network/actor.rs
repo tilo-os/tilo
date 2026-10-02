@@ -5628,7 +5628,19 @@ mod tests {
             HEARTBEAT_INTERVAL,
         )
         .await;
-        let frame = tilo_relay_protocol::live::LiveFrame::Presence(
+        // A sealed frame: the host relays its bytes unchanged.
+        let frame = tilo_relay_protocol::live::SealedLiveFrame {
+            kind: tilo_relay_protocol::live::LiveKind::Presence,
+            seq: 1,
+            record: [3; 32],
+            channel: [7; 16],
+            epoch: 1,
+            payload: vec![0xa5; 48],
+        }
+        .encode()
+        .unwrap();
+        // A frame in the clear never leaves.
+        let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
             tilo_relay_protocol::live::PresenceFrame {
                 seq: 1,
                 sent_at_ms: 1,
@@ -5644,13 +5656,12 @@ mod tests {
         // The live join follows the subscription; resend until it is in.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
-            cmd_a
-                .send(NetCmd::PublishLive {
-                    ws: 42,
-                    frame: frame.clone(),
-                })
-                .await
-                .unwrap();
+            for frame in [cleartext.clone(), frame.clone()] {
+                cmd_a
+                    .send(NetCmd::PublishLive { ws: 42, frame })
+                    .await
+                    .unwrap();
+            }
             match tokio::time::timeout(Duration::from_millis(200), rx_b.recv()).await {
                 Ok(Some(NetEvent::Live {
                     ws,
