@@ -50,9 +50,7 @@ impl MediaLane {
             if binding.app_id != "so.tilo.chat" {
                 return None;
             }
-            let Some(route) = binding.broker_route() else {
-                return None;
-            };
+            let route = binding.broker_route()?;
             for request in crate::widget::take_collab_requests(widget) {
                 if let CollabRequest::RealtimeCommand { request_id, .. } = request {
                     crate::widget::handle_collab_event(
