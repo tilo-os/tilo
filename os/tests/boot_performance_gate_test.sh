@@ -36,7 +36,7 @@ case "${2:-}" in
   *) exit 1 ;;
 esac
 EOF
-cat >"$work/journalctl" <<'EOF'
+cat >"$work/dmesg" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '[    0.100000] host kernel: start' \
   '[    2.000000] host kernel: Trying to unpack rootfs image as initramfs...' \
@@ -55,7 +55,7 @@ if [ "${TILO_TEST_ZRAM_SWAP:-yes}" = yes ]; then
 fi
 [ -z "${TILO_TEST_EXTRA_SWAP:-}" ] || printf '%s\n' "$TILO_TEST_EXTRA_SWAP"
 EOF
-chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/journalctl"
+chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"

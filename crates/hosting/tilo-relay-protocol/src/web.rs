@@ -75,6 +75,17 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
             .saturating_add(grant.subscriptions.len())
             .saturating_mul(200)
             .saturating_add(grant.endpoint.len()),
+        Envelope::VoiceCallList { result, .. } => match result {
+            Ok(calls) => calls.iter().fold(0usize, |bytes, call| {
+                bytes.saturating_add(
+                    call.participants
+                        .len()
+                        .saturating_add(1)
+                        .saturating_mul(200),
+                )
+            }),
+            Err(reason) => reason.len(),
+        },
         Envelope::PeerRelayHello { hosted_workspaces } => hosted_workspaces.len().saturating_mul(8),
         Envelope::SyncRequest { have_heads, .. } => have_heads.len().saturating_mul(32),
         _ => 0,
@@ -133,8 +144,9 @@ pub const FEATURE_COMPACTION: u64 = 2;
 
 /// The host governs calls in its rooms: it accepts
 /// [`crate::transport::Envelope::VoiceCall`],
-/// [`crate::transport::Envelope::VoiceJoin`] and
-/// [`crate::transport::Envelope::VoiceLeave`] (see [`crate::voice`]).
+/// [`crate::transport::Envelope::VoiceJoin`],
+/// [`crate::transport::Envelope::VoiceLeave`] and
+/// [`crate::transport::Envelope::VoiceCalls`] (see [`crate::voice`]).
 pub const FEATURE_VOICE: u64 = 4;
 
 /// The host governs rooms a page administers and joins over HTTPS

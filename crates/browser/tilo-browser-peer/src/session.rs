@@ -272,6 +272,8 @@ pub enum PeerEvent {
         /// Echo in [`PeerHandle::compact`].
         request: [u8; 16],
     },
+    /// What the host said about this device's calls.
+    Voice(crate::voice::VoiceEvent),
 }
 
 enum Command {
@@ -285,6 +287,10 @@ enum Command {
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
+    VoiceCalls(u64),
+    VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
+    VoiceJoin(u64, [u8; 32]),
+    VoiceLeave(u64),
     LegacyInput(
         tilo_relay_protocol::legacy_window::InputRequest,
         InputCompletion,
@@ -445,6 +451,7 @@ impl PeerHandle {
             delivered: BTreeMap::new(),
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
+            voice: crate::voice::Participations::default(),
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -627,6 +634,52 @@ impl PeerHandle {
         done: GrantCompletion,
     ) -> Result<(), String> {
         self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
+    }
+
+    /// Ask the host for the calls of `workspace_id`; the answer arrives as
+    /// [`VoiceEvent::Calls`](crate::voice::VoiceEvent::Calls).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_calls(&self, workspace_id: u64) -> Result<(), String> {
+        self.send(Command::VoiceCalls(workspace_id))
+    }
+
+    /// Start, end or moderate a call of `workspace_id`; the answer arrives
+    /// as [`VoiceEvent::CallResult`](crate::voice::VoiceEvent::CallResult)
+    /// for `request`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_call(
+        &self,
+        workspace_id: u64,
+        request: [u8; 16],
+        operation: tilo_relay_protocol::voice::CallOperation,
+    ) -> Result<(), String> {
+        self.send(Command::VoiceCall(workspace_id, request, operation))
+    }
+
+    /// Take part in `call` of `workspace_id` until [`Self::voice_leave`]:
+    /// the session keeps the participation alive across reconnects and
+    /// hands on its grants ([`crate::voice`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_join(&self, workspace_id: u64, call: [u8; 32]) -> Result<(), String> {
+        self.send(Command::VoiceJoin(workspace_id, call))
+    }
+
+    /// Leave the call of `workspace_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_leave(&self, workspace_id: u64) -> Result<(), String> {
+        self.send(Command::VoiceLeave(workspace_id))
     }
 
     /// Send input for a legacy window a member streams
@@ -879,6 +932,8 @@ struct Task {
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
+    /// This device's participation in the rooms' calls.
+    voice: crate::voice::Participations,
 }
 
 /// An open compaction request: room, route and the entries it covers.
@@ -1267,28 +1322,7 @@ impl Task {
         mut client: Link,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
-        let mut sent_ok = true;
-        // A resuming subscription asks only for what follows the page's
-        // positions, yet a frame can reach the page before the position
-        // covering it does: the host then replays it, and the page takes it
-        // once. A whole subscription asks for the rooms again.
-        if !client.resumable() {
-            self.received.clear();
-        }
-        for workspace_id in &self.rooms {
-            sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
-        }
-        for workspace_id in &self.live {
-            sent_ok &= client
-                .send(Envelope::LiveJoin {
-                    workspace_id: *workspace_id,
-                })
-                .is_ok();
-        }
-        for entry in &self.outbox {
-            sent_ok &= client.send(commit(entry, &self.config.cert)).is_ok();
-        }
-        if !sent_ok {
+        if !self.resume_session(&client) {
             return Exit::Lost("host session saturated during resume".into());
         }
         self.update(|status| {
@@ -1306,6 +1340,7 @@ impl Task {
         self.admission_since = Some(crate::clock::now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
+        let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
         loop {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
@@ -1339,6 +1374,17 @@ impl Task {
                 },
                 envelope = client.recv() => match envelope {
                     Some(envelope) => {
+                        if let Some((event, reply)) = self.voice.inbound(&envelope) {
+                            if let Some(reply) = reply
+                                && client.send(reply).is_err()
+                            {
+                                return Exit::Lost("host session saturated".into());
+                            }
+                            if let Some(event) = event {
+                                self.emit(&PeerEvent::Voice(event));
+                            }
+                            continue;
+                        }
                         let admitted = matches!(envelope, Envelope::Ready { .. });
                         if let Envelope::Ready { workspace_id, .. } = &envelope
                             && !self.announce(&client, *workspace_id)
@@ -1361,6 +1407,13 @@ impl Task {
                 _ = channel_tick.tick() => {
                     let changes = self.channels.tick(crate::clock::now_ms());
                     self.absorb(changes);
+                }
+                _ = heartbeat.tick() => {
+                    for beat in self.voice.heartbeats() {
+                        if client.send(beat).is_err() {
+                            return Exit::Lost("host session saturated".into());
+                        }
+                    }
                 }
             }
         }
@@ -1451,12 +1504,97 @@ impl Task {
                 Self::request_legacy_input(request, done, client);
                 true
             }
+            Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
+            Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
+            Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
+            Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::Rooms(request, done) => {
                 Self::request_rooms(request, done, client);
                 true
             }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
+        }
+    }
+
+    /// Restore this session's rooms, pending commits and call participations.
+    fn resume_session(&mut self, client: &Link) -> bool {
+        let mut sent_ok = true;
+        // A resuming subscription can replay a frame before its covering position.
+        // Keep duplicate detection until the host requests a whole subscription.
+        if !client.resumable() {
+            self.received.clear();
+        }
+        for workspace_id in &self.rooms {
+            sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
+        }
+        for workspace_id in &self.live {
+            sent_ok &= client
+                .send(Envelope::LiveJoin {
+                    workspace_id: *workspace_id,
+                })
+                .is_ok();
+        }
+        for entry in &self.outbox {
+            sent_ok &= client.send(commit(entry, &self.config.cert)).is_ok();
+        }
+        for join in self.voice.resume() {
+            sent_ok &= client.send(join).is_ok();
+        }
+        sent_ok
+    }
+
+    fn voice_calls(&self, workspace_id: u64, client: Option<&Link>) -> bool {
+        if let Some(client) = client {
+            client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
+        } else {
+            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::Calls {
+                workspace_id,
+                result: Err("not connected to the host".into()),
+            }));
+            true
+        }
+    }
+
+    fn voice_call(
+        &self,
+        workspace_id: u64,
+        request: [u8; 16],
+        operation: tilo_relay_protocol::voice::CallOperation,
+        client: Option<&Link>,
+    ) -> bool {
+        if let Some(client) = client {
+            client
+                .send(Envelope::VoiceCall {
+                    workspace_id,
+                    request,
+                    operation,
+                })
+                .is_ok()
+        } else {
+            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::CallResult {
+                workspace_id,
+                request,
+                result: Err("not connected to the host".into()),
+            }));
+            true
+        }
+    }
+
+    /// Offline, the next connection sends the join.
+    fn voice_join(&mut self, workspace_id: u64, call: [u8; 32], client: Option<&Link>) -> bool {
+        let out = self.voice.join(workspace_id, call);
+        client.is_none_or(|client| {
+            out.into_iter()
+                .all(|envelope| client.send(envelope).is_ok())
+        })
+    }
+
+    fn voice_leave(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+        let out = self.voice.leave(workspace_id);
+        match (client, out) {
+            (Some(client), Some(leave)) => client.send(leave).is_ok(),
+            _ => true,
         }
     }
 

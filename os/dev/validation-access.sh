@@ -189,15 +189,16 @@ Before=shutdown.target
 
 [Service]
 Type=exec
-# Keep the signed-Verity diagnostics on this disposable gate disk. In
-# particular, systemd's normal log level hides whether the userspace
-# /etc/verity.d certificate fallback was attempted after kernel ENOKEY.
-Environment=SYSTEMD_LOG_LEVEL=debug
 ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt
 ExecStartPre=/usr/bin/mkdir -p /run/extensions
 ExecStartPre=/usr/bin/ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw
 # Only a verity-signed root partition, verified against /etc/verity.d.
-ExecStartPre=/usr/bin/systemd-sysext refresh --no-reload --image-policy=root=signed+absent:usr=absent:=unused+absent
+# Keep the signed-Verity diagnostics on this disposable gate disk: systemd's
+# normal log level hides whether the userspace /etc/verity.d certificate
+# fallback was attempted after kernel ENOKEY. Only for the refresh: sshd and
+# every login it serves would otherwise inherit debug logging and flood the
+# journal the gate's failure diagnostics print.
+ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh --no-reload --image-policy=root=signed+absent:usr=absent:=unused+absent
 ExecStartPre=/usr/bin/systemd-sysusers /usr/lib/sysusers.d/openssh-server.conf
 ExecStartPre=/usr/bin/ssh-keygen -A
 ExecStartPre=-/usr/sbin/restorecon -R /etc/ssh
