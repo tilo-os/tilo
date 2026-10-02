@@ -9,6 +9,7 @@ import unittest
 import urllib.request
 import zipfile
 from unittest import mock
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/windows-direct-install.py"
@@ -18,6 +19,23 @@ SPEC.loader.exec_module(module)
 
 
 class OrchestratorContract(unittest.TestCase):
+    def test_medium_binds_actual_imager_checkout_and_pinned_os_separately(self):
+        data = {"verify_key": Path("key"), "cosign_command_json": None,
+                "cosign_key_arg": None, "source_revision": "a" * 40,
+                "generic_image": module.PUBLIC + "b" * 64}
+        identity = {"run_id": "9001", "build_revision": "c" * 40,
+                    "os_source_revision": "a" * 40, "live_base_image": data["generic_image"]}
+        verifier = SimpleNamespace(signed_medium_identity=mock.Mock(return_value=identity))
+        spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
+        with mock.patch.object(module.importlib.util, "spec_from_file_location", return_value=spec), \
+                mock.patch.object(module.importlib.util, "module_from_spec", return_value=verifier):
+            self.assertEqual(module.verify_identity(data, Path("work"), "generic", 9001,
+                                                    "c" * 40), identity)
+            for field in ("build_revision", "os_source_revision", "run_id"):
+                verifier.signed_medium_identity.return_value = {**identity, field: "9" * 40}
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "pinned CI"):
+                    module.verify_identity(data, Path("work"), "generic", 9001, "c" * 40)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
