@@ -565,13 +565,17 @@ case "${roottype:-}" in
   *)     note "root filesystem is NOT encrypted ($rootsrc, $roottype) — install with --encrypt to change that" ;;
 esac
 
-# hidepid on /proc (other users' processes hidden). Read PID 1's /proc: the
-# audit's own sandbox (ProtectKernelTunables=) mounts a fresh /proc without it.
-if findmnt --task 1 -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
-  ok "hidepid on /proc: $(findmnt --task 1 -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
-else
-  warn "hidepid on /proc NOT set"
-fi
+# Long-running services under their own users see only their own processes
+# (ProtectProc=invisible). /proc is not remounted hidepid globally: that hides
+# PID 1 from every unprivileged process, which breaks libsystemd's unit
+# lookups (the AT-SPI bus cannot start); secret holders are non-dumpable.
+for unit in tilo-relay.service tilo-fs-replica.service tilo-local-model.service; do
+  if [ "$(systemctl show -p ProtectProc --value "$unit" 2>/dev/null)" = invisible ]; then
+    ok "$unit sees only its own processes (ProtectProc=invisible)"
+  else
+    warn "$unit can see other users' processes (ProtectProc is not invisible)"
+  fi
+done
 
 # Hardened userspace allocator (scudo) on the base daemons. Query systemd's
 # effective unit environment rather than acquiring ptrace authority merely to
