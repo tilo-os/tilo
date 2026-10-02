@@ -1,0 +1,54 @@
+# Agent host: local home peer (tilo-relay) + loopback MCP (tilo-runtime).
+#
+# Create the directories named below, then `podman compose up -d`. Pair the home
+# server from Tilo Settings, then approve the agent personal device. Never mount
+# a user-root private key into either identity volume.
+services:
+  tilo-relay:
+    image: ${TILO_RELAY_IMAGE:-registry.tilo.so/tilo/tilo-relay:latest}
+    command: ["--config", "/etc/tilo/relay.toml", "run"]
+    restart: unless-stopped
+    environment:
+      TILO_DEVICE_NAME: ${TILO_DEVICE_NAME:-Home server}
+    # Enrollment uses authenticated LAN broadcast on UDP 23831.
+    network_mode: host
+    volumes:
+      - ./relay-config:/etc/tilo:Z
+      # Host-capable device identity only — never a user-root privkey.
+      - ./relay-identity:/var/lib/tilo:Z
+      - tilo-relay-state:/var/lib/tilo-relay:Z
+      - tilo-full-replica:/var/lib/tilo/full-replica:Z
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/tilo-relay/metrics.json && grep -q '\"state\": \"ready\"' /var/lib/tilo/full-replica/status.json"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+
+  tilo-mcp:
+    image: ${TILO_MCP_IMAGE:-registry.tilo.so/tilo/tilo-runtime:latest}
+    restart: unless-stopped
+    depends_on:
+      - tilo-relay
+    environment:
+      TILO_DEVICE_NAME: ${TILO_AGENT_DEVICE_NAME:-Agent host}
+      TILO_RUNTIME_PROFILE: /var/lib/tilo-runtime/profile
+      # Loopback only. Non-loopback still requires the token file (runtime enforces).
+      TILO_RUNTIME_MCP_HTTP: ${TILO_RUNTIME_MCP_HTTP:-127.0.0.1:7391}
+      TILO_RUNTIME_MCP_HTTP_TOKEN_FILE: /run/tilo/mcp-token
+      TILO_COLLAB_HOST: ${TILO_COLLAB_HOST:-}
+    # Same host network as the relay so pair-device LAN discover works; MCP stays on 127.0.0.1.
+    network_mode: host
+    volumes:
+      - ./agent-profile:/var/lib/tilo-runtime/profile:Z
+      - ./mcp-secrets:/run/tilo:Z
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /run/tilo/mcp-token && test -s /var/lib/tilo-runtime/profile/identity/device/cert.bin"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  tilo-relay-state:
+  tilo-full-replica:
