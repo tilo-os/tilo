@@ -1096,6 +1096,7 @@ impl Hypervisor for Whpx {
             screenshot: true,
             direct_kernel: true,
             boot_esp: true,
+            control: Some("QEMU monitor (HMP over QMP)"),
             ..Capabilities::default()
         }
     }
@@ -1126,6 +1127,29 @@ impl Hypervisor for Whpx {
                if ($response.error) {{ throw ('QMP screenshot failed: '+$response.error.desc) }}; \
              }} }} finally {{ $c.Dispose() }}",
             ps_quote(&out.display().to_string()),
+            Self::qmp_port(vm)
+        );
+        Some(powershell(&script))
+    }
+
+    fn control(&self, vm: &Vm<'_>, args: &[String]) -> Option<CommandLine> {
+        let command = ps_quote(&args.join(" "));
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $c=[Net.Sockets.TcpClient]::new('127.0.0.1',{}); \
+             try {{ $c.ReceiveTimeout=5000; $c.SendTimeout=5000; $s=$c.GetStream(); \
+             $r=[IO.StreamReader]::new($s); $w=[IO.StreamWriter]::new($s); $w.AutoFlush=$true; \
+             $null=$r.ReadLine(); \
+             foreach ($request in @(@{{execute='qmp_capabilities'}}, \
+                 @{{execute='human-monitor-command';arguments=@{{'command-line'={command}}}}})) {{ \
+               $w.WriteLine(($request | ConvertTo-Json -Compress -Depth 4)); \
+               do {{ $line=$r.ReadLine(); if ($null -eq $line) {{ throw 'QMP connection closed' }}; \
+                 $response=$line | ConvertFrom-Json; \
+               }} while ($response.PSObject.Properties.Name -notcontains 'return' -and \
+                        $response.PSObject.Properties.Name -notcontains 'error'); \
+               if ($response.error) {{ throw ('QMP monitor failed: '+$response.error.desc) }}; \
+               if ($request.execute -eq 'human-monitor-command') {{ $response.return }}; \
+             }} }} finally {{ $c.Dispose() }}",
             Self::qmp_port(vm)
         );
         Some(powershell(&script))
@@ -1271,6 +1295,21 @@ mod tests {
             self.0.push(command.clone());
             Ok(true)
         }
+    }
+
+    #[test]
+    fn whpx_monitor_keeps_command_arguments_in_a_literal() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let command = Whpx
+            .control(&vm, &["help '; throw 'injected'; #".into()])
+            .expect("WHPX monitor is supported");
+        let script = command.args.last().expect("PowerShell script");
+        assert!(script.contains("'command-line'='help ''; throw ''injected''; #'"));
+        assert!(Whpx.capabilities().control.is_some());
     }
 
     fn fake(stdout: &str) -> Fake {

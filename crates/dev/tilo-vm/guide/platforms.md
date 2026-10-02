@@ -76,8 +76,8 @@ respective volume. The guest gets the host CPU through WHPX, a PCI serial
 device for Linux `console=ttyS0`, a separate firmware UART, a user network
 with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
 display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
-`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
-through QMP and waits for QEMU to exit.
+`<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` asks the guest to power off
+through SSH first, then uses the QMP power button if SSH is unavailable.
 
 For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
 virtual GPU, USB devices and VNC. WHPX defaults to 3 GiB of guest RAM; use
@@ -231,6 +231,19 @@ tilo-vm vm create esp1 --image base.raw --boot-esp tilo-boot-override.raw
 The ESP is attached read-only with the first boot index, so firmware boots its
 loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
 support it; keep the ESP on a local drive.
+
+### WHPX monitor diagnostics
+
+`tilo-vm vm control` sends a QEMU monitor command through the VM's local QMP
+connection. It works before guest SSH is available:
+
+```sh
+tilo-vm vm control info status
+tilo-vm vm control info block
+```
+
+`tilo-vm vm shot` captures the real VM display. Use `tilo-vm control` for the
+running compositor's semantic actions; monitor commands manage the VM itself.
 
 ## The root SSH key
 
