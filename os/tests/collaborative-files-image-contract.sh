@@ -215,6 +215,11 @@ require_exec "$payload/bin/file-explorer"
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
 require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
 require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
+# A thin app links the runtime bundle's shared libraries; the launcher puts
+# the bundle's lib directory on the loader path. The AT-SPI smoke below runs
+# the payload binary directly, so it gives it the same path.
+runtime_lib=/usr/lib/tilo-runtime/2026.07/lib
+require_file "$runtime_lib/libruntime_dylib.so"
 # These are deliberately allowed to be distinct signed build artifacts.  The
 # loose binary is the privileged recovery surface built with the OS, while the
 # launcher resolves the checksum-pinned app-collection payload.  Requiring
@@ -360,7 +365,7 @@ if [ "$mode" = runtime ]; then
   # installed registry and launcher resolve. Thin packages require the signed
   # runtime bundle's library directory, just as the launcher supplies it. Do
   # not inherit host library overrides into this installed-payload check.
-  LD_LIBRARY_PATH=/usr/lib/tilo-runtime/2026.07/lib \
+  LD_LIBRARY_PATH="$runtime_lib" \
   TILO_FILES_BINARY="$payload/bin/file-explorer" \
     /usr/libexec/tilo/files-atspi-smoke.sh \
     || die "installed Files AT-SPI smoke failed"
