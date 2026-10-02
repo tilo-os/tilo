@@ -160,6 +160,18 @@ struct Dab {
     area: Area,
 }
 
+/// One bristle's tip on the canvas at one sample of a stroke.
+struct Touch {
+    centre: (f32, f32),
+    tip: f32,
+    /// How firmly the bristle meets the canvas here, `0..=1`.
+    contact: f32,
+    /// How hard the hand presses, `0..=1`.
+    pressure: f32,
+    /// The unit direction the brush is travelling.
+    heading: (f32, f32),
+}
+
 /// Everything one brush pass needs besides the layer.
 struct Pass<'a> {
     samples: &'a [Sample],
@@ -250,6 +262,7 @@ impl OilLayer {
         // How far along the stroke a bristle's contact stays alike: a dry
         // brush skips in streaks this long, not dot by dot over the weave.
         let streak_length = (pass.size * 2.0).max(5.0);
+        let patch_size = (pass.size * 1.5).max(6.0);
         let lanes = float(bristles.len()) * 0.35;
         // A short dab keeps most of its bristles however ragged the brush.
         let room = total * 0.3;
@@ -262,6 +275,14 @@ impl OilLayer {
                 * 0.5
                 * (0.35 + 0.65 * sample.pressure)
                 * taper(sample.distance, total, pass.size);
+            // The hand rides up and bears down over a few brush widths, so
+            // the whole brush catches in patches as well as in streaks.
+            let patch = fbm(
+                sample.x / patch_size,
+                sample.y / patch_size,
+                pass.seed ^ 0x2e61,
+                2,
+            );
             for bristle in &mut bristles {
                 if bristle.load <= 0.002
                     || sample.distance < bristle.land.min(room)
@@ -273,17 +294,21 @@ impl OilLayer {
                     sample.x - sample.ty * bristle.offset * half,
                     sample.y + sample.tx * bristle.offset * half,
                 );
-                let contact = smoothstep(
-                    0.25,
-                    0.75,
-                    fbm(
-                        sample.distance / streak_length,
-                        bristle.offset * lanes,
-                        pass.seed ^ 0x7a3d,
-                        2,
-                    ),
+                let streak = fbm(
+                    sample.distance / streak_length,
+                    bristle.offset * lanes,
+                    pass.seed ^ 0x7a3d,
+                    2,
                 );
-                let dab = self.dab(bristle, centre, (tip, contact), body, pass);
+                let contact = smoothstep(0.25, 0.75, streak * 0.65 + patch * 0.35);
+                let touch = Touch {
+                    centre,
+                    tip,
+                    contact,
+                    pressure: sample.pressure,
+                    heading: (sample.tx, sample.ty),
+                };
+                let dab = self.dab(bristle, &touch, body, pass);
                 // Wet paint beneath sticks to the bristle and travels with
                 // it, by how far the bristle dragged through it.
                 if dab.picked_weight > 0.0 {
@@ -302,17 +327,15 @@ impl OilLayer {
         self.wet_area = self.wet_area.union(touched);
     }
 
-    /// One bristle's tip pressed at `centre`, touching the canvas as firmly
-    /// as `contact` (`0..=1`) says.
-    fn dab(
-        &mut self,
-        bristle: &Bristle,
-        centre: (f32, f32),
-        (tip, contact): (f32, f32),
-        body: f32,
-        pass: &Pass<'_>,
-    ) -> Dab {
+    /// One bristle's tip pressed on the canvas as `touch` says.
+    fn dab(&mut self, bristle: &Bristle, touch: &Touch, body: f32, pass: &Pass<'_>) -> Dab {
         let (width, height) = (self.width(), self.canvas.height);
+        let (centre, tip) = (touch.centre, touch.tip);
+        let dryness = 1.0 - smoothstep(0.2, 0.6, bristle.load);
+        // A hard-pressed dry brush is pushed down into the weave; a light
+        // one skims the tops, the more so where the bristle lifts.
+        let press =
+            (0.5 + (touch.contact - 0.5) * dryness) * 0.6 + (touch.pressure - 0.6) * 0.18 * dryness;
         let reach = cell(tip.ceil() + 1.0, 64);
         let area = Area {
             x0: cell(centre.0 - tip, width).saturating_sub(1),
@@ -335,11 +358,15 @@ impl OilLayer {
                     continue;
                 }
                 // A loaded brush fills the weave; a dry one catches where the
-                // bristle presses and the threads stand high, mostly the
-                // former, so broken colour streaks along the stroke.
-                let tooth = self.canvas.ground.at(x, y);
-                let dryness = 1.0 - smoothstep(0.2, 0.6, bristle.load);
-                let grip = tooth * 0.35 + (0.5 + (contact - 0.5) * dryness) * 0.65;
+                // bristle presses and the threads stand high, and on the
+                // faces of the threads it drags against more than their lee,
+                // so broken colour streaks along the stroke.
+                let ground = &self.canvas.ground;
+                let mut tooth = ground.at(x, y);
+                if dryness > 0.0 {
+                    tooth += ground.rise(x, y, touch.heading) * 2.0 * dryness;
+                }
+                let grip = tooth * 0.4 + press;
                 let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
                 let deposit =
                     (reach_here.min(1.0) * clip * catch * bristle.load.min(1.0) * pass.opacity)
@@ -421,7 +448,7 @@ impl OilLayer {
                 let wander = fbm(float(x) / grain, float(y) / grain, seed ^ 0x5c4b, 3);
                 // A thin coat is scrubbed on unevenly, so where it misses the
                 // weave it misses in patches, not thread by thread.
-                let catch = smoothstep(0.5 - load, 0.8 - load, tooth * 0.7 + wander * 0.3);
+                let catch = smoothstep(0.5 - load, 0.75 - load, tooth * 0.5 + wander * 0.5);
                 let deposit = (inside * catch * opacity * (0.7 + 0.35 * load)).clamp(0.0, 1.0);
                 let index = at(width, x, y);
                 let cover = read(&self.cover, width, x, y, 0.0);
