@@ -165,7 +165,6 @@ fn page(
     text
 }
 
-
 /// Open a sealed live frame with `peer`'s channel keys.
 async fn open_live(peer: &PeerHandle, frame: Vec<u8>) -> Option<LiveFrame> {
     let (tx, rx) = tokio::sync::oneshot::channel();
