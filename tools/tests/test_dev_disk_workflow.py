@@ -245,7 +245,8 @@ class PublishScriptTests(unittest.TestCase):
                 'podman manifest push --all "$list" "docker://$index_tag"',
                 'TILO_PACKAGE_UPLOAD_WORKERS=2 "$REPO/tools/upload_immutable_packages.sh" "$uploads"',
                 '"$REPO/tools/upload_immutable_packages.sh" "$uploads"\nrm -f "$uploads"',
-                'skopeo copy --all "docker://$REPOSITORY@$target" "docker://$latest"',
+                'skopeo copy --multi-arch index-only --preserve-digests \\\n'
+                '    "docker://$REPOSITORY@$target" "docker://$latest"',
             ]
             positions = [self.source.index(marker) for marker in order]
             self.assertEqual(positions, sorted(positions))
