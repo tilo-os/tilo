@@ -85,18 +85,5 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media", default-features = false }
-# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
-# per-peer identity the collab layer signs with. Chat uses its public key +
-# display name so every running instance is a distinct participant.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-# Live-media dependencies. Versions match the workspace media and transport
-# stacks to avoid duplicate copies.
-iroh = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["sync"] }
-# Length-prefixed media frames on the call stream.
-wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }

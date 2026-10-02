@@ -206,7 +206,6 @@ pub fn provide_resources(state: &Vec<Snippet>) -> Vec<PublishedResource> {
 }
 
 /// Live launch through the framework host, with History mode registered.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<SnippetsShell>().history(&crate::framework_history::HISTORY)
 }

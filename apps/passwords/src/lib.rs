@@ -369,7 +369,4 @@ mod tests {
         }
     }
 }
-#[cfg(target_arch = "wasm32")]
-pub use resource::{Passwords, PasswordsShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Passwords, PasswordsShell, launch_spec};

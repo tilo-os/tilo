@@ -173,7 +173,6 @@ impl ActionSink {
 }
 
 /// Live launch through the framework host, with History mode registered.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<DiffmergeShell>().history(&crate::framework_history::HISTORY)
 }

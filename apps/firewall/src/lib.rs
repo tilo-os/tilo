@@ -61,7 +61,4 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(FirewallApp::new_demo())
 }
-#[cfg(target_arch = "wasm32")]
-pub use resource::{Firewall, FirewallShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{Firewall, FirewallShell, launch_spec};

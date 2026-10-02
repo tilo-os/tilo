@@ -66,7 +66,4 @@ pub use files_app::{FileExplorerWidget, StartupInputs};
 
 #[cfg(all(test, windows))]
 mod unavailable_projection_tests;
-#[cfg(target_arch = "wasm32")]
-pub use resource::{FileExplorer, FileExplorerShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{FileExplorer, FileExplorerShell, launch_spec as framework_launch_spec};

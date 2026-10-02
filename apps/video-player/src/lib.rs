@@ -92,7 +92,4 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 pub fn app_root_for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(PlayerApp::for_shot(open, scenario))
 }
-#[cfg(target_arch = "wasm32")]
-pub use resource::{VideoPlayer, VideoPlayerShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{VideoPlayer, VideoPlayerShell, launch_spec as framework_launch_spec};

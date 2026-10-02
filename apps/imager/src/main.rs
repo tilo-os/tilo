@@ -167,13 +167,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Off Linux the imager ships without the desktop portal; its file
-    // choosers are the platform dialogs.
-    #[cfg(not(target_os = "linux"))]
-    ui::host::install_default(
-        ui::host::native::services(Some("so.tilo.imager"))
-            .with_files(std::sync::Arc::new(imager::setup::folders::PlatformDialogs)),
-    );
     // Default live path: ResourceApp host. Captures, helpers and smoke probes
     // above keep the standalone launch path.
     if !args.iter().any(|arg| {

@@ -100,7 +100,4 @@ pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
     }
     Box::new(app)
 }
-#[cfg(target_arch = "wasm32")]
-pub use resource::{GitClient, GitClientShell};
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{GitClient, GitClientShell, launch_spec};

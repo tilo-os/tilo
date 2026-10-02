@@ -172,7 +172,4 @@ pub fn app_root_import_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
     app.demo_import_image();
     Box::new(app)
 }
-#[cfg(not(target_arch = "wasm32"))]
 pub use resource::{PdfMarkup, PdfViewer, PdfViewerShell, launch_spec, standalone_launch};
-#[cfg(target_arch = "wasm32")]
-pub use resource::{PdfMarkup, PdfViewer, PdfViewerShell, standalone_launch};

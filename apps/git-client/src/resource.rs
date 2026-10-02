@@ -169,7 +169,6 @@ impl ActionSink {
 }
 
 /// Live launch through the framework host.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<GitClientShell>().configure_app(|app| {
         app.set_window_title(Some("Git Client".into()));

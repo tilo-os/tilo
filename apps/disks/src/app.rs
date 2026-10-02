@@ -33,7 +33,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{ConfirmationPolicy, ExecutionMode, OperationKind, Resource, ResultSpec};
+use ui::tilo_actions::{OperationKind, Resource};
+#[cfg(test)]
+use ui::tilo_actions::{ConfirmationPolicy, ExecutionMode, ResultSpec};
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
