@@ -13,6 +13,8 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
+//! - [`legacy_window`] — legacy windows a session streams, as the live plane
+//!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
 //! - [`rooms`] — governed rooms over HTTPS: administration and joining;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
@@ -49,6 +51,7 @@ pub mod certify;
 pub mod compaction;
 pub mod config;
 pub mod home_peer;
+pub mod legacy_window;
 pub mod live;
 pub mod mesh;
 pub mod metrics;

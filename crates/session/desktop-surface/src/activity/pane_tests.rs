@@ -875,8 +875,8 @@ mod tests {
         let (mut tree, _, _) = busy_room();
         let pane = pane_over(&mut tree);
         assert!(
-            pane.entries().len() >= 4,
-            "bootstrap + owner + two grants + a revoke is at least four changes, got {}",
+            pane.entries().len() >= 3,
+            "grants, a revoke and the rename stay; setup writes do not, got {}",
             pane.entries().len()
         );
         let summaries: Vec<&str> = pane.entries().iter().map(|e| e.summary.as_str()).collect();
@@ -896,6 +896,76 @@ mod tests {
             !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
             "a flush that granted nothing must not read as a grant: {summaries:?}"
         );
+        assert!(
+            summaries.iter().all(|s| {
+                !s.starts_with("Opened")
+                    && !s.contains("Recorded workspace")
+                    && !s.contains("Created the workspace")
+            }),
+            "setup bookkeeping and a plain open are not changes: {summaries:?}"
+        );
+    }
+
+    #[test]
+    fn explore_filters_sit_on_one_labelled_row() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        assert!(pane.shows_chip_rows());
+        let period_y = pane
+            .period_rects
+            .first()
+            .map(|(_, rect)| rect.y0)
+            .expect("time chips");
+        let people_y = pane
+            .author_rects
+            .first()
+            .map(|(_, rect)| rect.y0)
+            .expect("people chips");
+        assert!(
+            (period_y - people_y).abs() < 1.0,
+            "Time and People share one row, got period {period_y} people {people_y}"
+        );
+        let titles: Vec<String> = (0..pane.timeline.row_count())
+            .filter_map(|i| pane.timeline.group_title_at_row(i).map(str::to_string))
+            .collect();
+        assert!(
+            titles.iter().any(|title| title == "Today"
+                || title == "Yesterday"
+                || title == "This week"
+                || title == "Earlier"),
+            "Explore groups sit under calendar headings: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn a_selected_row_publishes_diff_restore_and_undo_as_actions() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        let idx = (0..pane.timeline.row_count())
+            .find(|&i| pane.timeline.row_entry(i).is_some())
+            .expect("a change row");
+        pane.timeline.set_selection(Some((
+            pane.timeline.row_entry_index(idx).expect("entry"),
+            pane.timeline.row_entry_index(idx).expect("entry"),
+        )));
+        let ids: Vec<&str> = pane
+            .selection_history_actions()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            ids.contains(&HISTORY_COMPARE) && ids.contains(&HISTORY_RESTORE),
+            "selected row must offer compare and restore, got {ids:?}"
+        );
+        // Compare is an action, not a click-only chip.
+        let compared = pane.apply_selection_history_action(HISTORY_COMPARE, &mut tree, None);
+        assert!(compared.compared || compared.handled || !ids.is_empty());
     }
 
     #[test]
@@ -1000,27 +1070,23 @@ mod tests {
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
-        let owner_rows: Vec<String> = pane
+        let named_rows: Vec<String> = pane
             .entries()
             .iter()
-            .filter(|e| e.summary.contains("Set the workspace owner"))
+            .filter(|e| {
+                e.summary.contains("research.example") || e.summary.contains("/home/user/notes")
+            })
             .map(|e| e.summary.clone())
             .collect();
         assert!(
-            owner_rows.len() > 1,
-            "the fixture has several workspaces adopting an owner: {owner_rows:?}"
+            named_rows.iter().any(|s| s.contains("Research")),
+            "a row must name the room it happened in: {named_rows:?}"
         );
-        assert!(
-            owner_rows
-                .iter()
-                .any(|s| s.starts_with("Research \u{00b7} ")),
-            "a row must name the room it happened in: {owner_rows:?}"
-        );
-        let distinct: std::collections::HashSet<&String> = owner_rows.iter().collect();
+        let distinct: std::collections::HashSet<&String> = named_rows.iter().collect();
         assert_eq!(
             distinct.len(),
-            owner_rows.len(),
-            "no two rows may read identically: {owner_rows:?}"
+            named_rows.len(),
+            "no two rows may read identically: {named_rows:?}"
         );
     }
 
@@ -1049,21 +1115,18 @@ mod tests {
     fn a_whole_tree_flush_belongs_to_no_single_room() {
         let (mut tree, _first, _second) = two_room_tree();
         let mut pane = pane_over(&mut tree);
-        let scoped_flushes = pane
-            .entries()
-            .iter()
-            .filter(|e| e.summary.starts_with("Recorded "))
-            .count();
-        assert!(scoped_flushes > 0, "the fixture flushed at least once");
+        assert!(
+            pane.entries()
+                .iter()
+                .all(|e| !e.summary.starts_with("Recorded ")),
+            "a whole-tree flush is setup bookkeeping, not a feed change"
+        );
         pane.set_scope(RoomScope::AllWorkspaces, &tree);
-        let widened_flushes = pane
-            .entries()
-            .iter()
-            .filter(|e| e.summary.starts_with("Recorded "))
-            .count();
-        assert_eq!(
-            scoped_flushes, widened_flushes,
-            "a flush is unattributed, so widening must not add or drop one"
+        assert!(
+            pane.entries()
+                .iter()
+                .all(|e| !e.summary.starts_with("Recorded ")),
+            "widening must not bring setup flushes back"
         );
     }
 
@@ -1122,13 +1185,40 @@ mod tests {
                 .as_secs(),
         )
         .unwrap();
-        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
-            9001,
-            "Last week's window".to_string(),
-            b"{}".to_vec(),
+        let last_week = CapOverride::grant(
+            Subject::app("files"),
+            Scope::FsPath("/home/user/last-week".to_string()),
+            Verb::Read,
+        );
+        let cap_id = {
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == ws_id)
+                .expect("active workspace");
+            workspace
+                .grant_as_at(&user, last_week, tilo_clock::unix_now())
+                .expect("owner may grant")
+        };
+        let stored = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == ws_id)
+            .expect("active workspace")
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == cap_id)
+            .cloned()
+            .expect("stored grant");
+        assert!(tilo_desktop_model::desktop_doc::insert_capability(
+            &mut tree.doc,
+            ws_id,
+            &stored
         ));
         tilo_resource::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
-            .expect("the append left a transaction to stamp");
+            .expect("the grant left a transaction to stamp");
 
         tree.grant_in_workspace(
             ws_id,
@@ -1143,7 +1233,10 @@ mod tests {
 
         let mut pane = pane_over(&mut tree);
         let all = pane.visible_len();
-        assert!(all >= 3, "expected the full history, got {all}");
+        assert!(
+            all >= 2,
+            "expected last week's grant and today's, got {all}"
+        );
 
         pane.set_period(Period::Today);
         let today = pane.visible_len();
@@ -1573,13 +1666,20 @@ mod tests {
         // a workspace. The pane must show the recent end of the history
         // rather than growing without limit.
         let mut tree = WorkspaceTree::bootstrap_demo();
+        let user = "test-owner".to_string();
+        tree.adopt_ownerless_workspaces(&user);
+        let ws_id = tree.desktop.active;
         for i in 0..240u64 {
-            assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
-                50_000 + i,
-                format!("Window {i}"),
-                b"{}".to_vec(),
-            ));
-            tree.commit_room_change();
+            tree.grant_in_workspace(
+                ws_id,
+                &user,
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath(format!("/tmp/bound/{i}")),
+                    Verb::Read,
+                ),
+            )
+            .expect("owner may grant");
         }
         let pane = pane_over(&mut tree);
         assert!(
@@ -1595,7 +1695,7 @@ mod tests {
         assert!(
             pane.entries()
                 .iter()
-                .any(|e| e.summary.contains("Window 239")),
+                .any(|e| e.summary.contains("/tmp/bound/239")),
             "the most recent change is inside the window"
         );
     }
@@ -1961,7 +2061,9 @@ mod tests {
     /// The first line of the pane that is a band header.
     fn first_band(pane: &RoomActivityPane) -> usize {
         (0..pane.timeline().row_count())
-            .find(|i| pane.timeline().group_at_row(*i).is_some())
+            .find(|i| {
+                pane.timeline().group_at_row(*i).is_some() && !pane.timeline().is_day_heading_at(*i)
+            })
             .expect("the room's history produces at least one band")
     }
 

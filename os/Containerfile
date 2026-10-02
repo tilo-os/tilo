@@ -1029,6 +1029,11 @@ COPY os/scripts/build-clock.c /tmp/build-clock.c
 RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
     /tmp/build-clock.c -o /build-clock.so
 
+FROM ${WPE_BUILDROOT_REF} AS virtio-gallivm-cpu
+COPY os/scripts/virtio-gallivm-cpu.c /tmp/virtio-gallivm-cpu.c
+RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
+    -Wl,-z,relro,-z,now /tmp/virtio-gallivm-cpu.c -o /virtio-gallivm-cpu.so
+
 # ---- Tilo build outputs, arranged by os/components.toml ---------------------
 # The manifest is the one record of which Tilo-built file lands where. This
 # stage applies it: every file of every image layer is installed under
@@ -2068,6 +2073,7 @@ COPY --from=remote-capture-files / /
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 COPY --chmod=0755 os/usr/libexec/tilo-cage-session /usr/libexec/tilo-cage-session
+COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth, and starts /

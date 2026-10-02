@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const ROOM_HEX = 'aa'.repeat(32);
@@ -621,4 +621,50 @@ test('the room\'s records this page holds, and waiting for one', async () => {
   assert.deepEqual(peer.records(), [{app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'}]);
   await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing', {timeoutMs: 20}), /no so.tilo.notes record missing/);
   await peer.dispose();
+});
+
+
+test('raw record watches bind the member namespace and stop retrying after unwatch', async () => {
+  let onMember;
+  let endTrack;
+  let deliver;
+  let opened = 0;
+  let canceled = 0;
+  const timers = [];
+  const record = {app: 'so.tilo.legacy-window', record: '@tilo:legacy-windows'};
+  const runtime = fakeRuntime();
+  const track = runtime.liveRecordTrack(JSON.stringify(record));
+  const session = {
+    closed: new Promise(() => {}), close() {}, publishPresence: () => true,
+    watchMembers(options) { onMember = options.onMember; },
+    subscribePresence() { return () => {}; },
+    subscribeOps(publisher, name, onFrame, onEnd) {
+      assert.equal(publisher, OTHER);
+      assert.equal(name, track);
+      opened++; deliver = onFrame; endTrack = onEnd;
+      return () => { canceled++; };
+    },
+  };
+  const layer = createLiveLayer({liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX,
+    publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6})}, runtime, ROOM, {
+    endpoint: 'test', carriers: {connect: async () => session},
+    setTimer: callback => {timers.push(callback); return timers.length;}, clearTimer() {},
+  });
+  await until(() => onMember, 'the live member watcher');
+  const received = [];
+  const stop = layer.watchRecordFrames(record, (publisher, bytes) => received.push([publisher, [...bytes]]));
+  const only = [];
+  const stopMember = layer.subscribeMemberRecord(OTHER, record, bytes => only.push([...bytes]));
+  onMember(OTHER, true);
+  assert.equal(opened, 1, 'one raw subscription serves both consumers');
+  deliver(Uint8Array.from([0xf1, 4]));
+  assert.deepEqual(received, [[OTHER, [0xf1, 4]]]);
+  assert.deepEqual(only, [[0xf1, 4]]);
+  stop();
+  assert.equal(canceled, 0, 'the member consumer still owns the subscription');
+  endTrack();
+  stopMember();
+  for (const callback of timers.splice(1)) callback(); // omit the grant-renewal timer
+  assert.equal(opened, 1, 'an ended subscription has no consumers left to retry for');
+  layer.stop();
 });

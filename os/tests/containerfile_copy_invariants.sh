@@ -77,7 +77,8 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=ab2ea6df3dd0a7ce6da607076c57c0ad97c6bd36cefe26e3e7b36df872094ac7
+# ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
+expected_contract=3ec0b1b5999fbf69847aa1503dff34db2c3dab5c66ed3ef55b4185e47431737b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -116,8 +117,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
 # Pinning the unpacked base's directory times to the epoch adds one RUN.
 # The single virtio Cage wrapper COPY brings the reviewed rootfs to 151.
-[ "$instructions" -le 151 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 151)" >&2
+# The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
+[ "$instructions" -le 152 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 152)" >&2
   exit 1
 }
 

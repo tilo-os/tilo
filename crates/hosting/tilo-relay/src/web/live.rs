@@ -167,7 +167,7 @@ impl LiveGrants {
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
-async fn admitted(
+pub(crate) async fn admitted(
     sessions: &Sessions,
     device: [u8; 32],
     user: [u8; 32],

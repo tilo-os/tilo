@@ -1495,7 +1495,7 @@ impl SidebarWheelDisc {
             self.rect.y1,
         );
         // Flat fill — the theme's glass surface, same token as modal surfaces.
-        let body_hue = theme.tokens.colors.surfaces.glass;
+        let body_hue = theme.material_glass();
 
         Some(DiscGeometry {
             c,
