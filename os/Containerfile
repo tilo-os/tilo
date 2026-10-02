@@ -457,8 +457,11 @@ ARG SCCACHE_ENDPOINT=""
 ARG SCCACHE_REGION="auto"
 ARG SCCACHE_S3_KEY_PREFIX="tilo/image/v1"
 ARG SCCACHE_S3_USE_SSL="false"
+# BuildKit can overlap the production and dev compiles. Keep their servers
+# on private filesystem sockets instead of competing for localhost:4226.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    SCCACHE_SERVER_UDS=/tmp/tilo-image-sccache.sock \
     SCCACHE_BUCKET=${SCCACHE_BUCKET} \
     SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
     SCCACHE_REGION=${SCCACHE_REGION} \
@@ -631,7 +634,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          printf 'TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=0\n' "$phase" "$((now - started))"; \
          phase=$1; started=$now; \
        } \
-    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; if [ "$status" != 0 ]; then df -h /build /build/target /tmp; df -i /build /build/target /tmp; fi; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
          shared:0|off:0|publication:0) ;; \
          shared:1|publication:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
